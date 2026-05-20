@@ -1,0 +1,43 @@
+[package]
+name = "knotq-app"
+version = "0.1.0"
+edition = "2021"
+description = "A structured task and calendar app."
+
+[[bin]]
+name = "knotq"
+path = "src/main.rs"
+
+[package.metadata.bundle]
+name = "KnotQ"
+identifier = "com.enigmadux.knotq"
+icon = ["desktop/app/assets/app-icon/*.png", "assets/app-icon/*.png"]
+category = "public.app-category.productivity"
+short_description = "A structured task and calendar app."
+
+[dependencies]
+gpui = "0.2.2"
+gpui-component = "0.5.1"
+base64 = { workspace = true }
+chrono = { workspace = true }
+rand = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+sha2 = { workspace = true }
+ureq = { workspace = true }
+urlencoding = { workspace = true }
+uuid = { workspace = true }
+anyhow = { workspace = true }
+async-channel = "2.5.0"
+futures = "0.3"
+knotq-commands = { workspace = true }
+knotq-date-util = { workspace = true }
+knotq-editor = { workspace = true }
+knotq-index = { workspace = true }
+knotq-model = { workspace = true }
+knotq-rrule = { workspace = true }
+knotq-state = { workspace = true }
+knotq-notifications = { workspace = true }
+knotq-storage-json = { workspace = true }
+knotq-theme = { workspace = true }
+knotq-ui = { workspace = true }

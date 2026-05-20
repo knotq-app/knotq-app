@@ -1,0 +1,13 @@
+[package]
+name = "knotq-state"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+anyhow = { workspace = true }
+chrono = { workspace = true }
+knotq-commands = { workspace = true }
+knotq-index = { workspace = true }
+knotq-model = { workspace = true }
+knotq-notifications = { workspace = true }
+knotq-rrule = { workspace = true }

@@ -1,0 +1,13 @@
+[package]
+name = "knotq-import"
+version = "0.1.0"
+edition = "2021"
+
+[features]
+google = []
+
+[dependencies]
+chrono = { workspace = true }
+knotq-commands = { workspace = true }
+knotq-model = { workspace = true }
+knotq-rrule = { workspace = true }

@@ -1,0 +1,14 @@
+[package]
+name = "knotq-commands"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+chrono = { workspace = true }
+knotq-model = { workspace = true }
+knotq-rrule = { workspace = true }
+serde = { workspace = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+serde_json = { workspace = true }

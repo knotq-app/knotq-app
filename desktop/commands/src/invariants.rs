@@ -1,0 +1,120 @@
+use thiserror::Error;
+
+use knotq_model::{FolderId, NodeRef, SchemeId, Workspace};
+
+use crate::Command;
+
+#[derive(Debug, Error)]
+pub enum CommandError {
+    #[error("folder {0} not found")]
+    FolderMissing(FolderId),
+    #[error("scheme {0} not found")]
+    SchemeMissing(SchemeId),
+    #[error("item {0} not found in scheme {1}")]
+    ItemMissing(knotq_model::ItemId, SchemeId),
+    #[error("cannot delete the root folder")]
+    DeleteRoot,
+    #[error("cannot move a folder into itself or a descendant")]
+    CycleMove,
+    #[error("folders can only be created at the workspace root")]
+    BadFolderDepth,
+    #[error("position {0} out of bounds")]
+    BadPosition(usize),
+    #[error("occurrence {0} out of bounds")]
+    BadOccurrence(usize),
+    #[error("scheme {0} is read-only")]
+    ReadOnlyScheme(SchemeId),
+}
+
+pub fn validate_position(position: usize, len: usize) -> Result<(), CommandError> {
+    if position > len {
+        Err(CommandError::BadPosition(position))
+    } else {
+        Ok(())
+    }
+}
+
+pub fn is_descendant(workspace: &Workspace, candidate: FolderId, ancestor: FolderId) -> bool {
+    let mut current = workspace.folders.get(&candidate).and_then(|f| f.parent);
+    while let Some(parent) = current {
+        if parent == ancestor {
+            return true;
+        }
+        current = workspace.folders.get(&parent).and_then(|f| f.parent);
+    }
+    false
+}
+
+pub fn is_valid_scheme_parent(workspace: &Workspace, folder_id: FolderId) -> bool {
+    folder_id == workspace.root
+        || workspace
+            .folders
+            .get(&folder_id)
+            .is_some_and(|folder| folder.parent == Some(workspace.root))
+}
+
+pub fn validate_depth_for_node(
+    workspace: &Workspace,
+    node: NodeRef,
+    new_parent: FolderId,
+) -> Result<(), CommandError> {
+    match node {
+        NodeRef::Folder(_) if new_parent != workspace.root => Err(CommandError::BadFolderDepth),
+        NodeRef::Scheme(_) if !is_valid_scheme_parent(workspace, new_parent) => {
+            Err(CommandError::BadFolderDepth)
+        }
+        _ => Ok(()),
+    }
+}
+
+pub fn enforce_marker_constraints(item: &mut knotq_model::Item) {
+    item.enforce_marker_constraints();
+}
+
+pub fn ensure_command_allowed_for_user(
+    workspace: &Workspace,
+    cmd: &Command,
+) -> Result<(), CommandError> {
+    match cmd {
+        Command::InsertItem { scheme, .. }
+        | Command::UpdateItemText { scheme, .. }
+        | Command::ReplaceItem { scheme, .. }
+        | Command::SetItemIndent { scheme, .. }
+        | Command::SetItemMarker { scheme, .. }
+        | Command::SetItemDate { scheme, .. }
+        | Command::SetItemRecurrence { scheme, .. }
+        | Command::SetItemPriority { scheme, .. }
+        | Command::SetOccurrenceNotificationOffset { scheme, .. }
+        | Command::DeleteItem { scheme, .. }
+        | Command::ReorderItem { scheme, .. }
+        | Command::ToggleOccurrence { scheme, .. } => {
+            if workspace
+                .schemes
+                .get(scheme)
+                .ok_or(CommandError::SchemeMissing(*scheme))?
+                .is_read_only()
+            {
+                return Err(CommandError::ReadOnlyScheme(*scheme));
+            }
+        }
+        Command::SetSchemeColor { id, .. }
+        | Command::SetSchemeGsync { id, .. }
+        | Command::SetSchemeSource { id, .. } => {
+            if workspace
+                .schemes
+                .get(id)
+                .ok_or(CommandError::SchemeMissing(*id))?
+                .is_read_only()
+            {
+                return Err(CommandError::ReadOnlyScheme(*id));
+            }
+        }
+        Command::Batch(cmds) => {
+            for cmd in cmds {
+                ensure_command_allowed_for_user(workspace, cmd)?;
+            }
+        }
+        _ => {}
+    }
+    Ok(())
+}

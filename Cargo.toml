@@ -1,0 +1,50 @@
+[workspace]
+members = [
+    "desktop/app",
+    "desktop/commands",
+    "desktop/date-util",
+    "desktop/editor-core",
+    "desktop/editor",
+    "desktop/fixtures",
+    "desktop/import",
+    "desktop/index",
+    "desktop/model",
+    "desktop/notifications",
+    "desktop/rrule",
+    "desktop/state",
+    "desktop/storage",
+    "desktop/storage-json",
+    "desktop/theme",
+    "desktop/ui",
+]
+resolver = "2"
+
+[workspace.dependencies]
+anyhow = "1"
+async-trait = "0.1"
+base64 = "0.22"
+chrono = { version = "0.4", features = ["serde"] }
+rand = "0.8"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
+thiserror = "1"
+ureq = { version = "2", features = ["json"] }
+urlencoding = "2"
+uuid = { version = "1", features = ["v4", "serde"] }
+
+knotq-commands = { path = "desktop/commands" }
+knotq-date-util = { path = "desktop/date-util" }
+knotq-editor-core = { path = "desktop/editor-core" }
+knotq-editor = { path = "desktop/editor" }
+knotq-fixtures = { path = "desktop/fixtures" }
+knotq-import = { path = "desktop/import" }
+knotq-index = { path = "desktop/index" }
+knotq-model = { path = "desktop/model" }
+knotq-notifications = { path = "desktop/notifications" }
+knotq-rrule = { path = "desktop/rrule" }
+knotq-state = { path = "desktop/state" }
+knotq-storage = { path = "desktop/storage" }
+knotq-storage-json = { path = "desktop/storage-json" }
+knotq-theme = { path = "desktop/theme" }
+knotq-ui = { path = "desktop/ui" }

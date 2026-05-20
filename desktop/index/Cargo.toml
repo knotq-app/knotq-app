@@ -1,0 +1,10 @@
+[package]
+name = "knotq-index"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+chrono = { workspace = true }
+knotq-date-util = { workspace = true }
+knotq-model = { workspace = true }
+knotq-rrule = { workspace = true }

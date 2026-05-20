@@ -1,0 +1,10 @@
+[package]
+name = "knotq-editor-core"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+chrono = { workspace = true }
+knotq-commands = { workspace = true }
+knotq-date-util = { workspace = true }
+knotq-model = { workspace = true }

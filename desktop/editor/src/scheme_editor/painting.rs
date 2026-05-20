@@ -1,0 +1,175 @@
+use super::*;
+
+impl SchemeEditor {
+    pub(super) fn paint_editor(
+        &mut self,
+        bounds: Bounds<Pixels>,
+        window: &mut Window,
+        cx: &mut App,
+    ) {
+        self.last_bounds = Some(bounds);
+        self.checkbox_hitboxes.clear();
+        self.date_annotation_hitboxes.clear();
+        self.repeat_annotation_hitboxes.clear();
+        let theme = self.theme;
+        let text_origin = point(
+            bounds.left() + px(TEXT_LEFT_PAD),
+            bounds.top() + px(self.top_pad),
+        );
+        let focused = !self.read_only && self.focus_handle.is_focused(window);
+        let active_row = self
+            .selection
+            .head
+            .row
+            .min(self.render_line_count().saturating_sub(1));
+
+        if focused {
+            if let Some(row_bounds) = self.row_bounds(active_row, bounds) {
+                window.paint_quad(fill(row_bounds, token_rgba(theme.row_hover)));
+            }
+        }
+
+        if focused && !self.selection.is_empty() {
+            self.paint_selection(text_origin, window);
+        }
+
+        for row in 0..self.line_map.line_count() {
+            let y = self.line_map.y_range(row..row + 1).start;
+            if let Some(line) = self.line_map.line(row).cloned() {
+                let line_origin = point(text_origin.x + self.row_layout_x(row), text_origin.y + y);
+                let _ = line.paint(
+                    line_origin,
+                    self.line_map.line_height(),
+                    TextAlign::Left,
+                    None,
+                    window,
+                    cx,
+                );
+                if let Some(editor_row) = self.rows.get(row).cloned() {
+                    self.paint_line_marker(&editor_row, row, line_origin, window, cx);
+                    if self
+                        .line_map
+                        .item_line(row)
+                        .and_then(|line| line.annotation.as_ref())
+                        .is_some()
+                    {
+                        self.paint_date_annotation(&editor_row, row, line_origin, window, cx);
+                    }
+                    self.paint_item_media(&editor_row.item, row, line_origin, window, cx);
+                }
+            }
+        }
+
+        if focused && self.selection.is_empty() && self.cursor_blink_state {
+            let pos = self.visual_point_for_location(self.selection.head);
+            let caret_height = (self.line_map.line_height() - px(4.0)).max(px(12.0));
+            window.paint_quad(fill(
+                Bounds::new(
+                    point(text_origin.x + pos.x, text_origin.y + pos.y + px(2.0)),
+                    size(px(1.5), caret_height),
+                ),
+                token_hsla(theme.caret_color),
+            ));
+        }
+    }
+
+    pub(super) fn marker_left_for_text_left(&self, item: &Item, text_left: Pixels) -> Pixels {
+        if item.marker == ItemMarker::Blank {
+            text_left
+        } else {
+            text_left - px(CHECKBOX_SIZE + CHECKBOX_GAP)
+        }
+    }
+
+    pub(super) fn media_stack_height(&self, item: &Item, max_width: Pixels) -> Pixels {
+        let mut height = px(0.0);
+        let mut count = 0;
+        for media in &item.media {
+            let media_size = media_display_size(media, max_width);
+            if media_size.height <= px(0.0) {
+                continue;
+            }
+            if count == 0 {
+                height += px(IMAGE_TOP_GAP);
+            } else {
+                height += px(IMAGE_STACK_GAP);
+            }
+            height += media_size.height;
+            count += 1;
+        }
+        height
+    }
+
+    pub(super) fn paint_item_media(
+        &mut self,
+        item: &Item,
+        row_ix: usize,
+        line_origin: Point<Pixels>,
+        window: &mut Window,
+        cx: &mut App,
+    ) {
+        if item.media.is_empty() {
+            return;
+        }
+
+        let Some(line) = self.line_map.item_line(row_ix) else {
+            return;
+        };
+        let text_width = line
+            .text
+            .size(self.line_map.line_height())
+            .width
+            .max(px(120.0));
+        let max_width = (self
+            .last_bounds
+            .map(|bounds| bounds.size.width - px(TEXT_LEFT_PAD + 24.0) - self.row_indent_x(row_ix))
+            .unwrap_or(text_width))
+        .max(px(120.0));
+
+        let text_left = line_origin.x + self.first_text_x(row_ix);
+        let annotation_height = line
+            .annotation
+            .as_ref()
+            .map(|annotation| annotation.height)
+            .unwrap_or(px(0.0));
+        let mut y = line_origin.y
+            + self.line_map.line_text_height(row_ix)
+            + annotation_height
+            + px(IMAGE_TOP_GAP);
+
+        for media in &item.media {
+            let media_size = media_display_size(media, max_width);
+            if media_size.height <= px(0.0) {
+                continue;
+            }
+            let bounds = Bounds::new(point(text_left, y), media_size);
+            window.paint_quad(quad(
+                bounds,
+                px(5.0),
+                token_rgba(self.theme.button_bg),
+                px(1.0),
+                token_hsla(self.theme.border_main),
+                BorderStyle::default(),
+            ));
+
+            if let Some(image) = self.image_for_media(media) {
+                if let Some(render_image) = image.get_render_image(window, cx) {
+                    let _ =
+                        window.paint_image(bounds, Corners::all(px(5.0)), render_image, 0, false);
+                }
+            }
+            y += media_size.height + px(IMAGE_STACK_GAP);
+        }
+    }
+
+    pub(super) fn image_for_media(&mut self, media: &ItemMedia) -> Option<Arc<Image>> {
+        let ItemMedia::Image { asset, .. } = media;
+        if let Some(cached) = self.image_cache.get(asset) {
+            return cached.clone();
+        }
+
+        let image = load_image_for_media(media);
+        self.image_cache.insert(*asset, image.clone());
+        image
+    }
+}

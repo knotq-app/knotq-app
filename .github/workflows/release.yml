@@ -1,0 +1,127 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  build-macos:
+    name: macOS (${{ matrix.target }})
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: aarch64-apple-darwin
+            artifact: macos-arm64
+            runner: macos-15
+          - target: x86_64-apple-darwin
+            artifact: macos-x86_64
+            runner: macos-15-intel
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+
+      - name: Install build dependencies
+        run: cargo install cargo-bundle --locked
+
+      - name: Derive version
+        id: version
+        run: echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+
+      - name: Apply bundle version
+        run: perl -0pi -e 's/^version = "[^"]+"/version = "$ENV{KNOTQ_VERSION}"/m' desktop/app/Cargo.toml
+        env:
+          KNOTQ_VERSION: ${{ steps.version.outputs.version }}
+
+      - name: Bundle
+        run: cargo bundle --package knotq-app --release --target ${{ matrix.target }}
+
+      - name: Import macOS signing certificate
+        run: |
+          if [[ -z "${MACOS_CERTIFICATE_P12:-}" || -z "${MACOS_CERTIFICATE_PASSWORD:-}" ]]; then
+            echo "Skipping certificate import; MACOS_CERTIFICATE_P12 or MACOS_CERTIFICATE_PASSWORD is not set."
+            exit 0
+          fi
+
+          CERTIFICATE_PATH="$RUNNER_TEMP/developer-id.p12"
+          KEYCHAIN_PATH="$RUNNER_TEMP/knotq-signing.keychain-db"
+
+          printf '%s' "$MACOS_CERTIFICATE_P12" | base64 -D > "$CERTIFICATE_PATH"
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security import "$CERTIFICATE_PATH" \
+            -k "$KEYCHAIN_PATH" \
+            -P "$MACOS_CERTIFICATE_PASSWORD" \
+            -T /usr/bin/codesign \
+            -T /usr/bin/security
+          security list-keychains -d user -s "$KEYCHAIN_PATH" $(security list-keychains -d user | tr -d '"')
+          security default-keychain -s "$KEYCHAIN_PATH"
+          security set-key-partition-list \
+            -S apple-tool:,apple:,codesign: \
+            -s \
+            -k "$KEYCHAIN_PASSWORD" \
+            "$KEYCHAIN_PATH"
+          security find-identity -v -p codesigning "$KEYCHAIN_PATH"
+        env:
+          MACOS_CERTIFICATE_P12: ${{ secrets.MACOS_CERTIFICATE_P12 }}
+          MACOS_CERTIFICATE_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
+          KEYCHAIN_PASSWORD: ${{ github.run_id }}-${{ github.run_attempt }}
+
+      - name: Sign app
+        run: |
+          APP_PATH="target/${{ matrix.target }}/release/bundle/osx/KnotQ.app"
+          if [[ ! -d "$APP_PATH" ]]; then
+            APP_PATH="target/release/bundle/osx/KnotQ.app"
+          fi
+
+          plutil -replace CFBundleIdentifier -string "com.enigmadux.knotq" "$APP_PATH/Contents/Info.plist"
+          plutil -replace CFBundleShortVersionString -string "${KNOTQ_VERSION}" "$APP_PATH/Contents/Info.plist"
+          plutil -replace CFBundleVersion -string "${GITHUB_RUN_NUMBER}.${GITHUB_RUN_ATTEMPT}" "$APP_PATH/Contents/Info.plist"
+          rm -f "$APP_PATH/Contents/embedded.provisionprofile"
+
+          if [[ -n "${CODESIGN_IDENTITY:-}" ]]; then
+            codesign --force --deep --options runtime --sign "$CODESIGN_IDENTITY" "$APP_PATH"
+          else
+            codesign --force --deep --sign - "$APP_PATH"
+          fi
+
+          codesign --verify --deep --strict "$APP_PATH"
+          mkdir -p dist/macos
+          ditto -c -k --keepParent "$APP_PATH" "dist/macos/KnotQ-${KNOTQ_VERSION}-${{ matrix.artifact }}.zip"
+        env:
+          CODESIGN_IDENTITY: ${{ secrets.CODESIGN_IDENTITY }}
+          KNOTQ_VERSION: ${{ steps.version.outputs.version }}
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: KnotQ-${{ matrix.artifact }}
+          path: dist/macos/KnotQ-*.zip
+
+  publish:
+    name: Publish GitHub release
+    runs-on: ubuntu-24.04
+    needs: build-macos
+
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: dist/KnotQ-*.zip
