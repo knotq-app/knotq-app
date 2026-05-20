@@ -93,6 +93,9 @@ fn save_workspace_splits_scheme_files_and_omits_empty_item_fields() {
     let index = fs::read_to_string(&workspace_file).unwrap();
     assert!(index.contains("\"version\": 1"));
     assert!(!index.contains("\"items\""));
+    assert!(fs::read_to_string(dir.join(".gitignore"))
+        .unwrap()
+        .contains("backups/"));
 
     let scheme_path = scheme_path_for_workspace(&dir, &workspace, scheme_id)
         .unwrap()

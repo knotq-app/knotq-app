@@ -17,8 +17,13 @@ fn data_dir() -> PathBuf {
     PathBuf::from(".")
 }
 
+fn workspace_dir() -> PathBuf {
+    data_dir().join("workspace")
+}
+
 pub(crate) fn image_asset_path(asset: Uuid, extension: &str) -> PathBuf {
-    data_dir()
-        .join("assets/images")
+    workspace_dir()
+        .join("assets")
+        .join("images")
         .join(format!("{asset}.{extension}"))
 }

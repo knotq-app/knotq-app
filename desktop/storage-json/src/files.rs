@@ -19,6 +19,7 @@ use crate::{
 
 pub(crate) const SCHEMA_VERSION: u32 = 1;
 pub(crate) const SETTINGS_SCHEMA_VERSION: u32 = 1;
+const WORKSPACE_GITIGNORE: &str = "# KnotQ local files\nbackups/\n*.tmp\n.DS_Store\n";
 
 pub fn load_workspace(path: &Path) -> Result<Option<Workspace>> {
     load_workspace_with_options(path, WorkspaceLoadOptions::all())
@@ -113,6 +114,7 @@ pub fn load_daily_queue_schemes_for_calendar_range(
 pub fn save_workspace(path: &Path, workspace: &Workspace) -> Result<()> {
     let base_dir = path.parent().unwrap_or_else(|| Path::new("."));
     fs::create_dir_all(base_dir).with_context(|| format!("create {}", base_dir.display()))?;
+    ensure_workspace_gitignore(base_dir)?;
     let schemes_dir = base_dir.join("schemes");
     fs::create_dir_all(&schemes_dir)
         .with_context(|| format!("create {}", schemes_dir.display()))?;
@@ -163,6 +165,7 @@ pub fn save_workspace_incremental(
 ) -> Result<()> {
     let base_dir = path.parent().unwrap_or_else(|| Path::new("."));
     fs::create_dir_all(base_dir).with_context(|| format!("create {}", base_dir.display()))?;
+    ensure_workspace_gitignore(base_dir)?;
     let schemes_dir = base_dir.join("schemes");
     fs::create_dir_all(&schemes_dir)
         .with_context(|| format!("create {}", schemes_dir.display()))?;
@@ -242,6 +245,14 @@ pub(crate) fn write_atomic(path: &Path, contents: &[u8]) -> Result<()> {
     fs::write(&tmp, contents).with_context(|| format!("write {}", tmp.display()))?;
     fs::rename(&tmp, path).with_context(|| format!("rename {}", path.display()))?;
     Ok(())
+}
+
+fn ensure_workspace_gitignore(base_dir: &Path) -> Result<()> {
+    let path = base_dir.join(".gitignore");
+    if path.exists() {
+        return Ok(());
+    }
+    write_atomic(&path, WORKSPACE_GITIGNORE.as_bytes())
 }
 
 fn is_not_found(err: &anyhow::Error) -> bool {

@@ -12,6 +12,8 @@ fn main() -> anyhow::Result<()> {
     };
 
     std::fs::create_dir_all(&data_dir)?;
+    let workspace_dir = data_dir.join("workspace");
+    std::fs::create_dir_all(&workspace_dir)?;
 
     let mut settings = AppSettings::default();
     settings.theme_mode = ThemeMode::Light;
@@ -142,7 +144,7 @@ fn main() -> anyhow::Result<()> {
     ]);
 
     let _ = (launch_id, week_id, research_id, life_id);
-    save_workspace(&data_dir.join("workspace.json"), &workspace)?;
+    save_workspace(&workspace_dir.join("workspace.json"), &workspace)?;
     Ok(())
 }
 

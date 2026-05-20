@@ -3,7 +3,11 @@ use std::path::PathBuf;
 use uuid::Uuid;
 
 pub fn workspace_path() -> PathBuf {
-    data_dir().join("workspace.json")
+    workspace_dir().join("workspace.json")
+}
+
+pub fn workspace_dir() -> PathBuf {
+    data_dir().join("workspace")
 }
 
 pub fn settings_path() -> PathBuf {
@@ -26,7 +30,7 @@ pub fn data_dir() -> PathBuf {
 }
 
 pub fn image_assets_dir() -> PathBuf {
-    data_dir().join("assets/images")
+    workspace_dir().join("assets/images")
 }
 
 pub fn image_asset_path(asset: Uuid, extension: &str) -> PathBuf {

@@ -126,7 +126,7 @@ impl KnotQApp {
                     cx.listener(move |this, _: &ClickEvent, _window, cx| {
                         this.close_sidebar_context_menu(cx);
                         if let Ok(Some(path)) = knotq_storage_json::scheme_path_for_workspace(
-                            &knotq_storage_json::data_dir(),
+                            &knotq_storage_json::workspace_dir(),
                             &this.workspace,
                             scheme_id,
                         ) {
