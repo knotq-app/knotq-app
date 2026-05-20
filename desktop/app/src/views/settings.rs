@@ -4,251 +4,104 @@ use gpui_component::scroll::ScrollableElement as _;
 use knotq_storage_json::{CalendarViewMode, NotificationDefaults, ThemeMode, TimeFormat};
 
 use crate::app::KnotQApp;
-use crate::theme_gpui::{all_themes, token_hsla, token_rgba};
+use crate::theme_gpui::{all_themes, token_hsla, token_rgba, Theme as UiTheme};
 
 impl KnotQApp {
     pub fn render_settings(&mut self, cx: &mut Context<Self>) -> gpui::AnyElement {
         let t = self.theme();
         let themes = all_themes();
-        let mut rows: Vec<gpui::AnyElement> = Vec::new();
-        for (i, (label, mode, theme)) in [
-            ("System", ThemeMode::System, self.theme()),
-            ("Dark", ThemeMode::Dark, themes[0]),
-            ("Light", ThemeMode::Light, themes[1]),
+
+        let theme_rows = [
+            (
+                "System",
+                "Follow the current macOS appearance.",
+                ThemeMode::System,
+                self.theme(),
+            ),
+            (
+                "Dark",
+                "Use the low-contrast dark workspace.",
+                ThemeMode::Dark,
+                themes[0],
+            ),
+            (
+                "Light",
+                "Use the warm parchment workspace.",
+                ThemeMode::Light,
+                themes[1],
+            ),
         ]
         .into_iter()
         .enumerate()
-        {
+        .map(|(idx, (label, detail, mode, theme))| {
             let is_active = self.theme_mode == mode;
-            rows.push(
-                div()
-                    .id(("theme", i))
-                    .px(px(16.0))
-                    .py(px(8.0))
-                    .flex()
-                    .items_center()
-                    .gap(px(8.0))
-                    .cursor_pointer()
-                    .when(is_active, {
-                        let c = t.row_selected;
-                        move |s| s.bg(token_rgba(c))
-                    })
-                    .when(!is_active, {
-                        let c = t.row_hover;
-                        move |s| s.hover(move |h| h.bg(token_rgba(c)))
-                    })
-                    .on_click(cx.listener(move |this, _: &ClickEvent, _w, cx| {
-                        this.set_theme_mode(mode, cx);
-                    }))
-                    .child(
-                        div()
-                            .w(px(14.0))
-                            .h(px(14.0))
-                            .rounded(px(3.0))
-                            .bg(token_rgba(theme.bg_app))
-                            .border_1()
-                            .border_color(token_rgba(theme.border_main)),
-                    )
-                    .child(
-                        div()
-                            .text_size(px(13.0))
-                            .text_color(token_hsla(t.text_primary))
-                            .child(label),
-                    )
-                    .into_any_element(),
-            );
-        }
+            choice_row(
+                ("theme", idx),
+                label,
+                detail,
+                is_active,
+                theme_swatch(theme, t),
+                t,
+                cx,
+                move |this, cx| this.set_theme_mode(mode, cx),
+            )
+        })
+        .collect::<Vec<_>>();
 
-        let mut calendar_rows: Vec<gpui::AnyElement> = Vec::new();
-        for (idx, (label, mode)) in [
-            ("Week", CalendarViewMode::Week),
-            ("Month", CalendarViewMode::Month),
+        let calendar_rows = [
+            (
+                "Week",
+                "Show a time-grid for the current week.",
+                CalendarViewMode::Week,
+            ),
+            (
+                "Month",
+                "Show a compact month overview.",
+                CalendarViewMode::Month,
+            ),
         ]
         .into_iter()
         .enumerate()
-        {
+        .map(|(idx, (label, detail, mode))| {
             let is_active = self.calendar_view == mode;
-            calendar_rows.push(
-                div()
-                    .id(("calendar-setting", idx))
-                    .px(px(16.0))
-                    .py(px(8.0))
-                    .flex()
-                    .items_center()
-                    .gap(px(8.0))
-                    .cursor_pointer()
-                    .when(is_active, {
-                        let c = t.row_selected;
-                        move |s| s.bg(token_rgba(c))
-                    })
-                    .when(!is_active, {
-                        let c = t.row_hover;
-                        move |s| s.hover(move |h| h.bg(token_rgba(c)))
-                    })
-                    .on_click(cx.listener(move |this, _: &ClickEvent, _w, cx| {
-                        this.set_calendar_view(mode, cx);
-                    }))
-                    .child(
-                        div()
-                            .w(px(14.0))
-                            .h(px(14.0))
-                            .rounded(px(3.0))
-                            .bg(token_rgba(if is_active {
-                                t.text_today
-                            } else {
-                                t.button_bg
-                            }))
-                            .border_1()
-                            .border_color(token_rgba(t.border_main)),
-                    )
-                    .child(
-                        div()
-                            .text_size(px(13.0))
-                            .text_color(token_hsla(t.text_primary))
-                            .child(label),
-                    )
-                    .into_any_element(),
-            );
-        }
+            choice_row(
+                ("calendar-setting", idx),
+                label,
+                detail,
+                is_active,
+                active_marker(is_active, t),
+                t,
+                cx,
+                move |this, cx| this.set_calendar_view(mode, cx),
+            )
+        })
+        .collect::<Vec<_>>();
 
-        let mut time_rows: Vec<gpui::AnyElement> = Vec::new();
-        for (idx, (label, format)) in [
-            ("12-hour", TimeFormat::TwelveHour),
-            ("24-hour", TimeFormat::TwentyFourHour),
+        let time_rows = [
+            ("12-hour", "", TimeFormat::TwelveHour),
+            ("24-hour", "", TimeFormat::TwentyFourHour),
         ]
         .into_iter()
         .enumerate()
-        {
+        .map(|(idx, (label, detail, format))| {
             let is_active = self.time_format == format;
-            time_rows.push(
-                div()
-                    .id(("time-format-setting", idx))
-                    .px(px(16.0))
-                    .py(px(8.0))
-                    .flex()
-                    .items_center()
-                    .gap(px(8.0))
-                    .cursor_pointer()
-                    .when(is_active, {
-                        let c = t.row_selected;
-                        move |s| s.bg(token_rgba(c))
-                    })
-                    .when(!is_active, {
-                        let c = t.row_hover;
-                        move |s| s.hover(move |h| h.bg(token_rgba(c)))
-                    })
-                    .on_click(cx.listener(move |this, _: &ClickEvent, _w, cx| {
-                        this.set_time_format(format, cx);
-                    }))
-                    .child(
-                        div()
-                            .w(px(14.0))
-                            .h(px(14.0))
-                            .rounded(px(3.0))
-                            .bg(token_rgba(if is_active {
-                                t.text_today
-                            } else {
-                                t.button_bg
-                            }))
-                            .border_1()
-                            .border_color(token_rgba(t.border_main)),
-                    )
-                    .child(
-                        div()
-                            .text_size(px(13.0))
-                            .text_color(token_hsla(t.text_primary))
-                            .child(label),
-                    )
-                    .into_any_element(),
-            );
-        }
+            choice_row(
+                ("time-format-setting", idx),
+                label,
+                detail,
+                is_active,
+                active_marker(is_active, t),
+                t,
+                cx,
+                move |this, cx| this.set_time_format(format, cx),
+            )
+        })
+        .collect::<Vec<_>>();
 
         let mut notification_rows: Vec<gpui::AnyElement> = Vec::new();
         if let Some(err) = &self.notification_error {
-            notification_rows.push(
-                div()
-                    .px(px(16.0))
-                    .py(px(8.0))
-                    .mx(px(16.0))
-                    .rounded(px(6.0))
-                    .bg(token_rgba(t.text_today))
-                    .child(
-                        div()
-                            .text_size(px(12.0))
-                            .text_color(token_hsla(t.bg_app))
-                            .child(err.clone()),
-                    )
-                    .into_any_element(),
-            );
+            notification_rows.push(settings_message(err.clone(), true, t));
         }
-        if let Some(status) = &self.notification_status {
-            notification_rows.push(
-                div()
-                    .px(px(16.0))
-                    .py(px(4.0))
-                    .child(
-                        div()
-                            .text_size(px(11.0))
-                            .text_color(token_hsla(t.text_dim))
-                            .child(status.clone()),
-                    )
-                    .into_any_element(),
-            );
-        }
-        notification_rows.push(
-            div()
-                .id("test-notification-btn")
-                .mx(px(16.0))
-                .my(px(6.0))
-                .px(px(12.0))
-                .py(px(6.0))
-                .rounded(px(6.0))
-                .border_1()
-                .border_color(token_rgba(t.border_soft))
-                .bg(token_rgba(t.button_bg))
-                .cursor_pointer()
-                .hover({
-                    let c = t.button_hover;
-                    move |s| s.bg(token_rgba(c))
-                })
-                .on_click(cx.listener(|this, _: &ClickEvent, _w, cx| {
-                    this.send_test_notification(cx);
-                }))
-                .child(
-                    div()
-                        .text_size(px(12.0))
-                        .text_color(token_hsla(t.text_primary))
-                        .child("Send Test (Immediate)"),
-                )
-                .into_any_element(),
-        );
-        notification_rows.push(
-            div()
-                .id("test-scheduled-notification-btn")
-                .mx(px(16.0))
-                .my(px(6.0))
-                .px(px(12.0))
-                .py(px(6.0))
-                .rounded(px(6.0))
-                .border_1()
-                .border_color(token_rgba(t.border_soft))
-                .bg(token_rgba(t.button_bg))
-                .cursor_pointer()
-                .hover({
-                    let c = t.button_hover;
-                    move |s| s.bg(token_rgba(c))
-                })
-                .on_click(cx.listener(|this, _: &ClickEvent, _w, cx| {
-                    this.send_scheduled_test_notification(cx);
-                }))
-                .child(
-                    div()
-                        .text_size(px(12.0))
-                        .text_color(token_hsla(t.text_primary))
-                        .child("Send Test (Scheduled 15s)"),
-                )
-                .into_any_element(),
-        );
         notification_rows.push(settings_subheading("Events", t));
         for (idx, (label, offset_secs)) in [
             ("At start", 0),
@@ -264,7 +117,7 @@ impl KnotQApp {
             let is_active = self.notification_defaults.event_offset_secs == offset_secs;
             let mut defaults = self.notification_defaults;
             defaults.event_offset_secs = offset_secs;
-            notification_rows.push(notification_setting_row(
+            notification_rows.push(notification_choice_row(
                 ("event-notification-setting", idx),
                 label,
                 is_active,
@@ -288,7 +141,7 @@ impl KnotQApp {
             let is_active = self.notification_defaults.assignment_offset_secs == offset_secs;
             let mut defaults = self.notification_defaults;
             defaults.assignment_offset_secs = offset_secs;
-            notification_rows.push(notification_setting_row(
+            notification_rows.push(notification_choice_row(
                 ("assignment-notification-setting", idx),
                 label,
                 is_active,
@@ -302,82 +155,136 @@ impl KnotQApp {
             .flex_1()
             .h_full()
             .bg(token_hsla(t.bg_app))
-            .pt(px(16.0))
             .overflow_y_scrollbar()
             .child(
                 div()
-                    .px(px(16.0))
-                    .pb(px(8.0))
-                    .text_size(px(15.0))
-                    .font_weight(gpui::FontWeight::SEMIBOLD)
-                    .text_color(token_hsla(t.text_primary))
-                    .child("Theme"),
+                    .w_full()
+                    .max_w(px(700.0))
+                    .px(px(24.0))
+                    .pt(px(22.0))
+                    .pb(px(34.0))
+                    .flex()
+                    .flex_col()
+                    .gap(px(16.0))
+                    .child(settings_header(t))
+                    .child(settings_section(
+                        "Appearance",
+                        "Choose how the workspace should look.",
+                        theme_rows,
+                        t,
+                    ))
+                    .child(settings_section(
+                        "Calendar",
+                        "Control the default calendar presentation.",
+                        calendar_rows,
+                        t,
+                    ))
+                    .child(settings_section(
+                        "Time",
+                        "Choose how times are displayed across events and reminders.",
+                        time_rows,
+                        t,
+                    ))
+                    .child(settings_section(
+                        "Notifications",
+                        "Set default lead times for scheduled items.",
+                        notification_rows,
+                        t,
+                    )),
             )
-            .children(rows)
-            .child(
-                div()
-                    .px(px(16.0))
-                    .pt(px(18.0))
-                    .pb(px(8.0))
-                    .text_size(px(15.0))
-                    .font_weight(gpui::FontWeight::SEMIBOLD)
-                    .text_color(token_hsla(t.text_primary))
-                    .child("Calendar"),
-            )
-            .children(calendar_rows)
-            .child(
-                div()
-                    .px(px(16.0))
-                    .pt(px(18.0))
-                    .pb(px(8.0))
-                    .text_size(px(15.0))
-                    .font_weight(gpui::FontWeight::SEMIBOLD)
-                    .text_color(token_hsla(t.text_primary))
-                    .child("Time"),
-            )
-            .children(time_rows)
-            .child(
-                div()
-                    .px(px(16.0))
-                    .pt(px(18.0))
-                    .pb(px(8.0))
-                    .text_size(px(15.0))
-                    .font_weight(gpui::FontWeight::SEMIBOLD)
-                    .text_color(token_hsla(t.text_primary))
-                    .child("Notifications"),
-            )
-            .children(notification_rows)
             .into_any_element()
     }
 }
 
-fn settings_subheading(label: &'static str, t: crate::theme_gpui::Theme) -> gpui::AnyElement {
+fn settings_header(t: UiTheme) -> gpui::AnyElement {
     div()
-        .px(px(16.0))
-        .pt(px(6.0))
-        .pb(px(3.0))
-        .text_size(px(11.0))
-        .font_weight(gpui::FontWeight::SEMIBOLD)
-        .text_color(token_hsla(t.text_dim))
-        .child(label)
+        .flex()
+        .flex_col()
+        .gap(px(5.0))
+        .pb(px(2.0))
+        .child(
+            div()
+                .text_size(px(22.0))
+                .font_weight(gpui::FontWeight::SEMIBOLD)
+                .text_color(token_hsla(t.text_primary))
+                .child("Settings"),
+        )
+        .child(
+            div()
+                .text_size(px(13.0))
+                .line_height(px(18.0))
+                .text_color(token_hsla(t.text_soft))
+                .child("Tune the workspace, calendar, time display, and notification defaults."),
+        )
         .into_any_element()
 }
 
-fn notification_setting_row(
+fn settings_section(
+    title: &'static str,
+    detail: &'static str,
+    rows: Vec<gpui::AnyElement>,
+    t: UiTheme,
+) -> gpui::AnyElement {
+    div()
+        .w_full()
+        .overflow_hidden()
+        .rounded(px(8.0))
+        .border_1()
+        .border_color(token_rgba(t.border_soft))
+        .bg(token_rgba(t.bg_modal))
+        .child(
+            div()
+                .px(px(16.0))
+                .pt(px(13.0))
+                .pb(px(11.0))
+                .border_b_1()
+                .border_color(token_rgba(t.divider_soft))
+                .flex()
+                .flex_col()
+                .gap(px(3.0))
+                .child(
+                    div()
+                        .text_size(px(14.0))
+                        .font_weight(gpui::FontWeight::SEMIBOLD)
+                        .text_color(token_hsla(t.text_primary))
+                        .child(title),
+                )
+                .child(
+                    div()
+                        .text_size(px(12.0))
+                        .line_height(px(16.0))
+                        .text_color(token_hsla(t.text_soft))
+                        .child(detail),
+                ),
+        )
+        .child(div().flex().flex_col().children(rows))
+        .into_any_element()
+}
+
+fn choice_row<F>(
     id: (&'static str, usize),
     label: &'static str,
+    detail: &'static str,
     is_active: bool,
-    defaults: NotificationDefaults,
-    t: crate::theme_gpui::Theme,
+    marker: gpui::AnyElement,
+    t: UiTheme,
     cx: &mut Context<KnotQApp>,
-) -> gpui::AnyElement {
+    on_click: F,
+) -> gpui::AnyElement
+where
+    F: Fn(&mut KnotQApp, &mut Context<KnotQApp>) + 'static,
+{
     div()
         .id(id)
         .px(px(16.0))
-        .py(px(8.0))
+        .py(px(10.0))
+        .min_h(px(if detail.is_empty() { 46.0 } else { 54.0 }))
         .flex()
         .items_center()
-        .gap(px(8.0))
+        .justify_between()
+        .gap(px(14.0))
+        .border_b_1()
+        .border_color(token_rgba(t.divider_tiny))
         .cursor_pointer()
         .when(is_active, {
             let c = t.row_selected;
@@ -388,26 +295,164 @@ fn notification_setting_row(
             move |s| s.hover(move |h| h.bg(token_rgba(c)))
         })
         .on_click(cx.listener(move |this, _: &ClickEvent, _w, cx| {
-            this.set_notification_defaults(defaults, cx);
+            on_click(this, cx);
         }))
         .child(
             div()
-                .w(px(14.0))
-                .h(px(14.0))
-                .rounded(px(3.0))
-                .bg(token_rgba(if is_active {
-                    t.text_today
-                } else {
-                    t.button_bg
-                }))
-                .border_1()
-                .border_color(token_rgba(t.border_main)),
+                .flex()
+                .items_center()
+                .gap(px(11.0))
+                .min_w_0()
+                .child(marker)
+                .child(
+                    div()
+                        .min_w_0()
+                        .flex()
+                        .flex_col()
+                        .gap(px(2.0))
+                        .child(
+                            div()
+                                .text_size(px(13.0))
+                                .font_weight(gpui::FontWeight::SEMIBOLD)
+                                .text_color(token_hsla(t.text_primary))
+                                .child(label),
+                        )
+                        .when(!detail.is_empty(), move |s| {
+                            s.child(
+                                div()
+                                    .text_size(px(12.0))
+                                    .line_height(px(16.0))
+                                    .text_color(token_hsla(t.text_soft))
+                                    .child(detail),
+                            )
+                        }),
+                ),
         )
+        .child(active_dot(is_active, t))
+        .into_any_element()
+}
+
+fn notification_choice_row(
+    id: (&'static str, usize),
+    label: &'static str,
+    is_active: bool,
+    defaults: NotificationDefaults,
+    t: UiTheme,
+    cx: &mut Context<KnotQApp>,
+) -> gpui::AnyElement {
+    choice_row(
+        id,
+        label,
+        "",
+        is_active,
+        active_marker(is_active, t),
+        t,
+        cx,
+        move |this, cx| this.set_notification_defaults(defaults, cx),
+    )
+}
+
+fn settings_subheading(label: &'static str, t: UiTheme) -> gpui::AnyElement {
+    div()
+        .px(px(16.0))
+        .pt(px(13.0))
+        .pb(px(6.0))
+        .text_size(px(11.0))
+        .font_weight(gpui::FontWeight::SEMIBOLD)
+        .text_color(token_hsla(t.text_dim))
+        .child(label)
+        .into_any_element()
+}
+
+fn settings_message(message: String, is_error: bool, t: UiTheme) -> gpui::AnyElement {
+    div()
+        .mx(px(12.0))
+        .mt(px(12.0))
+        .px(px(12.0))
+        .py(px(8.0))
+        .rounded(px(6.0))
+        .border_1()
+        .border_color(token_rgba(if is_error {
+            t.text_today
+        } else {
+            t.border_soft
+        }))
+        .bg(token_rgba(if is_error { 0xde5b2524 } else { t.bg_hint }))
         .child(
             div()
-                .text_size(px(13.0))
-                .text_color(token_hsla(t.text_primary))
-                .child(label),
+                .text_size(px(12.0))
+                .line_height(px(16.0))
+                .text_color(token_hsla(if is_error {
+                    t.text_today
+                } else {
+                    t.text_soft
+                }))
+                .child(message),
         )
+        .into_any_element()
+}
+
+fn theme_swatch(theme: UiTheme, t: UiTheme) -> gpui::AnyElement {
+    div()
+        .w(px(24.0))
+        .h(px(24.0))
+        .rounded(px(5.0))
+        .border_1()
+        .border_color(token_rgba(t.border_main))
+        .bg(token_rgba(theme.bg_app))
+        .child(
+            div()
+                .w_full()
+                .h(px(8.0))
+                .rounded(px(4.0))
+                .bg(token_rgba(theme.bg_sidebar)),
+        )
+        .into_any_element()
+}
+
+fn active_marker(is_active: bool, t: UiTheme) -> gpui::AnyElement {
+    div()
+        .w(px(24.0))
+        .h(px(24.0))
+        .flex()
+        .items_center()
+        .justify_center()
+        .rounded(px(5.0))
+        .border_1()
+        .border_color(token_rgba(if is_active {
+            t.text_today
+        } else {
+            t.border_main
+        }))
+        .bg(token_rgba(t.button_bg))
+        .when(is_active, |s| {
+            s.child(
+                div()
+                    .w(px(10.0))
+                    .h(px(10.0))
+                    .rounded(px(2.0))
+                    .bg(token_rgba(t.text_today)),
+            )
+        })
+        .into_any_element()
+}
+
+fn active_dot(is_active: bool, t: UiTheme) -> gpui::AnyElement {
+    div()
+        .w(px(11.0))
+        .h(px(11.0))
+        .flex_shrink_0()
+        .rounded(px(99.0))
+        .border_1()
+        .border_color(token_rgba(if is_active {
+            t.text_today
+        } else {
+            t.border_soft
+        }))
+        .bg(token_rgba(if is_active {
+            t.text_today
+        } else {
+            0x00000000
+        }))
         .into_any_element()
 }

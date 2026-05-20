@@ -6,7 +6,6 @@ use chrono::{DateTime, Duration, Local, TimeZone, Utc};
 use futures::{pin_mut, select, FutureExt};
 use gpui::{Context, Task};
 use knotq_model::{Item, ItemId, ItemKind, SchemeId, Workspace};
-use knotq_notifications::NotificationRequest;
 use knotq_rrule::ItemOccurrenceExt;
 use knotq_storage_json::NotificationDefaults;
 
@@ -34,7 +33,6 @@ pub(crate) struct AppServiceReceivers {
 pub(crate) enum NotificationSignal {
     Recompute,
     RefreshItem(NotificationItemRefresh),
-    ScheduledTest(NotificationRequest),
     Action,
 }
 
@@ -103,12 +101,6 @@ impl AppServiceBus {
 
     pub(crate) fn signal_timeline(&self) {
         let _ = self.timeline_tx.try_send(());
-    }
-
-    pub(crate) fn scheduled_test_notification(&self, request: NotificationRequest) {
-        let _ = self
-            .notification_tx
-            .try_send(NotificationSignal::ScheduledTest(request));
     }
 
     fn signal_notification_action(&self) -> bool {
@@ -199,15 +191,6 @@ pub(crate) fn spawn_notification_task(
 
                 if batch.has_actions {
                     handle_notification_actions(&weak, cx);
-                }
-                for request in batch.tests {
-                    let schedule_error = cx
-                        .background_executor()
-                        .spawn(async move {
-                            crate::notifications::schedule_one_os_notification(&request)
-                        })
-                        .await;
-                    update_notification_error(&weak, cx, schedule_error);
                 }
                 if batch.needs_recompute {
                     refresh_os_notifications(&weak, cx).await;
@@ -318,18 +301,16 @@ async fn refresh_os_notifications(weak: &gpui::WeakEntity<KnotQApp>, cx: &mut gp
         return;
     };
 
-    let (update, schedule_error) = cx
+    let schedule_error = cx
         .background_executor()
         .spawn(async move {
             let update = crate::notifications::recompute_pending(&workspace, defaults);
-            let schedule_error = crate::notifications::schedule_os_notifications(&update.requests);
-            (update, schedule_error)
+            crate::notifications::schedule_os_notifications(&update.requests)
         })
         .await;
     let _ = weak.update(cx, |app, cx| {
         app.notification_error =
             schedule_error.or_else(crate::notifications::notification_availability_error);
-        app.notification_status = Some(update.status_detail);
         cx.notify();
     });
 }
@@ -392,7 +373,6 @@ fn drain_unit_signals(rx: &Receiver<()>) {
 struct NotificationBatch {
     needs_recompute: bool,
     has_actions: bool,
-    tests: Vec<NotificationRequest>,
     item_refreshes: HashMap<(SchemeId, ItemId), NotificationItemRefresh>,
 }
 
@@ -404,7 +384,6 @@ impl NotificationBatch {
                 self.item_refreshes
                     .insert((refresh.scheme_id, refresh.item.id), refresh);
             }
-            NotificationSignal::ScheduledTest(request) => self.tests.push(request),
             NotificationSignal::Action => self.has_actions = true,
         }
     }
@@ -452,7 +431,6 @@ impl KnotQApp {
             self.notification_error = Some(err);
         } else {
             self.notification_error = crate::notifications::notification_availability_error();
-            self.notification_status = Some(update.status_detail);
             crate::notifications::notif_log("shutdown OS notification schedule flush completed");
         }
 

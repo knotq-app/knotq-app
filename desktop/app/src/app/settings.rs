@@ -61,40 +61,6 @@ impl KnotQApp {
         cx.notify();
     }
 
-    pub fn send_test_notification(&mut self, cx: &mut Context<Self>) {
-        self.notification_status = Some("Sending test notification...".to_string());
-        cx.notify();
-        cx.spawn(
-            async move |weak: gpui::WeakEntity<Self>, cx: &mut gpui::AsyncApp| {
-                let result = crate::notifications::deliver_test_notification();
-                let _ = weak.update(cx, |app, cx| {
-                    match result {
-                        Ok(()) => {
-                            app.notification_error = None;
-                            app.notification_status = Some("Immediate test sent!".to_string());
-                        }
-                        Err(err) => {
-                            app.notification_error = Some(format!("{err:#}"));
-                            app.notification_status = None;
-                        }
-                    }
-                    cx.notify();
-                });
-            },
-        )
-        .detach();
-    }
-
-    pub fn send_scheduled_test_notification(&mut self, cx: &mut Context<Self>) {
-        let request = crate::notifications::make_test_notification_request();
-        self.notification_status = Some(format!(
-            "Scheduled test for {}",
-            request.fire_at.format("%H:%M:%S")
-        ));
-        self.service_bus.scheduled_test_notification(request);
-        cx.notify();
-    }
-
     pub fn set_notification_defaults(
         &mut self,
         defaults: NotificationDefaults,

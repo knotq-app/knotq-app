@@ -25,8 +25,11 @@ fn main() -> anyhow::Result<()> {
     save_app_settings(&data_dir.join("settings.json"), &settings)?;
 
     let today = Local::now().date_naive();
+    let yesterday = today - Duration::days(1);
     let tomorrow = today + Duration::days(1);
     let next = today + Duration::days(2);
+    let plus3 = today + Duration::days(3);
+    let plus4 = today + Duration::days(4);
 
     let mut workspace = Workspace::new();
     let root = workspace.root;
@@ -39,6 +42,16 @@ fn main() -> anyhow::Result<()> {
     launch.items = vec![
         checkbox("Ship landing page with real screenshots"),
         child("Hero: one sentence for why documents and calendars belong together"),
+        event("Launch planning", yesterday, 9, 30, yesterday, 10, 15),
+        event(
+            "App walkthrough capture",
+            yesterday,
+            14,
+            0,
+            yesterday,
+            15,
+            0,
+        ),
         event("Design review", today, 9, 0, today, 10, 0),
         event(
             "Pricing and positioning review",
@@ -50,12 +63,14 @@ fn main() -> anyhow::Result<()> {
             15,
         ),
         child("Decide whether to lead with Daily, Calendar, or Schemes"),
-        event("Beta install debugging", today, 11, 30, today, 12, 15),
-        event("Release checklist pass", today, 13, 0, today, 13, 45),
+        event("Beta install debugging", today, 11, 45, today, 12, 30),
+        event("Release checklist pass", today, 13, 30, today, 14, 15),
         assignment("Publish beta notes", today, 16, 0),
         reminder("Follow up with beta users", tomorrow, 9, 0),
         event("Website copy pass", tomorrow, 10, 15, tomorrow, 11, 0),
+        event("Release notes edit", plus3, 10, 0, plus3, 11, 0),
         assignment("Cut onboarding demo", tomorrow, 17, 30),
+        assignment("Tag beta release", plus3, 14, 30),
         checkbox("Record 45-second walkthrough clip"),
     ];
     let launch_id = add_scheme(&mut workspace, launch_folder, launch);
@@ -63,16 +78,19 @@ fn main() -> anyhow::Result<()> {
     let mut week = Scheme::new("Week Plan", 4);
     week.items = vec![
         bullet("Monday"),
-        checkbox("Review calendar commitments").with_indent(1),
+        event("Weekly review", yesterday, 8, 30, yesterday, 9, 15).with_indent(1),
         checkbox("Move loose notes into launch plan").with_indent(1),
-        bullet("Wednesday"),
+        bullet("Tuesday"),
         event("Customer interview", today, 14, 0, today, 14, 45).with_indent(1),
-        event("Calendar density review", today, 15, 0, today, 15, 45).with_indent(1),
+        event("Calendar density review", today, 15, 15, today, 16, 0).with_indent(1),
+        bullet("Wednesday"),
         event("Product walkthrough", tomorrow, 13, 0, tomorrow, 14, 30).with_indent(1),
-        bullet("Friday"),
-        assignment("Send weekly update", next, 15, 30).with_indent(1),
         event("Implementation block", next, 9, 0, next, 11, 30).with_indent(1),
         event("Open source cleanup", next, 12, 30, next, 13, 30).with_indent(1),
+        assignment("Send weekly update", next, 15, 30).with_indent(1),
+        bullet("Friday"),
+        event("Website QA sweep", plus3, 9, 0, plus3, 10, 0).with_indent(1),
+        event("Beta feedback triage", plus3, 13, 0, plus3, 14, 0).with_indent(1),
     ];
     let week_id = add_scheme(&mut workspace, planning_folder, week);
 
@@ -82,9 +100,11 @@ fn main() -> anyhow::Result<()> {
         child("Tasks live in one place, calendar commitments live somewhere else"),
         child("A line should be able to carry context and time at once"),
         checkbox("Compare agenda flows in Things, Notion, and Calendar"),
-        event("Competitor notes sweep", today, 12, 30, today, 13, 15),
+        event("Competitor notes sweep", today, 12, 45, today, 13, 30),
+        event("Positioning research", tomorrow, 15, 0, tomorrow, 16, 0),
         reminder("Capture onboarding feedback", next, 10, 0),
         assignment("Summarize interview patterns", next, 18, 0),
+        event("Essay on line-first planning", plus4, 11, 0, plus4, 12, 30),
     ];
     let research_id = add_scheme(&mut workspace, planning_folder, research);
 
@@ -93,6 +113,8 @@ fn main() -> anyhow::Result<()> {
         reminder("Pack returns", today, 8, 30),
         event("Dinner with Sam", tomorrow, 18, 30, tomorrow, 20, 0),
         event("Gym", next, 7, 30, next, 8, 30),
+        event("Errands loop", plus3, 16, 0, plus3, 17, 0),
+        event("Coffee with Mira", plus4, 9, 30, plus4, 10, 30),
         assignment("Renew domain", next, 12, 0),
         checkbox("Laundry"),
         child("Move to tonight if the afternoon slips"),
@@ -104,17 +126,9 @@ fn main() -> anyhow::Result<()> {
         checkbox("Make the website answer: why KnotQ?"),
         child("A document is the source of truth; the calendar is a view"),
         checkbox("Take product screenshots from a seeded workspace"),
-        event("Design review", today, 9, 0, today, 10, 0),
-        event("Beta install debugging", today, 11, 30, today, 12, 15),
-        event("Release checklist pass", today, 13, 0, today, 13, 45),
-        event("Customer interview", today, 14, 0, today, 14, 45),
-        event("Calendar density review", today, 15, 0, today, 15, 45),
-        assignment("Publish beta notes", today, 16, 0),
-        event("Website copy pass", tomorrow, 10, 15, tomorrow, 11, 0),
-        event("Product walkthrough", tomorrow, 13, 0, tomorrow, 14, 30),
-        reminder("Follow up with beta users", tomorrow, 9, 0),
-        assignment("Cut onboarding demo", tomorrow, 17, 30),
-        event("Implementation block", next, 9, 0, next, 11, 30),
+        checkbox("Reply to beta feedback without duplicating calendar events"),
+        checkbox("Tighten the download call to action"),
+        child("Keep the calendar dense, but make each block readable"),
         checkbox("Write release copy"),
     ];
     let daily_id = daily.id;

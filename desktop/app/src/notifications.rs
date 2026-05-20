@@ -136,6 +136,8 @@ pub(crate) fn refresh_item_os_notifications(
         .map(|request| request.id.clone())
         .collect::<Vec<_>>();
     let cancel_error = scheduler.cancel(&ids).err().map(|err| format!("{err}"));
+    // Also remove delivered versions so stale banners are cleaned up.
+    let _ = scheduler.remove_delivered(&ids);
     #[cfg(target_os = "macos")]
     if cancel_error.is_none() {
         std::thread::sleep(StdDuration::from_millis(100));
@@ -159,30 +161,10 @@ pub fn recompute_pending(
     defaults: NotificationDefaults,
 ) -> NotificationUpdate {
     let pending = pending_notifications(workspace, defaults);
-    let status_detail = if pending.is_empty() {
-        "No pending notifications".to_string()
-    } else {
-        let now = Utc::now();
-        let next = &pending[0];
-        let delta = next.fire_at.signed_duration_since(now);
-        let hours = delta.num_hours();
-        let mins = delta.num_minutes() % 60;
-        format!(
-            "{} scheduled — next: \"{}\" in {}h{}m",
-            pending.len(),
-            next.title,
-            hours,
-            mins,
-        )
-    };
-
     let requests: Vec<NotificationRequest> =
         pending.into_iter().map(notification_request).collect();
 
-    NotificationUpdate {
-        requests,
-        status_detail,
-    }
+    NotificationUpdate { requests }
 }
 
 /// Reconcile the durable OS schedule with the current pending list so
@@ -343,7 +325,16 @@ fn cancel_notifications(
     }
 
     let ids = ids.iter().cloned().collect::<Vec<_>>();
-    match scheduler.cancel(&ids) {
+    let cancel_result = scheduler.cancel(&ids);
+    // Also remove delivered notifications so stale banners don't linger in
+    // the notification center after an event is deleted or rescheduled.
+    if let Err(err) = scheduler.remove_delivered(&ids) {
+        notif_log(&format!(
+            "remove_delivered for {} stale notification(s) failed: {err}",
+            ids.len()
+        ));
+    }
+    match cancel_result {
         Ok(()) => {
             notif_log(&format!(
                 "OS canceled {} stale/changed pending notification(s)",
@@ -567,32 +558,9 @@ fn is_managed_notification_id(id: &str) -> bool {
     hex.len() == 16 && hex.bytes().all(|byte| byte.is_ascii_hexdigit())
 }
 
-pub fn schedule_one_os_notification(request: &NotificationRequest) -> Option<String> {
-    let scheduler = NotificationScheduler::new(APP_ID);
-    match scheduler.schedule(request) {
-        Ok(()) => {
-            let delta = (request.fire_at - Utc::now()).num_seconds();
-            notif_log(&format!(
-                "OS scheduled single \"{}\" id={} in {}s",
-                request.title, request.id, delta
-            ));
-            None
-        }
-        Err(err) => {
-            let msg = format!("{err}");
-            notif_log(&format!(
-                "OS schedule failed for single \"{}\" id={}: {msg}",
-                request.title, request.id
-            ));
-            Some(msg)
-        }
-    }
-}
-
 #[derive(Clone, Debug)]
 pub struct NotificationUpdate {
     pub requests: Vec<NotificationRequest>,
-    pub status_detail: String,
 }
 
 pub fn clear_item_notifications(
@@ -640,31 +608,6 @@ pub fn drain_notification_action_targets() -> Vec<NotificationActionTarget> {
         .into_iter()
         .filter_map(notification_action_target)
         .collect()
-}
-
-pub fn deliver_test_notification() -> anyhow::Result<()> {
-    let scheduler = NotificationScheduler::new(APP_ID);
-    let id = format!("knotq-test-notification-{}", Utc::now().timestamp_millis());
-    scheduler.deliver_now(
-        &NotificationRequest::new(
-            id.clone(),
-            Utc::now(),
-            "KnotQ",
-            "Test notification (immediate)",
-        )
-        .group(id)
-        .category(CATEGORY_ID),
-    )?;
-    Ok(())
-}
-
-/// Create a test notification 15 seconds from now for OS scheduling.
-pub fn make_test_notification_request() -> NotificationRequest {
-    let fire_at = Utc::now() + Duration::seconds(15);
-    let id = format!("knotq-test-scheduled-{}", fire_at.timestamp());
-    NotificationRequest::new(id.clone(), fire_at, "KnotQ", "Scheduled test (15s delay)")
-        .group(id)
-        .category(CATEGORY_ID)
 }
 
 impl KnotQApp {
@@ -830,7 +773,7 @@ mod tests {
 
     #[cfg(target_os = "macos")]
     #[test]
-    fn managed_notification_id_excludes_test_notifications() {
+    fn managed_notification_id_matches_only_hashed_knotq_ids() {
         assert!(is_managed_notification_id("knotq-0123456789abcdef"));
         assert!(!is_managed_notification_id("knotq-test-scheduled-123"));
         assert!(!is_managed_notification_id("other-0123456789abcdef"));

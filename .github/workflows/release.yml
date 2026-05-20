@@ -90,6 +90,8 @@ jobs:
           plutil -replace CFBundleIdentifier -string "com.enigmadux.knotq" "$APP_PATH/Contents/Info.plist"
           plutil -replace CFBundleShortVersionString -string "${KNOTQ_VERSION}" "$APP_PATH/Contents/Info.plist"
           plutil -replace CFBundleVersion -string "${GITHUB_RUN_NUMBER}.${GITHUB_RUN_ATTEMPT}" "$APP_PATH/Contents/Info.plist"
+          plutil -insert NSUserNotificationAlertStyle -string "alert" "$APP_PATH/Contents/Info.plist" 2>/dev/null || \
+            plutil -replace NSUserNotificationAlertStyle -string "alert" "$APP_PATH/Contents/Info.plist"
           rm -f "$APP_PATH/Contents/embedded.provisionprofile"
 
           if [[ -n "${CODESIGN_IDENTITY:-}" ]]; then
@@ -111,17 +113,184 @@ jobs:
           name: KnotQ-${{ matrix.artifact }}
           path: dist/macos/KnotQ-*.zip
 
+  build-windows:
+    name: Windows
+    runs-on: windows-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: windows-x86_64
+
+      - name: Derive version
+        id: version
+        shell: bash
+        run: echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+
+      - name: Apply version
+        shell: bash
+        run: perl -0pi -e 's/^version = "[^"]+"/version = "$ENV{KNOTQ_VERSION}"/m' desktop/app/Cargo.toml
+        env:
+          KNOTQ_VERSION: ${{ steps.version.outputs.version }}
+
+      - name: Build
+        run: cargo build --package knotq-app --release
+
+      - name: Create MSIX package
+        shell: pwsh
+        run: |
+          $version = "${{ steps.version.outputs.version }}"
+          # Ensure 4-part version for MSIX (major.minor.patch.0)
+          $parts = $version -split '\.'
+          while ($parts.Count -lt 4) { $parts += "0" }
+          $msixVersion = ($parts[0..3]) -join '.'
+
+          $distDir = "dist/windows"
+          New-Item -ItemType Directory -Force -Path $distDir | Out-Null
+
+          # Create package layout
+          $layoutDir = "$distDir/layout"
+          New-Item -ItemType Directory -Force -Path $layoutDir | Out-Null
+          Copy-Item "target/release/knotq.exe" "$layoutDir/knotq.exe"
+
+          # Copy assets if they exist
+          if (Test-Path "desktop/app/assets/app-icon/icon_256x256.png") {
+            Copy-Item "desktop/app/assets/app-icon/icon_256x256.png" "$layoutDir/knotq-icon.png"
+          }
+
+          # Create AppxManifest.xml
+          @"
+          <?xml version="1.0" encoding="utf-8"?>
+          <Package xmlns="http://schemas.microsoft.com/appx/manifest/foundation/windows10"
+                   xmlns:uap="http://schemas.microsoft.com/appx/manifest/uap/windows10"
+                   xmlns:rescap="http://schemas.microsoft.com/appx/manifest/foundation/windows10/restrictedcapabilities">
+            <Identity Name="Enigmadux.KnotQ"
+                      Publisher="CN=Enigmadux"
+                      Version="$msixVersion"
+                      ProcessorArchitecture="x64" />
+            <Properties>
+              <DisplayName>KnotQ</DisplayName>
+              <PublisherDisplayName>Enigmadux</PublisherDisplayName>
+              <Description>A structured task and calendar app.</Description>
+              <Logo>knotq-icon.png</Logo>
+            </Properties>
+            <Dependencies>
+              <TargetDeviceFamily Name="Windows.Desktop" MinVersion="10.0.17763.0" MaxVersionTested="10.0.22621.0" />
+            </Dependencies>
+            <Resources>
+              <Resource Language="en-us" />
+            </Resources>
+            <Applications>
+              <Application Id="KnotQ"
+                           Executable="knotq.exe"
+                           EntryPoint="Windows.FullTrustApplication">
+                <uap:VisualElements DisplayName="KnotQ"
+                                    Description="A structured task and calendar app."
+                                    BackgroundColor="transparent"
+                                    Square150x150Logo="knotq-icon.png"
+                                    Square44x44Logo="knotq-icon.png" />
+              </Application>
+            </Applications>
+            <Capabilities>
+              <rescap:Capability Name="runFullTrust" />
+            </Capabilities>
+          </Package>
+          "@ | Out-File -Encoding utf8 "$layoutDir/AppxManifest.xml"
+
+          # Try to create MSIX using makeappx
+          $makeappx = Get-ChildItem "C:\Program Files (x86)\Windows Kits\10\bin\*\x64\makeappx.exe" -ErrorAction SilentlyContinue | Sort-Object | Select-Object -Last 1
+          if ($makeappx) {
+            & $makeappx.FullName pack /d "$layoutDir" /p "$distDir/KnotQ-$version-windows-x64.msix" /nv
+          } else {
+            Write-Warning "makeappx not found, creating zip instead"
+            Compress-Archive -Path "$layoutDir/*" -DestinationPath "$distDir/KnotQ-$version-windows-x64.zip"
+          }
+
+          # Also create a plain zip with just the exe for sideloading
+          Compress-Archive -Path "target/release/knotq.exe" -DestinationPath "$distDir/KnotQ-$version-windows-x64-portable.zip"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: KnotQ-windows-x64
+          path: dist/windows/KnotQ-*.*
+
+  build-linux:
+    name: Linux
+    runs-on: ubuntu-24.04
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: linux-x86_64
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libvulkan-dev \
+            libwayland-dev \
+            libxkbcommon-dev \
+            libxkbcommon-x11-dev \
+            libx11-xcb-dev \
+            libxcb-xfixes0-dev \
+            libxcb-shape0-dev \
+            libfontconfig1-dev \
+            libasound2-dev
+
+      - name: Derive version
+        id: version
+        run: echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+
+      - name: Apply version
+        run: perl -0pi -e 's/^version = "[^"]+"/version = "$ENV{KNOTQ_VERSION}"/m' desktop/app/Cargo.toml
+        env:
+          KNOTQ_VERSION: ${{ steps.version.outputs.version }}
+
+      - name: Build
+        run: cargo build --package knotq-app --release
+
+      - name: Package
+        run: |
+          mkdir -p dist/linux
+          tar czf "dist/linux/KnotQ-${{ steps.version.outputs.version }}-linux-x86_64.tar.gz" \
+            -C target/release knotq
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: KnotQ-linux-x86_64
+          path: dist/linux/KnotQ-*.tar.gz
+
   publish:
     name: Publish GitHub release
     runs-on: ubuntu-24.04
-    needs: build-macos
+    needs: [build-macos, build-windows, build-linux]
 
     steps:
+      - uses: actions/checkout@v4
+
       - uses: actions/download-artifact@v4
         with:
           path: dist
           merge-multiple: true
 
+      - name: Upload install script
+        run: cp bundling/install.sh dist/ 2>/dev/null || true
+
       - uses: softprops/action-gh-release@v2
         with:
-          files: dist/KnotQ-*.zip
+          files: |
+            dist/KnotQ-*.zip
+            dist/KnotQ-*.msix
+            dist/KnotQ-*.tar.gz

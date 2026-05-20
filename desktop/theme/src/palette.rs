@@ -7,7 +7,7 @@ pub const PALETTE: &[u32] = &[
     0xffd60a, // SwiftUI yellow, dark
 ];
 
-const PALETTE_LIGHT: &[u32] = &[0xff3b30, 0xff9500, 0x34c759, 0x007aff, 0xaf52de, 0xffcc00];
+const PALETTE_LIGHT: &[u32] = &[0xd4271c, 0xc47400, 0x1e9e40, 0x0064d2, 0x8a3db5, 0xb89400];
 
 pub fn scheme_color(index: u8, is_dark: bool) -> u32 {
     if is_dark {

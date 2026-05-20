@@ -297,25 +297,6 @@ fn window_decorations() -> Option<WindowDecorations> {
 }
 
 fn main() {
-    if std::env::args().any(|arg| arg == "--test-notification") {
-        if let Err(err) = crate::notifications::deliver_test_notification() {
-            eprintln!("test notification failed: {err:#}");
-            std::process::exit(1);
-        }
-        std::thread::sleep(std::time::Duration::from_secs(2));
-        return;
-    }
-
-    if std::env::args().any(|arg| arg == "--test-scheduled-notification") {
-        let request = crate::notifications::make_test_notification_request();
-        if let Some(err) = crate::notifications::schedule_one_os_notification(&request) {
-            eprintln!("scheduled test notification failed: {err}");
-            std::process::exit(1);
-        }
-        std::thread::sleep(std::time::Duration::from_secs(2));
-        return;
-    }
-
     Application::new()
         .with_assets(AppAssets::new())
         .run(|cx: &mut App| {
