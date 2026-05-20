@@ -17,6 +17,7 @@ PACKAGE="${KNOTQ_PACKAGE:-knotq-app}"
 APP_PATH="target/${PROFILE}/bundle/osx/KnotQ.app"
 BUNDLE_ID="${KNOTQ_BUNDLE_ID:-com.enigmadux.knotq}"
 OPEN_ENV_ARGS=()
+HAS_OPEN_ENV_ARGS=0
 
 for name in \
   KNOTQ_GOOGLE_CLIENT_ID \
@@ -25,6 +26,7 @@ for name in \
   GOOGLE_CLIENT_SECRET; do
   if [[ -n "${!name:-}" ]]; then
     OPEN_ENV_ARGS+=(--env "$name=${!name}")
+    HAS_OPEN_ENV_ARGS=1
   fi
 done
 
@@ -54,4 +56,8 @@ codesign \
 codesign --verify --deep --strict "$APP_PATH"
 
 osascript -e "tell application id \"$BUNDLE_ID\" to quit" >/dev/null 2>&1 || true
-open -n "${OPEN_ENV_ARGS[@]}" "$APP_PATH"
+if [[ "$HAS_OPEN_ENV_ARGS" == "1" ]]; then
+  open -n "${OPEN_ENV_ARGS[@]}" "$APP_PATH"
+else
+  open -n "$APP_PATH"
+fi
