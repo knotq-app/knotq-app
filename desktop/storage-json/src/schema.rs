@@ -140,7 +140,9 @@ impl WorkspaceIndex {
             if !options.should_load_daily_queue_entry(&entry) {
                 continue;
             }
-            let file = read_daily_queue_file(base_dir, entry.date, id)?;
+            let Ok(file) = read_daily_queue_file(base_dir, entry.date, id) else {
+                continue;
+            };
             if file.id != id {
                 return Err(anyhow!(
                     "daily queue file {} contains id {}",

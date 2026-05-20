@@ -87,6 +87,14 @@ pub fn validate_scheme_name(name: &str) -> Result<(), CommandError> {
     validate_node_name(name, WorkspaceNodeNameKind::Scheme)
 }
 
+pub fn sanitize_folder_name(name: &str) -> Result<String, CommandError> {
+    sanitize_node_name(name, WorkspaceNodeNameKind::Folder)
+}
+
+pub fn sanitize_scheme_name(name: &str) -> Result<String, CommandError> {
+    sanitize_node_name(name, WorkspaceNodeNameKind::Scheme)
+}
+
 pub fn ensure_folder_name_available(
     workspace: &Workspace,
     parent: FolderId,
@@ -253,6 +261,12 @@ fn validate_node_name(name: &str, kind: WorkspaceNodeNameKind) -> Result<(), Com
             reason,
         }
     })
+}
+
+fn sanitize_node_name(name: &str, kind: WorkspaceNodeNameKind) -> Result<String, CommandError> {
+    let sanitized = knotq_model::sanitize_workspace_node_name(name, kind);
+    validate_node_name(&sanitized, kind)?;
+    Ok(sanitized)
 }
 
 fn names_match(left: &str, right: &str) -> bool {

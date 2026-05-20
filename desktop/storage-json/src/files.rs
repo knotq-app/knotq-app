@@ -2,6 +2,7 @@ use anyhow::{anyhow, Context, Result};
 use chrono::NaiveDate;
 use knotq_model::{Scheme, SchemeId, Workspace};
 use std::collections::HashSet;
+use std::io;
 use std::{fs, path::Path};
 
 use crate::{
@@ -16,7 +17,7 @@ use crate::{
     },
 };
 
-pub(crate) const SCHEMA_VERSION: u32 = 4;
+pub(crate) const SCHEMA_VERSION: u32 = 1;
 pub(crate) const SETTINGS_SCHEMA_VERSION: u32 = 1;
 
 pub fn load_workspace(path: &Path) -> Result<Option<Workspace>> {
@@ -49,7 +50,11 @@ pub fn load_daily_queue_scheme(path: &Path, date: NaiveDate) -> Result<Option<Sc
         return Ok(None);
     };
     let base_dir = path.parent().unwrap_or_else(|| Path::new("."));
-    let file = read_daily_queue_file(base_dir, date, entry.scheme.id)?;
+    let file = match read_daily_queue_file(base_dir, date, entry.scheme.id) {
+        Ok(file) => file,
+        Err(err) if is_not_found(&err) => return Ok(None),
+        Err(err) => return Err(err),
+    };
     if file.id != entry.scheme.id {
         return Err(anyhow!(
             "daily queue file {} contains id {}",
@@ -81,7 +86,15 @@ pub fn load_daily_queue_schemes_for_calendar_range(
         ) {
             continue;
         }
-        let file = read_daily_queue_file(base_dir, entry.date, entry.scheme.id)?;
+        let file = match read_daily_queue_file(base_dir, entry.date, entry.scheme.id) {
+            Ok(file) => file,
+            Err(err) => {
+                if is_not_found(&err) {
+                    continue;
+                }
+                return Err(err);
+            }
+        };
         if file.id != entry.scheme.id {
             return Err(anyhow!(
                 "daily queue file {} contains id {}",
@@ -229,6 +242,14 @@ pub(crate) fn write_atomic(path: &Path, contents: &[u8]) -> Result<()> {
     fs::write(&tmp, contents).with_context(|| format!("write {}", tmp.display()))?;
     fs::rename(&tmp, path).with_context(|| format!("rename {}", path.display()))?;
     Ok(())
+}
+
+fn is_not_found(err: &anyhow::Error) -> bool {
+    err.chain().any(|cause| {
+        cause
+            .downcast_ref::<io::Error>()
+            .is_some_and(|err| err.kind() == io::ErrorKind::NotFound)
+    })
 }
 
 pub(crate) fn is_false(value: &bool) -> bool {

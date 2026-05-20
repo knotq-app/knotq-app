@@ -91,7 +91,7 @@ fn save_workspace_splits_scheme_files_and_omits_empty_item_fields() {
     save_workspace(&workspace_file, &workspace).unwrap();
 
     let index = fs::read_to_string(&workspace_file).unwrap();
-    assert!(index.contains("\"version\": 4"));
+    assert!(index.contains("\"version\": 1"));
     assert!(!index.contains("\"items\""));
 
     let scheme_path = scheme_path_for_workspace(&dir, &workspace, scheme_id)
@@ -221,6 +221,45 @@ fn schemes_are_saved_under_nested_folder_paths() {
 
     let loaded = load_workspace(&workspace_file).unwrap().unwrap();
     assert_eq!(loaded.schemes[&scheme_id].items[0].text, "Read paper");
+
+    let _ = fs::remove_dir_all(dir);
+}
+
+#[test]
+fn missing_daily_queue_files_do_not_block_workspace_load() {
+    let dir = unique_temp_dir("knotq-storage-missing-daily");
+    let workspace_file = dir.join("workspace.json");
+    let date = NaiveDate::from_ymd_opt(2026, 5, 17).unwrap();
+    let mut workspace = Workspace::new();
+
+    let mut daily = Scheme::new("Daily 2026-05-17", 0);
+    daily.items.push(Item::new("old daily note"));
+    let daily_id = daily.id;
+    workspace.daily_queue.insert(date, daily_id);
+    workspace.schemes.insert(daily_id, daily);
+
+    save_workspace(&workspace_file, &workspace).unwrap();
+    fs::remove_file(
+        dir.join("daily_queue")
+            .join("2026")
+            .join("05")
+            .join("17.knotq"),
+    )
+    .unwrap();
+
+    let loaded = load_workspace_with_options(
+        &workspace_file,
+        WorkspaceLoadOptions::daily_queue_range(date, date),
+    )
+    .unwrap()
+    .unwrap();
+    assert_eq!(loaded.daily_queue_scheme_id(date), Some(daily_id));
+    assert!(!loaded.schemes.contains_key(&daily_id));
+
+    save_workspace(&workspace_file, &loaded).unwrap();
+    assert!(fs::read_to_string(&workspace_file)
+        .unwrap()
+        .contains("Daily 2026-05-17"));
 
     let _ = fs::remove_dir_all(dir);
 }

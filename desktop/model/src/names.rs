@@ -91,3 +91,27 @@ pub fn validate_workspace_node_name(
 
     Ok(())
 }
+
+pub fn sanitize_workspace_node_name(name: &str, kind: WorkspaceNodeNameKind) -> String {
+    let mut sanitized = name
+        .trim()
+        .chars()
+        .filter(|ch| {
+            !matches!(ch, '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|') && !ch.is_control()
+        })
+        .collect::<String>();
+
+    if kind == WorkspaceNodeNameKind::Scheme {
+        loop {
+            let lower = sanitized.to_ascii_lowercase();
+            if !lower.ends_with(".knotq") {
+                break;
+            }
+            let new_len = sanitized.len() - ".knotq".len();
+            sanitized.truncate(new_len);
+            sanitized = sanitized.trim().to_string();
+        }
+    }
+
+    sanitized.trim_matches('.').trim().to_string()
+}

@@ -124,6 +124,9 @@ pub(crate) fn spawn_save_task(save_rx: Receiver<()>, cx: &mut Context<KnotQApp>)
 
                 let snapshot = weak
                     .update(cx, |app, _cx| {
+                        if app.workspace_save_blocked_reason.is_some() {
+                            return None;
+                        }
                         if !app.state.is_dirty() {
                             return None;
                         }
@@ -408,17 +411,24 @@ impl KnotQApp {
 
         self.save_app_settings();
 
-        match save_workspace(&workspace_path(), &self.workspace) {
-            Ok(()) => {
-                self.dirty_schemes.clear();
-                self.index_dirty = false;
-                crate::notifications::notif_log("shutdown workspace flush completed");
-            }
-            Err(err) => {
-                crate::notifications::notif_log(&format!(
-                    "shutdown workspace flush failed: {err:#}"
-                ));
-                eprintln!("shutdown workspace flush failed: {err:#}");
+        if let Some(reason) = &self.workspace_save_blocked_reason {
+            crate::notifications::notif_log(&format!(
+                "shutdown workspace flush skipped because workspace load failed: {reason}"
+            ));
+            eprintln!("shutdown workspace flush skipped because workspace load failed: {reason}");
+        } else {
+            match save_workspace(&workspace_path(), &self.workspace) {
+                Ok(()) => {
+                    self.dirty_schemes.clear();
+                    self.index_dirty = false;
+                    crate::notifications::notif_log("shutdown workspace flush completed");
+                }
+                Err(err) => {
+                    crate::notifications::notif_log(&format!(
+                        "shutdown workspace flush failed: {err:#}"
+                    ));
+                    eprintln!("shutdown workspace flush failed: {err:#}");
+                }
             }
         }
 

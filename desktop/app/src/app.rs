@@ -395,6 +395,7 @@ pub struct KnotQApp {
     pub google_oauth_task: Option<Task<()>>,
     pub(crate) scheme_sessions: HashMap<SchemeId, SchemeSessionState>,
     pub(crate) service_bus: AppServiceBus,
+    pub(crate) workspace_save_blocked_reason: Option<String>,
     pub notification_error: Option<String>,
     pub cal_drag: Option<CalendarDragState>,
     pub cal_move: Option<CalendarMoveState>,
@@ -430,7 +431,9 @@ impl DerefMut for KnotQApp {
 
 impl KnotQApp {
     pub fn new(cx: &mut Context<Self>) -> Self {
-        let mut workspace = load_or_seed();
+        let bootstrap = load_or_seed();
+        let mut workspace = bootstrap.workspace;
+        let workspace_save_blocked_reason = bootstrap.save_blocked_reason;
         mark_past_events_done(&mut workspace, Utc::now());
         // Persist IDs generated while loading older scheme files before OS
         // notification actions depend on them.
@@ -490,6 +493,7 @@ impl KnotQApp {
             google_oauth_task: None,
             scheme_sessions: HashMap::new(),
             service_bus,
+            workspace_save_blocked_reason,
             notification_error: None,
             cal_drag: None,
             cal_move: None,
