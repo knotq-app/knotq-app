@@ -1,6 +1,8 @@
 use thiserror::Error;
 
-use knotq_model::{FolderId, NodeRef, SchemeId, Workspace};
+use knotq_model::{
+    FolderId, NodeRef, SchemeId, Workspace, WorkspaceNodeNameError, WorkspaceNodeNameKind,
+};
 
 use crate::Command;
 
@@ -24,6 +26,16 @@ pub enum CommandError {
     BadOccurrence(usize),
     #[error("scheme {0} is read-only")]
     ReadOnlyScheme(SchemeId),
+    #[error("invalid {kind} name {name:?}: {reason}")]
+    InvalidNodeName {
+        kind: &'static str,
+        name: String,
+        reason: WorkspaceNodeNameError,
+    },
+    #[error("folder name {name:?} already exists under folder {parent}")]
+    DuplicateFolderName { parent: FolderId, name: String },
+    #[error("scheme name {name:?} already exists under folder {parent}")]
+    DuplicateSchemeName { parent: FolderId, name: String },
 }
 
 pub fn validate_position(position: usize, len: usize) -> Result<(), CommandError> {
@@ -64,6 +76,117 @@ pub fn validate_depth_for_node(
             Err(CommandError::BadFolderDepth)
         }
         _ => Ok(()),
+    }
+}
+
+pub fn validate_folder_name(name: &str) -> Result<(), CommandError> {
+    validate_node_name(name, WorkspaceNodeNameKind::Folder)
+}
+
+pub fn validate_scheme_name(name: &str) -> Result<(), CommandError> {
+    validate_node_name(name, WorkspaceNodeNameKind::Scheme)
+}
+
+pub fn ensure_folder_name_available(
+    workspace: &Workspace,
+    parent: FolderId,
+    name: &str,
+    except: Option<FolderId>,
+) -> Result<(), CommandError> {
+    let folder = workspace
+        .folders
+        .get(&parent)
+        .ok_or(CommandError::FolderMissing(parent))?;
+    let exists = folder.children.iter().any(|child| {
+        let NodeRef::Folder(id) = child else {
+            return false;
+        };
+        if Some(*id) == except {
+            return false;
+        }
+        workspace
+            .folders
+            .get(id)
+            .is_some_and(|folder| names_match(&folder.name, name))
+    });
+    if exists {
+        Err(CommandError::DuplicateFolderName {
+            parent,
+            name: name.to_string(),
+        })
+    } else {
+        Ok(())
+    }
+}
+
+pub fn ensure_scheme_name_available(
+    workspace: &Workspace,
+    parent: FolderId,
+    name: &str,
+    except: Option<SchemeId>,
+) -> Result<(), CommandError> {
+    let folder = workspace
+        .folders
+        .get(&parent)
+        .ok_or(CommandError::FolderMissing(parent))?;
+    let exists = folder.children.iter().any(|child| {
+        let NodeRef::Scheme(id) = child else {
+            return false;
+        };
+        if Some(*id) == except {
+            return false;
+        }
+        workspace
+            .schemes
+            .get(id)
+            .is_some_and(|scheme| names_match(&scheme.name, name))
+    });
+    if exists {
+        Err(CommandError::DuplicateSchemeName {
+            parent,
+            name: name.to_string(),
+        })
+    } else {
+        Ok(())
+    }
+}
+
+pub fn scheme_parent(workspace: &Workspace, id: SchemeId) -> Option<FolderId> {
+    workspace.folders.iter().find_map(|(folder_id, folder)| {
+        folder
+            .children
+            .iter()
+            .any(|child| *child == NodeRef::Scheme(id))
+            .then_some(*folder_id)
+    })
+}
+
+pub fn validate_sibling_name_for_node(
+    workspace: &Workspace,
+    node: NodeRef,
+    parent: FolderId,
+) -> Result<(), CommandError> {
+    match node {
+        NodeRef::Folder(id) => {
+            let name = workspace
+                .folders
+                .get(&id)
+                .ok_or(CommandError::FolderMissing(id))?
+                .name
+                .clone();
+            validate_folder_name(&name)?;
+            ensure_folder_name_available(workspace, parent, &name, Some(id))
+        }
+        NodeRef::Scheme(id) => {
+            let name = workspace
+                .schemes
+                .get(&id)
+                .ok_or(CommandError::SchemeMissing(id))?
+                .name
+                .clone();
+            validate_scheme_name(&name)?;
+            ensure_scheme_name_available(workspace, parent, &name, Some(id))
+        }
     }
 }
 
@@ -117,4 +240,21 @@ pub fn ensure_command_allowed_for_user(
         _ => {}
     }
     Ok(())
+}
+
+fn validate_node_name(name: &str, kind: WorkspaceNodeNameKind) -> Result<(), CommandError> {
+    knotq_model::validate_workspace_node_name(name, kind).map_err(|reason| {
+        CommandError::InvalidNodeName {
+            kind: match kind {
+                WorkspaceNodeNameKind::Folder => "folder",
+                WorkspaceNodeNameKind::Scheme => "scheme",
+            },
+            name: name.to_string(),
+            reason,
+        }
+    })
+}
+
+fn names_match(left: &str, right: &str) -> bool {
+    left.eq_ignore_ascii_case(right)
 }

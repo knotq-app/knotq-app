@@ -123,10 +123,18 @@ fn create_folder(
     workspace: &mut Workspace,
     parent: knotq_model::FolderId,
 ) -> knotq_model::FolderId {
+    let name = format!(
+        "Projects {}",
+        workspace
+            .folders
+            .get(&parent)
+            .map(|folder| folder.children.len() + 1)
+            .unwrap_or(1)
+    );
     let receipt = workspace
         .apply(Command::CreateFolder {
             parent,
-            name: "Projects".into(),
+            name,
             position: None,
         })
         .unwrap();

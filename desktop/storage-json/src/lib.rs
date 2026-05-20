@@ -4,6 +4,7 @@ mod options;
 mod paths;
 mod schema;
 mod scheme_file;
+mod scheme_markdown;
 mod settings;
 
 use async_trait::async_trait;
@@ -22,6 +23,7 @@ pub use knotq_model::{
 };
 pub use options::WorkspaceLoadOptions;
 pub use paths::{data_dir, image_asset_path, image_assets_dir, settings_path, workspace_path};
+pub use scheme_file::scheme_path_for_workspace;
 pub use settings::{load_app_settings, save_app_settings};
 
 #[derive(Clone, Debug)]

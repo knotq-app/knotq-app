@@ -6,7 +6,8 @@ mod scheme;
 use knotq_model::{FolderId, NodeRef, Workspace};
 
 use crate::invariants::{
-    ensure_command_allowed_for_user, is_descendant, validate_depth_for_node, CommandError,
+    ensure_command_allowed_for_user, is_descendant, validate_depth_for_node,
+    validate_sibling_name_for_node, CommandError,
 };
 use crate::{ChangeSet, Command, CommandOrigin, CommandReceipt};
 
@@ -88,6 +89,8 @@ pub fn move_node(
             NodeRef::Folder(id) => CommandError::FolderMissing(id),
             NodeRef::Scheme(id) => CommandError::SchemeMissing(id),
         })?;
+
+    validate_sibling_name_for_node(workspace, node, new_parent)?;
 
     workspace
         .folders

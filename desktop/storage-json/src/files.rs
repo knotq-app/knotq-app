@@ -10,14 +10,13 @@ use crate::{
     paths::daily_queue_file_path,
     schema::{WorkspaceEnvelope, WorkspaceIndex},
     scheme_file::{
-        prune_removed_daily_queue_files, prune_removed_scheme_files, read_daily_queue_file,
-        read_existing_daily_queue_index, write_daily_backup, write_daily_queue_file,
-        write_scheme_file,
+        ensure_scheme_directories, prune_removed_daily_queue_files, prune_removed_scheme_files,
+        read_daily_queue_file, read_existing_daily_queue_index, write_daily_backup,
+        write_daily_queue_file, write_scheme_file,
     },
 };
 
-pub(crate) const SCHEMA_VERSION: u32 = 3;
-pub(crate) const SCHEME_SCHEMA_VERSION: u32 = 3;
+pub(crate) const SCHEMA_VERSION: u32 = 4;
 pub(crate) const SETTINGS_SCHEMA_VERSION: u32 = 1;
 
 pub fn load_workspace(path: &Path) -> Result<Option<Workspace>> {
@@ -50,7 +49,7 @@ pub fn load_daily_queue_scheme(path: &Path, date: NaiveDate) -> Result<Option<Sc
         return Ok(None);
     };
     let base_dir = path.parent().unwrap_or_else(|| Path::new("."));
-    let file = read_daily_queue_file(base_dir, date)?;
+    let file = read_daily_queue_file(base_dir, date, entry.scheme.id)?;
     if file.id != entry.scheme.id {
         return Err(anyhow!(
             "daily queue file {} contains id {}",
@@ -82,7 +81,7 @@ pub fn load_daily_queue_schemes_for_calendar_range(
         ) {
             continue;
         }
-        let file = read_daily_queue_file(base_dir, entry.date)?;
+        let file = read_daily_queue_file(base_dir, entry.date, entry.scheme.id)?;
         if file.id != entry.scheme.id {
             return Err(anyhow!(
                 "daily queue file {} contains id {}",
@@ -104,27 +103,22 @@ pub fn save_workspace(path: &Path, workspace: &Workspace) -> Result<()> {
     let schemes_dir = base_dir.join("schemes");
     fs::create_dir_all(&schemes_dir)
         .with_context(|| format!("create {}", schemes_dir.display()))?;
+    ensure_scheme_directories(base_dir, workspace)?;
     let daily_queue_dir = base_dir.join("daily_queue");
     fs::create_dir_all(&daily_queue_dir)
         .with_context(|| format!("create {}", daily_queue_dir.display()))?;
 
     let daily_ids: HashSet<SchemeId> = workspace.daily_queue.values().copied().collect();
-    let normal_ids: HashSet<SchemeId> = workspace
-        .schemes
-        .keys()
-        .copied()
-        .filter(|id| !daily_ids.contains(id))
-        .collect();
 
     for scheme in workspace
         .schemes
         .values()
         .filter(|scheme| !daily_ids.contains(&scheme.id))
     {
-        write_scheme_file(base_dir, scheme)
+        write_scheme_file(base_dir, workspace, scheme)
             .with_context(|| format!("write scheme {}", scheme.id))?;
     }
-    prune_removed_scheme_files(&schemes_dir, &normal_ids)?;
+    prune_removed_scheme_files(base_dir, workspace)?;
 
     for (date, scheme_id) in &workspace.daily_queue {
         if let Some(scheme) = workspace.schemes.get(scheme_id) {
@@ -159,6 +153,7 @@ pub fn save_workspace_incremental(
     let schemes_dir = base_dir.join("schemes");
     fs::create_dir_all(&schemes_dir)
         .with_context(|| format!("create {}", schemes_dir.display()))?;
+    ensure_scheme_directories(base_dir, workspace)?;
     let daily_queue_dir = base_dir.join("daily_queue");
     fs::create_dir_all(&daily_queue_dir)
         .with_context(|| format!("create {}", daily_queue_dir.display()))?;
@@ -180,11 +175,12 @@ pub fn save_workspace_incremental(
                         .with_context(|| format!("write daily queue {}", date))?;
                 }
             } else {
-                write_scheme_file(base_dir, scheme)
+                write_scheme_file(base_dir, workspace, scheme)
                     .with_context(|| format!("write scheme {}", scheme.id))?;
             }
         }
     }
+    prune_removed_scheme_files(base_dir, workspace)?;
 
     // Always rewrite the workspace index (it's small and metadata may have changed).
     let existing_daily_queue = read_existing_daily_queue_index(path)?;
@@ -226,7 +222,10 @@ pub(crate) fn write_atomic(path: &Path, contents: &[u8]) -> Result<()> {
     if let Some(dir) = path.parent() {
         fs::create_dir_all(dir).with_context(|| format!("create {}", dir.display()))?;
     }
-    let tmp = path.with_extension("json.tmp");
+    let tmp = match path.extension().and_then(|ext| ext.to_str()) {
+        Some(ext) => path.with_extension(format!("{ext}.tmp")),
+        None => path.with_extension("tmp"),
+    };
     fs::write(&tmp, contents).with_context(|| format!("write {}", tmp.display()))?;
     fs::rename(&tmp, path).with_context(|| format!("rename {}", path.display()))?;
     Ok(())

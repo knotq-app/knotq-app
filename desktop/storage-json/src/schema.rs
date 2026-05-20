@@ -10,7 +10,9 @@ use std::{
 use crate::{
     cal_index::SchemeCalendarIndex,
     options::WorkspaceLoadOptions,
-    scheme_file::{read_daily_queue_file, read_scheme_file, scheme_from_index},
+    scheme_file::{
+        read_daily_queue_file, read_scheme_file, scheme_from_index, scheme_path_for_index,
+    },
 };
 
 #[derive(Serialize, Deserialize)]
@@ -103,26 +105,42 @@ impl WorkspaceIndex {
         base_dir: &Path,
         options: WorkspaceLoadOptions,
     ) -> Result<Workspace> {
-        let mut schemes = HashMap::with_capacity(self.schemes.len() + self.daily_queue.len());
-        for (id, index) in self.schemes {
-            let file = read_scheme_file(base_dir, id)?;
+        let WorkspaceIndex {
+            root,
+            folders,
+            schemes: scheme_index,
+            daily_queue: daily_queue_index,
+            recently_deleted,
+            deleted_scheme_origins,
+        } = self;
+        let mut schemes = HashMap::with_capacity(scheme_index.len() + daily_queue_index.len());
+        for (id, index) in scheme_index {
+            let path = scheme_path_for_index(
+                base_dir,
+                root,
+                &folders,
+                &recently_deleted,
+                id,
+                &index.name,
+            )?;
+            let file = read_scheme_file(&path, id)?;
             if file.id != id {
                 return Err(anyhow!(
                     "scheme file {} contains id {}",
-                    crate::paths::scheme_file_path(base_dir, id).display(),
+                    path.display(),
                     file.id
                 ));
             }
             schemes.insert(id, scheme_from_index(index, file.items));
         }
         let mut daily_queue = BTreeMap::new();
-        for entry in self.daily_queue {
+        for entry in daily_queue_index {
             let id = entry.scheme.id;
             daily_queue.insert(entry.date, id);
             if !options.should_load_daily_queue_entry(&entry) {
                 continue;
             }
-            let file = read_daily_queue_file(base_dir, entry.date)?;
+            let file = read_daily_queue_file(base_dir, entry.date, id)?;
             if file.id != id {
                 return Err(anyhow!(
                     "daily queue file {} contains id {}",
@@ -134,12 +152,12 @@ impl WorkspaceIndex {
         }
 
         Ok(Workspace {
-            root: self.root,
-            folders: self.folders,
+            root,
+            folders,
             schemes,
             daily_queue,
-            recently_deleted: self.recently_deleted,
-            deleted_scheme_origins: self.deleted_scheme_origins,
+            recently_deleted,
+            deleted_scheme_origins,
         })
     }
 }

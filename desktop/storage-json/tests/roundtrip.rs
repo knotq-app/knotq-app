@@ -1,12 +1,12 @@
 use chrono::{NaiveDate, TimeZone, Utc};
 use knotq_model::{
-    AppSettings, CalendarProvider, ExternalItemSource, GoogleOAuthAccount, ImageAssetFormat, Item,
-    ItemMarker, ItemMedia, NodeRef, Scheme, ThemeMode, Workspace,
+    AppSettings, CalendarProvider, ExternalItemSource, Folder, FolderId, GoogleOAuthAccount,
+    ImageAssetFormat, Item, ItemMarker, ItemMedia, NodeRef, Scheme, ThemeMode, Workspace,
 };
 use knotq_storage_json::{
     load_app_settings, load_daily_queue_scheme, load_daily_queue_schemes_for_calendar_range,
     load_workspace, load_workspace_with_options, save_app_settings, save_workspace,
-    WorkspaceLoadOptions,
+    scheme_path_for_workspace, WorkspaceLoadOptions,
 };
 use std::{fs, path::PathBuf};
 
@@ -58,12 +58,12 @@ fn save_workspace_splits_scheme_files_and_omits_empty_item_fields() {
     let root = workspace.root;
     let mut scheme = Scheme::new("Notes", 2);
     scheme.items.push(Item::new("plain"));
-    let first_item_id = scheme.items[0].id;
     let mut done = Item::new("done");
     done.marker = ItemMarker::Checkbox;
     done.state[0].state.progress = -1;
     scheme.items.push(done);
     let mut image_item = Item::new("image");
+    let image_item_id = image_item.id;
     image_item.external = Some(ExternalItemSource {
         provider: CalendarProvider::Google,
         account_id: "google".to_string(),
@@ -91,24 +91,31 @@ fn save_workspace_splits_scheme_files_and_omits_empty_item_fields() {
     save_workspace(&workspace_file, &workspace).unwrap();
 
     let index = fs::read_to_string(&workspace_file).unwrap();
-    assert!(index.contains("\"version\": 3"));
+    assert!(index.contains("\"version\": 4"));
     assert!(!index.contains("\"items\""));
 
-    let scheme_json = fs::read_to_string(scheme_file_path(&dir, scheme_id)).unwrap();
-    assert!(scheme_json.contains("\"items\""));
-    assert!(!scheme_json.contains("\"start\""));
-    assert!(!scheme_json.contains("\"available\""));
-    assert!(!scheme_json.contains("\"priority\""));
-    assert!(scheme_json.contains("\"media\""));
-    assert!(scheme_json.contains("\"external\""));
-    assert!(scheme_json.contains("\"provider\": \"google\""));
-    assert!(scheme_json.contains("\"format\": \"png\""));
-    assert_eq!(scheme_json.matches("\"id\"").count(), 4);
-    assert!(scheme_json.contains(&format!("\"id\": \"{first_item_id}\"")));
-    assert!(scheme_json.contains("\"progress\": -1"));
+    let scheme_path = scheme_path_for_workspace(&dir, &workspace, scheme_id)
+        .unwrap()
+        .unwrap();
+    assert_eq!(scheme_path, dir.join("schemes").join("Notes.knotq"));
+    let scheme_markdown = fs::read_to_string(scheme_path).unwrap();
+    assert!(scheme_markdown.starts_with("plain\n- [x] done\nimage "));
+    assert!(!scheme_markdown.starts_with("!knotq{type=\"scheme\""));
+    assert!(!scheme_markdown.contains("\"items\""));
+    assert!(!scheme_markdown.contains("start="));
+    assert!(!scheme_markdown.contains("available="));
+    assert!(!scheme_markdown.contains("priority="));
+    assert!(scheme_markdown.contains("media="));
+    assert!(scheme_markdown.contains("external="));
+    assert!(scheme_markdown.contains("google"));
+    assert!(scheme_markdown.contains("png"));
+    assert_eq!(scheme_markdown.matches("id=").count(), 1);
+    assert!(scheme_markdown.contains(&format!("id=\"{image_item_id}\"")));
+    assert!(scheme_markdown.contains("- [x] done"));
 
     let loaded = load_workspace(&workspace_file).unwrap().unwrap();
     assert_eq!(loaded.schemes[&scheme_id].items.len(), 3);
+    assert_eq!(loaded.schemes[&scheme_id].items[0].text, "plain");
     assert_eq!(
         loaded.schemes[&scheme_id].items[2]
             .external
@@ -117,7 +124,131 @@ fn save_workspace_splits_scheme_files_and_omits_empty_item_fields() {
             .event_id,
         "event-1"
     );
-    assert_eq!(loaded.schemes[&scheme_id].items[0].id, first_item_id);
+    assert_eq!(loaded.schemes[&scheme_id].items[2].id, image_item_id);
+
+    let _ = fs::remove_dir_all(dir);
+}
+
+#[test]
+fn schemes_are_saved_under_named_folder_paths() {
+    let dir = unique_temp_dir("knotq-storage-named-paths");
+    let workspace_file = dir.join("workspace.json");
+    let mut workspace = Workspace::new();
+    let root = workspace.root;
+    let folder_id = FolderId::new();
+    let mut scheme = Scheme::new("Research", 4);
+    scheme.items.push(Item::new("Read paper"));
+    let scheme_id = scheme.id;
+
+    workspace.schemes.insert(scheme_id, scheme);
+    workspace.folders.insert(
+        folder_id,
+        Folder {
+            id: folder_id,
+            name: "Projects".into(),
+            parent: Some(root),
+            children: vec![NodeRef::Scheme(scheme_id)],
+            expanded: true,
+        },
+    );
+    workspace
+        .folders
+        .get_mut(&root)
+        .unwrap()
+        .children
+        .push(NodeRef::Folder(folder_id));
+
+    save_workspace(&workspace_file, &workspace).unwrap();
+
+    let path = dir.join("schemes").join("Projects").join("Research.knotq");
+    assert!(path.exists());
+    assert!(fs::read_to_string(&path).unwrap().contains("Read paper"));
+
+    let loaded = load_workspace(&workspace_file).unwrap().unwrap();
+    assert_eq!(loaded.schemes[&scheme_id].items[0].text, "Read paper");
+
+    let _ = fs::remove_dir_all(dir);
+}
+
+#[test]
+fn schemes_are_saved_under_nested_folder_paths() {
+    let dir = unique_temp_dir("knotq-storage-nested-paths");
+    let workspace_file = dir.join("workspace.json");
+    let mut workspace = Workspace::new();
+    let root = workspace.root;
+    let projects_id = FolderId::new();
+    let research_id = FolderId::new();
+    let mut scheme = Scheme::new("ELSAN", 4);
+    scheme.items.push(Item::new("Read paper"));
+    let scheme_id = scheme.id;
+
+    workspace.schemes.insert(scheme_id, scheme);
+    workspace.folders.insert(
+        projects_id,
+        Folder {
+            id: projects_id,
+            name: "Projects".into(),
+            parent: Some(root),
+            children: vec![NodeRef::Folder(research_id)],
+            expanded: true,
+        },
+    );
+    workspace.folders.insert(
+        research_id,
+        Folder {
+            id: research_id,
+            name: "Research".into(),
+            parent: Some(projects_id),
+            children: vec![NodeRef::Scheme(scheme_id)],
+            expanded: true,
+        },
+    );
+    workspace
+        .folders
+        .get_mut(&root)
+        .unwrap()
+        .children
+        .push(NodeRef::Folder(projects_id));
+
+    save_workspace(&workspace_file, &workspace).unwrap();
+
+    let path = dir
+        .join("schemes")
+        .join("Projects")
+        .join("Research")
+        .join("ELSAN.knotq");
+    assert!(path.exists());
+
+    let loaded = load_workspace(&workspace_file).unwrap().unwrap();
+    assert_eq!(loaded.schemes[&scheme_id].items[0].text, "Read paper");
+
+    let _ = fs::remove_dir_all(dir);
+}
+
+#[test]
+fn save_workspace_rejects_duplicate_scheme_file_paths() {
+    let dir = unique_temp_dir("knotq-storage-duplicate-paths");
+    let workspace_file = dir.join("workspace.json");
+    let mut workspace = Workspace::new();
+    let root = workspace.root;
+    let first = Scheme::new("Notes", 0);
+    let first_id = first.id;
+    let second = Scheme::new("notes", 1);
+    let second_id = second.id;
+
+    workspace.schemes.insert(first_id, first);
+    workspace.schemes.insert(second_id, second);
+    workspace
+        .folders
+        .get_mut(&root)
+        .unwrap()
+        .children
+        .extend([NodeRef::Scheme(first_id), NodeRef::Scheme(second_id)]);
+
+    let err = save_workspace(&workspace_file, &workspace).unwrap_err();
+    assert!(err
+        .to_string()
+        .contains("multiple schemes resolve to the same file"));
 
     let _ = fs::remove_dir_all(dir);
 }
@@ -216,10 +347,6 @@ fn app_settings_default_to_dark_theme() {
         knotq_model::AppSettings::default().theme_mode,
         ThemeMode::Dark
     );
-}
-
-fn scheme_file_path(base_dir: &std::path::Path, id: knotq_model::SchemeId) -> PathBuf {
-    base_dir.join("schemes").join(format!("{id}.json"))
 }
 
 fn unique_temp_dir(prefix: &str) -> PathBuf {

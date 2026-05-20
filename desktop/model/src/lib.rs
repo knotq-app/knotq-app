@@ -1,6 +1,7 @@
 pub mod daily_queue;
 pub mod ids;
 pub mod item;
+pub mod names;
 pub mod occurrence;
 pub mod recurrence;
 pub mod scheme;
@@ -10,6 +11,7 @@ pub mod workspace;
 pub use daily_queue::*;
 pub use ids::*;
 pub use item::*;
+pub use names::*;
 pub use occurrence::*;
 pub use recurrence::*;
 pub use scheme::*;
