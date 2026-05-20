@@ -146,7 +146,7 @@ fn scheduled_notification(
         return None;
     }
     Some(ScheduledNotification {
-        key: ScheduledNotification::make_key(scheme_id, &occurrence.id, kind, fire_at),
+        key: ScheduledNotification::make_key(scheme_id, item.id, &occurrence.id, kind, fire_at),
         fire_at,
         title: title_for(item),
         body: body_for(kind, occurrence.start, occurrence.end),

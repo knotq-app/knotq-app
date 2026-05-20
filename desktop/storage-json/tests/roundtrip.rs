@@ -58,6 +58,7 @@ fn save_workspace_splits_scheme_files_and_omits_empty_item_fields() {
     let root = workspace.root;
     let mut scheme = Scheme::new("Notes", 2);
     scheme.items.push(Item::new("plain"));
+    let first_item_id = scheme.items[0].id;
     let mut done = Item::new("done");
     done.marker = ItemMarker::Checkbox;
     done.state[0].state.progress = -1;
@@ -102,7 +103,8 @@ fn save_workspace_splits_scheme_files_and_omits_empty_item_fields() {
     assert!(scheme_json.contains("\"external\""));
     assert!(scheme_json.contains("\"provider\": \"google\""));
     assert!(scheme_json.contains("\"format\": \"png\""));
-    assert_eq!(scheme_json.matches("\"id\"").count(), 1);
+    assert_eq!(scheme_json.matches("\"id\"").count(), 4);
+    assert!(scheme_json.contains(&format!("\"id\": \"{first_item_id}\"")));
     assert!(scheme_json.contains("\"progress\": -1"));
 
     let loaded = load_workspace(&workspace_file).unwrap().unwrap();
@@ -115,10 +117,7 @@ fn save_workspace_splits_scheme_files_and_omits_empty_item_fields() {
             .event_id,
         "event-1"
     );
-    assert_ne!(
-        loaded.schemes[&scheme_id].items[0].id,
-        workspace.schemes[&scheme_id].items[0].id
-    );
+    assert_eq!(loaded.schemes[&scheme_id].items[0].id, first_item_id);
 
     let _ = fs::remove_dir_all(dir);
 }

@@ -169,11 +169,12 @@ pub(crate) fn spawn_notification_task(
         async move |weak: gpui::WeakEntity<KnotQApp>, cx: &mut gpui::AsyncApp| {
             crate::notifications::notif_log("notification service started");
 
+            handle_notification_actions(&weak, cx);
             cx.background_executor()
                 .timer(StdDuration::from_secs(3))
                 .await;
-            update_notification_error(&weak, cx, None);
             handle_notification_actions(&weak, cx);
+            update_notification_error(&weak, cx, None);
             refresh_os_notifications(&weak, cx).await;
 
             while let Ok(signal) = notification_rx.recv().await {

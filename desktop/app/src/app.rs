@@ -431,7 +431,10 @@ impl DerefMut for KnotQApp {
 impl KnotQApp {
     pub fn new(cx: &mut Context<Self>) -> Self {
         let mut workspace = load_or_seed();
-        let initial_state_changes = mark_past_events_done(&mut workspace, Utc::now());
+        mark_past_events_done(&mut workspace, Utc::now());
+        // Persist IDs generated while loading older scheme files before OS
+        // notification actions depend on them.
+        let initial_dirty = true;
         let settings = load_or_default_settings();
         let needs_onboarding = !settings.onboarding_completed;
         let editor_focus_handle = cx.focus_handle();
@@ -455,7 +458,7 @@ impl KnotQApp {
                 settings,
                 today,
                 daily_queue_initial_start(today),
-                initial_state_changes > 0,
+                initial_dirty,
             ),
             undo_navigation_stack: VecDeque::new(),
             redo_navigation_stack: VecDeque::new(),

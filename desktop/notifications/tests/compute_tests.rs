@@ -89,9 +89,10 @@ fn completed_items_do_not_schedule_but_keys_are_available_for_cleanup() {
         start + Duration::minutes(1),
     );
     assert_eq!(keys.len(), 1);
-    // Key contains scheme_id and occurrence info, not item_id (item IDs
-    // aren't persisted so they can't be part of the stable key).
+    // The OS notification key is scoped to the durable item ID so two items
+    // with the same time do not collide.
     assert!(keys[0].contains(&scheme_id.0.to_string()));
+    assert!(keys[0].contains(&item_id.0.to_string()));
 }
 
 #[test]

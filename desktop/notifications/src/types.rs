@@ -64,15 +64,15 @@ pub struct ScheduledNotification {
 impl ScheduledNotification {
     pub(crate) fn make_key(
         scheme: SchemeId,
+        item: ItemId,
         occurrence: &OccurrenceId,
         kind: NotificationKind,
         fire_at: DateTime<Utc>,
     ) -> String {
-        // Key must be stable across app launches. Item IDs are regenerated on
-        // each load (skip_serializing), so they cannot be part of the key.
         format!(
-            "{}|{}|{}|{}",
+            "{}|{}|{}|{}|{}",
             scheme.0,
+            item.0,
             occurrence_key_fragment(occurrence),
             match kind {
                 NotificationKind::Reminder => "r",

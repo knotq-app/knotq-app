@@ -62,9 +62,17 @@ fn swiftui_saturation(color: Rgba, amount: f32) -> Rgba {
 pub fn calendar_item_color(is_done: bool, color_index: u8, is_dark: bool) -> Hsla {
     let rgb = scheme_color(color_index, is_dark);
     let amount = if is_done {
-        if is_dark { 0.35 } else { 0.45 }
+        if is_dark {
+            0.35
+        } else {
+            0.45
+        }
     } else {
-        if is_dark { 0.7 } else { 0.9 }
+        if is_dark {
+            0.7
+        } else {
+            0.9
+        }
     };
     let mut hsla: Hsla = swiftui_saturation(palette_rgba(rgb, 1.0), amount).into();
     if is_done {

@@ -1,7 +1,7 @@
 use chrono::{DateTime, Duration, Utc};
 use gpui::Context;
 use knotq_commands::Command;
-use knotq_model::{Item, ItemId, OccurrenceId, Scheme, SchemeId, Workspace};
+use knotq_model::{Item, ItemId, ItemKind, OccurrenceId, Scheme, SchemeId, Workspace};
 use knotq_notifications::{
     compute_due_notifications_with_lead_times, notification_keys_for_item, NotificationLeadTimes,
     ScheduledNotification,
@@ -11,6 +11,7 @@ use knotq_notifications::{
     NotificationScheduler, PlatformStatus, ACTION_MARK_DONE, ACTION_SNOOZE_10_MINUTES,
     ACTION_SNOOZE_1_HOUR,
 };
+use knotq_rrule::ItemOccurrenceExt;
 #[cfg(target_os = "macos")]
 use knotq_storage_json::data_dir;
 use knotq_storage_json::NotificationDefaults;
@@ -597,6 +598,7 @@ pub fn clear_item_notifications(
 pub struct NotificationActionTarget {
     pub notification_id: String,
     pub action_id: String,
+    pub notification_key: Option<String>,
     pub scheme_id: SchemeId,
     pub item_id: ItemId,
     pub occurrence: OccurrenceId,
@@ -639,7 +641,10 @@ impl KnotQApp {
         delay: Duration,
         cx: &mut Context<Self>,
     ) {
-        if self.notification_target_is_done(&target) {
+        let Some(item_id) = self.notification_target_item_id(&target) else {
+            return;
+        };
+        if self.notification_target_is_done(&target, item_id) {
             return;
         }
         let fire_at = Utc::now() + delay;
@@ -647,7 +652,7 @@ impl KnotQApp {
         self.apply(
             Command::SetOccurrenceNotificationOffset {
                 scheme: target.scheme_id,
-                item: target.item_id,
+                item: item_id,
                 occurrence: target.occurrence,
                 offset_secs: Some(offset_secs),
             },
@@ -660,25 +665,77 @@ impl KnotQApp {
         target: NotificationActionTarget,
         cx: &mut Context<Self>,
     ) {
-        if self.notification_target_is_done(&target) {
+        let Some(item_id) = self.notification_target_item_id(&target) else {
+            return;
+        };
+        if self.notification_target_is_done(&target, item_id) {
             return;
         }
         self.apply(
             Command::ToggleOccurrence {
                 scheme: target.scheme_id,
-                item: target.item_id,
+                item: item_id,
                 occurrence: target.occurrence,
             },
             cx,
         );
     }
 
-    fn notification_target_is_done(&self, target: &NotificationActionTarget) -> bool {
+    fn notification_target_item_id(&self, target: &NotificationActionTarget) -> Option<ItemId> {
+        resolve_notification_target_item_id(&self.workspace, target)
+    }
+
+    fn notification_target_is_done(
+        &self,
+        target: &NotificationActionTarget,
+        item_id: ItemId,
+    ) -> bool {
         self.workspace
             .scheme(target.scheme_id)
-            .and_then(|scheme| scheme.item(target.item_id))
+            .and_then(|scheme| scheme.item(item_id))
             .map(|item| item.state_for_occurrence(&target.occurrence).is_done())
             .unwrap_or(true)
+    }
+}
+
+fn resolve_notification_target_item_id(
+    workspace: &Workspace,
+    target: &NotificationActionTarget,
+) -> Option<ItemId> {
+    let scheme = workspace.scheme(target.scheme_id)?;
+    if scheme.item(target.item_id).is_some() {
+        return Some(target.item_id);
+    }
+
+    let kind = target
+        .notification_key
+        .as_deref()
+        .and_then(notification_key_kind);
+    let scan_start = target.trigger_at - Duration::days(370);
+    let scan_end = target.trigger_at + Duration::days(370);
+    let matches = scheme
+        .items
+        .iter()
+        .filter(|item| match kind {
+            Some(kind) => notification_kind_code(item.kind()) == Some(kind),
+            None => true,
+        })
+        .filter(|item| {
+            item.occurrences(scan_start, scan_end)
+                .into_iter()
+                .any(|occ| {
+                    occ.id == target.occurrence
+                        && trigger_at_for_kind(occ.kind, occ.start, occ.end)
+                            == Some(target.trigger_at)
+                })
+        })
+        .map(|item| item.id)
+        .take(2)
+        .collect::<Vec<_>>();
+
+    match matches.as_slice() {
+        [item_id] => Some(*item_id),
+        _ => None,
     }
 }
 
@@ -717,11 +774,43 @@ fn notification_action_target(response: NotificationResponse) -> Option<Notifica
     Some(NotificationActionTarget {
         notification_id: response.notification_id,
         action_id: response.action_id,
+        notification_key: response.user_info.get("notification_key").cloned(),
         scheme_id,
         item_id,
         occurrence,
         trigger_at,
     })
+}
+
+fn notification_key_kind(key: &str) -> Option<&str> {
+    // New keys are scheme|item|occurrence|kind|fire_at. Legacy keys are
+    // scheme|occurrence|kind|fire_at.
+    match key.split('|').count() {
+        5 => key.split('|').nth(3),
+        4 => key.split('|').nth(2),
+        _ => None,
+    }
+}
+
+fn notification_kind_code(kind: ItemKind) -> Option<&'static str> {
+    match kind {
+        ItemKind::Reminder => Some("r"),
+        ItemKind::Event => Some("e"),
+        ItemKind::Assignment => Some("a"),
+        ItemKind::Procedure => None,
+    }
+}
+
+fn trigger_at_for_kind(
+    kind: ItemKind,
+    start: Option<DateTime<Utc>>,
+    end: Option<DateTime<Utc>>,
+) -> Option<DateTime<Utc>> {
+    match kind {
+        ItemKind::Reminder | ItemKind::Event => start,
+        ItemKind::Assignment => end,
+        ItemKind::Procedure => None,
+    }
 }
 
 fn clear_delivered_notification(id: &str) {
@@ -757,6 +846,7 @@ fn lead_times(defaults: NotificationDefaults) -> NotificationLeadTimes {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use chrono::TimeZone;
 
     #[test]
     fn notification_request_has_stable_key() {
@@ -769,6 +859,61 @@ mod tests {
     #[test]
     fn schedule_horizon_is_two_weeks() {
         assert_eq!(SCHEDULE_HORIZON_DAYS, 14);
+    }
+
+    #[test]
+    fn notification_target_resolves_stale_item_id_from_unique_occurrence() {
+        let trigger_at = Utc.with_ymd_and_hms(2026, 5, 20, 9, 0, 0).unwrap();
+        let item = Item::new("meeting").with_start(trigger_at);
+        let item_id = item.id;
+        let mut scheme = Scheme::new("Work", 0);
+        let scheme_id = scheme.id;
+        scheme.items.push(item);
+        let mut workspace = Workspace::new();
+        workspace.schemes.insert(scheme_id, scheme);
+
+        let target = NotificationActionTarget {
+            notification_id: "notification".to_string(),
+            action_id: ACTION_MARK_DONE.to_string(),
+            notification_key: Some(format!("{scheme_id}|single|r|{}", trigger_at.to_rfc3339())),
+            scheme_id,
+            item_id: ItemId::new(),
+            occurrence: OccurrenceId::Single,
+            trigger_at,
+        };
+
+        assert_eq!(
+            resolve_notification_target_item_id(&workspace, &target),
+            Some(item_id)
+        );
+    }
+
+    #[test]
+    fn notification_target_does_not_guess_when_stale_item_id_is_ambiguous() {
+        let trigger_at = Utc.with_ymd_and_hms(2026, 5, 20, 9, 0, 0).unwrap();
+        let mut scheme = Scheme::new("Work", 0);
+        let scheme_id = scheme.id;
+        scheme.items.push(Item::new("first").with_start(trigger_at));
+        scheme
+            .items
+            .push(Item::new("second").with_start(trigger_at));
+        let mut workspace = Workspace::new();
+        workspace.schemes.insert(scheme_id, scheme);
+
+        let target = NotificationActionTarget {
+            notification_id: "notification".to_string(),
+            action_id: ACTION_MARK_DONE.to_string(),
+            notification_key: Some(format!("{scheme_id}|single|r|{}", trigger_at.to_rfc3339())),
+            scheme_id,
+            item_id: ItemId::new(),
+            occurrence: OccurrenceId::Single,
+            trigger_at,
+        };
+
+        assert_eq!(
+            resolve_notification_target_item_id(&workspace, &target),
+            None
+        );
     }
 
     #[cfg(target_os = "macos")]

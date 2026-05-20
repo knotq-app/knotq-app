@@ -37,27 +37,27 @@ struct SpotlightStep {
 const STEPS: &[SpotlightStep] = &[
     SpotlightStep {
         title: "Welcome to KnotQ",
-        body: "KnotQ unifies planning documents and the calendar: the same scheme can hold notes, plans, and scheduled work. Schemes are documents for planning, organization, note taking, or specifying calendar items.",
+        body: "KnotQ serves as a single app for calendar events, reminders, assignments, and general purpose notes. It aims to be simple yet functional.",
         target: OnboardingTarget::Welcome,
     },
     SpotlightStep {
         title: "Calendar Editor",
-        body: "Use the calendar to create events, assignments, and reminders. Click for a reminder, Shift-click for an assignment, or drag across time for an event.",
+        body: "Use the calendar to create events, assignments, and reminders. Click for a reminder, shift-click for an assignment, or drag for an event.",
         target: OnboardingTarget::Calendar,
     },
     SpotlightStep {
-        title: "Daily",
-        body: "Daily is a scheme for short-term planning. Use it to focus the day without mixing those notes into your longer-running documents.",
-        target: OnboardingTarget::Daily,
-    },
-    SpotlightStep {
         title: "Scheme Editor",
-        body: "Schemes are editable outlines for projects, notes, and plans. Add nested details, check items off, and turn entries into calendar items with dates: start and end make an event, end only makes an assignment, and start only makes a reminder. Cmd+S and Cmd+E set those dates here.",
+        body: "Schemes are editable outlines for projects, notes, and plans. You can add start and end times to each line, transforming them into visible calendar items.",
         target: OnboardingTarget::Scheme,
     },
     SpotlightStep {
+        title: "Daily",
+        body: "Daily is a special and default scheme. You write an optimistic task list each day and cross off the ones that you complete.",
+        target: OnboardingTarget::Daily,
+    },
+    SpotlightStep {
         title: "Upcoming",
-        body: "Upcoming keeps events, assignments, and reminders sorted by time. It stays visible while you work so the next important item is always nearby.",
+        body: "Upcoming displays nearby events, assignments, and reminders. You can directly mark tasks completed from here.",
         target: OnboardingTarget::Upcoming,
     },
 ];

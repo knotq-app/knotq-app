@@ -6,7 +6,7 @@ use crate::{CalendarProvider, ItemKind, ItemState, OccurrenceId, OccurrenceState
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Item {
-    #[serde(default, skip_serializing)]
+    #[serde(default)]
     pub id: crate::ItemId,
     #[serde(default)]
     pub text: String,
