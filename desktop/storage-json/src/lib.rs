@@ -17,6 +17,10 @@ pub use files::{
     load_daily_queue_scheme, load_daily_queue_schemes_for_calendar_range, load_workspace,
     load_workspace_with_options, save_workspace, save_workspace_incremental,
 };
+pub use knotq_history::{
+    list_workspace_snapshots, record_workspace_snapshot, restore_workspace_snapshot,
+    WorkspaceSnapshot,
+};
 pub use knotq_model::{
     AppSettings, CalendarViewMode, NotificationDefaults, SavedWindowPosition, SavedWindowSize,
     ThemeMode, TimeFormat,

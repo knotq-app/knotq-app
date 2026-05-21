@@ -8,6 +8,7 @@ anyhow = { workspace = true }
 async-trait = { workspace = true }
 chrono = { workspace = true }
 knotq-commands = { workspace = true }
+knotq-history = { workspace = true }
 knotq-model = { workspace = true }
 knotq-storage = { workspace = true }
 serde = { workspace = true }

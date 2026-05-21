@@ -21,6 +21,7 @@ mod daily_queue;
 mod delete_confirm;
 mod editor_mgr;
 mod google_oauth;
+mod history;
 mod nav;
 mod node_rename;
 mod services;
@@ -396,6 +397,7 @@ pub struct KnotQApp {
     pub(crate) scheme_sessions: HashMap<SchemeId, SchemeSessionState>,
     pub(crate) service_bus: AppServiceBus,
     pub(crate) workspace_save_blocked_reason: Option<String>,
+    pub workspace_history_error: Option<String>,
     pub notification_error: Option<String>,
     pub cal_drag: Option<CalendarDragState>,
     pub cal_move: Option<CalendarMoveState>,
@@ -494,6 +496,7 @@ impl KnotQApp {
             scheme_sessions: HashMap::new(),
             service_bus,
             workspace_save_blocked_reason,
+            workspace_history_error: None,
             notification_error: None,
             cal_drag: None,
             cal_move: None,

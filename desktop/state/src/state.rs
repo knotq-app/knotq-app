@@ -153,6 +153,32 @@ impl AppState {
     pub fn is_dirty(&self) -> bool {
         self.index_dirty || !self.dirty_schemes.is_empty()
     }
+
+    pub fn replace_workspace(
+        &mut self,
+        workspace: Workspace,
+        today: NaiveDate,
+        loaded_start: NaiveDate,
+    ) {
+        self.indexed = IndexedWorkspace::build(workspace.clone());
+        self.workspace = workspace;
+        self.dirty_schemes.clear();
+        self.index_dirty = false;
+        self.undo = UndoRedoStack::default();
+        self.editor_undo_group = None;
+        self.recurrence_undo_group = None;
+        self.editor_sessions.clear();
+        self.retained_completed_calendar_items.clear();
+        self.undo_stack.clear();
+        self.redo_stack.clear();
+
+        let daily_queue = DailyQueueState::new(today, loaded_start);
+        self.daily_queue = daily_queue.clone();
+        self.daily_queue_today = today;
+        self.daily_queue_loaded_start = loaded_start;
+        self.daily_queue_visible_dates = daily_queue.visible_dates;
+        self.daily_queue_loaded_calendar_months = daily_queue.loaded_calendar_months;
+    }
 }
 
 fn collect_affected_schemes(cmd: &Command, out: &mut HashSet<SchemeId>) {

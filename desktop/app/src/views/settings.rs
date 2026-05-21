@@ -1,7 +1,10 @@
 use gpui::prelude::*;
 use gpui::{div, px, ClickEvent, Context, IntoElement};
 use gpui_component::scroll::ScrollableElement as _;
-use knotq_storage_json::{CalendarViewMode, NotificationDefaults, ThemeMode, TimeFormat};
+use knotq_storage_json::{
+    list_workspace_snapshots, workspace_dir, CalendarViewMode, NotificationDefaults, ThemeMode,
+    TimeFormat, WorkspaceSnapshot,
+};
 
 use crate::app::KnotQApp;
 use crate::theme_gpui::{all_themes, token_hsla, token_rgba, Theme as UiTheme};
@@ -150,6 +153,7 @@ impl KnotQApp {
                 cx,
             ));
         }
+        let history_rows = self.version_history_rows(t, cx);
 
         div()
             .flex_1()
@@ -190,9 +194,50 @@ impl KnotQApp {
                         "Set default lead times for scheduled items.",
                         notification_rows,
                         t,
+                    ))
+                    .child(settings_section(
+                        "Version History",
+                        "Restore an earlier saved workspace.",
+                        history_rows,
+                        t,
                     )),
             )
             .into_any_element()
+    }
+
+    fn version_history_rows(
+        &mut self,
+        t: UiTheme,
+        cx: &mut Context<Self>,
+    ) -> Vec<gpui::AnyElement> {
+        let mut rows = Vec::new();
+        if let Some(err) = &self.workspace_history_error {
+            rows.push(settings_message(err.clone(), true, t));
+        }
+        match list_workspace_snapshots(&workspace_dir()) {
+            Ok(snapshots) if snapshots.is_empty() => {
+                rows.push(settings_message(
+                    "No saved versions yet.".to_string(),
+                    false,
+                    t,
+                ));
+            }
+            Ok(snapshots) => {
+                rows.extend(
+                    snapshots
+                        .into_iter()
+                        .take(24)
+                        .enumerate()
+                        .map(|(idx, snapshot)| history_snapshot_row(idx, snapshot, t, cx)),
+                );
+            }
+            Err(err) => rows.push(settings_message(
+                format!("Version history unavailable: {err:#}"),
+                true,
+                t,
+            )),
+        }
+        rows
     }
 }
 
@@ -350,6 +395,88 @@ fn notification_choice_row(
         cx,
         move |this, cx| this.set_notification_defaults(defaults, cx),
     )
+}
+
+fn history_snapshot_row(
+    idx: usize,
+    snapshot: WorkspaceSnapshot,
+    t: UiTheme,
+    cx: &mut Context<KnotQApp>,
+) -> gpui::AnyElement {
+    let snapshot_id = snapshot.id.clone();
+    let short_id = snapshot.id.chars().take(8).collect::<String>();
+    div()
+        .id(("version-history", idx))
+        .px(px(16.0))
+        .py(px(10.0))
+        .min_h(px(52.0))
+        .flex()
+        .items_center()
+        .justify_between()
+        .gap(px(14.0))
+        .border_b_1()
+        .border_color(token_rgba(t.divider_tiny))
+        .cursor_pointer()
+        .hover({
+            let c = t.row_hover;
+            move |h| h.bg(token_rgba(c))
+        })
+        .on_click(cx.listener(move |this, _: &ClickEvent, _w, cx| {
+            this.restore_workspace_to_snapshot(snapshot_id.clone(), cx);
+        }))
+        .child(
+            div()
+                .flex()
+                .items_center()
+                .gap(px(11.0))
+                .min_w_0()
+                .child(
+                    div()
+                        .w(px(24.0))
+                        .h(px(24.0))
+                        .flex_shrink_0()
+                        .rounded(px(5.0))
+                        .border_1()
+                        .border_color(token_rgba(t.border_main))
+                        .bg(token_rgba(t.button_bg)),
+                )
+                .child(
+                    div()
+                        .min_w_0()
+                        .flex()
+                        .flex_col()
+                        .gap(px(2.0))
+                        .child(
+                            div()
+                                .text_size(px(13.0))
+                                .font_weight(gpui::FontWeight::SEMIBOLD)
+                                .text_color(token_hsla(t.text_primary))
+                                .child(snapshot.label),
+                        )
+                        .child(
+                            div()
+                                .text_size(px(12.0))
+                                .line_height(px(16.0))
+                                .text_color(token_hsla(t.text_soft))
+                                .child(short_id),
+                        ),
+                ),
+        )
+        .child(
+            div()
+                .flex_shrink_0()
+                .px(px(9.0))
+                .py(px(4.0))
+                .rounded(px(5.0))
+                .border_1()
+                .border_color(token_rgba(t.border_main))
+                .bg(token_rgba(t.button_bg))
+                .text_size(px(12.0))
+                .font_weight(gpui::FontWeight::SEMIBOLD)
+                .text_color(token_hsla(t.text_primary))
+                .child("Restore"),
+        )
+        .into_any_element()
 }
 
 fn settings_subheading(label: &'static str, t: UiTheme) -> gpui::AnyElement {

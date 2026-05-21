@@ -19,7 +19,8 @@ use crate::{
 
 pub(crate) const SCHEMA_VERSION: u32 = 1;
 pub(crate) const SETTINGS_SCHEMA_VERSION: u32 = 1;
-const WORKSPACE_GITIGNORE: &str = "# KnotQ local files\nbackups/\n*.tmp\n.DS_Store\n";
+const WORKSPACE_GITIGNORE: &str =
+    "# KnotQ local files\n.knotq-history/\nbackups/\n*.tmp\n.DS_Store\n";
 
 pub fn load_workspace(path: &Path) -> Result<Option<Workspace>> {
     load_workspace_with_options(path, WorkspaceLoadOptions::all())
@@ -151,6 +152,7 @@ pub fn save_workspace(path: &Path, workspace: &Workspace) -> Result<()> {
     let json = serde_json::to_string_pretty(&env)?;
     write_atomic(path, json.as_bytes())?;
     write_daily_backup(base_dir, &json, workspace);
+    record_history_snapshot(base_dir);
 
     Ok(())
 }
@@ -206,6 +208,7 @@ pub fn save_workspace_incremental(
     };
     let json = serde_json::to_string_pretty(&env)?;
     write_atomic(path, json.as_bytes())?;
+    record_history_snapshot(base_dir);
 
     Ok(())
 }
@@ -249,10 +252,30 @@ pub(crate) fn write_atomic(path: &Path, contents: &[u8]) -> Result<()> {
 
 fn ensure_workspace_gitignore(base_dir: &Path) -> Result<()> {
     let path = base_dir.join(".gitignore");
-    if path.exists() {
+    if !path.exists() {
+        return write_atomic(&path, WORKSPACE_GITIGNORE.as_bytes());
+    }
+    let existing = fs::read_to_string(&path).with_context(|| format!("read {}", path.display()))?;
+    let mut updated = existing.clone();
+    for line in [".knotq-history/", "backups/", "*.tmp", ".DS_Store"] {
+        if !existing.lines().any(|existing_line| existing_line == line) {
+            if !updated.ends_with('\n') {
+                updated.push('\n');
+            }
+            updated.push_str(line);
+            updated.push('\n');
+        }
+    }
+    if updated == existing {
         return Ok(());
     }
-    write_atomic(&path, WORKSPACE_GITIGNORE.as_bytes())
+    write_atomic(&path, updated.as_bytes())
+}
+
+fn record_history_snapshot(base_dir: &Path) {
+    if let Err(err) = knotq_history::record_workspace_snapshot(base_dir) {
+        eprintln!("workspace history snapshot failed: {err:#}");
+    }
 }
 
 fn is_not_found(err: &anyhow::Error) -> bool {

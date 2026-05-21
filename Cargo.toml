@@ -6,6 +6,7 @@ members = [
     "desktop/editor-core",
     "desktop/editor",
     "desktop/fixtures",
+    "desktop/history",
     "desktop/import",
     "desktop/index",
     "desktop/model",
@@ -38,6 +39,7 @@ knotq-date-util = { path = "desktop/date-util" }
 knotq-editor-core = { path = "desktop/editor-core" }
 knotq-editor = { path = "desktop/editor" }
 knotq-fixtures = { path = "desktop/fixtures" }
+knotq-history = { path = "desktop/history" }
 knotq-import = { path = "desktop/import" }
 knotq-index = { path = "desktop/index" }
 knotq-model = { path = "desktop/model" }

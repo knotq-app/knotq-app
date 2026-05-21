@@ -3084,6 +3084,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "knotq-history"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "chrono",
+]
+
+[[package]]
 name = "knotq-import"
 version = "0.1.0"
 dependencies = [
@@ -3173,6 +3181,7 @@ dependencies = [
  "async-trait",
  "chrono",
  "knotq-commands",
+ "knotq-history",
  "knotq-model",
  "knotq-storage",
  "serde",
