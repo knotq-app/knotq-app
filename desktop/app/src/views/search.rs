@@ -14,7 +14,7 @@ use crate::theme_gpui::{
 impl KnotQApp {
     pub fn open_search(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.close_repeat_popover();
-        self.dismiss_event_popup_without_commit();
+        self.cancel_event_popup_without_commit(cx);
         self.search_open = true;
         self.search_selected_index = 0;
         let input = self.ensure_search_input(window, cx);

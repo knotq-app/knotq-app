@@ -12,6 +12,7 @@ pub const ACTION_MARK_DONE: &str = "knotq.mark_done";
 pub struct NotificationRequest {
     pub id: String,
     pub fire_at: DateTime<Utc>,
+    pub expires_at: Option<DateTime<Utc>>,
     pub title: String,
     pub body: String,
     pub group: Option<String>,
@@ -63,6 +64,7 @@ impl NotificationRequest {
         Self {
             id: id.into(),
             fire_at,
+            expires_at: None,
             title: title.into(),
             body: body.into(),
             group: None,
@@ -78,6 +80,11 @@ impl NotificationRequest {
 
     pub fn category(mut self, category: impl Into<String>) -> Self {
         self.category = Some(category.into());
+        self
+    }
+
+    pub fn expires_at(mut self, expires_at: Option<DateTime<Utc>>) -> Self {
+        self.expires_at = expires_at;
         self
     }
 
@@ -264,12 +271,23 @@ mod tests {
                 .user_info("scheme_id", "scheme");
 
         assert_eq!(request.id, "id");
+        assert_eq!(request.expires_at, None);
         assert_eq!(request.group.as_deref(), Some("group"));
         assert_eq!(request.category.as_deref(), Some("category"));
         assert_eq!(
             request.user_info.get("scheme_id").map(String::as_str),
             Some("scheme")
         );
+    }
+
+    #[test]
+    fn request_builder_sets_expiration() {
+        let fire_at = Utc::now() + Duration::hours(1);
+        let expires_at = fire_at + Duration::hours(2);
+        let request =
+            NotificationRequest::new("id", fire_at, "title", "body").expires_at(Some(expires_at));
+
+        assert_eq!(request.expires_at, Some(expires_at));
     }
 
     #[test]

@@ -294,3 +294,4 @@ jobs:
             dist/KnotQ-*.zip
             dist/KnotQ-*.msix
             dist/KnotQ-*.tar.gz
+            dist/install.sh

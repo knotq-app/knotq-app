@@ -101,6 +101,63 @@ pub fn notification_keys_for_item_with_expander(
     out
 }
 
+/// Compute delivered event notification identifiers that should no longer be
+/// visible because the event occurrence has passed its end time.
+pub fn expired_event_notification_keys(
+    workspace: &Workspace,
+    lead_times: NotificationLeadTimes,
+    now: DateTime<Utc>,
+) -> Vec<String> {
+    expired_event_notification_keys_with_expander(workspace, lead_times, now, &DefaultExpander)
+}
+
+pub fn expired_event_notification_keys_with_expander(
+    workspace: &Workspace,
+    lead_times: NotificationLeadTimes,
+    now: DateTime<Utc>,
+    expander: &dyn OccurrenceExpander,
+) -> Vec<String> {
+    let mut out = Vec::new();
+    let range = DateRange {
+        start: now - Duration::days(370),
+        end: now + Duration::seconds(1),
+    };
+
+    for scheme in workspace.iter_schemes() {
+        for item in &scheme.items {
+            for occurrence in expander.expand(item, range) {
+                if NotificationKind::from_item(occurrence.kind) != Some(NotificationKind::Event) {
+                    continue;
+                }
+                if notification_expires_at(NotificationKind::Event, &occurrence)
+                    .is_none_or(|expires_at| expires_at > now)
+                {
+                    continue;
+                }
+                let Some(fire_at) =
+                    notification_fire_at(NotificationKind::Event, &occurrence, lead_times)
+                else {
+                    continue;
+                };
+                if fire_at > now {
+                    continue;
+                }
+                out.push(ScheduledNotification::make_key(
+                    scheme.id,
+                    item.id,
+                    &occurrence.id,
+                    NotificationKind::Event,
+                    fire_at,
+                ));
+            }
+        }
+    }
+
+    out.sort();
+    out.dedup();
+    out
+}
+
 fn expansion_range(
     lead_times: NotificationLeadTimes,
     from: DateTime<Utc>,
@@ -135,27 +192,50 @@ fn scheduled_notification(
     if skip_completed && occurrence.state.is_done() {
         return None;
     }
-    let trigger = trigger_at(kind, &occurrence)?;
-    let lead = occurrence
-        .state
-        .notification_offset_secs
-        .map(Duration::seconds)
-        .unwrap_or_else(|| lead_offset_for_kind(kind, lead_times));
-    let fire_at = trigger - lead;
+    let fire_at = notification_fire_at(kind, &occurrence, lead_times)?;
+    let expires_at = notification_expires_at(kind, &occurrence);
+    if expires_at.is_some_and(|expires_at| expires_at <= fire_at) {
+        return None;
+    }
     if fire_at < from || fire_at >= to {
         return None;
     }
     Some(ScheduledNotification {
         key: ScheduledNotification::make_key(scheme_id, item.id, &occurrence.id, kind, fire_at),
         fire_at,
+        expires_at,
         title: title_for(item),
         body: body_for(kind, occurrence.start, occurrence.end),
         kind,
-        trigger_at: trigger,
+        trigger_at: trigger_at(kind, &occurrence)?,
         scheme_id,
         item_id: item.id,
         occurrence: occurrence.id,
     })
+}
+
+fn notification_fire_at(
+    kind: NotificationKind,
+    occurrence: &Occurrence,
+    lead_times: NotificationLeadTimes,
+) -> Option<DateTime<Utc>> {
+    let trigger = trigger_at(kind, occurrence)?;
+    let lead = occurrence
+        .state
+        .notification_offset_secs
+        .map(Duration::seconds)
+        .unwrap_or_else(|| lead_offset_for_kind(kind, lead_times));
+    Some(trigger - lead)
+}
+
+fn notification_expires_at(
+    kind: NotificationKind,
+    occurrence: &Occurrence,
+) -> Option<DateTime<Utc>> {
+    match kind {
+        NotificationKind::Event => occurrence.end,
+        NotificationKind::Reminder | NotificationKind::Assignment => None,
+    }
 }
 
 fn trigger_at(kind: NotificationKind, occurrence: &Occurrence) -> Option<DateTime<Utc>> {

@@ -6,9 +6,17 @@ KnotQ is a generalized productivity app that combines a structured text editor w
 
 ### Core Concepts
 
-**Schemes** are the fundamental unit of KnotQ. Each scheme is a plain text file rendered as a hierarchical checkbox/bullet list — similar to Google Docs' `Cmd+Shift+9` list style. The editor is *line-major*: each line is an independently actionable task.
+**Schemes** are the fundamental unit of KnotQ. Each scheme is a plain text file rendered as a hierarchical list — similar to Google Docs' `Cmd+Shift+9` list style. The editor is *line-major*: each line is an independently actionable task.
 
-**Folders** organize schemes hierarchically. The sidebar (modeled after the VSCode file explorer) lets users navigate folders and schemes. 
+**Folders** organize schemes hierarchically. The sidebar (modeled after the VSCode file explorer) lets users navigate folders and schemes.
+
+#### Line Types (markers)
+
+Each line has a marker type:
+- **Blank** — no marker, plain text/heading (`Cmd+1`)
+- **Checkbox** — todo item, can be checked off (`Cmd+2`)
+- **Bullet** — bullet point (`Cmd+3`)
+- **Numbered** — numbered list item (`Cmd+4`)
 
 #### Task Types (by date attributes)
 
@@ -21,11 +29,22 @@ Each line/task can have a `start` and/or `end` datetime:
 | ✅ | ❌ | **Reminder** | Yes |
 | ❌ | ❌ | **Procedure** | No — planning only |
 
-Dates are set inline within the scheme editor via a small popover date/time picker (doing command s on a task reveals a calendar popover showing `Start 2023/09/24 at 13:47` in .claude-context/scheme-view.png).
+Dates are set via:
+- **`Cmd+S`** → open/toggle start date picker
+- **`Cmd+E`** → open/toggle end date picker
+- **Click on calendar** → creates a reminder (start only) on that line
+- **Shift+click on calendar** → creates an assignment (end only)
+- **Drag on calendar** → creates an event (start + end)
+
+#### Text Formatting
+
+- **`Cmd+B`** → bold
+- **`Cmd+I`** → italic
+- **`Cmd+J`** → heading
 
 #### Nested Tasks & Details
 
-Child bullet points (indented lines under a task) serve as detail/description for their parent. When viewing an event on the calendar, these nested children are shown as the event's body/details.
+Child lines (indented under a task) serve as detail/description for their parent. When viewing an event on the calendar, nested children are shown as the event's body/details.
 
 ---
 
@@ -33,77 +52,103 @@ Child bullet points (indented lines under a task) serve as detail/description fo
 
 #### Sidebar (all pages)
 - Hierarchical folder + scheme navigator (VSCode-style)
-- Color-coded scheme labels that are configurable (e.g., Summer = orange, Chores = yellow, Research = green, Homework = blue, Classes = purple)
+- Color-coded scheme labels (configurable per scheme)
 - "New" button at the bottom to create a scheme or folder
 
 #### Scheme Editor Page
-- Full-width checkbox/bullet list — edit directly inline
-- No heavy markup: only `*bold*` and possibly fenced code blocks
-- Inline date picker popover to set start/end on any line
-- `#channel` syntax to link to another scheme or a specific task within one
-- Be able to reorder / move tasks? Or maybe copy paste is enough for that
+- Full-width list editor — edit directly inline
+- Formatting: bold, italic, heading
+- Inline date picker popovers to set start/end on any line
+- Right-click context menu for additional actions
 
-#### Calendar Page
-- Week-view grid (resembling Google Calendar) with time slots on the Y-axis and days on the X-axis
+#### Calendar Page (View::Union)
+- Week-view grid with time slots on Y-axis and days on X-axis
 - Events rendered as colored blocks corresponding to their scheme's color
-- **Right panel**: Upcoming assignments, reminders, and events listed chronologically; also shows past-due items
+- **Upcoming panel**: Upcoming assignments, reminders, and events; also shows past-due items
 - Events on days outside the current week are visible but visually distinguished
-- Actions: create, filter, view, and "go to definition" (jump to the originating line in the scheme)
-- The right panel is visible on *all* pages, not just Calendar
+- Click any event to jump to its source line in the scheme editor ("go to definition")
+- The upcoming panel is visible on all pages
 
-> .claude-context/union-view.png shows the Calendar page: the week of Sep 24–30 with MATH 15 (purple, Mon/Wed/Fri 11:30–12:30), laundry (yellow, Sun 14:00), Visit friends (red, Sun 18:00), Meet Professor (green, Thu 17:00), and Essay 1 + Math HW due Thu 23:00. The left panel lists upcoming assignments and a "Chores / laundry" reminder.
+> .claude-context/union-view.png shows the Calendar page.
+> .claude-context/scheme-view.png shows the Scheme Editor with date-picker popover open.
+> .claude-context/many.png shows calendar with many overlapping events (merged into bubbles).
 
-> .claude-context/scheme-view.png shows the Scheme Editor for the "Research" scheme: a nested checkbox list for a research paper (ELSAN — Ensemble Linear Sum Assignment Network). A date-picker popover is open on the "Meet Professor" task, showing `Start 2023/09/24 at 13:47` with a mini month calendar.
-> .claude-context/many.png Shows calendar in the case of many events, highlighting how you should "merge" events into a single bubble ideally if they overlap and it's hard to visually separate. It also shows how all of the different calendar types look.
-
-#### Search Page
-- Triggered via `Cmd+K` (Apple Spotlight–style)
+#### Search (Cmd+F)
 - Searches across all schemes, tasks, and calendar items
+- Triggered via `Cmd+F`
 
 #### Settings Page
-- Standard app settings
+- Standard app settings (theme, Google Calendar connection, etc.)
 
-#### Nut List (Special Scheme)
-- A built-in, non-editable-in-the-normal-sense scheme
-- Prompts the user each day to list out what they want to accomplish *tomorrow*
-- Encourages intentional daily planning — not a normal scheme, has its own dedicated UI flow
+#### Daily Queue (View::DailyQueue, shown as "Daily")
+- A special built-in view — not an ordinary scheme
+- Creates a new dated scheme for each day (named "Daily YYYY-MM-DD")
+- Incomplete items carry over automatically from the previous day
+- Intended for quick notes, brainstorming, and listing tasks to complete that day
+- Has its own dedicated UI; users navigate by day
 
 ---
 
-### Features & Quality of Life
+### Keyboard Shortcuts (editor)
 
-- **`#channel` linking**: type `#schemeName` or `#schemeName/taskLine` to cross-link
-- **Priorities**: ability to set priority levels on tasks (planned)
-- **Repeating events**: recurrence rules, similar to Google Calendar
-- **Special-cased events**: exceptions/overrides on recurring events
-- **Google Calendar integration**: a scheme can be a read/write mirror of a Google Calendar
-- **Invite people to events** (stretch goal)
-- **Shared schemes**: share a folder or scheme with collaborators
-- **Assign people to tasks** (paid tier)
-- **Cloud sync** (paid tier)
-- **Schedule sharing**: share your free/busy view à la Google Calendar
+| Shortcut | Action |
+|---|---|
+| `Cmd+S` | Toggle start date (open date picker) |
+| `Cmd+E` | Toggle end date |
+| `Cmd+Shift+S` | Remove start date |
+| `Cmd+Shift+E` | Remove end date |
+| `Cmd+R` | Toggle repeat rule |
+| `Cmd+L` | Toggle status (complete/incomplete) |
+| `Cmd+B` | Toggle bold |
+| `Cmd+I` | Toggle italic |
+| `Cmd+J` | Toggle heading |
+| `Cmd+1` | Set line type: blank |
+| `Cmd+2` | Set line type: checkbox |
+| `Cmd+3` | Set line type: bullet |
+| `Cmd+4` | Set line type: numbered |
+| `Tab` | Indent line |
+| `Shift+Tab` | Unindent line |
+| `Cmd+F` | Search |
+
+All `Cmd+*` shortcuts also work with `Ctrl+*` on Windows/Linux.
+
+---
+
+### Features (implemented vs. planned)
+
+**Implemented:**
+- Scheme editor with line types, formatting, indentation
+- Date picker (start/end), repeating events with rrule
+- Calendar view (week grid, event/assignment/reminder/procedure rendering)
+- Daily Queue (per-day notes + carryover)
+- Google Calendar integration (read-only)
+- Search (Cmd+F)
+- Notifications (macOS + Windows)
+- Multiple themes (dark/light)
+
+**Planned / in progress:**
+- `#channel` cross-linking — index is built in code but not yet exposed in the editor UI
+- Priorities on tasks
+- Cloud sync (paid tier)
+- Shared schemes / assign people (paid tier)
+- Schedule sharing (free/busy view)
 
 ---
 
 ### Backend
 
 - **Language/Framework**: Rust + Axum
-- Functionality is primarily CRUD; complexity is expected to be low
+- Primarily CRUD; complexity expected to be low
 - Potential challenge: **synchronization / CRDT** for real-time collaborative editing and multi-device sync
-
-API
-- Authentication (for now sign in with something...?)
-- Retrieve Schemes, mostly want to retrieve changes
-- Search Query
-- Send Changes (only really necessary for cloud sync??) Initial version is maybe local only?
+- Initial version is local-only (no cloud)
 
 ### Frontend
 
 | Platform | Stack |
 |---|---|
-| Web | Svelte + TypeScript |
-| Desktop | GPUI / Zed
-| iOS / Android | React Native |
+| Desktop | GPUI (Zed's UI framework) |
+| Web (future) | Svelte + TypeScript |
+| Mobile (future) | React Native |
 
 ---
 

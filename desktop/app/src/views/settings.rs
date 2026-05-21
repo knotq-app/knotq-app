@@ -1,3 +1,4 @@
+use chrono::{Duration, Utc};
 use gpui::prelude::*;
 use gpui::{div, px, ClickEvent, Context, IntoElement};
 use gpui_component::scroll::ScrollableElement as _;
@@ -15,33 +16,17 @@ impl KnotQApp {
         let themes = all_themes();
 
         let theme_rows = [
-            (
-                "System",
-                "Follow the current macOS appearance.",
-                ThemeMode::System,
-                self.theme(),
-            ),
-            (
-                "Dark",
-                "Use the low-contrast dark workspace.",
-                ThemeMode::Dark,
-                themes[0],
-            ),
-            (
-                "Light",
-                "Use the warm parchment workspace.",
-                ThemeMode::Light,
-                themes[1],
-            ),
+            ("System", ThemeMode::System, self.theme()),
+            ("Dark", ThemeMode::Dark, themes[0]),
+            ("Light", ThemeMode::Light, themes[1]),
         ]
         .into_iter()
         .enumerate()
-        .map(|(idx, (label, detail, mode, theme))| {
+        .map(|(idx, (label, mode, theme))| {
             let is_active = self.theme_mode == mode;
             choice_row(
                 ("theme", idx),
                 label,
-                detail,
                 is_active,
                 theme_swatch(theme, t),
                 t,
@@ -52,25 +37,16 @@ impl KnotQApp {
         .collect::<Vec<_>>();
 
         let calendar_rows = [
-            (
-                "Week",
-                "Show a time-grid for the current week.",
-                CalendarViewMode::Week,
-            ),
-            (
-                "Month",
-                "Show a compact month overview.",
-                CalendarViewMode::Month,
-            ),
+            ("Week", CalendarViewMode::Week),
+            ("Month", CalendarViewMode::Month),
         ]
         .into_iter()
         .enumerate()
-        .map(|(idx, (label, detail, mode))| {
+        .map(|(idx, (label, mode))| {
             let is_active = self.calendar_view == mode;
             choice_row(
                 ("calendar-setting", idx),
                 label,
-                detail,
                 is_active,
                 active_marker(is_active, t),
                 t,
@@ -81,17 +57,16 @@ impl KnotQApp {
         .collect::<Vec<_>>();
 
         let time_rows = [
-            ("12-hour", "", TimeFormat::TwelveHour),
-            ("24-hour", "", TimeFormat::TwentyFourHour),
+            ("12-hour", TimeFormat::TwelveHour),
+            ("24-hour", TimeFormat::TwentyFourHour),
         ]
         .into_iter()
         .enumerate()
-        .map(|(idx, (label, detail, format))| {
+        .map(|(idx, (label, format))| {
             let is_active = self.time_format == format;
             choice_row(
                 ("time-format-setting", idx),
                 label,
-                detail,
                 is_active,
                 active_marker(is_active, t),
                 t,
@@ -161,46 +136,23 @@ impl KnotQApp {
             .bg(token_hsla(t.bg_app))
             .overflow_y_scrollbar()
             .child(
-                div()
-                    .w_full()
-                    .max_w(px(700.0))
-                    .px(px(24.0))
-                    .pt(px(22.0))
-                    .pb(px(34.0))
-                    .flex()
-                    .flex_col()
-                    .gap(px(16.0))
-                    .child(settings_header(t))
-                    .child(settings_section(
-                        "Appearance",
-                        "Choose how the workspace should look.",
-                        theme_rows,
-                        t,
-                    ))
-                    .child(settings_section(
-                        "Calendar",
-                        "Control the default calendar presentation.",
-                        calendar_rows,
-                        t,
-                    ))
-                    .child(settings_section(
-                        "Time",
-                        "Choose how times are displayed across events and reminders.",
-                        time_rows,
-                        t,
-                    ))
-                    .child(settings_section(
-                        "Notifications",
-                        "Set default lead times for scheduled items.",
-                        notification_rows,
-                        t,
-                    ))
-                    .child(settings_section(
-                        "Version History",
-                        "Restore an earlier saved workspace.",
-                        history_rows,
-                        t,
-                    )),
+                div().w_full().flex().justify_center().child(
+                    div()
+                        .w_full()
+                        .max_w(px(560.0))
+                        .px(px(18.0))
+                        .pt(px(14.0))
+                        .pb(px(22.0))
+                        .flex()
+                        .flex_col()
+                        .gap(px(10.0))
+                        .child(settings_header(t))
+                        .child(settings_section("Appearance", theme_rows, t))
+                        .child(settings_section("Calendar", calendar_rows, t))
+                        .child(settings_section("Time", time_rows, t))
+                        .child(settings_section("Notifications", notification_rows, t))
+                        .child(settings_section("Version History", history_rows, t)),
+                ),
             )
             .into_any_element()
     }
@@ -245,28 +197,19 @@ fn settings_header(t: UiTheme) -> gpui::AnyElement {
     div()
         .flex()
         .flex_col()
-        .gap(px(5.0))
-        .pb(px(2.0))
+        .pb(px(1.0))
         .child(
             div()
-                .text_size(px(22.0))
+                .text_size(px(18.0))
                 .font_weight(gpui::FontWeight::SEMIBOLD)
                 .text_color(token_hsla(t.text_primary))
                 .child("Settings"),
-        )
-        .child(
-            div()
-                .text_size(px(13.0))
-                .line_height(px(18.0))
-                .text_color(token_hsla(t.text_soft))
-                .child("Tune the workspace, calendar, time display, and notification defaults."),
         )
         .into_any_element()
 }
 
 fn settings_section(
     title: &'static str,
-    detail: &'static str,
     rows: Vec<gpui::AnyElement>,
     t: UiTheme,
 ) -> gpui::AnyElement {
@@ -279,27 +222,16 @@ fn settings_section(
         .bg(token_rgba(t.bg_modal))
         .child(
             div()
-                .px(px(16.0))
-                .pt(px(13.0))
-                .pb(px(11.0))
+                .px(px(12.0))
+                .py(px(8.0))
                 .border_b_1()
                 .border_color(token_rgba(t.divider_soft))
-                .flex()
-                .flex_col()
-                .gap(px(3.0))
                 .child(
                     div()
-                        .text_size(px(14.0))
+                        .text_size(px(13.0))
                         .font_weight(gpui::FontWeight::SEMIBOLD)
                         .text_color(token_hsla(t.text_primary))
                         .child(title),
-                )
-                .child(
-                    div()
-                        .text_size(px(12.0))
-                        .line_height(px(16.0))
-                        .text_color(token_hsla(t.text_soft))
-                        .child(detail),
                 ),
         )
         .child(div().flex().flex_col().children(rows))
@@ -309,7 +241,6 @@ fn settings_section(
 fn choice_row<F>(
     id: (&'static str, usize),
     label: &'static str,
-    detail: &'static str,
     is_active: bool,
     marker: gpui::AnyElement,
     t: UiTheme,
@@ -321,13 +252,13 @@ where
 {
     div()
         .id(id)
-        .px(px(16.0))
-        .py(px(10.0))
-        .min_h(px(if detail.is_empty() { 46.0 } else { 54.0 }))
+        .px(px(12.0))
+        .py(px(6.0))
+        .min_h(px(36.0))
         .flex()
         .items_center()
         .justify_between()
-        .gap(px(14.0))
+        .gap(px(10.0))
         .border_b_1()
         .border_color(token_rgba(t.divider_tiny))
         .cursor_pointer()
@@ -346,31 +277,16 @@ where
             div()
                 .flex()
                 .items_center()
-                .gap(px(11.0))
+                .gap(px(8.0))
                 .min_w_0()
                 .child(marker)
                 .child(
                     div()
                         .min_w_0()
-                        .flex()
-                        .flex_col()
-                        .gap(px(2.0))
-                        .child(
-                            div()
-                                .text_size(px(13.0))
-                                .font_weight(gpui::FontWeight::SEMIBOLD)
-                                .text_color(token_hsla(t.text_primary))
-                                .child(label),
-                        )
-                        .when(!detail.is_empty(), move |s| {
-                            s.child(
-                                div()
-                                    .text_size(px(12.0))
-                                    .line_height(px(16.0))
-                                    .text_color(token_hsla(t.text_soft))
-                                    .child(detail),
-                            )
-                        }),
+                        .text_size(px(13.0))
+                        .font_weight(gpui::FontWeight::SEMIBOLD)
+                        .text_color(token_hsla(t.text_primary))
+                        .child(label),
                 ),
         )
         .child(active_dot(is_active, t))
@@ -388,7 +304,6 @@ fn notification_choice_row(
     choice_row(
         id,
         label,
-        "",
         is_active,
         active_marker(is_active, t),
         t,
@@ -405,15 +320,16 @@ fn history_snapshot_row(
 ) -> gpui::AnyElement {
     let snapshot_id = snapshot.id.clone();
     let short_id = snapshot.id.chars().take(8).collect::<String>();
+    let detail = snapshot_detail(&snapshot, short_id);
     div()
         .id(("version-history", idx))
-        .px(px(16.0))
-        .py(px(10.0))
-        .min_h(px(52.0))
+        .px(px(12.0))
+        .py(px(7.0))
+        .min_h(px(44.0))
         .flex()
         .items_center()
         .justify_between()
-        .gap(px(14.0))
+        .gap(px(10.0))
         .border_b_1()
         .border_color(token_rgba(t.divider_tiny))
         .cursor_pointer()
@@ -428,12 +344,12 @@ fn history_snapshot_row(
             div()
                 .flex()
                 .items_center()
-                .gap(px(11.0))
+                .gap(px(8.0))
                 .min_w_0()
                 .child(
                     div()
-                        .w(px(24.0))
-                        .h(px(24.0))
+                        .w(px(20.0))
+                        .h(px(20.0))
                         .flex_shrink_0()
                         .rounded(px(5.0))
                         .border_1()
@@ -455,18 +371,18 @@ fn history_snapshot_row(
                         )
                         .child(
                             div()
-                                .text_size(px(12.0))
-                                .line_height(px(16.0))
+                                .text_size(px(11.0))
+                                .line_height(px(14.0))
                                 .text_color(token_hsla(t.text_soft))
-                                .child(short_id),
+                                .child(detail),
                         ),
                 ),
         )
         .child(
             div()
                 .flex_shrink_0()
-                .px(px(9.0))
-                .py(px(4.0))
+                .px(px(7.0))
+                .py(px(3.0))
                 .rounded(px(5.0))
                 .border_1()
                 .border_color(token_rgba(t.border_main))
@@ -479,11 +395,20 @@ fn history_snapshot_row(
         .into_any_element()
 }
 
+fn snapshot_detail(snapshot: &WorkspaceSnapshot, short_id: String) -> String {
+    let age = Utc::now().signed_duration_since(snapshot.timestamp);
+    if age >= Duration::zero() && age <= Duration::hours(3) {
+        let minutes = age.num_minutes();
+        return format!("{minutes} min ago - {short_id}");
+    }
+    short_id
+}
+
 fn settings_subheading(label: &'static str, t: UiTheme) -> gpui::AnyElement {
     div()
-        .px(px(16.0))
-        .pt(px(13.0))
-        .pb(px(6.0))
+        .px(px(12.0))
+        .pt(px(9.0))
+        .pb(px(4.0))
         .text_size(px(11.0))
         .font_weight(gpui::FontWeight::SEMIBOLD)
         .text_color(token_hsla(t.text_dim))
@@ -493,10 +418,10 @@ fn settings_subheading(label: &'static str, t: UiTheme) -> gpui::AnyElement {
 
 fn settings_message(message: String, is_error: bool, t: UiTheme) -> gpui::AnyElement {
     div()
-        .mx(px(12.0))
-        .mt(px(12.0))
-        .px(px(12.0))
-        .py(px(8.0))
+        .mx(px(10.0))
+        .mt(px(8.0))
+        .px(px(10.0))
+        .py(px(6.0))
         .rounded(px(6.0))
         .border_1()
         .border_color(token_rgba(if is_error {
@@ -521,8 +446,8 @@ fn settings_message(message: String, is_error: bool, t: UiTheme) -> gpui::AnyEle
 
 fn theme_swatch(theme: UiTheme, t: UiTheme) -> gpui::AnyElement {
     div()
-        .w(px(24.0))
-        .h(px(24.0))
+        .w(px(20.0))
+        .h(px(20.0))
         .rounded(px(5.0))
         .border_1()
         .border_color(token_rgba(t.border_main))
@@ -530,7 +455,7 @@ fn theme_swatch(theme: UiTheme, t: UiTheme) -> gpui::AnyElement {
         .child(
             div()
                 .w_full()
-                .h(px(8.0))
+                .h(px(7.0))
                 .rounded(px(4.0))
                 .bg(token_rgba(theme.bg_sidebar)),
         )
@@ -539,8 +464,8 @@ fn theme_swatch(theme: UiTheme, t: UiTheme) -> gpui::AnyElement {
 
 fn active_marker(is_active: bool, t: UiTheme) -> gpui::AnyElement {
     div()
-        .w(px(24.0))
-        .h(px(24.0))
+        .w(px(20.0))
+        .h(px(20.0))
         .flex()
         .items_center()
         .justify_center()
@@ -566,8 +491,8 @@ fn active_marker(is_active: bool, t: UiTheme) -> gpui::AnyElement {
 
 fn active_dot(is_active: bool, t: UiTheme) -> gpui::AnyElement {
     div()
-        .w(px(11.0))
-        .h(px(11.0))
+        .w(px(9.0))
+        .h(px(9.0))
         .flex_shrink_0()
         .rounded(px(99.0))
         .border_1()

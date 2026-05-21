@@ -3,8 +3,8 @@ use knotq_date_util::DateRange;
 use knotq_model::{Item, ItemKind, NodeRef, Occurrence, OccurrenceId, Scheme, Workspace};
 use knotq_notifications::{
     compute_due_notifications, compute_due_notifications_with_expander,
-    compute_due_notifications_with_lead_times, notification_keys_for_item, NotificationKind,
-    NotificationLeadTimes,
+    compute_due_notifications_with_lead_times, expired_event_notification_keys,
+    notification_keys_for_item, NotificationKind, NotificationLeadTimes,
 };
 use knotq_rrule::OccurrenceExpander;
 
@@ -23,8 +23,10 @@ fn event_notifications_fire_at_start_time() {
     assert_eq!(notes.len(), 1);
     assert_eq!(notes[0].kind, NotificationKind::Event);
     assert_eq!(notes[0].fire_at, start);
+    assert_eq!(notes[0].expires_at, Some(end));
     assert_eq!(notes[0].title, "Class");
-    assert!(notes[0].body.starts_with("From "));
+    assert!(!notes[0].body.starts_with("From "));
+    assert!(notes[0].body.contains(" to "));
 }
 
 #[test]
@@ -45,7 +47,42 @@ fn assignment_notification_uses_default_due_lead_time() {
 
     assert_eq!(notes.len(), 1);
     assert_eq!(notes[0].title, "Essay");
+    assert_eq!(notes[0].expires_at, None);
     assert!(notes[0].body.starts_with("Due "));
+}
+
+#[test]
+fn event_notifications_do_not_fire_after_event_end() {
+    let start = Utc.with_ymd_and_hms(2026, 5, 10, 12, 0, 0).unwrap();
+    let end = Utc.with_ymd_and_hms(2026, 5, 10, 13, 0, 0).unwrap();
+    let mut item = Item::new("Class").with_start(start).with_end(end);
+    item.state[0].state.notification_offset_secs = Some(-2 * 60 * 60);
+    let workspace = workspace_with_item(item);
+
+    let notes = compute_due_notifications(
+        &workspace,
+        Utc.with_ymd_and_hms(2026, 5, 10, 13, 59, 0).unwrap(),
+        Utc.with_ymd_and_hms(2026, 5, 10, 14, 1, 0).unwrap(),
+    );
+
+    assert!(notes.is_empty());
+}
+
+#[test]
+fn expired_event_notification_keys_are_available_after_event_end() {
+    let start = Utc.with_ymd_and_hms(2026, 5, 10, 12, 0, 0).unwrap();
+    let end = Utc.with_ymd_and_hms(2026, 5, 10, 13, 0, 0).unwrap();
+    let (workspace, scheme_id) =
+        workspace_and_scheme_with_item(Item::new("Class").with_start(start).with_end(end));
+
+    let keys = expired_event_notification_keys(
+        &workspace,
+        NotificationLeadTimes::default(),
+        end + Duration::seconds(1),
+    );
+
+    assert_eq!(keys.len(), 1);
+    assert!(keys[0].contains(&scheme_id.0.to_string()));
 }
 
 #[test]

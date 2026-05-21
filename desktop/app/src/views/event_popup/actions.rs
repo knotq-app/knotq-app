@@ -187,6 +187,12 @@ impl KnotQApp {
         self.event_popup_title_subscription = None;
         self.close_date_popover();
 
+        if popup.created_from_calendar {
+            self.delete_created_calendar_popup_item(popup, cx);
+            cx.notify();
+            return;
+        }
+
         let Some(scheme) = self.workspace.scheme(popup.scheme_id) else {
             return;
         };

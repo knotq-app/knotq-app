@@ -64,6 +64,44 @@ impl KnotQApp {
         }
     }
 
+    pub(crate) fn cancel_event_popup_without_commit(&mut self, cx: &mut Context<Self>) -> bool {
+        self.close_date_popover();
+        let Some(popup) = self.event_popup.take() else {
+            return false;
+        };
+        self.event_popup_title_subscription = None;
+        if popup.created_from_calendar {
+            self.delete_created_calendar_popup_item(popup, cx);
+        }
+        true
+    }
+
+    pub(crate) fn delete_created_calendar_popup_item(
+        &mut self,
+        popup: EventPopup,
+        cx: &mut Context<Self>,
+    ) {
+        let item_exists = self
+            .workspace
+            .scheme(popup.scheme_id)
+            .and_then(|scheme| scheme.item(popup.item_id))
+            .is_some();
+        if !item_exists {
+            self.discard_pending_creation_undo(popup.item_id);
+            return;
+        }
+        if self.workspace.is_scheme_read_only(popup.scheme_id) {
+            return;
+        }
+        let command = Command::DeleteItem {
+            scheme: popup.scheme_id,
+            item: popup.item_id,
+        };
+        if self.apply_without_pushing_undo(command, cx).is_some() {
+            self.discard_pending_creation_undo(popup.item_id);
+        }
+    }
+
     pub(crate) fn commit_event_popup_with_scope(
         &mut self,
         scope: RepeatScope,
@@ -256,8 +294,8 @@ impl KnotQApp {
                 self.update_event_popup_title_draft(value, cx);
             }
             SingleLineEditorEvent::Cancel => {
-                self.dismiss_event_popup_without_commit();
-                self.event_popup_title_subscription = None;
+                self.cancel_event_popup_without_commit(cx);
+                self.focus_app_root(window);
                 cx.notify();
             }
             SingleLineEditorEvent::Focus => {}

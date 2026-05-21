@@ -309,7 +309,13 @@ async fn refresh_os_notifications(weak: &gpui::WeakEntity<KnotQApp>, cx: &mut gp
         .background_executor()
         .spawn(async move {
             let update = crate::notifications::recompute_pending(&workspace, defaults);
-            crate::notifications::schedule_os_notifications(&update.requests)
+            let schedule_error = crate::notifications::schedule_os_notifications(&update.requests);
+            let cleanup_error = crate::notifications::clear_expired_event_notifications(
+                &workspace,
+                defaults,
+                Utc::now(),
+            );
+            schedule_error.or(cleanup_error)
         })
         .await;
     let _ = weak.update(cx, |app, cx| {
@@ -434,7 +440,13 @@ impl KnotQApp {
 
         let update =
             crate::notifications::recompute_pending(&self.workspace, self.notification_defaults);
-        if let Some(err) = crate::notifications::schedule_os_notifications(&update.requests) {
+        let schedule_error = crate::notifications::schedule_os_notifications(&update.requests);
+        let cleanup_error = crate::notifications::clear_expired_event_notifications(
+            &self.workspace,
+            self.notification_defaults,
+            Utc::now(),
+        );
+        if let Some(err) = schedule_error.or(cleanup_error) {
             crate::notifications::notif_log(&format!(
                 "shutdown OS notification schedule flush failed: {err}"
             ));
@@ -459,7 +471,15 @@ impl KnotQApp {
     }
 
     pub(crate) fn run_due_timeline_jobs(&mut self, cx: &mut Context<Self>) {
-        self.complete_past_events(Utc::now(), cx);
+        let now = Utc::now();
+        self.complete_past_events(now, cx);
+        if let Some(err) = crate::notifications::clear_expired_event_notifications(
+            &self.workspace,
+            self.notification_defaults,
+            now,
+        ) {
+            self.notification_error = Some(err);
+        }
         self.sync_daily_queue_day_boundary(cx);
     }
 }

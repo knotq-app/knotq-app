@@ -60,8 +60,7 @@ impl KnotQApp {
                 return true;
             }
         }
-        if self.event_popup.take().is_some() {
-            self.event_popup_title_subscription = None;
+        if self.cancel_event_popup_without_commit(cx) {
             self.focus_app_root(window);
             cx.notify();
             return true;

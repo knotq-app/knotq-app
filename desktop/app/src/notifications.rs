@@ -3,8 +3,8 @@ use gpui::Context;
 use knotq_commands::Command;
 use knotq_model::{Item, ItemId, ItemKind, OccurrenceId, Scheme, SchemeId, Workspace};
 use knotq_notifications::{
-    compute_due_notifications_with_lead_times, notification_keys_for_item, NotificationLeadTimes,
-    ScheduledNotification,
+    compute_due_notifications_with_lead_times, expired_event_notification_keys,
+    notification_keys_for_item, NotificationLeadTimes, ScheduledNotification,
 };
 use knotq_notifications::{
     take_notification_responses, AuthorizationStatus, NotificationRequest, NotificationResponse,
@@ -182,6 +182,42 @@ pub fn schedule_os_notifications(requests: &[NotificationRequest]) -> Option<Str
     }
 }
 
+pub fn clear_expired_event_notifications(
+    workspace: &Workspace,
+    defaults: NotificationDefaults,
+    now: DateTime<Utc>,
+) -> Option<String> {
+    let mut ids = expired_event_notification_keys(workspace, lead_times(defaults), now)
+        .into_iter()
+        .map(|key| os_notification_id(&key))
+        .collect::<Vec<_>>();
+    #[cfg(target_os = "macos")]
+    ids.extend(prune_expired_schedule_manifest(now));
+    ids.sort();
+    ids.dedup();
+    if ids.is_empty() {
+        return None;
+    }
+
+    let scheduler = NotificationScheduler::new(APP_ID);
+    match scheduler.remove_delivered(&ids) {
+        Ok(()) => {
+            notif_log(&format!(
+                "OS removed {} expired delivered event notification(s)",
+                ids.len()
+            ));
+            None
+        }
+        Err(err) => {
+            let msg = format!("{err}");
+            notif_log(&format!(
+                "remove expired delivered event notifications failed: {msg}"
+            ));
+            Some(msg)
+        }
+    }
+}
+
 #[cfg(target_os = "macos")]
 fn schedule_os_notifications_reconciled(requests: &[NotificationRequest]) -> Option<String> {
     let scheduler = NotificationScheduler::new(APP_ID);
@@ -203,7 +239,7 @@ fn schedule_os_notifications_reconciled(requests: &[NotificationRequest]) -> Opt
 
     if first_error.is_none() {
         save_schedule_manifest(ScheduleManifest {
-            requests: desired.fingerprints,
+            requests: desired.manifest_entries,
         });
     }
     notif_log(&format!(
@@ -221,7 +257,7 @@ fn schedule_os_notifications_reconciled(requests: &[NotificationRequest]) -> Opt
 struct DesiredSchedule {
     requests: Vec<NotificationRequest>,
     ids: BTreeSet<String>,
-    fingerprints: BTreeMap<String, String>,
+    manifest_entries: BTreeMap<String, ScheduleManifestRequest>,
 }
 
 #[cfg(target_os = "macos")]
@@ -237,15 +273,15 @@ impl DesiredSchedule {
             .iter()
             .map(|request| request.id.clone())
             .collect::<BTreeSet<_>>();
-        let fingerprints = requests
+        let manifest_entries = requests
             .iter()
-            .map(|request| (request.id.clone(), request_fingerprint(request)))
+            .map(|request| (request.id.clone(), schedule_manifest_entry(request)))
             .collect::<BTreeMap<_, _>>();
 
         Self {
             requests,
             ids,
-            fingerprints,
+            manifest_entries,
         }
     }
 
@@ -280,7 +316,7 @@ impl ScheduleReconciliationPlan {
         let changed = desired
             .ids
             .intersection(pending)
-            .filter(|id| manifest.requests.get(*id) != desired.fingerprints.get(*id))
+            .filter(|id| manifest.requests.get(*id) != desired.manifest_entries.get(*id))
             .cloned()
             .collect::<BTreeSet<_>>();
         let missing = desired
@@ -464,7 +500,14 @@ fn verify_pending_request_ids(
 #[cfg(target_os = "macos")]
 #[derive(Default, Serialize, Deserialize)]
 struct ScheduleManifest {
-    requests: BTreeMap<String, String>,
+    requests: BTreeMap<String, ScheduleManifestRequest>,
+}
+
+#[cfg(target_os = "macos")]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+struct ScheduleManifestRequest {
+    fingerprint: String,
+    expires_at: Option<DateTime<Utc>>,
 }
 
 #[cfg(target_os = "macos")]
@@ -510,7 +553,7 @@ fn save_item_schedule_manifest_entries(requests: &[NotificationRequest]) {
     for request in requests {
         manifest
             .requests
-            .insert(request.id.clone(), request_fingerprint(request));
+            .insert(request.id.clone(), schedule_manifest_entry(request));
     }
     save_schedule_manifest(manifest);
 }
@@ -526,6 +569,10 @@ fn request_fingerprint(request: &NotificationRequest) -> String {
     hasher.update(request.id.as_bytes());
     hasher.update([0]);
     hasher.update(request.fire_at.to_rfc3339().as_bytes());
+    hasher.update([0]);
+    if let Some(expires_at) = request.expires_at {
+        hasher.update(expires_at.to_rfc3339().as_bytes());
+    }
     hasher.update([0]);
     hasher.update(request.title.as_bytes());
     hasher.update([0]);
@@ -549,6 +596,35 @@ fn request_fingerprint(request: &NotificationRequest) -> String {
         "{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}",
         digest[0], digest[1], digest[2], digest[3], digest[4], digest[5], digest[6], digest[7]
     )
+}
+
+#[cfg(target_os = "macos")]
+fn schedule_manifest_entry(request: &NotificationRequest) -> ScheduleManifestRequest {
+    ScheduleManifestRequest {
+        fingerprint: request_fingerprint(request),
+        expires_at: request.expires_at,
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn prune_expired_schedule_manifest(now: DateTime<Utc>) -> Vec<String> {
+    let mut manifest = load_schedule_manifest();
+    let mut expired = Vec::new();
+    manifest.requests.retain(|id, request| {
+        if request
+            .expires_at
+            .is_some_and(|expires_at| expires_at <= now)
+        {
+            expired.push(id.clone());
+            false
+        } else {
+            true
+        }
+    });
+    if !expired.is_empty() {
+        save_schedule_manifest(manifest);
+    }
+    expired
 }
 
 #[cfg(target_os = "macos")]
@@ -743,14 +819,20 @@ pub(crate) fn notification_request(note: ScheduledNotification) -> NotificationR
     let occurrence_json = serde_json::to_string(&note.occurrence).unwrap_or_default();
     let key = note.key;
     let request_id = os_notification_id(&key);
-    NotificationRequest::new(request_id.clone(), note.fire_at, note.title, note.body)
-        .group(request_id)
-        .user_info("notification_key", key)
-        .category(CATEGORY_ID)
-        .user_info("scheme_id", note.scheme_id.0.to_string())
-        .user_info("item_id", note.item_id.0.to_string())
-        .user_info("occurrence_json", occurrence_json)
-        .user_info("trigger_at", note.trigger_at.to_rfc3339())
+    let mut request =
+        NotificationRequest::new(request_id.clone(), note.fire_at, note.title, note.body)
+            .expires_at(note.expires_at)
+            .group(request_id)
+            .user_info("notification_key", key)
+            .category(CATEGORY_ID)
+            .user_info("scheme_id", note.scheme_id.0.to_string())
+            .user_info("item_id", note.item_id.0.to_string())
+            .user_info("occurrence_json", occurrence_json)
+            .user_info("trigger_at", note.trigger_at.to_rfc3339());
+    if let Some(expires_at) = note.expires_at {
+        request = request.user_info("expires_at", expires_at.to_rfc3339());
+    }
+    request
 }
 
 fn os_notification_id(key: &str) -> String {
@@ -862,6 +944,33 @@ mod tests {
     }
 
     #[test]
+    fn notification_request_carries_expiration_metadata() {
+        let fire_at = Utc.with_ymd_and_hms(2026, 5, 21, 12, 0, 0).unwrap();
+        let expires_at = fire_at + Duration::hours(1);
+        let note = ScheduledNotification {
+            key: "key".to_string(),
+            fire_at,
+            expires_at: Some(expires_at),
+            title: "Class".to_string(),
+            body: "From Thu, 12:00 PM to 1:00 PM".to_string(),
+            kind: knotq_notifications::NotificationKind::Event,
+            trigger_at: fire_at,
+            scheme_id: SchemeId::new(),
+            item_id: ItemId::new(),
+            occurrence: OccurrenceId::Single,
+        };
+
+        let request = notification_request(note);
+
+        assert_eq!(request.expires_at, Some(expires_at));
+        let expected_expires_at = expires_at.to_rfc3339();
+        assert_eq!(
+            request.user_info.get("expires_at").map(String::as_str),
+            Some(expected_expires_at.as_str())
+        );
+    }
+
+    #[test]
     fn notification_target_resolves_stale_item_id_from_unique_occurrence() {
         let trigger_at = Utc.with_ymd_and_hms(2026, 5, 20, 9, 0, 0).unwrap();
         let item = Item::new("meeting").with_start(trigger_at);
@@ -935,6 +1044,20 @@ mod tests {
 
     #[cfg(target_os = "macos")]
     #[test]
+    fn schedule_manifest_entry_records_expiration() {
+        let now = Utc::now();
+        let expires_at = now + Duration::hours(1);
+        let request = NotificationRequest::new("knotq-0123456789abcdef", now, "T", "B")
+            .expires_at(Some(expires_at));
+
+        assert_eq!(
+            schedule_manifest_entry(&request).expires_at,
+            Some(expires_at)
+        );
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
     fn reconciliation_plan_keeps_changed_missing_and_stale_separate() {
         let unchanged = "knotq-0000000000000001".to_string();
         let changed = "knotq-0000000000000002".to_string();
@@ -945,16 +1068,16 @@ mod tests {
         let desired = DesiredSchedule {
             requests: Vec::new(),
             ids: BTreeSet::from([unchanged.clone(), changed.clone(), missing.clone()]),
-            fingerprints: BTreeMap::from([
-                (unchanged.clone(), "same".to_string()),
-                (changed.clone(), "new".to_string()),
-                (missing.clone(), "new".to_string()),
+            manifest_entries: BTreeMap::from([
+                (unchanged.clone(), manifest_entry("same")),
+                (changed.clone(), manifest_entry("new")),
+                (missing.clone(), manifest_entry("new")),
             ]),
         };
         let manifest = ScheduleManifest {
             requests: BTreeMap::from([
-                (unchanged.clone(), "same".to_string()),
-                (changed.clone(), "old".to_string()),
+                (unchanged.clone(), manifest_entry("same")),
+                (changed.clone(), manifest_entry("old")),
             ]),
         };
 
@@ -964,5 +1087,13 @@ mod tests {
         assert_eq!(plan.to_schedule, BTreeSet::from([changed, missing]));
         assert_eq!(plan.kept_count, 1);
         assert_eq!(plan.desired_count, 3);
+    }
+
+    #[cfg(target_os = "macos")]
+    fn manifest_entry(fingerprint: &str) -> ScheduleManifestRequest {
+        ScheduleManifestRequest {
+            fingerprint: fingerprint.to_string(),
+            expires_at: None,
+        }
     }
 }

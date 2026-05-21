@@ -106,6 +106,15 @@ impl KnotQApp {
         }
     }
 
+    pub(crate) fn discard_pending_creation_undo(&mut self, item_id: ItemId) -> bool {
+        if !pending_creation_undo_matches(self.undo_stack.back(), item_id) {
+            return false;
+        }
+        self.undo_stack.pop_back();
+        self.undo_navigation_stack.pop_back();
+        true
+    }
+
     /// Like `apply` but coalesces consecutive text edits on the same item into
     /// a single undo entry when they occur within the grouping window.
     pub(crate) fn apply_editor_command(
@@ -347,6 +356,25 @@ impl KnotQApp {
     }
 }
 
+#[cfg(test)]
+fn discard_pending_creation_undo_from_stacks(
+    undo_stack: &mut std::collections::VecDeque<Command>,
+    undo_navigation_stack: &mut std::collections::VecDeque<UndoNavigationEntry>,
+    item_id: ItemId,
+) -> bool {
+    if !pending_creation_undo_matches(undo_stack.back(), item_id) {
+        return false;
+    }
+
+    undo_stack.pop_back();
+    undo_navigation_stack.pop_back();
+    true
+}
+
+fn pending_creation_undo_matches(cmd: Option<&Command>, item_id: ItemId) -> bool {
+    cmd.is_some_and(|cmd| matches!(cmd, Command::DeleteItem { item, .. } if *item == item_id))
+}
+
 fn collect_deleted_items(cmd: &Command, out: &mut Vec<(SchemeId, ItemId)>) {
     match cmd {
         Command::DeleteItem { scheme, item } => out.push((*scheme, *item)),
@@ -545,6 +573,7 @@ mod tests {
     use chrono::Utc;
     use knotq_commands::DateKind;
     use knotq_model::Scheme;
+    use std::collections::VecDeque;
 
     #[test]
     fn text_edits_do_not_wake_background_calendar_workers_for_plain_items() {
@@ -606,6 +635,58 @@ mod tests {
         assert!(signals.timeline);
     }
 
+    #[test]
+    fn discarding_pending_creation_removes_top_delete_undo() {
+        let scheme = SchemeId::new();
+        let item = ItemId::new();
+        let older_item = ItemId::new();
+        let mut undo_stack = VecDeque::from([
+            Command::DeleteItem {
+                scheme,
+                item: older_item,
+            },
+            Command::DeleteItem { scheme, item },
+        ]);
+        let mut navigation_stack = VecDeque::from([undo_nav(), undo_nav()]);
+
+        assert!(discard_pending_creation_undo_from_stacks(
+            &mut undo_stack,
+            &mut navigation_stack,
+            item,
+        ));
+
+        assert_eq!(undo_stack.len(), 1);
+        assert_eq!(navigation_stack.len(), 1);
+        assert!(matches!(
+            undo_stack.back(),
+            Some(Command::DeleteItem { item, .. }) if *item == older_item
+        ));
+    }
+
+    #[test]
+    fn discarding_pending_creation_ignores_non_top_delete_undo() {
+        let scheme = SchemeId::new();
+        let item = ItemId::new();
+        let newer_item = ItemId::new();
+        let mut undo_stack = VecDeque::from([
+            Command::DeleteItem { scheme, item },
+            Command::DeleteItem {
+                scheme,
+                item: newer_item,
+            },
+        ]);
+        let mut navigation_stack = VecDeque::from([undo_nav(), undo_nav()]);
+
+        assert!(!discard_pending_creation_undo_from_stacks(
+            &mut undo_stack,
+            &mut navigation_stack,
+            item,
+        ));
+
+        assert_eq!(undo_stack.len(), 2);
+        assert_eq!(navigation_stack.len(), 2);
+    }
+
     fn workspace_with_item(mut item: Item) -> (Workspace, SchemeId, ItemId) {
         let mut workspace = Workspace::empty();
         let scheme_id = SchemeId::new();
@@ -618,5 +699,17 @@ mod tests {
         workspace.schemes.insert(scheme_id, scheme);
 
         (workspace, scheme_id, item_id)
+    }
+
+    fn undo_nav() -> UndoNavigationEntry {
+        let snapshot = UndoNavigationSnapshot {
+            selection: Default::default(),
+            week_offset: 0,
+            month_offset: 0,
+        };
+        UndoNavigationEntry {
+            before: snapshot.clone(),
+            after: snapshot,
+        }
     }
 }

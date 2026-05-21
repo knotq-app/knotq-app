@@ -52,6 +52,7 @@ pub fn lead_offset_for_kind(kind: NotificationKind, lead_times: NotificationLead
 pub struct ScheduledNotification {
     pub key: String,
     pub fire_at: DateTime<Utc>,
+    pub expires_at: Option<DateTime<Utc>>,
     pub title: String,
     pub body: String,
     pub kind: NotificationKind,
