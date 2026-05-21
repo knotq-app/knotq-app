@@ -265,6 +265,7 @@ impl SchemeEditor {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        let theme_changed = self.theme != theme;
         self.theme = theme;
         let color_changed = self.color_index != scheme.color_index;
         self.color_index = scheme.color_index;
@@ -277,6 +278,7 @@ impl SchemeEditor {
             || !same_rows(&rows, &self.rows)
             || time_format_changed
             || color_changed
+            || theme_changed
         {
             self.text = text;
             self.rows = rows;

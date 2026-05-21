@@ -1,7 +1,7 @@
 use gpui::{App, Bounds, Context, Pixels, Window, WindowAppearance};
 use knotq_storage_json::{
-    save_app_settings, settings_path, AppSettings, CalendarViewMode, NotificationDefaults,
-    SavedWindowPosition, SavedWindowSize, ThemeMode, TimeFormat,
+    save_app_settings, settings_path, AppSettings, CalendarViewMode, CalendarWeekRange,
+    NotificationDefaults, SavedWindowPosition, SavedWindowSize, ThemeMode, TimeFormat,
 };
 
 use super::{KnotQApp, DEFAULT_WINDOW_HEIGHT, DEFAULT_WINDOW_WIDTH, MIN_WINDOW_WIDTH};
@@ -48,6 +48,17 @@ impl KnotQApp {
             self.cal_scroll_initialized = false;
         }
         self.dismiss_event_popup_if_hidden_context();
+        self.save_app_settings();
+        cx.notify();
+    }
+
+    pub fn set_calendar_week_range(&mut self, range: CalendarWeekRange, cx: &mut Context<Self>) {
+        if self.calendar_week_range == range {
+            return;
+        }
+        self.calendar_week_range = range;
+        self.week_offset = 0;
+        self.cal_scroll_initialized = false;
         self.save_app_settings();
         cx.notify();
     }
@@ -105,6 +116,7 @@ impl KnotQApp {
     pub(crate) fn save_app_settings(&self) {
         let settings = AppSettings {
             calendar_view: self.calendar_view,
+            calendar_week_range: self.calendar_week_range,
             theme_mode: self.theme_mode,
             time_format: self.time_format,
             notification_defaults: self.notification_defaults,

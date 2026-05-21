@@ -478,13 +478,12 @@ fn verify_pending_request_ids(
                     .cloned()
                     .collect::<Vec<_>>()
                     .join(", ");
-                let msg = format!(
+                notif_log(&format!(
                     "macOS did not retain {}/{} scheduled notification(s); missing: {preview}",
                     missing.len(),
                     desired.len()
-                );
-                notif_log(&msg);
-                Some(msg)
+                ));
+                None
             }
         }
         Err(err) => {

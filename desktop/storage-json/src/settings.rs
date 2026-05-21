@@ -45,13 +45,17 @@ pub fn save_app_settings(path: &Path, settings: &AppSettings) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use knotq_model::ThemeMode;
+    use knotq_model::{CalendarWeekRange, ThemeMode};
 
     use super::*;
 
     #[test]
     fn app_settings_default_to_dark_theme() {
         assert_eq!(AppSettings::default().theme_mode, ThemeMode::Dark);
+        assert_eq!(
+            AppSettings::default().calendar_week_range,
+            CalendarWeekRange::NextSevenDays
+        );
         assert_eq!(
             AppSettings::default()
                 .notification_defaults

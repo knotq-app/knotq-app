@@ -1,12 +1,13 @@
 use chrono::{NaiveDate, TimeZone, Utc};
 use knotq_model::{
-    AppSettings, CalendarProvider, ExternalItemSource, Folder, FolderId, GoogleOAuthAccount,
-    ImageAssetFormat, Item, ItemMarker, ItemMedia, NodeRef, Scheme, ThemeMode, Workspace,
+    AppSettings, CalendarProvider, CalendarWeekRange, ExternalItemSource, Folder, FolderId,
+    GoogleOAuthAccount, ImageAssetFormat, Item, ItemMarker, ItemMedia, NodeRef, Scheme, ThemeMode,
+    Workspace,
 };
 use knotq_storage_json::{
     load_app_settings, load_daily_queue_scheme, load_daily_queue_schemes_for_calendar_range,
-    load_workspace, load_workspace_with_options, save_app_settings, save_workspace,
-    scheme_path_for_workspace, WorkspaceLoadOptions,
+    load_workspace, load_workspace_with_options, restore_workspace_snapshot, save_app_settings,
+    save_workspace, scheme_path_for_workspace, WorkspaceLoadOptions,
 };
 use std::{fs, path::PathBuf};
 
@@ -28,6 +29,7 @@ fn app_settings_roundtrip_preserves_google_accounts() {
     let dir = unique_temp_dir("knotq-settings-google-account");
     let settings_file = dir.join("settings.json");
     let mut settings = AppSettings::default();
+    settings.calendar_week_range = CalendarWeekRange::CalendarWeek;
     settings.google_accounts.push(GoogleOAuthAccount {
         account_id: "sub-1".to_string(),
         email: Some("user@example.com".to_string()),
@@ -46,6 +48,7 @@ fn app_settings_roundtrip_preserves_google_accounts() {
         loaded.google_accounts[0].email.as_deref(),
         Some("user@example.com")
     );
+    assert_eq!(loaded.calendar_week_range, CalendarWeekRange::CalendarWeek);
 
     let _ = fs::remove_dir_all(dir);
 }
@@ -384,10 +387,67 @@ fn workspace_load_options_load_daily_queue_by_calendar_index() {
 }
 
 #[test]
+fn version_history_restores_saved_workspace_files() {
+    let dir = unique_temp_dir("knotq-storage-history-restore");
+    let workspace_file = dir.join("workspace.json");
+    let mut workspace = Workspace::new();
+    let root = workspace.root;
+    let folder_id = FolderId::new();
+    let mut scheme = Scheme::new("Draft", 3);
+    scheme.items.push(Item::new("first version"));
+    let scheme_id = scheme.id;
+
+    workspace.schemes.insert(scheme_id, scheme);
+    workspace.folders.insert(
+        folder_id,
+        Folder {
+            id: folder_id,
+            name: "Projects".into(),
+            parent: Some(root),
+            children: vec![NodeRef::Scheme(scheme_id)],
+            expanded: true,
+        },
+    );
+    workspace
+        .folders
+        .get_mut(&root)
+        .unwrap()
+        .children
+        .push(NodeRef::Folder(folder_id));
+
+    save_workspace(&workspace_file, &workspace).unwrap();
+    let snapshots = knotq_storage_json::list_workspace_snapshots(&dir).unwrap();
+    assert_eq!(snapshots.len(), 1);
+    let first_snapshot = snapshots[0].id.clone();
+    let first_scheme_path = dir.join("schemes").join("Projects").join("Draft.knotq");
+    assert!(first_scheme_path.exists());
+
+    workspace.schemes.get_mut(&scheme_id).unwrap().items[0].text = "second version".into();
+    save_workspace(&workspace_file, &workspace).unwrap();
+    assert!(fs::read_to_string(&first_scheme_path)
+        .unwrap()
+        .contains("second version"));
+
+    restore_workspace_snapshot(&dir, &first_snapshot).unwrap();
+    let restored = load_workspace(&workspace_file).unwrap().unwrap();
+
+    assert_eq!(restored.schemes[&scheme_id].items[0].text, "first version");
+    assert!(fs::read_to_string(&first_scheme_path)
+        .unwrap()
+        .contains("first version"));
+
+    let _ = fs::remove_dir_all(dir);
+}
+
+#[test]
 fn app_settings_default_to_dark_theme() {
     assert_eq!(
         knotq_model::AppSettings::default().theme_mode,
         ThemeMode::Dark
+    );
+    assert_eq!(
+        knotq_model::AppSettings::default().calendar_week_range,
+        CalendarWeekRange::NextSevenDays
     );
 }
 

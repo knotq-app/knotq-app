@@ -4,8 +4,8 @@ use chrono::NaiveDate;
 use knotq_commands::Command;
 use knotq_index::IndexedWorkspace;
 use knotq_model::{
-    AppSettings, CalendarViewMode, NodeRef, NotificationDefaults, SavedWindowPosition,
-    SavedWindowSize, SchemeId, ThemeMode, TimeFormat, Workspace,
+    AppSettings, CalendarViewMode, CalendarWeekRange, NodeRef, NotificationDefaults,
+    SavedWindowPosition, SavedWindowSize, SchemeId, ThemeMode, TimeFormat, Workspace,
 };
 
 use crate::{
@@ -36,6 +36,7 @@ pub struct AppState {
     pub theme_mode: ThemeMode,
     pub system_theme_dark: bool,
     pub calendar_view: CalendarViewMode,
+    pub calendar_week_range: CalendarWeekRange,
     pub time_format: TimeFormat,
     pub notification_defaults: NotificationDefaults,
     pub scheduled_notification_ids: Vec<String>,
@@ -89,6 +90,7 @@ impl AppState {
             theme_mode: settings.theme_mode,
             system_theme_dark: true,
             calendar_view: settings.calendar_view,
+            calendar_week_range: settings.calendar_week_range,
             time_format: settings.time_format,
             notification_defaults: settings.notification_defaults,
             scheduled_notification_ids: settings.scheduled_notification_ids,

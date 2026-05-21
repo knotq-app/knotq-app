@@ -3,7 +3,7 @@ use chrono::{DateTime, Duration, SecondsFormat, Utc};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::{
-    collections::{BTreeMap, BTreeSet, HashSet},
+    collections::BTreeMap,
     fs, io,
     path::{Component, Path, PathBuf},
     sync::atomic::{AtomicU64, Ordering},
@@ -401,7 +401,6 @@ fn rotate_snapshots(workspace_dir: &Path, now: DateTime<Utc>) -> Result<()> {
             refs,
         },
     )?;
-    prune_unreferenced_objects(workspace_dir)?;
     Ok(())
 }
 
@@ -554,69 +553,6 @@ fn resolve_snapshot_id(workspace_dir: &Path, id: &str) -> Result<String> {
         [] => bail!("history snapshot {id} not found"),
         _ => bail!("history snapshot id {id} is ambiguous"),
     }
-}
-
-fn prune_unreferenced_objects(workspace_dir: &Path) -> Result<()> {
-    let manifest = read_manifest(workspace_dir)?;
-    let live_snapshots = manifest.refs.values().cloned().collect::<BTreeSet<_>>();
-    let mut live_blobs = HashSet::new();
-    for id in &live_snapshots {
-        let snapshot = read_snapshot_record(workspace_dir, id)?;
-        for entry in snapshot.entries {
-            if let Some(blob) = entry.blob {
-                live_blobs.insert(blob);
-            }
-        }
-    }
-
-    if snapshot_dir(workspace_dir).exists() {
-        for entry in fs::read_dir(snapshot_dir(workspace_dir))
-            .with_context(|| format!("read {}", snapshot_dir(workspace_dir).display()))?
-        {
-            let entry = entry?;
-            let path = entry.path();
-            let Some(id) = path
-                .file_stem()
-                .and_then(|stem| stem.to_str())
-                .map(ToOwned::to_owned)
-            else {
-                continue;
-            };
-            if path.extension().and_then(|ext| ext.to_str()) == Some("json")
-                && !live_snapshots.contains(&id)
-            {
-                remove_if_exists(&path)?;
-            }
-        }
-    }
-
-    if blob_dir(workspace_dir).exists() {
-        for prefix in fs::read_dir(blob_dir(workspace_dir))
-            .with_context(|| format!("read {}", blob_dir(workspace_dir).display()))?
-        {
-            let prefix = prefix?;
-            if !prefix.file_type()?.is_dir() {
-                continue;
-            }
-            for blob in fs::read_dir(prefix.path())? {
-                let blob = blob?;
-                let path = blob.path();
-                let Some(id) = path
-                    .file_name()
-                    .and_then(|name| name.to_str())
-                    .map(ToOwned::to_owned)
-                else {
-                    continue;
-                };
-                if validate_blob_id(&id).is_ok() && !live_blobs.contains(&id) {
-                    remove_if_exists(&path)?;
-                }
-            }
-            let _ = fs::remove_dir(prefix.path());
-        }
-    }
-
-    Ok(())
 }
 
 fn workspace_target_path(workspace_dir: &Path, stored: &str) -> Result<PathBuf> {

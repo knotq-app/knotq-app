@@ -3,8 +3,8 @@ use gpui::prelude::*;
 use gpui::{div, px, ClickEvent, Context, IntoElement};
 use gpui_component::scroll::ScrollableElement as _;
 use knotq_storage_json::{
-    list_workspace_snapshots, workspace_dir, CalendarViewMode, NotificationDefaults, ThemeMode,
-    TimeFormat, WorkspaceSnapshot,
+    list_workspace_snapshots, workspace_dir, CalendarViewMode, CalendarWeekRange,
+    NotificationDefaults, ThemeMode, TimeFormat, WorkspaceSnapshot,
 };
 
 use crate::app::KnotQApp;
@@ -36,25 +36,51 @@ impl KnotQApp {
         })
         .collect::<Vec<_>>();
 
-        let calendar_rows = [
-            ("Week", CalendarViewMode::Week),
-            ("Month", CalendarViewMode::Month),
-        ]
-        .into_iter()
-        .enumerate()
-        .map(|(idx, (label, mode))| {
-            let is_active = self.calendar_view == mode;
-            choice_row(
-                ("calendar-setting", idx),
-                label,
-                is_active,
-                active_marker(is_active, t),
-                t,
-                cx,
-                move |this, cx| this.set_calendar_view(mode, cx),
-            )
-        })
-        .collect::<Vec<_>>();
+        let mut calendar_rows = Vec::new();
+        calendar_rows.push(settings_subheading("View", t));
+        calendar_rows.extend(
+            [
+                ("Week", CalendarViewMode::Week),
+                ("Month", CalendarViewMode::Month),
+            ]
+            .into_iter()
+            .enumerate()
+            .map(|(idx, (label, mode))| {
+                let is_active = self.calendar_view == mode;
+                choice_row(
+                    ("calendar-setting", idx),
+                    label,
+                    is_active,
+                    active_marker(is_active, t),
+                    t,
+                    cx,
+                    move |this, cx| this.set_calendar_view(mode, cx),
+                )
+            })
+            .collect::<Vec<_>>(),
+        );
+        calendar_rows.push(settings_subheading("Week Range", t));
+        calendar_rows.extend(
+            [
+                ("Next 7 days", CalendarWeekRange::NextSevenDays),
+                ("Calendar week", CalendarWeekRange::CalendarWeek),
+            ]
+            .into_iter()
+            .enumerate()
+            .map(|(idx, (label, range))| {
+                let is_active = self.calendar_week_range == range;
+                choice_row(
+                    ("calendar-range-setting", idx),
+                    label,
+                    is_active,
+                    active_marker(is_active, t),
+                    t,
+                    cx,
+                    move |this, cx| this.set_calendar_week_range(range, cx),
+                )
+            })
+            .collect::<Vec<_>>(),
+        );
 
         let time_rows = [
             ("12-hour", TimeFormat::TwelveHour),

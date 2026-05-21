@@ -1,7 +1,7 @@
 use chrono::{Datelike, Duration, Local, NaiveDate};
 use gpui::{Context, Window};
 use knotq_model::{ItemId, SchemeId};
-use knotq_storage_json::CalendarViewMode;
+use knotq_storage_json::{CalendarViewMode, CalendarWeekRange};
 
 use super::{add_months, KnotQApp, View};
 
@@ -146,7 +146,11 @@ impl KnotQApp {
     }
 
     pub fn calendar_week_start(&self) -> chrono::NaiveDate {
-        calendar_week_start_for(Local::now().date_naive(), self.week_offset)
+        calendar_week_start_for(
+            Local::now().date_naive(),
+            self.week_offset,
+            self.calendar_week_range,
+        )
     }
 
     pub fn calendar_month_start(&self) -> chrono::NaiveDate {
@@ -160,9 +164,18 @@ pub(crate) fn event_popup_visible_in_context(view: View, calendar_view: Calendar
     view == View::Union && calendar_view == CalendarViewMode::Week
 }
 
-fn calendar_week_start_for(today: NaiveDate, week_offset: i32) -> NaiveDate {
-    let dow = today.weekday().num_days_from_sunday() as i64;
-    today - Duration::days(dow) + Duration::weeks(week_offset as i64)
+fn calendar_week_start_for(
+    today: NaiveDate,
+    week_offset: i32,
+    range: CalendarWeekRange,
+) -> NaiveDate {
+    match range {
+        CalendarWeekRange::NextSevenDays => today + Duration::weeks(week_offset as i64),
+        CalendarWeekRange::CalendarWeek => {
+            let dow = today.weekday().num_days_from_sunday() as i64;
+            today - Duration::days(dow) + Duration::weeks(week_offset as i64)
+        }
+    }
 }
 
 #[cfg(test)]
@@ -170,24 +183,44 @@ mod tests {
     use super::*;
 
     #[test]
-    fn calendar_week_starts_on_current_sunday() {
-        let sunday = NaiveDate::from_ymd_opt(2026, 5, 17).unwrap();
-        assert_eq!(calendar_week_start_for(sunday, 0), sunday);
+    fn next_seven_days_week_starts_today() {
+        let wednesday = NaiveDate::from_ymd_opt(2026, 5, 20).unwrap();
         assert_eq!(
-            calendar_week_start_for(sunday, -1),
+            calendar_week_start_for(wednesday, 0, CalendarWeekRange::NextSevenDays),
+            wednesday
+        );
+        assert_eq!(
+            calendar_week_start_for(wednesday, -1, CalendarWeekRange::NextSevenDays),
+            NaiveDate::from_ymd_opt(2026, 5, 13).unwrap()
+        );
+        assert_eq!(
+            calendar_week_start_for(wednesday, 1, CalendarWeekRange::NextSevenDays),
+            NaiveDate::from_ymd_opt(2026, 5, 27).unwrap()
+        );
+    }
+
+    #[test]
+    fn calendar_week_range_starts_on_current_sunday() {
+        let sunday = NaiveDate::from_ymd_opt(2026, 5, 17).unwrap();
+        assert_eq!(
+            calendar_week_start_for(sunday, 0, CalendarWeekRange::CalendarWeek),
+            sunday
+        );
+        assert_eq!(
+            calendar_week_start_for(sunday, -1, CalendarWeekRange::CalendarWeek),
             NaiveDate::from_ymd_opt(2026, 5, 10).unwrap()
         );
         assert_eq!(
-            calendar_week_start_for(sunday, 1),
+            calendar_week_start_for(sunday, 1, CalendarWeekRange::CalendarWeek),
             NaiveDate::from_ymd_opt(2026, 5, 24).unwrap()
         );
     }
 
     #[test]
-    fn calendar_week_start_rewinds_to_sunday_for_midweek_dates() {
+    fn calendar_week_range_rewinds_to_sunday_for_midweek_dates() {
         let wednesday = NaiveDate::from_ymd_opt(2026, 5, 20).unwrap();
         assert_eq!(
-            calendar_week_start_for(wednesday, 0),
+            calendar_week_start_for(wednesday, 0, CalendarWeekRange::CalendarWeek),
             NaiveDate::from_ymd_opt(2026, 5, 17).unwrap()
         );
     }

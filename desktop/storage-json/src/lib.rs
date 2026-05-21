@@ -22,8 +22,8 @@ pub use knotq_history::{
     WorkspaceSnapshot,
 };
 pub use knotq_model::{
-    AppSettings, CalendarViewMode, NotificationDefaults, SavedWindowPosition, SavedWindowSize,
-    ThemeMode, TimeFormat,
+    AppSettings, CalendarViewMode, CalendarWeekRange, NotificationDefaults, SavedWindowPosition,
+    SavedWindowSize, ThemeMode, TimeFormat,
 };
 pub use options::WorkspaceLoadOptions;
 pub use paths::{

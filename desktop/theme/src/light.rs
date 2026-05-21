@@ -186,20 +186,20 @@ pub fn theme_catppuccin_latte() -> Theme {
 pub fn theme_light() -> Theme {
     let mut theme = theme_parchment();
     theme.name = "Light";
-    // Higher contrast: whiter backgrounds with just a hint of warmth
-    theme.bg_app = rgb(0xfaf6f1);
-    theme.bg_sidebar = rgb(0xf0e8e0);
-    theme.bg_toolbar = rgb(0xf2ece4);
-    theme.bg_upcoming = rgb(0xf5f0ea);
-    theme.bg_hint = rgb(0xf0e8e0);
-    theme.bg_cal_hdr = rgb(0xf0e8e0);
-    theme.bg_modal = rgb(0xfcf9f5);
+    // Warm, muted backgrounds — no pure whites
+    theme.bg_app = rgb(0xe8e2d8);
+    theme.bg_sidebar = rgb(0xe0d8cc);
+    theme.bg_toolbar = rgb(0xe3dcd2);
+    theme.bg_upcoming = rgb(0xe5ded5);
+    theme.bg_hint = rgb(0xe0d8cc);
+    theme.bg_cal_hdr = rgb(0xe0d8cc);
+    theme.bg_modal = rgb(0xece6dd);
     theme.border_main = rgba(0xc4b5a4ff);
     theme.border_soft = rgba(0xd6cabcff);
     theme.border_strong = rgba(0xa89580ff);
     theme.border_overlay = rgba(0x3d2a1830);
-    // High-contrast text
-    theme.text_primary = rgb(0x1a1410);
+    // Softened text for less harsh contrast
+    theme.text_primary = rgb(0x2c2420);
     theme.text_dim = rgba(0x302520e0);
     theme.text_muted = rgba(0x5a4a3cc0);
     theme.text_soft = rgba(0x382c22d8);
@@ -221,23 +221,23 @@ pub fn theme_light() -> Theme {
     theme.cal_grid = rgba(0x5a463524);
     theme.cal_grid_soft = rgba(0x5a463510);
     theme.cal_past = rgba(0x8c8c8c20);
-    // Whiter event blocks for better text contrast
-    theme.event_bg = rgba(0xffffffee);
+    // Event blocks: cooler/grayer tint to stand out from warm bg
+    theme.event_bg = rgba(0xd3d2ceee);
     theme.event_border = rgba(0xa89580c0);
     theme.checkbox_border_on = rgba(0xd04e1ac8);
     theme.checkbox_border_off = rgba(0x6b5d50c0);
     theme.checkbox_fill_on = rgba(0xe66f1f90);
-    theme.checkbox_fill_off = rgba(0xffffff90);
+    theme.checkbox_fill_off = rgba(0xe8e2d890);
     theme.checkbox_mark = rgba(0x1a1410e0);
     theme.done_text = rgba(0x5a4a3ca8);
-    theme.drag_preview_bg = rgba(0xf0e8e0c8);
+    theme.drag_preview_bg = rgba(0xe0d8ccc8);
     theme.toolbar_chip_bg = rgba(0xebeff5f0);
     theme.toolbar_chip_border = rgba(0xb0b8c8aa);
     theme.toolbar_chip_selected_text = rgb(0x111418);
     theme.toolbar_chip_muted = rgba(0x4a4050ff);
     theme.toolbar_chip_separator = rgba(0x7a808a66);
     theme.daily_title_active = rgb(0x1a1410);
-    theme.daily_title_muted = rgb(0x6a5c50);
+    theme.daily_title_muted = rgb(0x4a3e34);
     theme.link = rgb(0xc04510);
     theme.link_hover = rgb(0xe66f1f);
     // Fully opaque dark text on calendar events

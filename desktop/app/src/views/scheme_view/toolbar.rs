@@ -219,8 +219,8 @@ fn read_only_toolbar(
     c: Theme,
     cx: &mut Context<KnotQApp>,
 ) -> gpui::AnyElement {
-    let read_only_text = token_hsla(0x111111ff);
-    let muted_text = token_hsla(0x11111199);
+    let read_only_text = token_hsla(c.toolbar_chip_selected_text);
+    let muted_text = token_hsla(c.toolbar_chip_muted);
     div()
         .id("scheme-toolbar")
         .absolute()

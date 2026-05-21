@@ -10,6 +10,14 @@ pub enum CalendarViewMode {
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CalendarWeekRange {
+    #[default]
+    NextSevenDays,
+    CalendarWeek,
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum ThemeMode {
     System,
@@ -42,6 +50,8 @@ pub struct SavedWindowPosition {
 pub struct AppSettings {
     #[serde(default)]
     pub calendar_view: CalendarViewMode,
+    #[serde(default)]
+    pub calendar_week_range: CalendarWeekRange,
     #[serde(default)]
     pub theme_mode: ThemeMode,
     #[serde(default)]
