@@ -1,164 +1,99 @@
-## KnotQ 
+## KnotQ
 
-### Project Overview
+### Overview
 
-KnotQ is a generalized productivity app that combines a structured text editor with a calendar. The name is a temporary placeholder.
+KnotQ is a desktop productivity app that integrates a structured text editor with a calendar. Built with Rust and GPUI (Zed's UI framework). All data is stored locally — no cloud, no account required.
+
+Releases target macOS (ARM + Intel), Windows (MSIX + portable zip), and Linux (x86_64 tarball).
+
+### Architecture
+
+The repo is a Rust workspace with 17 crates under `desktop/`:
+
+| Crate | Purpose |
+|---|---|
+| `app` | Main GPUI application — views, navigation, popups, title bar |
+| `ui` | Reusable GPUI components (DateField, SingleLineEditor, etc.) |
+| `model` | Core data structures: Item, Scheme, Workspace, Settings, Recurrence |
+| `commands` | Command enum with apply/undo/redo — all mutations go through here |
+| `state` | AppState: workspace + ephemeral UI state, undo stack, selections |
+| `storage` | Abstract `StorageBackend` trait (async) |
+| `storage-json` | Concrete JSON file backend — reads/writes from user's data directory |
+| `theme` | Theme definitions (8 themes: 4 dark, 4 light) |
+| `editor` | GPUI text editor with formatting, inline date pickers |
+| `editor-core` | Editor state machine, line manipulation, indent/dedent logic |
+| `notifications` | Native notifications: macOS (UserNotifications), Windows (Win32), Linux (stub) |
+| `index` | Full-text search index + channel (#link) index |
+| `rrule` | RRULE (RFC 5545) parsing/expansion for recurring events |
+| `date-util` | Calendar math and formatting helpers |
+| `history` | Workspace snapshot/undo-redo history |
+| `import` | iCal parsing + Google Calendar OAuth/sync (feature-gated behind `google`) |
+| `fixtures` | Test data fixtures |
 
 ### Core Concepts
 
-**Schemes** are the fundamental unit of KnotQ. Each scheme is a plain text file rendered as a hierarchical list — similar to Google Docs' `Cmd+Shift+9` list style. The editor is *line-major*: each line is an independently actionable task.
+**Schemes** are the fundamental unit. Each scheme is a document rendered as a hierarchical list. The editor is line-major: each line is independently addressable and can be scheduled.
 
-**Folders** organize schemes hierarchically. The sidebar (modeled after the VSCode file explorer) lets users navigate folders and schemes.
+**Folders** organize schemes in a sidebar tree (VSCode-style file explorer).
 
 #### Line Types (markers)
 
-Each line has a marker type:
-- **Blank** — no marker, plain text/heading (`Cmd+1`)
-- **Checkbox** — todo item, can be checked off (`Cmd+2`)
+- **Blank** — plain text or heading (`Cmd+1`)
+- **Checkbox** — todo item (`Cmd+2`)
 - **Bullet** — bullet point (`Cmd+3`)
 - **Numbered** — numbered list item (`Cmd+4`)
 
 #### Task Types (by date attributes)
 
-Each line/task can have a `start` and/or `end` datetime:
+| Start | End | Type |
+|---|---|---|
+| ✅ | ✅ | **Event** — time block on calendar |
+| ❌ | ✅ | **Assignment** — due date on calendar |
+| ✅ | ❌ | **Reminder** — alert point on calendar |
+| ❌ | ❌ | **Procedure** — planning only, not on calendar |
 
-| Start | End | Type | Calendar Item? |
-|---|---|---|---|
-| ✅ | ✅ | **Event** | Yes |
-| ❌ | ✅ | **Assignment** | Yes (due date) |
-| ✅ | ❌ | **Reminder** | Yes |
-| ❌ | ❌ | **Procedure** | No — planning only |
+Dates set via `Cmd+S` (start), `Cmd+E` (end). Calendar interactions: click → reminder, shift+click → assignment, drag → event.
 
-Dates are set via:
-- **`Cmd+S`** → open/toggle start date picker
-- **`Cmd+E`** → open/toggle end date picker
-- **Click on calendar** → creates a reminder (start only) on that line
-- **Shift+click on calendar** → creates an assignment (end only)
-- **Drag on calendar** → creates an event (start + end)
+#### Nested Tasks
 
-#### Text Formatting
+Child lines (indented under a task) become the event's description on the calendar.
 
-- **`Cmd+B`** → bold
-- **`Cmd+I`** → italic
-- **`Cmd+J`** → heading
+### Views
 
-#### Nested Tasks & Details
+- **Calendar** (`View::Union`) — week grid, color-coded events from all schemes, upcoming panel on left
+- **Scheme Editor** (`View::Scheme`) — inline list editor with formatting toolbar
+- **Daily Queue** (`View::DailyQueue`) — per-day notes, incomplete items carry over
+- **Settings** (`View::Settings`) — theme, Google Calendar, notifications
+- **Search** (`Cmd+F`) — full-text across all schemes
 
-Child lines (indented under a task) serve as detail/description for their parent. When viewing an event on the calendar, nested children are shown as the event's body/details.
+### Themes
 
----
+8 themes total:
+- **Dark:** Obsidian (default), Rosé Piné Moon, Catppuccin Mocha, Tokyo Night
+- **Light:** Light, Parchment, Rosé Piné Dawn, Catppuccin Latte
 
-### UI Structure
+### Data Storage
 
-#### Sidebar (all pages)
-- Hierarchical folder + scheme navigator (VSCode-style)
-- Color-coded scheme labels (configurable per scheme)
-- "New" button at the bottom to create a scheme or folder
+Schemes are stored as `.knotq` files (markdown-like with `!knotq{key="value"}` attribute blocks). Workspace metadata in `workspace.json`. Daily Queue entries in `daily_queue/YYYY/MM/DD.knotq`.
 
-#### Scheme Editor Page
-- Full-width list editor — edit directly inline
-- Formatting: bold, italic, heading
-- Inline date picker popovers to set start/end on any line
-- Right-click context menu for additional actions
+Platform data directory:
+- macOS: `~/Library/Application Support/KnotQ/workspace/`
+- Linux: `~/.local/share/knotq/`
+- Windows: AppData equivalent
 
-#### Calendar Page (View::Union)
-- Week-view grid with time slots on Y-axis and days on X-axis
-- Events rendered as colored blocks corresponding to their scheme's color
-- **Upcoming panel**: Upcoming assignments, reminders, and events; also shows past-due items
-- Events on days outside the current week are visible but visually distinguished
-- Click any event to jump to its source line in the scheme editor ("go to definition")
-- The upcoming panel is visible on all pages
+### Google Calendar
 
-> .claude-context/union-view.png shows the Calendar page.
-> .claude-context/scheme-view.png shows the Scheme Editor with date-picker popover open.
-> .claude-context/many.png shows calendar with many overlapping events (merged into bubbles).
+Read-only import with OAuth 2.0 (PKCE). Background sync every 5 minutes. Feature-gated behind `google` Cargo feature. Imported calendars appear as read-only schemes.
 
-#### Search (Cmd+F)
-- Searches across all schemes, tasks, and calendar items
-- Triggered via `Cmd+F`
+### Notifications
 
-#### Settings Page
-- Standard app settings (theme, Google Calendar connection, etc.)
+Native notifications on macOS and Windows with actions (mark done, snooze 10min/1hr). Linux has a stub implementation. Per-task notification offset override, configurable defaults for events vs assignments.
 
-#### Daily Queue (View::DailyQueue, shown as "Daily")
-- A special built-in view — not an ordinary scheme
-- Creates a new dated scheme for each day (named "Daily YYYY-MM-DD")
-- Incomplete items carry over automatically from the previous day
-- Intended for quick notes, brainstorming, and listing tasks to complete that day
-- Has its own dedicated UI; users navigate by day
+### GPUI Notes
 
----
+- Elements need an `.id()` before `.on_click()` can be used
+- All `Cmd+*` shortcuts also have `Ctrl+*` bindings for Windows/Linux
 
-### Keyboard Shortcuts (editor)
+### Other
 
-| Shortcut | Action |
-|---|---|
-| `Cmd+S` | Toggle start date (open date picker) |
-| `Cmd+E` | Toggle end date |
-| `Cmd+Shift+S` | Remove start date |
-| `Cmd+Shift+E` | Remove end date |
-| `Cmd+R` | Toggle repeat rule |
-| `Cmd+L` | Toggle status (complete/incomplete) |
-| `Cmd+B` | Toggle bold |
-| `Cmd+I` | Toggle italic |
-| `Cmd+J` | Toggle heading |
-| `Cmd+1` | Set line type: blank |
-| `Cmd+2` | Set line type: checkbox |
-| `Cmd+3` | Set line type: bullet |
-| `Cmd+4` | Set line type: numbered |
-| `Tab` | Indent line |
-| `Shift+Tab` | Unindent line |
-| `Cmd+F` | Search |
-
-All `Cmd+*` shortcuts also work with `Ctrl+*` on Windows/Linux.
-
----
-
-### Features (implemented vs. planned)
-
-**Implemented:**
-- Scheme editor with line types, formatting, indentation
-- Date picker (start/end), repeating events with rrule
-- Calendar view (week grid, event/assignment/reminder/procedure rendering)
-- Daily Queue (per-day notes + carryover)
-- Google Calendar integration (read-only)
-- Search (Cmd+F)
-- Notifications (macOS + Windows)
-- Multiple themes (dark/light)
-
-**Planned / in progress:**
-- `#channel` cross-linking — index is built in code but not yet exposed in the editor UI
-- Priorities on tasks
-- Cloud sync (paid tier)
-- Shared schemes / assign people (paid tier)
-- Schedule sharing (free/busy view)
-
----
-
-### Backend
-
-- **Language/Framework**: Rust + Axum
-- Primarily CRUD; complexity expected to be low
-- Potential challenge: **synchronization / CRDT** for real-time collaborative editing and multi-device sync
-- Initial version is local-only (no cloud)
-
-### Frontend
-
-| Platform | Stack |
-|---|---|
-| Desktop | GPUI (Zed's UI framework) |
-| Web (future) | Svelte + TypeScript |
-| Mobile (future) | React Native |
-
----
-
-## Old KnotQ
-You can reference old KnotQ in the knotqv1 folder.
-You can look at .claude-context for images of knotqv1 as inspiration for the UI.
-
-## GPUI Specific Notes
-- You cannot do .on_click without giving the element an id
-- Look at this folder for a very concrete example in creating a text editor in GPUI: /home/enigmadux/monocurl/monocurl
-
-## Other
 - Never coauthor a message with yourself.

@@ -6,3 +6,6 @@ build
 
 /local/.env
 /local/*.env
+
+.claude/CLAUDE.local.md
+.claude/settings.local.json
