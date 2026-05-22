@@ -44,6 +44,7 @@ function New-ResizedPng {
     try {
       $graphics = [System.Drawing.Graphics]::FromImage($bitmap)
       try {
+        $graphics.Clear([System.Drawing.Color]::Transparent)
         $graphics.InterpolationMode = [System.Drawing.Drawing2D.InterpolationMode]::HighQualityBicubic
         $graphics.SmoothingMode = [System.Drawing.Drawing2D.SmoothingMode]::HighQuality
         $graphics.PixelOffsetMode = [System.Drawing.Drawing2D.PixelOffsetMode]::HighQuality
@@ -63,10 +64,17 @@ function New-ResizedPng {
 try {
   $LayoutDir = Join-Path $TempDir "layout"
   $AssetsDir = Join-Path $LayoutDir "Assets"
+  $AppAssetsDir = Join-Path $LayoutDir "assets"
   New-Item -ItemType Directory -Force -Path $AssetsDir | Out-Null
+  New-Item -ItemType Directory -Force -Path $AppAssetsDir | Out-Null
   Copy-Item $Binary (Join-Path $LayoutDir "knotq.exe")
+  Copy-Item -Path (Join-Path $Root "desktop\app\assets\*") -Destination $AppAssetsDir -Recurse -Force
+  Get-ChildItem $AppAssetsDir -Filter ".DS_Store" -Recurse -ErrorAction SilentlyContinue | Remove-Item -Force -ErrorAction SilentlyContinue
 
-  $IconSource = Join-Path $Root "desktop\app\assets\app-icon\512x512.png"
+  $IconSource = Join-Path $Root "desktop\app\assets\app-icon\windows.png"
+  if (-not (Test-Path $IconSource)) {
+    $IconSource = Join-Path $Root "desktop\app\assets\app-icon\512x512.png"
+  }
   if (-not (Test-Path $IconSource)) {
     $IconSource = Join-Path $Root "desktop\app\assets\app-icon\256x256.png"
   }
@@ -125,11 +133,7 @@ try {
   & $MakeAppx.FullName pack /d "$LayoutDir" /p "$MsixPath" /nv
   if ($LASTEXITCODE -ne 0) { throw "makeappx failed with exit code $LASTEXITCODE" }
 
-  $PortablePath = Join-Path $Dist "KnotQ-$Version-windows-x64-portable.zip"
-  Compress-Archive -Path $Binary -DestinationPath $PortablePath -Force
-
   Write-Host "[ok] $MsixPath"
-  Write-Host "[ok] $PortablePath"
 } finally {
   Remove-Item $TempDir -Recurse -Force -ErrorAction SilentlyContinue
 }

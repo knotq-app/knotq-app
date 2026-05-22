@@ -181,6 +181,9 @@ jobs:
       - name: Build
         run: cargo build --package knotq-app --release --target x86_64-pc-windows-msvc
 
+      - name: Install Inno Setup
+        run: choco install innosetup --no-progress -y
+
       - name: Package MSIX
         shell: pwsh
         run: ./bundling/windows/package-msix.ps1 "${{ steps.version.outputs.version }}" "x86_64-pc-windows-msvc"
@@ -188,11 +191,17 @@ jobs:
           WINDOWS_PUBLISHER: ${{ secrets.WINDOWS_PUBLISHER }}
           WINDOWS_PUBLISHER_DISPLAY_NAME: ${{ secrets.WINDOWS_PUBLISHER_DISPLAY_NAME }}
 
+      - name: Package Windows installer
+        shell: pwsh
+        run: ./bundling/windows/package-installer.ps1 "${{ steps.version.outputs.version }}" "x86_64-pc-windows-msvc"
+
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: KnotQ-release-windows-x64
-          path: dist/windows/KnotQ-*.*
+          path: |
+            dist/windows/KnotQ-*.msix
+            dist/windows/KnotQ-*-setup.exe
 
   build-linux:
     name: Linux

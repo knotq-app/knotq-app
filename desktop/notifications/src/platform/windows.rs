@@ -27,6 +27,7 @@ use windows::UI::Notifications::{
 
 const WINDOWS_GROUP: &str = "knotq";
 const WINDOWS_NOTIFICATION_ID_LEN: usize = 15;
+const WINDOWS_SHORTCUT_DIR: &str = "KnotQ";
 const WINDOWS_SHORTCUT_NAME: &str = "KnotQ.lnk";
 
 pub fn status() -> PlatformStatus {
@@ -231,6 +232,9 @@ unsafe fn create_start_menu_shortcut(app_id: &str) -> Result<()> {
             .SetWorkingDirectory(&HSTRING::from(path_to_string(&parent.to_path_buf())))
             .map_err(windows_error)?;
     }
+    shell_link
+        .SetIconLocation(&HSTRING::from(path_to_string(&exe_path)), 0)
+        .map_err(windows_error)?;
 
     let property_store: IPropertyStore = shell_link.cast().map_err(windows_error)?;
     let mut app_id_value = propvariant_from_string(app_id)?;
@@ -253,7 +257,9 @@ unsafe fn start_menu_shortcut_path() -> Result<PathBuf> {
         .to_string()
         .map_err(|err| Error::Platform(format!("invalid Start Menu path: {err}")))?;
     CoTaskMemFree(Some(programs.0.cast()));
-    Ok(PathBuf::from(path).join(WINDOWS_SHORTCUT_NAME))
+    Ok(PathBuf::from(path)
+        .join(WINDOWS_SHORTCUT_DIR)
+        .join(WINDOWS_SHORTCUT_NAME))
 }
 
 fn path_to_string(path: &PathBuf) -> String {

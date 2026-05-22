@@ -4,7 +4,7 @@
 
 KnotQ is a desktop productivity app that integrates a structured text editor with a calendar. Built with Rust and GPUI (Zed's UI framework). All data is stored locally — no cloud, no account required.
 
-Releases target macOS (ARM + Intel), Windows (MSIX + portable zip), and Linux (x86_64 tarball).
+Releases target macOS (ARM + Intel), Windows (MSIX + Inno Setup installer), and Linux (x86_64 tarball).
 
 ### Architecture
 
