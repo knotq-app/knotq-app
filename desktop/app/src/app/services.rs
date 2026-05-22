@@ -440,7 +440,8 @@ impl KnotQApp {
 
         let update =
             crate::notifications::recompute_pending(&self.workspace, self.notification_defaults);
-        let schedule_error = crate::notifications::schedule_os_notifications(&update.requests);
+        let schedule_error =
+            crate::notifications::schedule_os_notifications_for_shutdown(&update.requests);
         let cleanup_error = crate::notifications::clear_expired_event_notifications(
             &self.workspace,
             self.notification_defaults,

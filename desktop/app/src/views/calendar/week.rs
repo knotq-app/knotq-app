@@ -511,6 +511,10 @@ impl KnotQApp {
                     .on_mouse_move({
                         let scroll_handle = scroll_handle.clone();
                         cx.listener(move |this, event: &MouseMoveEvent, _window, cx| {
+                            if !event.dragging() {
+                                this.clear_calendar_pointer_state(cx);
+                                return;
+                            }
                             let hour =
                                 window_y_to_hour(f32::from(event.position.y), &scroll_handle);
                             if let Some(drag) = this.cal_drag.as_mut() {

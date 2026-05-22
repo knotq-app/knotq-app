@@ -68,11 +68,12 @@ impl SchemeEditor {
             .last_bounds
             .map(|bounds| bounds.top() - scroll_bounds.top() - scroll_offset.y)
             .unwrap_or(px(0.0));
+        let cursor_line_height = self.line_map.row_line_height(self.selection.head.row);
         let cursor_top = editor_content_y + cursor.y + px(self.top_pad);
-        let cursor_bottom = cursor_top + self.line_map.line_height();
+        let cursor_bottom = cursor_top + cursor_line_height;
         let visible_top = -scroll_offset.y;
         let visible_bottom = visible_top + viewport_height;
-        let margin_height = self.line_map.line_height() * SCROLL_MARGIN_LINES;
+        let margin_height = cursor_line_height * SCROLL_MARGIN_LINES;
         let max_scroll_y = self
             .scroll_handle
             .max_offset()

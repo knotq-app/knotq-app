@@ -38,21 +38,30 @@ impl SchemeEditor {
             } else {
                 format!("{hidden_prefix}{line}")
             };
+            let (font_size, line_height) = if is_markdown_heading(&line) {
+                (HEADING_FONT_SIZE, HEADING_LINE_HEIGHT)
+            } else {
+                (TEXT_FONT_SIZE, TEXT_LINE_HEIGHT)
+            };
             let runs = self.markdown_text_runs(&font, hidden_prefix.len(), &line, color, is_done);
             let mut shaped = window
                 .text_system()
                 .shape_text(
                     SharedString::new(shaped_text),
-                    px(TEXT_FONT_SIZE),
+                    px(font_size),
                     &runs,
                     Some(text_width),
                     None,
                 )
                 .unwrap_or_default();
             wrapped.push(
-                SchemeItemLine::new(shaped.pop().unwrap_or_default(), annotation)
-                    .with_media_height(media_height)
-                    .with_hidden_prefix(hidden_prefix.len()),
+                SchemeItemLine::new(
+                    shaped.pop().unwrap_or_default(),
+                    annotation,
+                    px(line_height),
+                )
+                .with_media_height(media_height)
+                .with_hidden_prefix(hidden_prefix.len()),
             );
         }
 

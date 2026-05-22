@@ -8,6 +8,18 @@ use super::{CalendarOccurrenceKey, EventPopup, EventScopeAction, KnotQApp, Repea
 use crate::app::mark_past_events_done;
 
 impl KnotQApp {
+    pub(crate) fn clear_calendar_pointer_state(&mut self, cx: &mut Context<Self>) -> bool {
+        let had_state =
+            self.cal_drag.is_some() || self.cal_move.is_some() || self.cal_resize.is_some();
+        if had_state {
+            self.cal_drag = None;
+            self.cal_move = None;
+            self.cal_resize = None;
+            cx.notify();
+        }
+        had_state
+    }
+
     pub(crate) fn retains_completed_calendar_item(
         &self,
         scheme_id: SchemeId,

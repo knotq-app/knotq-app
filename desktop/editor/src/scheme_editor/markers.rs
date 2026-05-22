@@ -14,7 +14,8 @@ impl SchemeEditor {
         let annotation_rgba: gpui::Rgba = annotation_color.into();
         let text_left = line_origin.x + self.first_text_x(row_ix);
         let left = self.marker_left_for_text_left(&row.item, text_left);
-        let top = line_origin.y + (self.line_map.line_height() - px(CHECKBOX_SIZE)) / 2.0;
+        let line_height = self.line_map.row_line_height(row_ix);
+        let top = line_origin.y + (line_height - px(CHECKBOX_SIZE)) / 2.0;
         let checkbox_bounds =
             Bounds::new(point(left, top), size(px(CHECKBOX_SIZE), px(CHECKBOX_SIZE)));
         let done = item_is_done(&row.item);
@@ -39,6 +40,7 @@ impl SchemeEditor {
                         &format!("{number}."),
                         text_left,
                         line_origin.y,
+                        line_height,
                         annotation_color,
                         window,
                         cx,
@@ -83,8 +85,8 @@ impl SchemeEditor {
             let row_height = self
                 .line_map
                 .item_line(row_ix)
-                .map(|l| l.height(self.line_map.line_height()))
-                .unwrap_or(self.line_map.line_height());
+                .map(SchemeItemLine::height)
+                .unwrap_or(line_height);
             let bar_bottom = line_origin.y + row_height - bar_margin;
             window.paint_quad(fill(
                 Bounds::new(
@@ -101,6 +103,7 @@ impl SchemeEditor {
         label: &str,
         text_left: Pixels,
         y: Pixels,
+        line_height: Pixels,
         color: gpui::Hsla,
         window: &mut Window,
         cx: &mut App,
@@ -129,16 +132,9 @@ impl SchemeEditor {
         let Some(line) = shaped.pop() else {
             return;
         };
-        let width = line.size(self.line_map.line_height()).width;
+        let width = line.size(line_height).width;
         let origin = point(text_left - px(CHECKBOX_GAP) - width, y);
-        let _ = line.paint(
-            origin,
-            self.line_map.line_height(),
-            TextAlign::Left,
-            None,
-            window,
-            cx,
-        );
+        let _ = line.paint(origin, line_height, TextAlign::Left, None, window, cx);
     }
 
     pub(super) fn paint_checkbox_checkmark(&self, bounds: Bounds<Pixels>, window: &mut Window) {

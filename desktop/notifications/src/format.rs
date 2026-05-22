@@ -35,7 +35,7 @@ fn event_body(start: Option<DateTime<Utc>>, end: Option<DateTime<Utc>>) -> Strin
             let end_local = end.with_timezone(&Local);
             if start_local.date_naive() == end_local.date_naive() {
                 format!(
-                    "{} {}",
+                    "{}, {}",
                     day_label(start_local),
                     time_range_label(start_local, end_local)
                 )
@@ -57,7 +57,7 @@ fn date_time_label(dt: DateTime<Utc>) -> String {
 }
 
 fn day_label(dt: DateTime<Local>) -> String {
-    dt.format("%a,").to_string()
+    dt.format("%a").to_string()
 }
 
 fn time_range_label(start: DateTime<Local>, end: DateTime<Local>) -> String {
@@ -125,6 +125,19 @@ mod tests {
         );
 
         assert_eq!(body, "Thu, 11:30 AM to 12:30 PM");
+    }
+
+    #[test]
+    fn reminder_body_has_single_comma_between_day_and_time() {
+        let start = local_datetime(2026, 5, 22, 0, 41);
+
+        let body = body_for(
+            NotificationKind::Reminder,
+            Some(start.with_timezone(&Utc)),
+            None,
+        );
+
+        assert_eq!(body, "At Fri, 12:41 AM");
     }
 
     fn local_datetime(year: i32, month: u32, day: u32, hour: u32, minute: u32) -> DateTime<Local> {

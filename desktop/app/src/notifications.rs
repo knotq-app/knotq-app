@@ -3,8 +3,11 @@ use gpui::Context;
 use knotq_commands::Command;
 use knotq_model::{Item, ItemId, ItemKind, OccurrenceId, Scheme, SchemeId, Workspace};
 use knotq_notifications::{
-    compute_due_notifications_with_lead_times, expired_event_notification_keys,
-    notification_keys_for_item, NotificationLeadTimes, ScheduledNotification,
+    compute_due_notifications_with_lead_times, delivered_backlog_exceeds, delivered_cleanup_ids,
+    expired_event_notification_keys, notification_keys_for_item, DurableNotificationSchedule,
+    NotificationLeadTimes, PlatformSchedulePolicy, PlatformScheduleSnapshot, ReconciliationMode,
+    RetentionReport, ScheduleManifest, ScheduleReconciliationPlan, ScheduledNotification,
+    DEFAULT_DURABLE_NOTIFICATION_LIMIT,
 };
 use knotq_notifications::{
     take_notification_responses, AuthorizationStatus, NotificationRequest, NotificationResponse,
@@ -12,16 +15,11 @@ use knotq_notifications::{
     ACTION_SNOOZE_1_HOUR,
 };
 use knotq_rrule::ItemOccurrenceExt;
-#[cfg(target_os = "macos")]
 use knotq_storage_json::data_dir;
 use knotq_storage_json::NotificationDefaults;
-#[cfg(target_os = "macos")]
-use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-#[cfg(target_os = "macos")]
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeSet;
 use std::sync::atomic::{AtomicBool, Ordering};
-#[cfg(target_os = "macos")]
 use std::time::Duration as StdDuration;
 use uuid::Uuid;
 
@@ -40,14 +38,40 @@ pub fn notif_log(msg: &str) {
     }
 }
 
-const MAX_PENDING_NOTIFICATIONS: usize = 64;
+#[cfg(target_os = "macos")]
+const PLATFORM_OS_PENDING_LIMIT: usize = 16;
+#[cfg(not(target_os = "macos"))]
+const PLATFORM_OS_PENDING_LIMIT: usize = DEFAULT_DURABLE_NOTIFICATION_LIMIT;
 const SCHEDULE_HORIZON_DAYS: i64 = 14;
+const PLATFORM_OS_HARD_HORIZON: StdDuration = StdDuration::from_secs(32 * 24 * 60 * 60);
 pub(crate) const APP_ID: &str = "com.enigmadux.knotq";
 const CATEGORY_ID: &str = "knotq-reminder";
-#[cfg(target_os = "macos")]
 const SCHEDULE_MANIFEST_FILE: &str = "notification_schedule_manifest.json";
 
 static AUTHORIZATION_REQUESTED: AtomicBool = AtomicBool::new(false);
+
+fn base_schedule_policy() -> PlatformSchedulePolicy {
+    PlatformSchedulePolicy::new(PLATFORM_OS_PENDING_LIMIT)
+        .with_max_schedule_horizon(PLATFORM_OS_HARD_HORIZON)
+}
+
+fn background_schedule_policy() -> PlatformSchedulePolicy {
+    let policy = base_schedule_policy();
+    #[cfg(target_os = "macos")]
+    {
+        return policy
+            .with_add_interval(StdDuration::from_secs(1))
+            .with_verify_delays(StdDuration::from_millis(250), StdDuration::from_millis(750));
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        policy
+    }
+}
+
+fn shutdown_schedule_policy() -> PlatformSchedulePolicy {
+    base_schedule_policy()
+}
 
 /// Request notification authorization without blocking. Call this from the
 /// main thread (e.g. during app construction) so macOS can show the system
@@ -99,7 +123,7 @@ pub fn pending_notifications(
     )
     .into_iter()
     .filter(|note| note.fire_at > now)
-    .take(MAX_PENDING_NOTIFICATIONS)
+    .take(DEFAULT_DURABLE_NOTIFICATION_LIMIT)
     .collect()
 }
 
@@ -132,28 +156,12 @@ pub(crate) fn refresh_item_os_notifications(
     }
 
     let scheduler = NotificationScheduler::new(APP_ID);
-    let ids = requests
-        .iter()
-        .map(|request| request.id.clone())
-        .collect::<Vec<_>>();
-    let cancel_error = scheduler.cancel(&ids).err().map(|err| format!("{err}"));
-    // Also remove delivered versions so stale banners are cleaned up.
-    let _ = scheduler.remove_delivered(&ids);
-    #[cfg(target_os = "macos")]
-    if cancel_error.is_none() {
-        std::thread::sleep(StdDuration::from_millis(100));
-    }
-    let schedule_error = schedule_requests(&scheduler, &requests);
-
-    #[cfg(target_os = "macos")]
-    save_item_schedule_manifest_entries(&requests);
-
-    notif_log(&format!(
-        "OS refreshed {} pending notification request(s) for item {}",
-        requests.len(),
-        item_id
-    ));
-    cancel_error.or(schedule_error)
+    refresh_item_os_notifications_reconciled(
+        &scheduler,
+        item_id,
+        &requests,
+        background_schedule_policy(),
+    )
 }
 
 /// Recompute the pending notification list used by the durable OS schedule.
@@ -171,15 +179,21 @@ pub fn recompute_pending(
 /// Reconcile the durable OS schedule with the current pending list so
 /// notifications still fire after KnotQ quits.
 pub fn schedule_os_notifications(requests: &[NotificationRequest]) -> Option<String> {
-    #[cfg(target_os = "macos")]
-    {
-        return schedule_os_notifications_reconciled(requests);
-    }
+    let durable = durable_schedule_from_requests(requests);
+    schedule_os_notifications_reconciled(&durable, background_schedule_policy())
+}
 
-    #[cfg(not(target_os = "macos"))]
-    {
-        return schedule_os_notifications_replace_all(requests);
-    }
+pub fn schedule_os_notifications_for_shutdown(requests: &[NotificationRequest]) -> Option<String> {
+    let durable = durable_schedule_from_requests(requests);
+    schedule_os_notifications_reconciled(&durable, shutdown_schedule_policy())
+}
+
+fn durable_schedule_from_requests(requests: &[NotificationRequest]) -> DurableNotificationSchedule {
+    DurableNotificationSchedule::new(
+        requests.iter().cloned(),
+        Utc::now(),
+        DEFAULT_DURABLE_NOTIFICATION_LIMIT,
+    )
 }
 
 pub fn clear_expired_event_notifications(
@@ -191,8 +205,12 @@ pub fn clear_expired_event_notifications(
         .into_iter()
         .map(|key| os_notification_id(&key))
         .collect::<Vec<_>>();
-    #[cfg(target_os = "macos")]
-    ids.extend(prune_expired_schedule_manifest(now));
+    let mut manifest = load_schedule_manifest();
+    let expired_manifest_ids = manifest.prune_expired(now);
+    if !expired_manifest_ids.is_empty() {
+        save_schedule_manifest(&manifest);
+        ids.extend(expired_manifest_ids);
+    }
     ids.sort();
     ids.dedup();
     if ids.is_empty() {
@@ -200,10 +218,25 @@ pub fn clear_expired_event_notifications(
     }
 
     let scheduler = NotificationScheduler::new(APP_ID);
+    let delivered = match scheduler.delivered_ids() {
+        Ok(ids) => ids.into_iter().collect::<BTreeSet<_>>(),
+        Err(err) => {
+            let msg = format!("{err}");
+            notif_log(&format!(
+                "expired delivered OS notification lookup failed: {msg}"
+            ));
+            return Some(msg);
+        }
+    };
+    ids = delivered_cleanup_ids(ids, &delivered);
+    if ids.is_empty() {
+        return None;
+    }
+
     match scheduler.remove_delivered(&ids) {
         Ok(()) => {
             notif_log(&format!(
-                "OS removed {} expired delivered event notification(s)",
+                "OS requested removal for {} expired delivered event notification(s)",
                 ids.len()
             ));
             None
@@ -218,30 +251,48 @@ pub fn clear_expired_event_notifications(
     }
 }
 
-#[cfg(target_os = "macos")]
-fn schedule_os_notifications_reconciled(requests: &[NotificationRequest]) -> Option<String> {
+fn schedule_os_notifications_reconciled(
+    durable: &DurableNotificationSchedule,
+    policy: PlatformSchedulePolicy,
+) -> Option<String> {
     let scheduler = NotificationScheduler::new(APP_ID);
-    let pending = match managed_pending_ids(&scheduler) {
-        Ok(ids) => ids,
+    let snapshot = match platform_schedule_snapshot(&scheduler) {
+        Ok(snapshot) => snapshot,
         Err(msg) => {
-            notif_log(&format!("pending OS notification lookup failed: {msg}"));
+            notif_log(&format!("platform OS notification snapshot failed: {msg}"));
             return Some(msg);
         }
     };
-    let desired = DesiredSchedule::from_requests(requests);
-    let plan = ScheduleReconciliationPlan::new(&pending, &desired, &load_schedule_manifest());
+    let backlog_error = prune_delivered_notification_backlog(&scheduler, &snapshot, policy);
+    let mut manifest = load_schedule_manifest();
+    let desired = durable.platform_window(policy);
+    let plan =
+        ScheduleReconciliationPlan::new(&snapshot, &desired, &manifest, ReconciliationMode::Full);
 
+    let legacy_cancel_error = cancel_notifications(&scheduler, snapshot.pending_legacy());
     let cancel_error = cancel_notifications(&scheduler, &plan.to_cancel);
     let requests_to_schedule = desired.requests_for(&plan.to_schedule);
-    let schedule_error = schedule_requests(&scheduler, &requests_to_schedule);
-    let verify_error = verify_pending_request_ids(&scheduler, &desired.ids);
-    let first_error = cancel_error.or(schedule_error).or(verify_error);
+    let schedule_error = schedule_requests(&scheduler, &requests_to_schedule, policy.add_interval);
+    let verify_error = verify_pending_request_ids(&scheduler, &desired, policy);
+    let reconciliation_error = backlog_error
+        .or(legacy_cancel_error)
+        .or(cancel_error)
+        .or(schedule_error);
 
-    if first_error.is_none() {
-        save_schedule_manifest(ScheduleManifest {
-            requests: desired.manifest_entries,
-        });
+    if reconciliation_error.is_none() {
+        durable.replace_manifest(&mut manifest);
+        save_schedule_manifest(&manifest);
     }
+
+    let first_error = reconciliation_error.or(verify_error);
+
+    if let Some(err) = first_error.as_ref() {
+        notif_log(&format!(
+            "notification reconciliation left a partial OS schedule: {err}"
+        ));
+        return first_error;
+    }
+
     notif_log(&format!(
         "OS schedule reconciled: {} kept, {} added/updated, {} canceled, {} desired",
         plan.kept_count,
@@ -253,106 +304,93 @@ fn schedule_os_notifications_reconciled(requests: &[NotificationRequest]) -> Opt
     first_error
 }
 
-#[cfg(target_os = "macos")]
-struct DesiredSchedule {
-    requests: Vec<NotificationRequest>,
-    ids: BTreeSet<String>,
-    manifest_entries: BTreeMap<String, ScheduleManifestRequest>,
-}
+fn prune_delivered_notification_backlog(
+    scheduler: &NotificationScheduler,
+    snapshot: &PlatformScheduleSnapshot,
+    policy: PlatformSchedulePolicy,
+) -> Option<String> {
+    if !delivered_backlog_exceeds(snapshot, policy.max_delivered_backlog) {
+        return None;
+    }
 
-#[cfg(target_os = "macos")]
-impl DesiredSchedule {
-    fn from_requests(requests: &[NotificationRequest]) -> Self {
-        let now = Utc::now();
-        let requests = requests
-            .iter()
-            .filter(|request| request.fire_at > now)
-            .cloned()
-            .collect::<Vec<_>>();
-        let ids = requests
-            .iter()
-            .map(|request| request.id.clone())
-            .collect::<BTreeSet<_>>();
-        let manifest_entries = requests
-            .iter()
-            .map(|request| (request.id.clone(), schedule_manifest_entry(request)))
-            .collect::<BTreeMap<_, _>>();
-
-        Self {
-            requests,
-            ids,
-            manifest_entries,
+    match scheduler.remove_all_delivered() {
+        Ok(()) => {
+            notif_log(&format!(
+                "OS cleared {} delivered notification(s) to stay below the platform request cap",
+                snapshot.delivered().len()
+            ));
+            None
         }
-    }
-
-    fn requests_for(&self, ids: &BTreeSet<String>) -> Vec<NotificationRequest> {
-        self.requests
-            .iter()
-            .filter(|request| ids.contains(&request.id))
-            .cloned()
-            .collect()
-    }
-}
-
-#[cfg(target_os = "macos")]
-struct ScheduleReconciliationPlan {
-    to_cancel: BTreeSet<String>,
-    to_schedule: BTreeSet<String>,
-    kept_count: usize,
-    desired_count: usize,
-}
-
-#[cfg(target_os = "macos")]
-impl ScheduleReconciliationPlan {
-    fn new(
-        pending: &BTreeSet<String>,
-        desired: &DesiredSchedule,
-        manifest: &ScheduleManifest,
-    ) -> Self {
-        let stale = pending
-            .difference(&desired.ids)
-            .cloned()
-            .collect::<BTreeSet<_>>();
-        let changed = desired
-            .ids
-            .intersection(pending)
-            .filter(|id| manifest.requests.get(*id) != desired.manifest_entries.get(*id))
-            .cloned()
-            .collect::<BTreeSet<_>>();
-        let missing = desired
-            .ids
-            .difference(pending)
-            .cloned()
-            .collect::<BTreeSet<_>>();
-
-        let mut to_cancel = stale;
-        to_cancel.extend(changed.iter().cloned());
-
-        let mut to_schedule = missing;
-        to_schedule.extend(changed);
-
-        Self {
-            kept_count: desired.ids.len().saturating_sub(to_schedule.len()),
-            desired_count: desired.ids.len(),
-            to_cancel,
-            to_schedule,
+        Err(err) => {
+            let msg = format!("{err}");
+            notif_log(&format!(
+                "clear delivered OS notification backlog failed: {msg}"
+            ));
+            Some(msg)
         }
     }
 }
 
-#[cfg(target_os = "macos")]
-fn managed_pending_ids(scheduler: &NotificationScheduler) -> Result<BTreeSet<String>, String> {
-    scheduler
-        .pending_ids()
-        .map(|ids| {
-            ids.into_iter()
-                .filter(|id| is_managed_notification_id(id))
-                .collect()
-        })
-        .map_err(|err| format!("{err}"))
+fn refresh_item_os_notifications_reconciled(
+    scheduler: &NotificationScheduler,
+    item_id: ItemId,
+    requests: &[NotificationRequest],
+    policy: PlatformSchedulePolicy,
+) -> Option<String> {
+    let snapshot = match platform_schedule_snapshot(scheduler) {
+        Ok(snapshot) => snapshot,
+        Err(msg) => {
+            notif_log(&format!("platform OS notification snapshot failed: {msg}"));
+            return Some(msg);
+        }
+    };
+    let desired = DurableNotificationSchedule::new(
+        requests.iter().cloned(),
+        Utc::now(),
+        DEFAULT_DURABLE_NOTIFICATION_LIMIT,
+    )
+    .platform_window(policy);
+    let mut manifest = load_schedule_manifest();
+    let plan = ScheduleReconciliationPlan::new(
+        &snapshot,
+        &desired,
+        &manifest,
+        ReconciliationMode::Targeted,
+    );
+
+    let cancel_error = cancel_notifications(scheduler, &plan.to_cancel);
+    let requests_to_schedule = desired.requests_for(&plan.to_schedule);
+    let schedule_error = schedule_requests(scheduler, &requests_to_schedule, policy.add_interval);
+    let verify_error = verify_pending_request_ids(scheduler, &desired, policy);
+    let reconciliation_error = cancel_error.or(schedule_error);
+
+    if reconciliation_error.is_none() {
+        manifest.update_requests(requests);
+        save_schedule_manifest(&manifest);
+    }
+
+    let first_error = reconciliation_error.or(verify_error);
+
+    notif_log(&format!(
+        "OS refreshed item {} notification schedule: {} kept, {} added/updated, {} canceled, {} desired",
+        item_id,
+        plan.kept_count,
+        plan.to_schedule.len(),
+        plan.to_cancel.len(),
+        plan.desired_count
+    ));
+
+    first_error
 }
 
-#[cfg(target_os = "macos")]
+fn platform_schedule_snapshot(
+    scheduler: &NotificationScheduler,
+) -> Result<PlatformScheduleSnapshot, String> {
+    let pending = scheduler.pending_ids().map_err(|err| format!("{err}"))?;
+    let delivered = scheduler.delivered_ids().map_err(|err| format!("{err}"))?;
+    Ok(PlatformScheduleSnapshot::new(pending, delivered))
+}
+
 fn cancel_notifications(
     scheduler: &NotificationScheduler,
     ids: &BTreeSet<String>,
@@ -377,7 +415,6 @@ fn cancel_notifications(
                 "OS canceled {} stale/changed pending notification(s)",
                 ids.len()
             ));
-            std::thread::sleep(StdDuration::from_millis(100));
             None
         }
         Err(err) => {
@@ -388,27 +425,14 @@ fn cancel_notifications(
     }
 }
 
-#[cfg(not(target_os = "macos"))]
-fn schedule_os_notifications_replace_all(requests: &[NotificationRequest]) -> Option<String> {
-    let scheduler = NotificationScheduler::new(APP_ID);
-    if let Err(err) = scheduler.cancel_all() {
-        let msg = format!("{err}");
-        notif_log(&format!(
-            "cancel_all pending OS notifications failed: {msg}"
-        ));
-        return Some(msg);
-    }
-
-    schedule_requests(&scheduler, requests)
-}
-
 fn schedule_requests(
     scheduler: &NotificationScheduler,
     requests: &[NotificationRequest],
+    add_interval: StdDuration,
 ) -> Option<String> {
     let mut first_error = None;
     let mut scheduled = 0;
-    for request in requests {
+    for (index, request) in requests.iter().enumerate() {
         if request.fire_at <= Utc::now() {
             continue;
         }
@@ -432,6 +456,9 @@ fn schedule_requests(
                 }
             }
         }
+        if index + 1 < requests.len() && !add_interval.is_zero() {
+            std::thread::sleep(add_interval);
+        }
     }
     notif_log(&format!(
         "OS schedule add pass: {scheduled}/{} request(s)",
@@ -440,76 +467,71 @@ fn schedule_requests(
     first_error
 }
 
-#[cfg(target_os = "macos")]
 fn verify_pending_request_ids(
     scheduler: &NotificationScheduler,
-    desired: &BTreeSet<String>,
+    desired: &knotq_notifications::DesiredPlatformSchedule,
+    policy: PlatformSchedulePolicy,
 ) -> Option<String> {
-    std::thread::sleep(StdDuration::from_millis(250));
+    if !policy.initial_verify_delay.is_zero() {
+        std::thread::sleep(policy.initial_verify_delay);
+    }
 
-    match managed_pending_ids(scheduler) {
-        Ok(pending) => {
-            let missing = desired
-                .difference(&pending)
-                .cloned()
-                .collect::<Vec<String>>();
-            let stale = pending
-                .difference(&desired)
-                .cloned()
-                .collect::<Vec<String>>();
-
-            if missing.is_empty() {
-                notif_log(&format!(
-                    "macOS retained {}/{} pending OS notification(s)",
-                    pending.intersection(&desired).count(),
-                    desired.len()
-                ));
-                if !stale.is_empty() {
-                    notif_log(&format!(
-                        "macOS pending schedule has {} stale request(s) after refresh",
-                        stale.len()
-                    ));
-                }
-                None
-            } else {
-                let preview = missing
-                    .iter()
-                    .take(3)
-                    .cloned()
-                    .collect::<Vec<_>>()
-                    .join(", ");
-                notif_log(&format!(
-                    "macOS did not retain {}/{} scheduled notification(s); missing: {preview}",
-                    missing.len(),
-                    desired.len()
-                ));
-                None
-            }
-        }
+    let mut snapshot = match platform_schedule_snapshot(scheduler) {
+        Ok(snapshot) => snapshot,
         Err(err) => {
             let msg = format!("{err}");
             notif_log(&format!(
                 "pending OS notification verification failed: {msg}"
             ));
-            Some(msg)
+            return Some(msg);
         }
+    };
+    let mut report = RetentionReport::new(&snapshot, desired);
+    if !report.is_complete() {
+        if !policy.retry_verify_delay.is_zero() {
+            std::thread::sleep(policy.retry_verify_delay);
+        }
+        snapshot = match platform_schedule_snapshot(scheduler) {
+            Ok(snapshot) => snapshot,
+            Err(err) => {
+                let msg = format!("{err}");
+                notif_log(&format!(
+                    "pending OS notification verification retry failed: {msg}"
+                ));
+                return Some(msg);
+            }
+        };
+        report = RetentionReport::new(&snapshot, desired);
+    }
+
+    if report.is_complete() {
+        notif_log(&format!(
+            "OS retained {}/{} pending notification(s)",
+            report.retained_count, report.desired_count
+        ));
+        if !report.stale.is_empty() {
+            notif_log(&format!(
+                "OS pending schedule has {} stale request(s) after refresh",
+                report.stale.len()
+            ));
+        }
+        return None;
+    }
+
+    let msg = format!(
+        "OS did not retain {}/{} scheduled notification(s); missing: {preview}",
+        report.missing.len(),
+        report.desired_count,
+        preview = report.missing_preview(3)
+    );
+    notif_log(&msg);
+    if report.retained_count == 0 && report.desired_count > 0 {
+        Some(msg)
+    } else {
+        None
     }
 }
 
-#[cfg(target_os = "macos")]
-#[derive(Default, Serialize, Deserialize)]
-struct ScheduleManifest {
-    requests: BTreeMap<String, ScheduleManifestRequest>,
-}
-
-#[cfg(target_os = "macos")]
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
-struct ScheduleManifestRequest {
-    fingerprint: String,
-    expires_at: Option<DateTime<Utc>>,
-}
-
-#[cfg(target_os = "macos")]
 fn load_schedule_manifest() -> ScheduleManifest {
     let path = schedule_manifest_path();
     let Ok(raw) = std::fs::read_to_string(&path) else {
@@ -518,8 +540,7 @@ fn load_schedule_manifest() -> ScheduleManifest {
     serde_json::from_str(&raw).unwrap_or_default()
 }
 
-#[cfg(target_os = "macos")]
-fn save_schedule_manifest(manifest: ScheduleManifest) {
+fn save_schedule_manifest(manifest: &ScheduleManifest) {
     let path = schedule_manifest_path();
     if let Some(parent) = path.parent() {
         if let Err(err) = std::fs::create_dir_all(parent) {
@@ -542,96 +563,8 @@ fn save_schedule_manifest(manifest: ScheduleManifest) {
     }
 }
 
-#[cfg(target_os = "macos")]
-fn save_item_schedule_manifest_entries(requests: &[NotificationRequest]) {
-    if requests.is_empty() {
-        return;
-    }
-
-    let mut manifest = load_schedule_manifest();
-    for request in requests {
-        manifest
-            .requests
-            .insert(request.id.clone(), schedule_manifest_entry(request));
-    }
-    save_schedule_manifest(manifest);
-}
-
-#[cfg(target_os = "macos")]
 fn schedule_manifest_path() -> std::path::PathBuf {
     data_dir().join(SCHEDULE_MANIFEST_FILE)
-}
-
-#[cfg(target_os = "macos")]
-fn request_fingerprint(request: &NotificationRequest) -> String {
-    let mut hasher = Sha256::new();
-    hasher.update(request.id.as_bytes());
-    hasher.update([0]);
-    hasher.update(request.fire_at.to_rfc3339().as_bytes());
-    hasher.update([0]);
-    if let Some(expires_at) = request.expires_at {
-        hasher.update(expires_at.to_rfc3339().as_bytes());
-    }
-    hasher.update([0]);
-    hasher.update(request.title.as_bytes());
-    hasher.update([0]);
-    hasher.update(request.body.as_bytes());
-    hasher.update([0]);
-    if let Some(group) = &request.group {
-        hasher.update(group.as_bytes());
-    }
-    hasher.update([0]);
-    if let Some(category) = &request.category {
-        hasher.update(category.as_bytes());
-    }
-    for (key, value) in &request.user_info {
-        hasher.update([0]);
-        hasher.update(key.as_bytes());
-        hasher.update([0]);
-        hasher.update(value.as_bytes());
-    }
-    let digest = hasher.finalize();
-    format!(
-        "{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}",
-        digest[0], digest[1], digest[2], digest[3], digest[4], digest[5], digest[6], digest[7]
-    )
-}
-
-#[cfg(target_os = "macos")]
-fn schedule_manifest_entry(request: &NotificationRequest) -> ScheduleManifestRequest {
-    ScheduleManifestRequest {
-        fingerprint: request_fingerprint(request),
-        expires_at: request.expires_at,
-    }
-}
-
-#[cfg(target_os = "macos")]
-fn prune_expired_schedule_manifest(now: DateTime<Utc>) -> Vec<String> {
-    let mut manifest = load_schedule_manifest();
-    let mut expired = Vec::new();
-    manifest.requests.retain(|id, request| {
-        if request
-            .expires_at
-            .is_some_and(|expires_at| expires_at <= now)
-        {
-            expired.push(id.clone());
-            false
-        } else {
-            true
-        }
-    });
-    if !expired.is_empty() {
-        save_schedule_manifest(manifest);
-    }
-    expired
-}
-
-#[cfg(target_os = "macos")]
-fn is_managed_notification_id(id: &str) -> bool {
-    let Some(hex) = id.strip_prefix("knotq-") else {
-        return false;
-    };
-    hex.len() == 16 && hex.bytes().all(|byte| byte.is_ascii_hexdigit())
 }
 
 #[derive(Clone, Debug)]
@@ -1022,77 +955,5 @@ mod tests {
             resolve_notification_target_item_id(&workspace, &target),
             None
         );
-    }
-
-    #[cfg(target_os = "macos")]
-    #[test]
-    fn managed_notification_id_matches_only_hashed_knotq_ids() {
-        assert!(is_managed_notification_id("knotq-0123456789abcdef"));
-        assert!(!is_managed_notification_id("knotq-test-scheduled-123"));
-        assert!(!is_managed_notification_id("other-0123456789abcdef"));
-    }
-
-    #[cfg(target_os = "macos")]
-    #[test]
-    fn request_fingerprint_changes_when_content_changes() {
-        let now = Utc::now();
-        let first = NotificationRequest::new("knotq-0123456789abcdef", now, "T", "B");
-        let second = NotificationRequest::new("knotq-0123456789abcdef", now, "T2", "B");
-        assert_ne!(request_fingerprint(&first), request_fingerprint(&second));
-    }
-
-    #[cfg(target_os = "macos")]
-    #[test]
-    fn schedule_manifest_entry_records_expiration() {
-        let now = Utc::now();
-        let expires_at = now + Duration::hours(1);
-        let request = NotificationRequest::new("knotq-0123456789abcdef", now, "T", "B")
-            .expires_at(Some(expires_at));
-
-        assert_eq!(
-            schedule_manifest_entry(&request).expires_at,
-            Some(expires_at)
-        );
-    }
-
-    #[cfg(target_os = "macos")]
-    #[test]
-    fn reconciliation_plan_keeps_changed_missing_and_stale_separate() {
-        let unchanged = "knotq-0000000000000001".to_string();
-        let changed = "knotq-0000000000000002".to_string();
-        let missing = "knotq-0000000000000003".to_string();
-        let stale = "knotq-0000000000000004".to_string();
-
-        let pending = BTreeSet::from([unchanged.clone(), changed.clone(), stale.clone()]);
-        let desired = DesiredSchedule {
-            requests: Vec::new(),
-            ids: BTreeSet::from([unchanged.clone(), changed.clone(), missing.clone()]),
-            manifest_entries: BTreeMap::from([
-                (unchanged.clone(), manifest_entry("same")),
-                (changed.clone(), manifest_entry("new")),
-                (missing.clone(), manifest_entry("new")),
-            ]),
-        };
-        let manifest = ScheduleManifest {
-            requests: BTreeMap::from([
-                (unchanged.clone(), manifest_entry("same")),
-                (changed.clone(), manifest_entry("old")),
-            ]),
-        };
-
-        let plan = ScheduleReconciliationPlan::new(&pending, &desired, &manifest);
-
-        assert_eq!(plan.to_cancel, BTreeSet::from([changed.clone(), stale]));
-        assert_eq!(plan.to_schedule, BTreeSet::from([changed, missing]));
-        assert_eq!(plan.kept_count, 1);
-        assert_eq!(plan.desired_count, 3);
-    }
-
-    #[cfg(target_os = "macos")]
-    fn manifest_entry(fingerprint: &str) -> ScheduleManifestRequest {
-        ScheduleManifestRequest {
-            fingerprint: fingerprint.to_string(),
-            expires_at: None,
-        }
     }
 }

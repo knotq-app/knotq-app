@@ -97,7 +97,10 @@ impl SchemeEditor {
                     window.paint_quad(fill(
                         Bounds::new(
                             point(text_origin.x + indent_x + x, text_origin.y + y),
-                            size(px(EMPTY_SELECTION_WIDTH), self.line_map.line_height()),
+                            size(
+                                px(EMPTY_SELECTION_WIDTH),
+                                self.line_map.row_line_height(row),
+                            ),
                         ),
                         selection_bg,
                     ));
@@ -109,7 +112,7 @@ impl SchemeEditor {
                 continue;
             }
             let line_y = self.line_map.y_range(row..row + 1).start;
-            let lh = self.line_map.line_height();
+            let lh = self.line_map.row_line_height(row);
             for (wrap_ix, wrap_range) in self
                 .line_map
                 .wrapped_line_ranges(row)

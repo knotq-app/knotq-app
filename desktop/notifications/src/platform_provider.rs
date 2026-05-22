@@ -65,8 +65,8 @@ impl NotificationRequest {
             id: id.into(),
             fire_at,
             expires_at: None,
-            title: title.into(),
-            body: body.into(),
+            title: display_text_or(title.into(), "(untitled)"),
+            body: display_text_or(body.into(), "KnotQ notification"),
             group: None,
             category: None,
             user_info: BTreeMap::new(),
@@ -91,6 +91,15 @@ impl NotificationRequest {
     pub fn user_info(mut self, key: impl Into<String>, value: impl Into<String>) -> Self {
         self.user_info.insert(key.into(), value.into());
         self
+    }
+}
+
+fn display_text_or(value: String, fallback: &str) -> String {
+    let value = value.trim();
+    if value.is_empty() {
+        fallback.to_string()
+    } else {
+        value.to_string()
     }
 }
 
@@ -203,6 +212,14 @@ impl NotificationScheduler {
     pub fn remove_delivered(&self, ids: &[String]) -> Result<()> {
         platform::remove_delivered(&self.app_id, ids)
     }
+
+    pub fn delivered_ids(&self) -> Result<Vec<String>> {
+        platform::delivered_ids(&self.app_id)
+    }
+
+    pub fn remove_all_delivered(&self) -> Result<()> {
+        platform::remove_all_delivered(&self.app_id)
+    }
 }
 
 #[cfg(target_os = "macos")]
@@ -255,6 +272,14 @@ mod platform {
     pub fn remove_delivered(_app_id: &str, _ids: &[String]) -> Result<()> {
         Err(Error::Unsupported(REASON))
     }
+
+    pub fn delivered_ids(_app_id: &str) -> Result<Vec<String>> {
+        Err(Error::Unsupported(REASON))
+    }
+
+    pub fn remove_all_delivered(_app_id: &str) -> Result<()> {
+        Err(Error::Unsupported(REASON))
+    }
 }
 
 #[cfg(test)]
@@ -278,6 +303,14 @@ mod tests {
             request.user_info.get("scheme_id").map(String::as_str),
             Some("scheme")
         );
+    }
+
+    #[test]
+    fn request_builder_prevents_blank_display_text() {
+        let request = NotificationRequest::new("id", Utc::now() + Duration::hours(1), " \n\t ", "");
+
+        assert_eq!(request.title, "(untitled)");
+        assert_eq!(request.body, "KnotQ notification");
     }
 
     #[test]

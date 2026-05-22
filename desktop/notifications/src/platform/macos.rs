@@ -22,6 +22,7 @@ extern "C" {}
 const AUTHORIZATION_OPTION_BADGE: u64 = 1 << 0;
 const AUTHORIZATION_OPTION_SOUND: u64 = 1 << 1;
 const AUTHORIZATION_OPTION_ALERT: u64 = 1 << 2;
+const UN_NOTIFICATION_INTERRUPTION_LEVEL_TIME_SENSITIVE: usize = 2;
 
 pub fn status() -> PlatformStatus {
     unsafe {
@@ -256,6 +257,46 @@ pub fn remove_delivered(_app_id: &str, ids: &[String]) -> Result<()> {
     }
 }
 
+pub fn delivered_ids(_app_id: &str) -> Result<Vec<String>> {
+    unsafe {
+        let _pool = AutoreleasePool::new();
+        let center = notification_center()?;
+        let (tx, rx) = mpsc::channel();
+        let completion = ConcreteBlock::new(move |notifications: *mut Object| {
+            let ids = delivered_notification_request_ids(notifications);
+            let _ = tx.send(ids);
+        })
+        .copy();
+        let completion_ptr = &*completion as *const Block<(*mut Object,), ()>;
+        let _: () = msg_send![
+            center,
+            getDeliveredNotificationsWithCompletionHandler: completion_ptr
+        ];
+
+        match rx.recv_timeout(StdDuration::from_secs(5)) {
+            Ok(ids) => Ok(ids),
+            Err(mpsc::RecvTimeoutError::Timeout) => {
+                std::mem::forget(completion);
+                Err(Error::Unavailable(
+                    "delivered notification callback timed out",
+                ))
+            }
+            Err(mpsc::RecvTimeoutError::Disconnected) => Err(Error::Unavailable(
+                "delivered notification callback dropped",
+            )),
+        }
+    }
+}
+
+pub fn remove_all_delivered(_app_id: &str) -> Result<()> {
+    unsafe {
+        let _pool = AutoreleasePool::new();
+        let center = notification_center()?;
+        let _: () = msg_send![center, removeAllDeliveredNotifications];
+        Ok(())
+    }
+}
+
 unsafe fn add_notification_request(
     center: *mut Object,
     request: &NotificationRequest,
@@ -267,6 +308,7 @@ unsafe fn add_notification_request(
     let body = nsstring(&request.body);
     let _: () = msg_send![content, setTitle: title];
     let _: () = msg_send![content, setBody: body];
+    set_time_sensitive_interruption_level(content);
 
     let sound: *mut Object = msg_send![class!(UNNotificationSound), defaultSound];
     if !sound.is_null() {
@@ -292,6 +334,16 @@ unsafe fn add_notification_request(
         trigger: trigger
     ];
     wait_for_add_request(center, notification_request)
+}
+
+unsafe fn set_time_sensitive_interruption_level(content: *mut Object) {
+    let responds: BOOL = msg_send![content, respondsToSelector: sel!(setInterruptionLevel:)];
+    if responds != NO {
+        let _: () = msg_send![
+            content,
+            setInterruptionLevel: UN_NOTIFICATION_INTERRUPTION_LEVEL_TIME_SENSITIVE
+        ];
+    }
 }
 
 unsafe fn calendar_trigger(fire_at: chrono::DateTime<chrono::Utc>) -> *mut Object {
@@ -352,6 +404,30 @@ unsafe fn pending_request_ids(requests: *mut Object) -> Vec<String> {
     let mut ids = Vec::with_capacity(count);
     for index in 0..count {
         let request: *mut Object = msg_send![requests, objectAtIndex: index];
+        if request.is_null() {
+            continue;
+        }
+        let identifier: *mut Object = msg_send![request, identifier];
+        if let Some(id) = support::nsstring_to_string(identifier) {
+            ids.push(id);
+        }
+    }
+    ids
+}
+
+unsafe fn delivered_notification_request_ids(notifications: *mut Object) -> Vec<String> {
+    if notifications.is_null() {
+        return Vec::new();
+    }
+
+    let count: usize = msg_send![notifications, count];
+    let mut ids = Vec::with_capacity(count);
+    for index in 0..count {
+        let notification: *mut Object = msg_send![notifications, objectAtIndex: index];
+        if notification.is_null() {
+            continue;
+        }
+        let request: *mut Object = msg_send![notification, request];
         if request.is_null() {
             continue;
         }

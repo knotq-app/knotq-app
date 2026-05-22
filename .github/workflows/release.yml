@@ -7,9 +7,13 @@ on:
 permissions:
   contents: write
 
+env:
+  CARGO_TERM_COLOR: always
+  MACOSX_DEPLOYMENT_TARGET: "11.0"
+
 jobs:
-  build-macos:
-    name: macOS (${{ matrix.target }})
+  build-macos-arch:
+    name: macOS build (${{ matrix.artifact }})
     runs-on: ${{ matrix.runner }}
     strategy:
       fail-fast: false
@@ -45,8 +49,48 @@ jobs:
         env:
           KNOTQ_VERSION: ${{ steps.version.outputs.version }}
 
-      - name: Bundle
+      - name: Bundle app
         run: cargo bundle --package knotq-app --release --target ${{ matrix.target }}
+
+      - name: Upload unsigned app bundle
+        run: |
+          APP_PATH="target/${{ matrix.target }}/release/bundle/osx/KnotQ.app"
+          test -d "$APP_PATH"
+          mkdir -p dist/macos-build
+          ditto -c -k --keepParent "$APP_PATH" "dist/macos-build/KnotQ-${{ matrix.artifact }}-unsigned.zip"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: KnotQ-build-${{ matrix.artifact }}
+          path: dist/macos-build/KnotQ-*-unsigned.zip
+
+  package-macos:
+    name: macOS package universal DMG
+    runs-on: macos-15
+    needs: [build-macos-arch]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Derive version
+        id: version
+        run: echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+
+      - name: Download macOS app bundles
+        uses: actions/download-artifact@v4
+        with:
+          pattern: KnotQ-build-macos-*
+          path: dist/macos-input
+          merge-multiple: true
+
+      - name: Unpack app bundles
+        run: |
+          mkdir -p dist/macos-input/arm64 dist/macos-input/x86_64
+          ditto -x -k dist/macos-input/KnotQ-macos-arm64-unsigned.zip dist/macos-input/arm64
+          ditto -x -k dist/macos-input/KnotQ-macos-x86_64-unsigned.zip dist/macos-input/x86_64
+          test -d dist/macos-input/arm64/KnotQ.app
+          test -d dist/macos-input/x86_64/KnotQ.app
 
       - name: Import macOS signing certificate
         run: |
@@ -80,38 +124,28 @@ jobs:
           MACOS_CERTIFICATE_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
           KEYCHAIN_PASSWORD: ${{ github.run_id }}-${{ github.run_attempt }}
 
-      - name: Sign app
+      - name: Sign, notarize, and package
         run: |
-          APP_PATH="target/${{ matrix.target }}/release/bundle/osx/KnotQ.app"
-          if [[ ! -d "$APP_PATH" ]]; then
-            APP_PATH="target/release/bundle/osx/KnotQ.app"
-          fi
-
-          plutil -replace CFBundleIdentifier -string "com.enigmadux.knotq" "$APP_PATH/Contents/Info.plist"
-          plutil -replace CFBundleShortVersionString -string "${KNOTQ_VERSION}" "$APP_PATH/Contents/Info.plist"
-          plutil -replace CFBundleVersion -string "${GITHUB_RUN_NUMBER}.${GITHUB_RUN_ATTEMPT}" "$APP_PATH/Contents/Info.plist"
-          plutil -insert NSUserNotificationAlertStyle -string "alert" "$APP_PATH/Contents/Info.plist" 2>/dev/null || \
-            plutil -replace NSUserNotificationAlertStyle -string "alert" "$APP_PATH/Contents/Info.plist"
-          rm -f "$APP_PATH/Contents/embedded.provisionprofile"
-
-          if [[ -n "${CODESIGN_IDENTITY:-}" ]]; then
-            codesign --force --deep --options runtime --sign "$CODESIGN_IDENTITY" "$APP_PATH"
-          else
-            codesign --force --deep --sign - "$APP_PATH"
-          fi
-
-          codesign --verify --deep --strict "$APP_PATH"
-          mkdir -p dist/macos
-          ditto -c -k --keepParent "$APP_PATH" "dist/macos/KnotQ-${KNOTQ_VERSION}-${{ matrix.artifact }}.zip"
+          bash bundling/macos/post-bundle.sh \
+            "${KNOTQ_VERSION}" \
+            "${GITHUB_RUN_NUMBER}.${GITHUB_RUN_ATTEMPT}" \
+            "dist/macos-input/arm64/KnotQ.app" \
+            "dist/macos-input/x86_64/KnotQ.app"
         env:
-          CODESIGN_IDENTITY: ${{ secrets.CODESIGN_IDENTITY }}
           KNOTQ_VERSION: ${{ steps.version.outputs.version }}
+          CODESIGN_IDENTITY: ${{ secrets.CODESIGN_IDENTITY }}
+          CODESIGN_ENTITLEMENTS: bundling/macos/KnotQ.entitlements
+          APPLE_NOTARY_KEYCHAIN_PROFILE: ${{ secrets.APPLE_NOTARY_KEYCHAIN_PROFILE }}
+          APPLE_NOTARY_APPLE_ID: ${{ secrets.APPLE_NOTARY_APPLE_ID }}
+          APPLE_NOTARY_PASSWORD: ${{ secrets.APPLE_NOTARY_PASSWORD }}
+          APPLE_NOTARY_TEAM_ID: ${{ secrets.APPLE_NOTARY_TEAM_ID }}
+          MACOS_PROVISIONING_PROFILE: ${{ secrets.MACOS_PROVISIONING_PROFILE }}
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: KnotQ-${{ matrix.artifact }}
-          path: dist/macos/KnotQ-*.zip
+          name: KnotQ-release-macos
+          path: dist/macos/KnotQ-*.dmg
 
   build-windows:
     name: Windows
@@ -140,85 +174,19 @@ jobs:
           KNOTQ_VERSION: ${{ steps.version.outputs.version }}
 
       - name: Build
-        run: cargo build --package knotq-app --release
+        run: cargo build --package knotq-app --release --target x86_64-pc-windows-msvc
 
-      - name: Create MSIX package
+      - name: Package MSIX
         shell: pwsh
-        run: |
-          $version = "${{ steps.version.outputs.version }}"
-          # Ensure 4-part version for MSIX (major.minor.patch.0)
-          $parts = $version -split '\.'
-          while ($parts.Count -lt 4) { $parts += "0" }
-          $msixVersion = ($parts[0..3]) -join '.'
-
-          $distDir = "dist/windows"
-          New-Item -ItemType Directory -Force -Path $distDir | Out-Null
-
-          # Create package layout
-          $layoutDir = "$distDir/layout"
-          New-Item -ItemType Directory -Force -Path $layoutDir | Out-Null
-          Copy-Item "target/release/knotq.exe" "$layoutDir/knotq.exe"
-
-          # Copy assets if they exist
-          if (Test-Path "desktop/app/assets/app-icon/icon_256x256.png") {
-            Copy-Item "desktop/app/assets/app-icon/icon_256x256.png" "$layoutDir/knotq-icon.png"
-          }
-
-          # Create AppxManifest.xml
-          @"
-          <?xml version="1.0" encoding="utf-8"?>
-          <Package xmlns="http://schemas.microsoft.com/appx/manifest/foundation/windows10"
-                   xmlns:uap="http://schemas.microsoft.com/appx/manifest/uap/windows10"
-                   xmlns:rescap="http://schemas.microsoft.com/appx/manifest/foundation/windows10/restrictedcapabilities">
-            <Identity Name="Enigmadux.KnotQ"
-                      Publisher="CN=Enigmadux"
-                      Version="$msixVersion"
-                      ProcessorArchitecture="x64" />
-            <Properties>
-              <DisplayName>KnotQ</DisplayName>
-              <PublisherDisplayName>Enigmadux</PublisherDisplayName>
-              <Description>A structured task and calendar app.</Description>
-              <Logo>knotq-icon.png</Logo>
-            </Properties>
-            <Dependencies>
-              <TargetDeviceFamily Name="Windows.Desktop" MinVersion="10.0.17763.0" MaxVersionTested="10.0.22621.0" />
-            </Dependencies>
-            <Resources>
-              <Resource Language="en-us" />
-            </Resources>
-            <Applications>
-              <Application Id="KnotQ"
-                           Executable="knotq.exe"
-                           EntryPoint="Windows.FullTrustApplication">
-                <uap:VisualElements DisplayName="KnotQ"
-                                    Description="A structured task and calendar app."
-                                    BackgroundColor="transparent"
-                                    Square150x150Logo="knotq-icon.png"
-                                    Square44x44Logo="knotq-icon.png" />
-              </Application>
-            </Applications>
-            <Capabilities>
-              <rescap:Capability Name="runFullTrust" />
-            </Capabilities>
-          </Package>
-          "@ | Out-File -Encoding utf8 "$layoutDir/AppxManifest.xml"
-
-          # Try to create MSIX using makeappx
-          $makeappx = Get-ChildItem "C:\Program Files (x86)\Windows Kits\10\bin\*\x64\makeappx.exe" -ErrorAction SilentlyContinue | Sort-Object | Select-Object -Last 1
-          if ($makeappx) {
-            & $makeappx.FullName pack /d "$layoutDir" /p "$distDir/KnotQ-$version-windows-x64.msix" /nv
-          } else {
-            Write-Warning "makeappx not found, creating zip instead"
-            Compress-Archive -Path "$layoutDir/*" -DestinationPath "$distDir/KnotQ-$version-windows-x64.zip"
-          }
-
-          # Also create a plain zip with just the exe for sideloading
-          Compress-Archive -Path "target/release/knotq.exe" -DestinationPath "$distDir/KnotQ-$version-windows-x64-portable.zip"
+        run: ./bundling/windows/package-msix.ps1 "${{ steps.version.outputs.version }}" "x86_64-pc-windows-msvc"
+        env:
+          WINDOWS_PUBLISHER: ${{ secrets.WINDOWS_PUBLISHER }}
+          WINDOWS_PUBLISHER_DISPLAY_NAME: ${{ secrets.WINDOWS_PUBLISHER_DISPLAY_NAME }}
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: KnotQ-windows-x64
+          name: KnotQ-release-windows-x64
           path: dist/windows/KnotQ-*.*
 
   build-linux:
@@ -229,6 +197,8 @@ jobs:
       - uses: actions/checkout@v4
 
       - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-unknown-linux-gnu
 
       - uses: Swatinem/rust-cache@v2
         with:
@@ -258,40 +228,48 @@ jobs:
           KNOTQ_VERSION: ${{ steps.version.outputs.version }}
 
       - name: Build
-        run: cargo build --package knotq-app --release
+        run: cargo build --package knotq-app --release --target x86_64-unknown-linux-gnu
 
       - name: Package
         run: |
-          mkdir -p dist/linux
+          mkdir -p dist/linux/stage dist/linux
+          cp target/x86_64-unknown-linux-gnu/release/knotq dist/linux/stage/knotq
+          chmod +x dist/linux/stage/knotq
           tar czf "dist/linux/KnotQ-${{ steps.version.outputs.version }}-linux-x86_64.tar.gz" \
-            -C target/release knotq
+            -C dist/linux/stage knotq
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: KnotQ-linux-x86_64
+          name: KnotQ-release-linux-x86_64
           path: dist/linux/KnotQ-*.tar.gz
 
   publish:
     name: Publish GitHub release
     runs-on: ubuntu-24.04
-    needs: [build-macos, build-windows, build-linux]
+    needs: [package-macos, build-windows, build-linux]
 
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          fetch-tags: true
 
       - uses: actions/download-artifact@v4
         with:
+          pattern: KnotQ-release-*
           path: dist
           merge-multiple: true
 
-      - name: Upload install script
-        run: cp bundling/install.sh dist/ 2>/dev/null || true
+      - name: Add Linux install script
+        run: cp bundling/install.sh dist/install.sh
 
       - uses: softprops/action-gh-release@v2
         with:
-          files: |
-            dist/KnotQ-*.zip
-            dist/KnotQ-*.msix
-            dist/KnotQ-*.tar.gz
-            dist/install.sh
+          name: KnotQ ${{ github.ref_name }}
+          tag_name: ${{ github.ref_name }}
+          draft: false
+          prerelease: false
+          make_latest: true
+          fail_on_unmatched_files: true
+          files: dist/*

@@ -165,6 +165,14 @@ pub fn remove_delivered(app_id: &str, ids: &[String]) -> Result<()> {
     Ok(())
 }
 
+pub fn delivered_ids(_app_id: &str) -> Result<Vec<String>> {
+    Ok(Vec::new())
+}
+
+pub fn remove_all_delivered(_app_id: &str) -> Result<()> {
+    Ok(())
+}
+
 fn notifier(app_id: &str) -> Result<ToastNotifier> {
     if app_id.trim().is_empty() {
         return Err(Error::Unavailable(

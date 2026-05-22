@@ -37,14 +37,8 @@ impl SchemeEditor {
             let y = self.line_map.y_range(row..row + 1).start;
             if let Some(line) = self.line_map.line(row).cloned() {
                 let line_origin = point(text_origin.x + self.row_layout_x(row), text_origin.y + y);
-                let _ = line.paint(
-                    line_origin,
-                    self.line_map.line_height(),
-                    TextAlign::Left,
-                    None,
-                    window,
-                    cx,
-                );
+                let line_height = self.line_map.row_line_height(row);
+                let _ = line.paint(line_origin, line_height, TextAlign::Left, None, window, cx);
                 if let Some(editor_row) = self.rows.get(row).cloned() {
                     self.paint_line_marker(&editor_row, row, line_origin, window, cx);
                     if self
@@ -62,7 +56,8 @@ impl SchemeEditor {
 
         if focused && self.selection.is_empty() && self.cursor_blink_state {
             let pos = self.visual_point_for_location(self.selection.head);
-            let caret_height = (self.line_map.line_height() - px(4.0)).max(px(12.0));
+            let caret_height =
+                (self.line_map.row_line_height(self.selection.head.row) - px(4.0)).max(px(12.0));
             window.paint_quad(fill(
                 Bounds::new(
                     point(text_origin.x + pos.x, text_origin.y + pos.y + px(2.0)),
@@ -115,11 +110,7 @@ impl SchemeEditor {
         let Some(line) = self.line_map.item_line(row_ix) else {
             return;
         };
-        let text_width = line
-            .text
-            .size(self.line_map.line_height())
-            .width
-            .max(px(120.0));
+        let text_width = line.text.size(line.line_height()).width.max(px(120.0));
         let max_width = (self
             .last_bounds
             .map(|bounds| bounds.size.width - px(TEXT_LEFT_PAD + 24.0) - self.row_indent_x(row_ix))

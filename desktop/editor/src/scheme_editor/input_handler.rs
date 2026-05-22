@@ -119,7 +119,10 @@ impl EntityInputHandler for SchemeEditor {
                 element_bounds.left()
                     + px(TEXT_LEFT_PAD)
                     + end_point.x.max(start_point.x + px(1.0)),
-                element_bounds.top() + px(self.top_pad) + end_point.y + self.line_map.line_height(),
+                element_bounds.top()
+                    + px(self.top_pad)
+                    + end_point.y
+                    + self.line_map.row_line_height(end.row),
             ),
         ))
     }

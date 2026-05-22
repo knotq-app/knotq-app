@@ -3139,6 +3139,7 @@ dependencies = [
  "objc",
  "serde",
  "serde_json",
+ "sha2",
  "thiserror 1.0.69",
  "uuid",
  "windows 0.61.3",

@@ -14,4 +14,29 @@ Google Calendar development uses `local/.env`, which is intentionally ignored. S
 
 ## Release
 
-Pushing a tag named `v*` runs the macOS release workflow and uploads arm64 and Intel app bundle archives.
+Pushing a tag named `v*` builds and publishes:
+
+- a universal macOS DMG (`arm64` + `x86_64`)
+- a Windows x64 MSIX plus a portable zip
+- a Linux x86_64 tarball plus `install.sh`
+
+macOS notarization is enabled when these secrets are present:
+
+- `MACOS_CERTIFICATE_P12`: base64-encoded Developer ID Application `.p12`
+- `MACOS_CERTIFICATE_PASSWORD`
+- `CODESIGN_IDENTITY`: the Developer ID Application identity name
+- `APPLE_NOTARY_APPLE_ID`, `APPLE_NOTARY_PASSWORD`, `APPLE_NOTARY_TEAM_ID`
+- `MACOS_PROVISIONING_PROFILE`: optional base64-encoded `.provisionprofile`, required if the app uses a capability that must be provisioned, such as Time Sensitive Notifications
+
+Local macOS bundle signing can use the same entitlement/profile path with `local/.env`:
+
+```sh
+KNOTQ_CODESIGN_IDENTITY="Developer ID Application: Example, Inc. (TEAMID)"
+KNOTQ_PROVISIONING_PROFILE="/path/to/KnotQ.provisionprofile"
+KNOTQ_ENTITLEMENTS_PATH="bundling/macos/KnotQ.entitlements"
+```
+
+Windows package identity can be configured with:
+
+- `WINDOWS_PUBLISHER`: certificate subject, for example `CN=Enigmadux`
+- `WINDOWS_PUBLISHER_DISPLAY_NAME`: optional display name

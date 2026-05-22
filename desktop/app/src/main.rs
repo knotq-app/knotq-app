@@ -11,8 +11,8 @@ use std::borrow::Cow;
 use gpui::prelude::*;
 use gpui::{
     actions, div, px, App, Application, Context, InteractiveElement, IntoElement, KeyBinding, Menu,
-    MenuItem, OsAction, Render, TitlebarOptions, Window, WindowBounds, WindowDecorations,
-    WindowOptions,
+    MenuItem, MouseButton, MouseMoveEvent, MouseUpEvent, OsAction, Render, TitlebarOptions, Window,
+    WindowBounds, WindowDecorations, WindowOptions,
 };
 use gpui_component::{
     input::{IndentInline, MoveDown, MoveUp, OutdentInline},
@@ -144,6 +144,23 @@ impl Render for KnotQApp {
                 .bg(token_hsla(t.bg_app))
                 .text_color(token_hsla(t.text_primary))
                 .font_family(FONT_UI)
+                .on_mouse_move(cx.listener(|this, event: &MouseMoveEvent, _window, cx| {
+                    if !event.dragging() {
+                        this.clear_calendar_pointer_state(cx);
+                    }
+                }))
+                .on_mouse_up(
+                    MouseButton::Left,
+                    cx.listener(|this, _event: &MouseUpEvent, _window, cx| {
+                        this.clear_calendar_pointer_state(cx);
+                    }),
+                )
+                .on_mouse_up_out(
+                    MouseButton::Left,
+                    cx.listener(|this, _event: &MouseUpEvent, _window, cx| {
+                        this.clear_calendar_pointer_state(cx);
+                    }),
+                )
                 .on_action(cx.listener(|this, _: &OpenSettingsView, window, cx| {
                     this.open_settings();
                     this.focus_app_root(window);

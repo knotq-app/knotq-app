@@ -9,7 +9,7 @@ use gpui::{point, px, Pixels, Point, WrappedLine};
 /// checkboxes and date annotations.
 pub struct LineMap {
     lines: Vec<SchemeItemLine>,
-    line_height: Pixels,
+    default_line_height: Pixels,
 }
 
 #[derive(Clone)]
@@ -18,6 +18,7 @@ pub struct SchemeItemLine {
     pub annotation: Option<SchemeItemAnnotation>,
     pub media_height: Pixels,
     hidden_prefix_len: usize,
+    line_height: Pixels,
 }
 
 #[derive(Clone, Debug)]
@@ -27,12 +28,17 @@ pub struct SchemeItemAnnotation {
 }
 
 impl SchemeItemLine {
-    pub fn new(text: WrappedLine, annotation: Option<SchemeItemAnnotation>) -> Self {
+    pub fn new(
+        text: WrappedLine,
+        annotation: Option<SchemeItemAnnotation>,
+        line_height: Pixels,
+    ) -> Self {
         Self {
             text,
             annotation,
             media_height: px(0.0),
             hidden_prefix_len: 0,
+            line_height,
         }
     }
 
@@ -46,8 +52,12 @@ impl SchemeItemLine {
         self
     }
 
-    pub(crate) fn height(&self, line_height: Pixels) -> Pixels {
-        self.text.size(line_height).height
+    pub(crate) fn line_height(&self) -> Pixels {
+        self.line_height
+    }
+
+    pub(crate) fn height(&self) -> Pixels {
+        self.text.size(self.line_height).height
             + self
                 .annotation
                 .as_ref()
@@ -56,8 +66,8 @@ impl SchemeItemLine {
             + self.media_height
     }
 
-    fn text_height(&self, line_height: Pixels) -> Pixels {
-        self.text.size(line_height).height
+    fn text_height(&self) -> Pixels {
+        self.text.size(self.line_height).height
     }
 
     fn visible_len(&self) -> usize {
@@ -74,13 +84,16 @@ impl SchemeItemLine {
             .min(self.visible_len())
     }
 
-    fn position_for_index(&self, index: usize, line_height: Pixels) -> Option<Point<Pixels>> {
+    fn position_for_index(&self, index: usize) -> Option<Point<Pixels>> {
         self.text
-            .position_for_index(self.layout_index_for_col(index), line_height)
+            .position_for_index(self.layout_index_for_col(index), self.line_height)
     }
 
-    fn closest_index_for_position(&self, position: Point<Pixels>, line_height: Pixels) -> usize {
-        let col = match self.text.closest_index_for_position(position, line_height) {
+    fn closest_index_for_position(&self, position: Point<Pixels>) -> usize {
+        let col = match self
+            .text
+            .closest_index_for_position(position, self.line_height)
+        {
             Ok(col) | Err(col) => col,
         };
         self.visible_col_for_layout_index(col)
@@ -130,7 +143,7 @@ impl LineMap {
     pub fn new(line_height: Pixels) -> Self {
         Self {
             lines: Vec::new(),
-            line_height,
+            default_line_height: line_height,
         }
     }
 
@@ -143,7 +156,14 @@ impl LineMap {
     }
 
     pub fn line_height(&self) -> Pixels {
-        self.line_height
+        self.default_line_height
+    }
+
+    pub fn row_line_height(&self, row: usize) -> Pixels {
+        self.lines
+            .get(row)
+            .map(SchemeItemLine::line_height)
+            .unwrap_or(self.default_line_height)
     }
 
     pub fn line(&self, row: usize) -> Option<&WrappedLine> {
@@ -164,14 +184,14 @@ impl LineMap {
     pub fn line_text_height(&self, row: usize) -> Pixels {
         self.lines
             .get(row)
-            .map(|line| line.text_height(self.line_height))
-            .unwrap_or(self.line_height)
+            .map(SchemeItemLine::text_height)
+            .unwrap_or(self.default_line_height)
     }
 
     pub fn total_height(&self) -> Pixels {
-        self.lines.iter().fold(px(0.0), |height, line| {
-            height + line.height(self.line_height)
-        })
+        self.lines
+            .iter()
+            .fold(px(0.0), |height, line| height + line.height())
     }
 
     pub fn y_range(&self, rows: Range<usize>) -> Range<Pixels> {
@@ -188,12 +208,12 @@ impl LineMap {
         let row = location.row.min(self.lines.len().saturating_sub(1));
         let y = self.height_before(row);
         let x = self.lines[row]
-            .position_for_index(location.col, self.line_height)
+            .position_for_index(location.col)
             .map(|p| p.x)
             .unwrap_or(px(0.0));
 
         let local_y = self.lines[row]
-            .position_for_index(location.col, self.line_height)
+            .position_for_index(location.col)
             .map(|p| p.y)
             .unwrap_or(px(0.0));
 
@@ -211,13 +231,13 @@ impl LineMap {
 
         let mut y = px(0.0);
         for (row, line) in self.lines.iter().enumerate() {
-            let text_height = line.text_height(self.line_height);
-            let height = line.height(self.line_height);
+            let text_height = line.text_height();
+            let height = line.height();
             if pos.y < y + height {
                 let local_y = pos.y - y;
                 let col = if local_y < text_height {
                     let local = point(pos.x, local_y);
-                    line.closest_index_for_position(local, self.line_height)
+                    line.closest_index_for_position(local)
                 } else {
                     line.visible_len()
                 };
@@ -239,7 +259,7 @@ impl LineMap {
     pub fn position_for_index(&self, row: usize, index: usize) -> Option<Point<Pixels>> {
         self.lines
             .get(row)
-            .and_then(|line| line.position_for_index(index, self.line_height))
+            .and_then(|line| line.position_for_index(index))
     }
 
     pub fn wrapped_line_ranges(&self, row: usize) -> Vec<Range<usize>> {
@@ -253,8 +273,6 @@ impl LineMap {
         self.lines
             .iter()
             .take(row.min(self.lines.len()))
-            .fold(px(0.0), |height, line| {
-                height + line.height(self.line_height)
-            })
+            .fold(px(0.0), |height, line| height + line.height())
     }
 }
