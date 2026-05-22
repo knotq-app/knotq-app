@@ -60,7 +60,9 @@ pub fn schedule(app_id: &str, request: &NotificationRequest) -> Result<()> {
 
     let id = HSTRING::from(windows_notification_id(&request.id));
     scheduled.SetId(&id).map_err(windows_error)?;
-    scheduled.SetTag(&id).map_err(windows_error)?;
+    scheduled
+        .SetTag(&HSTRING::from(&request.id))
+        .map_err(windows_error)?;
     scheduled
         .SetGroup(&HSTRING::from(WINDOWS_GROUP))
         .map_err(windows_error)?;
@@ -87,7 +89,7 @@ pub fn cancel(app_id: &str, ids: &[String]) -> Result<()> {
     }
     let ids = ids
         .iter()
-        .map(|id| windows_notification_id(id))
+        .flat_map(|id| [id.clone(), windows_notification_id(id)])
         .collect::<HashSet<_>>();
     let notifier = notifier(app_id)?;
     let scheduled = notifier
@@ -159,9 +161,12 @@ pub fn remove_delivered(app_id: &str, ids: &[String]) -> Result<()> {
     let history = ToastNotificationManager::History().map_err(windows_error)?;
     let group = HSTRING::from(WINDOWS_GROUP);
     for id in ids {
+        let full_id = HSTRING::from(id);
+        let windows_id = HSTRING::from(windows_notification_id(id));
         history
-            .RemoveGroupedTagWithId(&HSTRING::from(windows_notification_id(id)), &group, &app_id)
+            .RemoveGroupedTagWithId(&full_id, &group, &app_id)
             .map_err(windows_error)?;
+        let _ = history.RemoveGroupedTagWithId(&windows_id, &group, &app_id);
     }
     Ok(())
 }
@@ -332,7 +337,7 @@ fn windows_time(time: chrono::DateTime<chrono::Utc>) -> DateTime {
 
 fn toast_xml(title: &str, body: &str) -> String {
     format!(
-        r#"<toast><visual><binding template="ToastGeneric"><text>{}</text><text>{}</text></binding></visual></toast>"#,
+        r#"<toast scenario="reminder"><visual><binding template="ToastGeneric"><text>{}</text><text>{}</text></binding></visual><audio src="ms-winsoundevent:Notification.Reminder"/></toast>"#,
         escape_xml(title),
         escape_xml(body)
     )

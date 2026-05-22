@@ -103,9 +103,6 @@ impl KnotQApp {
         .collect::<Vec<_>>();
 
         let mut notification_rows: Vec<gpui::AnyElement> = Vec::new();
-        if let Some(err) = &self.notification_error {
-            notification_rows.push(settings_message(err.clone(), true, t));
-        }
         notification_rows.push(settings_subheading("Events", t));
         for (idx, (label, offset_secs)) in [
             ("At start", 0),

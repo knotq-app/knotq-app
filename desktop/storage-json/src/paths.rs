@@ -15,14 +15,29 @@ pub fn settings_path() -> PathBuf {
 }
 
 pub fn data_dir() -> PathBuf {
+    #[cfg(target_os = "windows")]
+    {
+        if let Ok(local_app_data) = std::env::var("LOCALAPPDATA") {
+            return PathBuf::from(local_app_data).join("KnotQ");
+        }
+        if let Ok(app_data) = std::env::var("APPDATA") {
+            return PathBuf::from(app_data).join("KnotQ");
+        }
+        if let Ok(user_profile) = std::env::var("USERPROFILE") {
+            return PathBuf::from(user_profile).join("AppData/Local/KnotQ");
+        }
+    }
+
+    #[cfg(not(target_os = "windows"))]
     if let Ok(home) = std::env::var("HOME") {
-        let home = PathBuf::from(home);
         #[cfg(target_os = "macos")]
         {
+            let home = PathBuf::from(home);
             return home.join("Library/Application Support/KnotQ");
         }
-        #[cfg(not(target_os = "macos"))]
+        #[cfg(all(not(target_os = "macos"), not(target_os = "windows")))]
         {
+            let home = PathBuf::from(home);
             return home.join(".local/share/knotq");
         }
     }

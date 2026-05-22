@@ -9,3 +9,6 @@ build
 
 .claude/CLAUDE.local.md
 .claude/settings.local.json
+
+# Self-contained local run artifacts.
+.knotq-run/
