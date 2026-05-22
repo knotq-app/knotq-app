@@ -9,7 +9,7 @@ use knotq_model::{FolderId, NodeRef, SchemeId};
 
 use crate::app::{
     KnotQApp, NewNodeKind, SidebarContextMenu, SidebarContextTarget, View,
-    DAILY_QUEUE_MARKER_COLOR, DAILY_QUEUE_TITLE,
+    daily_queue_marker_color, DAILY_QUEUE_TITLE,
 };
 use crate::theme_gpui::{scheme_square_color, token_hsla, token_rgba, Theme, FONT_UI};
 use knotq_ui::single_line_editor::SingleLineEditor;

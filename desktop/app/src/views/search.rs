@@ -5,7 +5,7 @@ use knotq_index::search::{
     search_hits as query_search_hits, SearchHit, SearchHitStatus, SearchOptions, SearchTarget,
 };
 
-use crate::app::{KnotQApp, View, DAILY_QUEUE_MARKER_COLOR, DAILY_QUEUE_TITLE};
+use crate::app::{KnotQApp, View, daily_queue_marker_color, DAILY_QUEUE_TITLE};
 use crate::theme_gpui::{
     date_status_color, event_status_color, palette_hsla, scheme_color, token_hsla, token_rgba,
     FONT_MONO, FONT_SIZE_BODY, FONT_SIZE_CAPTION2, FONT_UI,
@@ -144,7 +144,7 @@ impl KnotQApp {
             let show_title = !is_list_hit && !hit.title.trim().is_empty();
             let title_text = hit.title.clone();
             let detail_text = hit.detail.clone();
-            let detail_color = search_hit_detail_color(hit, token_hsla(t.text_highlight))
+            let detail_color = search_hit_detail_color(hit, token_hsla(t.text_highlight), t.is_dark)
                 .unwrap_or_else(|| token_hsla(t.text_soft));
             let color = hit
                 .color_override
@@ -329,7 +329,7 @@ impl KnotQApp {
             query,
             SearchOptions {
                 daily_queue_title: DAILY_QUEUE_TITLE,
-                daily_queue_marker_color: DAILY_QUEUE_MARKER_COLOR,
+                daily_queue_marker_color: daily_queue_marker_color(self.theme().is_dark),
             },
         )
     }
@@ -368,7 +368,7 @@ impl KnotQApp {
     }
 }
 
-fn search_hit_detail_color(hit: &SearchHit, default: gpui::Hsla) -> Option<gpui::Hsla> {
+fn search_hit_detail_color(hit: &SearchHit, default: gpui::Hsla, is_dark: bool) -> Option<gpui::Hsla> {
     match hit.status {
         SearchHitStatus::Event { start, end } => Some(event_status_color(
             start.with_timezone(&chrono::Local),
@@ -378,7 +378,7 @@ fn search_hit_detail_color(hit: &SearchHit, default: gpui::Hsla) -> Option<gpui:
         SearchHitStatus::Date { dt } => {
             Some(date_status_color(dt.with_timezone(&chrono::Local), default))
         }
-        SearchHitStatus::DailyQueue => Some(token_hsla(DAILY_QUEUE_MARKER_COLOR)),
+        SearchHitStatus::DailyQueue => Some(token_hsla(daily_queue_marker_color(is_dark))),
         SearchHitStatus::None => None,
     }
 }

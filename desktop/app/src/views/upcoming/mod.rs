@@ -5,7 +5,7 @@ use gpui_component::scroll::ScrollableElement as _;
 use knotq_model::{ItemId, ItemKind, OccurrenceId, SchemeId};
 use knotq_rrule::ItemOccurrenceExt;
 
-use crate::app::{KnotQApp, DAILY_QUEUE_MARKER_COLOR};
+use crate::app::{KnotQApp, daily_queue_marker_color};
 use crate::theme_gpui::{
     date_status_color, event_status_color, token_hsla, token_rgba, upcoming_scheme_color,
     FONT_MONO, FONT_SIZE_BODY, FONT_SIZE_CAPTION2,

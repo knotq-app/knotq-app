@@ -13,7 +13,7 @@ use knotq_model::{
 use knotq_storage_json::{NotificationDefaults, TimeFormat};
 
 use crate::app::{
-    EventScopeAction, KnotQApp, RepeatScope, DAILY_QUEUE_MARKER_COLOR, DAILY_QUEUE_TITLE,
+    EventScopeAction, KnotQApp, RepeatScope, daily_queue_marker_color, DAILY_QUEUE_TITLE,
 };
 use crate::theme_gpui::{calendar_item_color, token_hsla, token_rgba, Theme, FONT_UI};
 use crate::views::date_popover::{DATE_POPOVER_WIDTH_12H, DATE_POPOVER_WIDTH_24H};

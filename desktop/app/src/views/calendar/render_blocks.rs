@@ -467,7 +467,7 @@ fn calendar_time_color(
 
 pub(super) fn calendar_task_color(task: &CalendarTask, is_dark: bool) -> gpui::Hsla {
     if task.is_daily {
-        token_hsla(DAILY_QUEUE_MARKER_COLOR)
+        token_hsla(daily_queue_marker_color(is_dark))
     } else {
         calendar_item_color(task.is_done, task.color_index, is_dark)
     }

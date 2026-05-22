@@ -63,7 +63,7 @@ impl KnotQApp {
                     ))
                     .child(special_row(
                         DAILY_QUEUE_TITLE,
-                        DAILY_QUEUE_MARKER_COLOR,
+                        daily_queue_marker_color(t.is_dark),
                         is_daily_queue,
                         t,
                         context_menu_open,

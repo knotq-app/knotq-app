@@ -340,7 +340,16 @@ pub struct CalendarResizeState {
 
 pub const CALENDAR_WEEK_VIEW_DAYS: usize = 7;
 pub const DAILY_QUEUE_TITLE: &str = "Daily";
-pub const DAILY_QUEUE_MARKER_COLOR: u32 = 0xb8c9e8ff;
+pub const DAILY_QUEUE_MARKER_COLOR_DARK: u32 = 0xb8c9e8ff;
+pub const DAILY_QUEUE_MARKER_COLOR_LIGHT: u32 = 0x5a7aadff;
+
+pub fn daily_queue_marker_color(is_dark: bool) -> u32 {
+    if is_dark {
+        DAILY_QUEUE_MARKER_COLOR_DARK
+    } else {
+        DAILY_QUEUE_MARKER_COLOR_LIGHT
+    }
+}
 pub const DAILY_QUEUE_COLOR_INDEX: u8 = 0;
 pub const DEFAULT_WINDOW_WIDTH: f32 = 1250.0;
 pub const DEFAULT_WINDOW_HEIGHT: f32 = 750.0;

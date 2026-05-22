@@ -206,7 +206,7 @@ pub fn theme_light() -> Theme {
     theme.text_highlight = rgba(0x1a1410f4);
     theme.text_placeholder = rgba(0x5a4a3c90);
     theme.text_today = rgb(0xd04e1a);
-    theme.caret_color = rgb(0xe66f1f);
+    theme.caret_color = rgb(0x1a1410);
     theme.row_alt = rgba(0x5a46350c);
     theme.row_hover = rgba(0x5a463518);
     theme.row_hover_strong = rgba(0x5a463524);
@@ -220,7 +220,7 @@ pub fn theme_light() -> Theme {
     theme.overlay_scrim = rgba(0x3b24169a);
     theme.cal_grid = rgba(0x5a463524);
     theme.cal_grid_soft = rgba(0x5a463510);
-    theme.cal_past = rgba(0x8c8c8c20);
+    theme.cal_past = rgba(0x8c8c8c40);
     // Event blocks: cooler/grayer tint to stand out from warm bg
     theme.event_bg = rgba(0xd3d2ceee);
     theme.event_border = rgba(0xa89580c0);

@@ -34,7 +34,7 @@ impl KnotQApp {
         let end = popup.draft_end;
         let is_daily = self.workspace.is_daily_queue_scheme(scheme_id);
         let accent = if is_daily {
-            token_hsla(DAILY_QUEUE_MARKER_COLOR)
+            token_hsla(daily_queue_marker_color(t.is_dark))
         } else {
             calendar_item_color(false, scheme.color_index, t.is_dark)
         };
@@ -625,7 +625,7 @@ fn event_scheme_picker_daily_row(
                 .h(px(9.0))
                 .rounded(px(2.0))
                 .flex_shrink_0()
-                .bg(token_rgba(DAILY_QUEUE_MARKER_COLOR)),
+                .bg(token_rgba(daily_queue_marker_color(t.is_dark))),
         )
         .child(
             div()

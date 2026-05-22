@@ -5,7 +5,7 @@ use knotq_commands::Command;
 use knotq_model::SchemeId;
 use knotq_storage_json::CalendarViewMode;
 
-use crate::app::{KnotQApp, View, DAILY_QUEUE_MARKER_COLOR};
+use crate::app::{KnotQApp, View, daily_queue_marker_color};
 use crate::theme_gpui::{
     palette_hsla, scheme_color, token_hsla, token_rgba, Theme, FONT_SIZE_HEADLINE,
 };
@@ -42,7 +42,7 @@ impl KnotQApp {
         } else if view == View::Union {
             token_hsla(t.text_highlight)
         } else if view == View::DailyQueue {
-            token_hsla(DAILY_QUEUE_MARKER_COLOR)
+            token_hsla(daily_queue_marker_color(t.is_dark))
         } else {
             token_hsla(t.text_dim)
         };

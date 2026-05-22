@@ -180,7 +180,7 @@ impl KnotQApp {
                 let item_id = row.item_id;
                 let occurrence = row.occurrence.clone();
                 let color = if row.is_daily {
-                    token_hsla(DAILY_QUEUE_MARKER_COLOR)
+                    token_hsla(daily_queue_marker_color(t.is_dark))
                 } else {
                     upcoming_scheme_color(row.color_index, t.is_dark)
                 };
