@@ -30,7 +30,7 @@ const GOOGLE_OAUTH_SCOPES: &[&str] = &[
     "openid",
     "email",
     "https://www.googleapis.com/auth/calendar.calendarlist.readonly",
-    "https://www.googleapis.com/auth/calendar.events",
+    "https://www.googleapis.com/auth/calendar.events.readonly",
 ];
 const IMPORTED_GOOGLE_CALENDAR_SCHEME_NAME: &str = "Google Calendar";
 const GOOGLE_CALENDAR_BACKGROUND_SYNC_INTERVAL_SECS: u64 = 5 * 60;
@@ -559,14 +559,9 @@ impl KnotQApp {
 
             if let Some(scheme) = self.workspace.schemes.get_mut(&scheme_id) {
                 let should_update_name = existing_scheme_id.is_none();
-                let metadata_changed = (should_update_name && scheme.name != calendar.name)
-                    || scheme.color_index != calendar.color_index;
+                let metadata_changed =
+                    apply_google_calendar_metadata(scheme, &calendar, should_update_name);
                 let items_changed = apply_google_calendar_items(scheme, &calendar);
-                if should_update_name {
-                    scheme.name = calendar.name.clone();
-                }
-                scheme.color_index = calendar.color_index;
-                scheme.source = google_calendar_source(&calendar);
                 self.state.mark_scheme_dirty(scheme_id);
                 let scheme_content_changed = metadata_changed || items_changed;
                 if scheme_content_changed {
@@ -1147,6 +1142,19 @@ fn google_calendar_source(calendar: &ImportedGoogleCalendar) -> SchemeSource {
     })
 }
 
+fn apply_google_calendar_metadata(
+    scheme: &mut Scheme,
+    calendar: &ImportedGoogleCalendar,
+    should_update_name: bool,
+) -> bool {
+    let metadata_changed = should_update_name && scheme.name != calendar.name;
+    if should_update_name {
+        scheme.name = calendar.name.clone();
+    }
+    scheme.source = google_calendar_source(calendar);
+    metadata_changed
+}
+
 fn apply_google_calendar_items(scheme: &mut Scheme, calendar: &ImportedGoogleCalendar) -> bool {
     if calendar.full_sync {
         if imported_item_lists_equal(&scheme.items, &calendar.items) {
@@ -1508,7 +1516,7 @@ mod tests {
             access_token: "access".to_string(),
             refresh_token: "refresh".to_string(),
             expires_at: None,
-            scope: "calendar".to_string(),
+            scope: "https://www.googleapis.com/auth/calendar.events.readonly".to_string(),
         }
     }
 
@@ -1562,6 +1570,34 @@ mod tests {
         assert_eq!(external.updated_at, Some(dt("2026-05-18T12:00:00Z")));
         let repeats = item.repeats.unwrap();
         assert_eq!(repeats.rrules, vec!["FREQ=WEEKLY;BYDAY=MO"]);
+    }
+
+    #[test]
+    fn google_calendar_metadata_preserves_existing_local_color() {
+        let mut scheme = Scheme::new("Local name", 4);
+        let changed = apply_google_calendar_metadata(
+            &mut scheme,
+            &ImportedGoogleCalendar {
+                account_id: "acct".to_string(),
+                calendar_id: "cal".to_string(),
+                name: "Google name".to_string(),
+                color_index: 1,
+                sync_token: Some("next".to_string()),
+                full_sync: false,
+                items: Vec::new(),
+                deleted: Vec::new(),
+            },
+            false,
+        );
+
+        assert!(!changed);
+        assert_eq!(scheme.name, "Local name");
+        assert_eq!(scheme.color_index, 4);
+        let SchemeSource::ImportedCalendar(source) = &scheme.source else {
+            panic!("expected imported calendar source");
+        };
+        assert_eq!(source.provider, CalendarProvider::Google);
+        assert_eq!(source.sync_token.as_deref(), Some("next"));
     }
 
     #[test]

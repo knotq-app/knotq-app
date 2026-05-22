@@ -228,9 +228,13 @@ pub fn ensure_command_allowed_for_user(
                 return Err(CommandError::ReadOnlyScheme(*scheme));
             }
         }
-        Command::SetSchemeColor { id, .. }
-        | Command::SetSchemeGsync { id, .. }
-        | Command::SetSchemeSource { id, .. } => {
+        Command::SetSchemeColor { id, .. } => {
+            workspace
+                .schemes
+                .get(id)
+                .ok_or(CommandError::SchemeMissing(*id))?;
+        }
+        Command::SetSchemeGsync { id, .. } | Command::SetSchemeSource { id, .. } => {
             if workspace
                 .schemes
                 .get(id)

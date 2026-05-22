@@ -109,22 +109,17 @@ pub(super) fn render_event_chunk<'a>(
                 block_w,
                 event_title_h,
                 event_title_size,
-                CalendarPopupTarget::from_task(task),
-                day,
-                scroll_handle,
-                cx,
             ));
             content_y += event_title_h;
         }
     }
-    if !head.is_read_only {
-        content.push(calendar_event_resize_handle(
-            CalendarPopupTarget::from_task(head),
-            day,
-            cx,
-        ));
+    let block_target = CalendarPopupTarget::from_task(head);
+    if !block_target.is_read_only {
+        content.push(calendar_event_resize_handle(block_target.clone(), day, cx));
     }
-    let block_editable = !head.is_read_only;
+    let block_editable = !block_target.is_read_only;
+    let move_target = block_target.clone();
+    let click_target = block_target.clone();
 
     div()
         .id(("ev", col * 1000 + idx))
@@ -140,8 +135,8 @@ pub(super) fn render_event_chunk<'a>(
         .overflow_hidden()
         .opacity(if any_done { 0.55 } else { 1.0 })
         .when(block_editable, |s| s.cursor_grab())
+        .when(!block_editable, |s| s.cursor_pointer())
         .on_mouse_down(MouseButton::Left, {
-            let move_target = CalendarPopupTarget::from_task(head);
             let start_hour_frac = min_start.hour() as f32 + min_start.minute() as f32 / 60.0;
             let end_hour_frac = max_end.hour() as f32 + max_end.minute() as f32 / 60.0;
             let item_date = day;
@@ -188,6 +183,23 @@ pub(super) fn render_event_chunk<'a>(
                 }
             }),
         )
+        .on_click(cx.listener(move |this, event: &ClickEvent, window, cx| {
+            this.focus_app_root(window);
+            this.open_event_popup(
+                click_target.scheme_id,
+                click_target.item_id,
+                click_target.occurrence.clone(),
+                click_target.occurrence_index,
+                click_target.start,
+                click_target.end,
+                event.position(),
+                false,
+                false,
+                window,
+                cx,
+            );
+            cx.stop_propagation();
+        }))
         .children(content)
         .into_any_element()
 }
@@ -369,17 +381,9 @@ fn calendar_title_line(
     top: f32,
     pad_x: f32,
     block_w: f32,
-    target: CalendarPopupTarget,
-    cx: &mut Context<KnotQApp>,
 ) -> gpui::AnyElement {
     let line_w = (block_w - pad_x * 2.0).max(1.0);
     div()
-        .id(SharedString::from(format!(
-            "calendar-title-{}-{}-{}",
-            target.scheme_id,
-            target.item_id,
-            occurrence_key_fragment(&target.occurrence)
-        )))
         .absolute()
         .left(px(pad_x))
         .top(px(top))
@@ -395,24 +399,7 @@ fn calendar_title_line(
         .whitespace_normal()
         .line_clamp(1)
         .text_ellipsis()
-        .cursor_pointer()
         .opacity(if is_done { 0.86 } else { 1.0 })
-        .on_click(cx.listener(move |this, event: &ClickEvent, window, cx| {
-            this.focus_app_root(window);
-            this.open_event_popup(
-                target.scheme_id,
-                target.item_id,
-                target.occurrence.clone(),
-                target.occurrence_index,
-                target.start.clone(),
-                target.end.clone(),
-                event.position(),
-                false,
-                false,
-                window,
-                cx,
-            );
-        }))
         .child(title)
         .into_any_element()
 }
@@ -426,31 +413,10 @@ fn calendar_event_title_line(
     block_w: f32,
     line_h: f32,
     text_size: f32,
-    target: CalendarPopupTarget,
-    date: chrono::NaiveDate,
-    scroll_handle: &gpui::ScrollHandle,
-    cx: &mut Context<KnotQApp>,
 ) -> gpui::AnyElement {
     let line_w = (block_w - pad_x * 2.0).max(1.0);
-    let target_for_drag = target.clone();
-    let target_for_click = target.clone();
-    let original_start_hour = target.start.as_ref().map(|dt| {
-        let local = dt.with_timezone(&Local);
-        local.hour() as f32 + local.minute() as f32 / 60.0
-    });
-    let original_end_hour = target.end.as_ref().map(|dt| {
-        let local = dt.with_timezone(&Local);
-        local.hour() as f32 + local.minute() as f32 / 60.0
-    });
-    let scroll_handle_for_drag = scroll_handle.clone();
 
     div()
-        .id(SharedString::from(format!(
-            "calendar-title-{}-{}-{}",
-            target.scheme_id,
-            target.item_id,
-            occurrence_key_fragment(&target.occurrence)
-        )))
         .absolute()
         .left(px(pad_x))
         .top(px(top))
@@ -466,55 +432,7 @@ fn calendar_event_title_line(
         .whitespace_normal()
         .line_clamp(1)
         .text_ellipsis()
-        .when(!target.is_read_only, |s| s.cursor_grab())
-        .when(target.is_read_only, |s| s.cursor_pointer())
         .opacity(if is_done { 0.86 } else { 1.0 })
-        .on_mouse_down(
-            MouseButton::Left,
-            cx.listener(move |this, event: &MouseDownEvent, _window, cx| {
-                if target_for_drag.is_read_only {
-                    cx.stop_propagation();
-                    return;
-                }
-                let grab_hour = super::week::window_y_to_hour(
-                    f32::from(event.position.y),
-                    &scroll_handle_for_drag,
-                );
-                this.cal_move = Some(CalendarMoveState {
-                    scheme_id: target_for_drag.scheme_id,
-                    item_id: target_for_drag.item_id,
-                    occurrence: target_for_drag.occurrence.clone(),
-                    occurrence_index: target_for_drag.occurrence_index,
-                    date,
-                    original_date: date,
-                    occurrence_start: target_for_drag.start,
-                    occurrence_end: target_for_drag.end,
-                    original_start_hour,
-                    original_end_hour,
-                    grab_hour,
-                    current_hour: grab_hour,
-                    anchor: event.position,
-                });
-                cx.stop_propagation();
-                cx.notify();
-            }),
-        )
-        .on_click(cx.listener(move |this, event: &ClickEvent, window, cx| {
-            this.focus_app_root(window);
-            this.open_event_popup(
-                target_for_click.scheme_id,
-                target_for_click.item_id,
-                target_for_click.occurrence.clone(),
-                target_for_click.occurrence_index,
-                target_for_click.start,
-                target_for_click.end,
-                event.position(),
-                false,
-                false,
-                window,
-                cx,
-            );
-        }))
         .child(title)
         .into_any_element()
 }
@@ -634,8 +552,6 @@ pub(super) fn render_pill_chunk<'a>(
                 content_y,
                 8.0,
                 block_w,
-                CalendarPopupTarget::from_task(task),
-                cx,
             ));
             content_y += RUN_LINE_HOURS * HOUR_H;
         }
@@ -648,8 +564,10 @@ pub(super) fn render_pill_chunk<'a>(
         head.end.unwrap()
     };
     let trigger_hour = trigger_time.hour() as f32 + trigger_time.minute() as f32 / 60.0;
-    let move_target = CalendarPopupTarget::from_task(head);
-    let block_editable = !head.is_read_only;
+    let block_target = CalendarPopupTarget::from_task(head);
+    let move_target = block_target.clone();
+    let click_target = block_target.clone();
+    let block_editable = !block_target.is_read_only;
 
     div()
         .id((id_key, col * 1000 + idx))
@@ -662,6 +580,7 @@ pub(super) fn render_pill_chunk<'a>(
         .overflow_hidden()
         .opacity(if all_done { 0.55 } else { 1.0 })
         .when(block_editable, |s| s.cursor_grab())
+        .when(!block_editable, |s| s.cursor_pointer())
         .on_mouse_down(MouseButton::Left, {
             let scroll_handle = scroll_handle.clone();
             cx.listener(move |this, event: &MouseDownEvent, _window, cx| {
@@ -708,6 +627,23 @@ pub(super) fn render_pill_chunk<'a>(
                 }
             }),
         )
+        .on_click(cx.listener(move |this, event: &ClickEvent, window, cx| {
+            this.focus_app_root(window);
+            this.open_event_popup(
+                click_target.scheme_id,
+                click_target.item_id,
+                click_target.occurrence.clone(),
+                click_target.occurrence_index,
+                click_target.start,
+                click_target.end,
+                event.position(),
+                false,
+                false,
+                window,
+                cx,
+            );
+            cx.stop_propagation();
+        }))
         .children(content)
         .into_any_element()
 }

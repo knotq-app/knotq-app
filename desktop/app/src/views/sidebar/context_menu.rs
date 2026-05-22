@@ -137,7 +137,7 @@ impl KnotQApp {
                 items.push(sidebar_context_separator(t));
                 items.push(sidebar_context_item(
                     "sidebar-menu-delete-scheme",
-                    "Delete",
+                    "Archive",
                     t,
                     cx.listener(move |this, _: &ClickEvent, _window, cx| {
                         this.close_sidebar_context_menu(cx);

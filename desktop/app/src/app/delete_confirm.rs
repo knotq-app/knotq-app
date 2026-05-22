@@ -19,11 +19,11 @@ impl KnotQApp {
         let message = match scheme_count {
             0 => format!("Delete empty folder \"{}\" from the workspace?", folder.name),
             1 => format!(
-                "Move the scheme in \"{}\" to Trash and remove the folder? The scheme's tasks and calendar items can be restored later",
+                "Move the scheme in \"{}\" to Archive and remove the folder? The scheme's tasks and calendar items can be restored later",
                 folder.name
             ),
             count => format!(
-                "Move the {count} schemes in \"{}\" to Trash and remove the folder? Their tasks and calendar items can be restored later",
+                "Move the {count} schemes in \"{}\" to Archive and remove the folder? Their tasks and calendar items can be restored later",
                 folder.name
             ),
         };
@@ -32,13 +32,13 @@ impl KnotQApp {
             title: if scheme_count == 0 {
                 "Delete folder".to_string()
             } else {
-                "Move folder contents to Trash".to_string()
+                "Move folder contents to Archive".to_string()
             },
             message,
             confirm_label: if scheme_count == 0 {
                 "Delete".to_string()
             } else {
-                "Move to Trash".to_string()
+                "Move to Archive".to_string()
             },
         });
         cx.notify();
@@ -53,12 +53,12 @@ impl KnotQApp {
         }
         self.pending_delete = Some(DeleteConfirmation {
             target: NodeRef::Scheme(scheme_id),
-            title: "Move item to Trash".to_string(),
+            title: "Move item to Archive".to_string(),
             message: format!(
-                "Move \"{}\" to Trash? Its tasks and calendar items can be restored later",
+                "Move \"{}\" to Archive? Its tasks and calendar items can be restored later",
                 scheme.name
             ),
-            confirm_label: "Move to Trash".to_string(),
+            confirm_label: "Move to Archive".to_string(),
         });
         cx.notify();
     }

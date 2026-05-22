@@ -37,7 +37,7 @@ fn app_settings_roundtrip_preserves_google_accounts() {
         access_token: "access".to_string(),
         refresh_token: "refresh".to_string(),
         expires_at: Some(Utc.with_ymd_and_hms(2026, 5, 18, 12, 0, 0).unwrap()),
-        scope: "https://www.googleapis.com/auth/calendar.events".to_string(),
+        scope: "https://www.googleapis.com/auth/calendar.events.readonly".to_string(),
     });
 
     save_app_settings(&settings_file, &settings).unwrap();

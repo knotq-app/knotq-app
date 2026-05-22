@@ -50,3 +50,7 @@ knotq-storage = { path = "desktop/storage" }
 knotq-storage-json = { path = "desktop/storage-json" }
 knotq-theme = { path = "desktop/theme" }
 knotq-ui = { path = "desktop/ui" }
+
+[profile.release]
+lto = true
+codegen-units = 1

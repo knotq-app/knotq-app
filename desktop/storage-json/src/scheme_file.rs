@@ -75,8 +75,12 @@ pub(crate) fn write_scheme_file(
     workspace: &Workspace,
     scheme: &Scheme,
 ) -> Result<()> {
-    let path = scheme_path_for_workspace(base_dir, workspace, scheme.id)?
-        .ok_or_else(|| anyhow!("scheme {} is not in the workspace tree or trash", scheme.id))?;
+    let path = scheme_path_for_workspace(base_dir, workspace, scheme.id)?.ok_or_else(|| {
+        anyhow!(
+            "scheme {} is not in the workspace tree or archive",
+            scheme.id
+        )
+    })?;
     let markdown = encode_scheme_file(scheme)?;
     write_atomic(&path, markdown.as_bytes())
 }

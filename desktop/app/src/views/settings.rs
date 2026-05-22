@@ -166,12 +166,12 @@ impl KnotQApp {
                     div()
                         .w_full()
                         .max_w(px(560.0))
-                        .px(px(18.0))
-                        .pt(px(14.0))
-                        .pb(px(22.0))
+                        .px(px(16.0))
+                        .pt(px(10.0))
+                        .pb(px(16.0))
                         .flex()
                         .flex_col()
-                        .gap(px(10.0))
+                        .gap(px(8.0))
                         .child(settings_header(t))
                         .child(settings_section("Appearance", theme_rows, t))
                         .child(settings_section("Calendar", calendar_rows, t))
@@ -223,6 +223,7 @@ fn settings_header(t: UiTheme) -> gpui::AnyElement {
     div()
         .flex()
         .flex_col()
+        .gap(px(2.0))
         .pb(px(1.0))
         .child(
             div()
@@ -230,6 +231,13 @@ fn settings_header(t: UiTheme) -> gpui::AnyElement {
                 .font_weight(gpui::FontWeight::SEMIBOLD)
                 .text_color(token_hsla(t.text_primary))
                 .child("Settings"),
+        )
+        .child(
+            div()
+                .text_size(px(11.0))
+                .line_height(px(14.0))
+                .text_color(token_hsla(t.text_soft))
+                .child(format!("KnotQ {}", env!("CARGO_PKG_VERSION"))),
         )
         .into_any_element()
 }
@@ -241,26 +249,26 @@ fn settings_section(
 ) -> gpui::AnyElement {
     div()
         .w_full()
-        .overflow_hidden()
-        .rounded(px(8.0))
-        .border_1()
-        .border_color(token_rgba(t.border_soft))
-        .bg(token_rgba(t.bg_modal))
+        .border_t_1()
+        .border_color(token_rgba(t.divider_soft))
+        .pt(px(7.0))
+        .child(
+            div().px(px(2.0)).pb(px(5.0)).child(
+                div()
+                    .text_size(px(12.0))
+                    .font_weight(gpui::FontWeight::SEMIBOLD)
+                    .text_color(token_hsla(t.text_soft))
+                    .child(title),
+            ),
+        )
         .child(
             div()
-                .px(px(12.0))
-                .py(px(8.0))
-                .border_b_1()
-                .border_color(token_rgba(t.divider_soft))
-                .child(
-                    div()
-                        .text_size(px(13.0))
-                        .font_weight(gpui::FontWeight::SEMIBOLD)
-                        .text_color(token_hsla(t.text_primary))
-                        .child(title),
-                ),
+                .flex()
+                .flex_col()
+                .border_t_1()
+                .border_color(token_rgba(t.divider_tiny))
+                .children(rows),
         )
-        .child(div().flex().flex_col().children(rows))
         .into_any_element()
 }
 
@@ -278,18 +286,18 @@ where
 {
     div()
         .id(id)
-        .px(px(12.0))
-        .py(px(6.0))
-        .min_h(px(36.0))
+        .px(px(8.0))
+        .py(px(4.0))
+        .min_h(px(30.0))
         .flex()
         .items_center()
         .justify_between()
-        .gap(px(10.0))
+        .gap(px(8.0))
         .border_b_1()
         .border_color(token_rgba(t.divider_tiny))
         .cursor_pointer()
         .when(is_active, {
-            let c = t.row_selected;
+            let c = settings_selection_bg(t);
             move |s| s.bg(token_rgba(c))
         })
         .when(!is_active, {
@@ -303,19 +311,18 @@ where
             div()
                 .flex()
                 .items_center()
-                .gap(px(8.0))
+                .gap(px(7.0))
                 .min_w_0()
                 .child(marker)
                 .child(
                     div()
                         .min_w_0()
-                        .text_size(px(13.0))
+                        .text_size(px(12.0))
                         .font_weight(gpui::FontWeight::SEMIBOLD)
                         .text_color(token_hsla(t.text_primary))
                         .child(label),
                 ),
         )
-        .child(active_dot(is_active, t))
         .into_any_element()
 }
 
@@ -349,13 +356,13 @@ fn history_snapshot_row(
     let detail = snapshot_detail(&snapshot, short_id);
     div()
         .id(("version-history", idx))
-        .px(px(12.0))
-        .py(px(7.0))
-        .min_h(px(44.0))
+        .px(px(8.0))
+        .py(px(5.0))
+        .min_h(px(38.0))
         .flex()
         .items_center()
         .justify_between()
-        .gap(px(10.0))
+        .gap(px(8.0))
         .border_b_1()
         .border_color(token_rgba(t.divider_tiny))
         .cursor_pointer()
@@ -370,17 +377,15 @@ fn history_snapshot_row(
             div()
                 .flex()
                 .items_center()
-                .gap(px(8.0))
+                .gap(px(7.0))
                 .min_w_0()
                 .child(
                     div()
-                        .w(px(20.0))
-                        .h(px(20.0))
+                        .w(px(2.0))
+                        .h(px(24.0))
                         .flex_shrink_0()
-                        .rounded(px(5.0))
-                        .border_1()
-                        .border_color(token_rgba(t.border_main))
-                        .bg(token_rgba(t.button_bg)),
+                        .rounded(px(1.0))
+                        .bg(token_rgba(t.border_main)),
                 )
                 .child(
                     div()
@@ -390,7 +395,7 @@ fn history_snapshot_row(
                         .gap(px(2.0))
                         .child(
                             div()
-                                .text_size(px(13.0))
+                                .text_size(px(12.0))
                                 .font_weight(gpui::FontWeight::SEMIBOLD)
                                 .text_color(token_hsla(t.text_primary))
                                 .child(snapshot.label),
@@ -407,13 +412,13 @@ fn history_snapshot_row(
         .child(
             div()
                 .flex_shrink_0()
-                .px(px(7.0))
-                .py(px(3.0))
-                .rounded(px(5.0))
+                .px(px(6.0))
+                .py(px(2.0))
+                .rounded(px(3.0))
                 .border_1()
                 .border_color(token_rgba(t.border_main))
                 .bg(token_rgba(t.button_bg))
-                .text_size(px(12.0))
+                .text_size(px(11.0))
                 .font_weight(gpui::FontWeight::SEMIBOLD)
                 .text_color(token_hsla(t.text_primary))
                 .child("Restore"),
@@ -432,9 +437,9 @@ fn snapshot_detail(snapshot: &WorkspaceSnapshot, short_id: String) -> String {
 
 fn settings_subheading(label: &'static str, t: UiTheme) -> gpui::AnyElement {
     div()
-        .px(px(12.0))
-        .pt(px(9.0))
-        .pb(px(4.0))
+        .px(px(8.0))
+        .pt(px(7.0))
+        .pb(px(3.0))
         .text_size(px(11.0))
         .font_weight(gpui::FontWeight::SEMIBOLD)
         .text_color(token_hsla(t.text_dim))
@@ -444,18 +449,12 @@ fn settings_subheading(label: &'static str, t: UiTheme) -> gpui::AnyElement {
 
 fn settings_message(message: String, is_error: bool, t: UiTheme) -> gpui::AnyElement {
     div()
-        .mx(px(10.0))
-        .mt(px(8.0))
-        .px(px(10.0))
-        .py(px(6.0))
-        .rounded(px(6.0))
-        .border_1()
-        .border_color(token_rgba(if is_error {
-            t.text_today
-        } else {
-            t.border_soft
-        }))
-        .bg(token_rgba(if is_error { 0xde5b2524 } else { t.bg_hint }))
+        .px(px(8.0))
+        .py(px(5.0))
+        .min_h(px(30.0))
+        .border_b_1()
+        .border_color(token_rgba(t.divider_tiny))
+        .bg(token_rgba(if is_error { 0xde5b2524 } else { 0x00000000 }))
         .child(
             div()
                 .text_size(px(12.0))
@@ -472,33 +471,26 @@ fn settings_message(message: String, is_error: bool, t: UiTheme) -> gpui::AnyEle
 
 fn theme_swatch(theme: UiTheme, t: UiTheme) -> gpui::AnyElement {
     div()
-        .w(px(20.0))
-        .h(px(20.0))
-        .rounded(px(5.0))
+        .w(px(16.0))
+        .h(px(16.0))
+        .rounded(px(3.0))
         .border_1()
         .border_color(token_rgba(t.border_main))
         .bg(token_rgba(theme.bg_app))
-        .child(
-            div()
-                .w_full()
-                .h(px(7.0))
-                .rounded(px(4.0))
-                .bg(token_rgba(theme.bg_sidebar)),
-        )
         .into_any_element()
 }
 
 fn active_marker(is_active: bool, t: UiTheme) -> gpui::AnyElement {
     div()
-        .w(px(20.0))
-        .h(px(20.0))
+        .w(px(16.0))
+        .h(px(16.0))
         .flex()
         .items_center()
         .justify_center()
-        .rounded(px(5.0))
+        .rounded(px(3.0))
         .border_1()
         .border_color(token_rgba(if is_active {
-            t.text_today
+            settings_selection_accent(t)
         } else {
             t.border_main
         }))
@@ -506,31 +498,27 @@ fn active_marker(is_active: bool, t: UiTheme) -> gpui::AnyElement {
         .when(is_active, |s| {
             s.child(
                 div()
-                    .w(px(10.0))
-                    .h(px(10.0))
-                    .rounded(px(2.0))
-                    .bg(token_rgba(t.text_today)),
+                    .w(px(6.0))
+                    .h(px(6.0))
+                    .rounded(px(1.0))
+                    .bg(token_rgba(settings_selection_accent(t))),
             )
         })
         .into_any_element()
 }
 
-fn active_dot(is_active: bool, t: UiTheme) -> gpui::AnyElement {
-    div()
-        .w(px(9.0))
-        .h(px(9.0))
-        .flex_shrink_0()
-        .rounded(px(99.0))
-        .border_1()
-        .border_color(token_rgba(if is_active {
-            t.text_today
-        } else {
-            t.border_soft
-        }))
-        .bg(token_rgba(if is_active {
-            t.text_today
-        } else {
-            0x00000000
-        }))
-        .into_any_element()
+fn settings_selection_accent(t: UiTheme) -> u32 {
+    if t.is_dark {
+        0x7aa0ffff
+    } else {
+        0x2f67cfff
+    }
+}
+
+fn settings_selection_bg(t: UiTheme) -> u32 {
+    if t.is_dark {
+        0x3f7cff24
+    } else {
+        0x2f67cf18
+    }
 }

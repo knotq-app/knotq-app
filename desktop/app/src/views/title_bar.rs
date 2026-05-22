@@ -48,9 +48,7 @@ impl KnotQApp {
         };
 
         let mut color_swatches: Vec<gpui::AnyElement> = Vec::new();
-        if let Some((scheme_id, _, color_index)) = active_scheme
-            .filter(|(scheme_id, _, _)| !self.workspace.is_scheme_read_only(*scheme_id))
-        {
+        if let Some((scheme_id, _, color_index)) = active_scheme {
             for (i, color_ix) in COLOR_SWATCH_ORDER.iter().copied().enumerate() {
                 let is_active = *color_index == color_ix;
                 let dot = palette_hsla(scheme_color(color_ix, t.is_dark), 1.0);

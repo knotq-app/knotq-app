@@ -30,6 +30,26 @@ impl KnotQApp {
             self.cancel_new_node_prompt(cx);
             return true;
         }
+        if self.event_popup.is_some() {
+            if let Some(popup) = self.event_popup.as_mut() {
+                if popup.scope_action.is_some() {
+                    if popup.scope_dialog_only {
+                        self.event_popup = None;
+                        self.event_popup_title_subscription = None;
+                        cx.notify();
+                        return true;
+                    }
+                    popup.scope_action = None;
+                    cx.notify();
+                    return true;
+                }
+            }
+            if self.cancel_event_popup_without_commit(cx) {
+                self.focus_app_root(window);
+                cx.notify();
+                return true;
+            }
+        }
         if self.date_popover.is_some() {
             self.close_date_popover();
             self.focus_app_root(window);
@@ -38,29 +58,6 @@ impl KnotQApp {
         }
         if self.repeat_popover.is_some() {
             self.close_repeat_popover();
-            self.focus_app_root(window);
-            cx.notify();
-            return true;
-        }
-        if let Some(popup) = self.event_popup.as_mut() {
-            if popup.scope_action.is_some() {
-                if popup.scope_dialog_only {
-                    self.event_popup = None;
-                    self.event_popup_title_subscription = None;
-                    cx.notify();
-                    return true;
-                }
-                popup.scope_action = None;
-                cx.notify();
-                return true;
-            }
-            if popup.notification_menu_open || popup.repeat_menu_open || popup.until_picker_open {
-                popup.close_all_menus();
-                cx.notify();
-                return true;
-            }
-        }
-        if self.cancel_event_popup_without_commit(cx) {
             self.focus_app_root(window);
             cx.notify();
             return true;

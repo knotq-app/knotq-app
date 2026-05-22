@@ -90,7 +90,7 @@ fn trash_header_row(
                 .line_height(px(SIDEBAR_LINE_HEIGHT))
                 .font_family(FONT_UI)
                 .text_color(token_hsla(t.text_primary))
-                .child("Trash"),
+                .child("Archive"),
         )
         .into_any_element()
 }

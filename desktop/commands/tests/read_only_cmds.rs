@@ -36,7 +36,7 @@ fn user_item_mutations_are_rejected_for_read_only_calendar_schemes() {
 }
 
 #[test]
-fn user_can_rename_read_only_calendar_schemes_but_not_change_source() {
+fn user_can_rename_and_recolor_read_only_calendar_schemes_but_not_change_source() {
     let mut workspace = Workspace::new();
     let scheme_id = insert_imported_scheme(&mut workspace, vec![]);
 
@@ -48,6 +48,15 @@ fn user_can_rename_read_only_calendar_schemes_but_not_change_source() {
         .unwrap();
 
     assert_eq!(workspace.schemes[&scheme_id].name, "New name");
+
+    workspace
+        .apply(Command::SetSchemeColor {
+            id: scheme_id,
+            color_index: 5,
+        })
+        .unwrap();
+
+    assert_eq!(workspace.schemes[&scheme_id].color_index, 5);
 
     let err = workspace
         .apply(Command::SetSchemeSource {
