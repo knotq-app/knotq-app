@@ -1,13 +1,11 @@
+use super::text::clamp_range_to_char_boundaries;
+use super::{inline_selection_rgba, SingleLineEditor, CURSOR_WIDTH};
 use gpui::{
     fill, point, px, relative, size, App, Bounds, ContentMask, DispatchPhase, Element, ElementId,
     ElementInputHandler, Entity, GlobalElementId, IntoElement, LayoutId, MouseButton,
     MouseMoveEvent, MouseUpEvent, PaintQuad, Pixels, ShapedLine, SharedString, Style, TextRun,
     Window,
 };
-use gpui_component::ActiveTheme;
-
-use super::text::clamp_range_to_char_boundaries;
-use super::{inline_selection_rgba, SingleLineEditor, CURSOR_WIDTH};
 
 pub(super) struct SingleLineTextElement {
     pub(super) editor: Entity<SingleLineEditor>,
@@ -143,7 +141,7 @@ impl Element for SingleLineTextElement {
                     point(bounds.left() + cursor_x, bounds.top()),
                     size(CURSOR_WIDTH, bounds.size.height),
                 ),
-                cx.theme().caret,
+                style.color,
             ))
         } else {
             None

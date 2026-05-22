@@ -9,14 +9,14 @@ pub struct AppAssets {
 
 impl AppAssets {
     pub fn new() -> Self {
-        let installed_assets = std::env::current_exe()
+        let installed_asset_roots = std::env::current_exe()
             .ok()
-            .and_then(|path| path.parent().map(|parent| parent.join("assets")));
+            .and_then(|path| path.parent().map(|parent| parent.to_path_buf()))
+            .map(|exe_dir| vec![exe_dir.join("assets"), exe_dir.join("../Resources/assets")])
+            .unwrap_or_default();
         let source_assets = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("assets");
         let mut roots = Vec::new();
-        if let Some(path) = installed_assets {
-            roots.push(path);
-        }
+        roots.extend(installed_asset_roots);
         roots.push(source_assets);
 
         Self { roots }

@@ -55,6 +55,12 @@ Linux users can install from the release tarball with:
 curl -fsSL https://knotq.com/install.sh | sh
 ```
 
+## Community
+
+Join the KnotQ Discord for questions, feedback, and release discussion:
+
+https://discord.gg/zyeHB77scg
+
 ## Development
 
 ```sh
@@ -91,5 +97,5 @@ KNOTQ_ENTITLEMENTS_PATH="bundling/macos/KnotQ.entitlements"
 
 Windows package identity can be configured with:
 
-- `WINDOWS_PUBLISHER`: certificate subject, for example `CN=Enigmadux`
+- `WINDOWS_PUBLISHER`: Microsoft Store publisher subject from Partner Center
 - `WINDOWS_PUBLISHER_DISPLAY_NAME`: optional display name

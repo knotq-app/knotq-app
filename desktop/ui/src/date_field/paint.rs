@@ -82,7 +82,7 @@ pub(super) fn paint_date_field(
                 ),
                 size(px(DATE_FIELD_CURSOR_WIDTH), cursor_height),
             ),
-            cx.theme().caret,
+            style.color,
         ));
     }
 }

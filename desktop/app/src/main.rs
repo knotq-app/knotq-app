@@ -24,7 +24,7 @@ use crate::app::{
     MIN_WINDOW_WIDTH,
 };
 use crate::assets::AppAssets;
-use crate::theme_gpui::{token_hsla, token_rgba, FONT_UI};
+use crate::theme_gpui::{token_hsla, token_rgba, Theme, FONT_UI};
 
 actions!(
     knotq,
@@ -77,6 +77,7 @@ impl Render for KnotQApp {
         self.sync_system_theme(window);
         let view = self.selection.view;
         let t = self.theme();
+        sync_component_theme(t, cx);
         let current_scheme_title = self
             .current_scheme()
             .map(|s| (s.id, self.scheme_display_name(s), s.color_index));
@@ -307,10 +308,26 @@ fn titlebar_options() -> TitlebarOptions {
 
 fn window_decorations() -> Option<WindowDecorations> {
     if cfg!(any(target_os = "linux", target_os = "freebsd")) {
-        Some(WindowDecorations::Server)
+        Some(WindowDecorations::Client)
     } else {
         None
     }
+}
+
+fn sync_component_theme(t: Theme, cx: &mut App) {
+    let theme = gpui_component::Theme::global_mut(cx);
+    theme.mode = if t.is_dark {
+        gpui_component::ThemeMode::Dark
+    } else {
+        gpui_component::ThemeMode::Light
+    };
+    theme.colors.caret = token_hsla(t.text_highlight);
+    theme.colors.foreground = token_hsla(t.text_primary);
+    theme.colors.muted_foreground = token_hsla(t.text_muted);
+    theme.colors.background = token_hsla(t.bg_app);
+    theme.colors.popover = token_hsla(t.bg_modal);
+    theme.colors.popover_foreground = token_hsla(t.text_primary);
+    theme.colors.input = token_hsla(t.border_soft);
 }
 
 fn main() {

@@ -246,11 +246,13 @@ jobs:
 
       - name: Package
         run: |
-          mkdir -p dist/linux/stage dist/linux
+          mkdir -p dist/linux/stage/assets dist/linux
           cp target/x86_64-unknown-linux-gnu/release/knotq dist/linux/stage/knotq
+          cp -R desktop/app/assets/. dist/linux/stage/assets/
+          find dist/linux/stage/assets -name .DS_Store -delete
           chmod +x dist/linux/stage/knotq
           tar czf "dist/linux/KnotQ-${{ steps.version.outputs.version }}-linux-x86_64.tar.gz" \
-            -C dist/linux/stage knotq
+            -C dist/linux/stage knotq assets
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4

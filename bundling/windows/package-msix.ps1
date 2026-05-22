@@ -11,7 +11,7 @@ $ErrorActionPreference = "Stop"
 $Root = (Resolve-Path (Join-Path $PSScriptRoot "../..")).Path
 $Binary = Join-Path $Root "target\$Target\release\knotq.exe"
 $Dist = Join-Path $Root "dist\windows"
-$Publisher = if ($env:WINDOWS_PUBLISHER) { $env:WINDOWS_PUBLISHER } else { "CN=Enigmadux" }
+$Publisher = if ($env:WINDOWS_PUBLISHER) { $env:WINDOWS_PUBLISHER } else { "CN=CE90B3E9-47FB-4D39-A23C-DB5A95142C93" }
 $PublisherDisplayName = if ($env:WINDOWS_PUBLISHER_DISPLAY_NAME) { $env:WINDOWS_PUBLISHER_DISPLAY_NAME } else { "Enigmadux" }
 
 if (-not (Test-Path $Binary)) { throw "binary not found: $Binary" }

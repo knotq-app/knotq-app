@@ -57,6 +57,9 @@ DMG="$DIST/KnotQ-$VERSION-macos-$ARCH.dmg"
 rm -rf "$APP"
 mkdir -p "$OUT_DIR"
 ditto --noextattr --norsrc "$INPUT_APP" "$APP"
+mkdir -p "$APP/Contents/Resources/assets"
+ditto --noextattr --norsrc "$ROOT/desktop/app/assets" "$APP/Contents/Resources/assets"
+find "$APP/Contents/Resources/assets" -name .DS_Store -delete
 
 EXE_NAME="$(/usr/libexec/PlistBuddy -c "Print :CFBundleExecutable" "$APP/Contents/Info.plist")"
 EXE="$APP/Contents/MacOS/$EXE_NAME"

@@ -1,5 +1,5 @@
 use gpui::prelude::*;
-use gpui::{div, px, ClickEvent, Context, IntoElement, Window, WindowControlArea};
+use gpui::{div, px, ClickEvent, Context, IntoElement, MouseButton, Window, WindowControlArea};
 use gpui_component::{Icon, IconName, Sizable};
 use knotq_commands::Command;
 use knotq_model::SchemeId;
@@ -11,8 +11,11 @@ use crate::theme_gpui::{
 };
 
 const TITLE_CONTENT_W: f32 = 430.0;
+const LINUX_TITLE_CONTENT_W: f32 = 340.0;
+const LINUX_WINDOW_CONTROLS_W: f32 = 132.0;
 const TITLE_MARKER_SIZE: f32 = 18.0;
 const TITLE_TEXT_W: f32 = 190.0;
+const LINUX_TITLE_TEXT_W: f32 = 150.0;
 const COLOR_SWATCH_ORDER: &[u8] = &[0, 1, 5, 2, 3, 4];
 
 impl KnotQApp {
@@ -25,6 +28,18 @@ impl KnotQApp {
         t: Theme,
         cx: &mut Context<Self>,
     ) -> gpui::AnyElement {
+        let linux_client_decorations = Self::uses_linux_client_decorations();
+        let title_content_w = if linux_client_decorations {
+            LINUX_TITLE_CONTENT_W
+        } else {
+            TITLE_CONTENT_W
+        };
+        let title_text_w = if linux_client_decorations {
+            LINUX_TITLE_TEXT_W
+        } else {
+            TITLE_TEXT_W
+        };
+
         let base = div()
             .relative()
             .flex()
@@ -34,7 +49,10 @@ impl KnotQApp {
             .pr(px(16.0))
             .bg(token_hsla(t.bg_cal_hdr))
             .border_b_1()
-            .border_color(token_rgba(t.divider));
+            .border_color(token_rgba(t.divider))
+            .when(linux_client_decorations, |s| {
+                s.pr(px(16.0 + LINUX_WINDOW_CONTROLS_W))
+            });
 
         let active_scheme = scheme.as_ref().filter(|_| view == View::Scheme);
         let marker_color = if let Some((_, _, color_index)) = active_scheme {
@@ -140,6 +158,7 @@ impl KnotQApp {
         )
         .child(
             div()
+                .id("title-drag-region")
                 .absolute()
                 .top_0()
                 .bottom_0()
@@ -149,9 +168,23 @@ impl KnotQApp {
                 .items_center()
                 .justify_center()
                 .window_control_area(WindowControlArea::Drag)
+                .when(linux_client_decorations, |s| {
+                    s.on_mouse_down(MouseButton::Left, |_, window, cx| {
+                        cx.stop_propagation();
+                        window.start_window_move();
+                    })
+                    .on_click(|event, window, cx| {
+                        cx.stop_propagation();
+                        if event.click_count() == 2 {
+                            window.zoom_window();
+                        } else if event.is_right_click() {
+                            window.show_window_menu(event.position());
+                        }
+                    })
+                })
                 .child(
                     div()
-                        .w(px(TITLE_CONTENT_W))
+                        .w(px(title_content_w))
                         .flex()
                         .items_center()
                         .justify_center()
@@ -165,7 +198,7 @@ impl KnotQApp {
                         )
                         .child(
                             div()
-                                .w(px(TITLE_TEXT_W))
+                                .w(px(title_text_w))
                                 .min_w_0()
                                 .truncate()
                                 .text_size(px(FONT_SIZE_HEADLINE))
@@ -175,7 +208,7 @@ impl KnotQApp {
                         ),
                 ),
         )
-        .child(div().w(px(TITLE_CONTENT_W)).flex_shrink_0().h_full())
+        .child(div().w(px(title_content_w)).flex_shrink_0().h_full())
         .child(
             div()
                 .flex_1()
@@ -235,7 +268,139 @@ impl KnotQApp {
                         ),
                 ),
         )
+        .children(self.render_linux_window_controls(window, t, cx))
         .into_any_element()
+    }
+
+    fn uses_linux_client_decorations() -> bool {
+        cfg!(target_os = "linux")
+    }
+
+    fn render_linux_window_controls(
+        &self,
+        window: &mut Window,
+        t: Theme,
+        cx: &mut Context<Self>,
+    ) -> Option<gpui::AnyElement> {
+        if !Self::uses_linux_client_decorations() {
+            return None;
+        }
+
+        let controls = window.window_controls();
+        Some(
+            div()
+                .id("linux-window-controls")
+                .absolute()
+                .top_0()
+                .right_0()
+                .h_full()
+                .w(px(LINUX_WINDOW_CONTROLS_W))
+                .flex()
+                .items_center()
+                .justify_end()
+                .bg(token_rgba(t.bg_cal_hdr))
+                .child(Self::linux_window_control_button(
+                    "linux-window-minimize",
+                    Self::linux_minimize_glyph(t),
+                    false,
+                    controls.minimize,
+                    |_: &ClickEvent, window, _cx| window.minimize_window(),
+                    t,
+                ))
+                .child(Self::linux_window_control_button(
+                    "linux-window-maximize",
+                    Self::linux_maximize_glyph(t),
+                    false,
+                    controls.maximize,
+                    |_: &ClickEvent, window, _cx| window.zoom_window(),
+                    t,
+                ))
+                .child(Self::linux_window_control_button(
+                    "linux-window-close",
+                    Self::linux_close_glyph(),
+                    true,
+                    true,
+                    cx.listener(|this, _: &ClickEvent, window, _cx| {
+                        this.flush_for_shutdown("linux title bar close");
+                        window.remove_window();
+                    }),
+                    t,
+                ))
+                .into_any_element(),
+        )
+    }
+
+    fn linux_window_control_button(
+        id: &'static str,
+        glyph: gpui::AnyElement,
+        is_close: bool,
+        enabled: bool,
+        on_click: impl Fn(&ClickEvent, &mut Window, &mut gpui::App) + 'static,
+        t: Theme,
+    ) -> gpui::AnyElement {
+        let hover_bg = if is_close {
+            if t.is_dark {
+                0xff5a537d
+            } else {
+                0xd20f3988
+            }
+        } else {
+            t.button_hover
+        };
+
+        div()
+            .id(id)
+            .w(px(44.0))
+            .h_full()
+            .flex()
+            .items_center()
+            .justify_center()
+            .flex_shrink_0()
+            .text_size(px(12.0))
+            .text_color(token_hsla(if is_close {
+                t.text_primary
+            } else {
+                t.text_dim
+            }))
+            .when(enabled, |s| {
+                s.cursor_pointer()
+                    .hover(move |h| h.bg(token_rgba(hover_bg)))
+                    .on_mouse_down(MouseButton::Left, |_, window, cx| {
+                        window.prevent_default();
+                        cx.stop_propagation();
+                    })
+                    .on_click(move |event: &ClickEvent, window, cx| {
+                        window.prevent_default();
+                        cx.stop_propagation();
+                        on_click(event, window, cx);
+                    })
+            })
+            .when(!enabled, |s| s.opacity(0.35))
+            .child(glyph)
+            .into_any_element()
+    }
+
+    fn linux_minimize_glyph(t: Theme) -> gpui::AnyElement {
+        div()
+            .w(px(10.0))
+            .h(px(1.5))
+            .rounded(px(1.0))
+            .bg(token_rgba(t.text_dim))
+            .into_any_element()
+    }
+
+    fn linux_maximize_glyph(t: Theme) -> gpui::AnyElement {
+        div()
+            .w(px(9.0))
+            .h(px(9.0))
+            .rounded(px(1.5))
+            .border_1()
+            .border_color(token_rgba(t.text_dim))
+            .into_any_element()
+    }
+
+    fn linux_close_glyph() -> gpui::AnyElement {
+        div().child("x").into_any_element()
     }
 
     fn render_title_bar_search(
