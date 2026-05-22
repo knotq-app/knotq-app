@@ -14,6 +14,7 @@ pub(super) fn rp_until_calendar(
     let first_weekday = month_start.weekday().num_days_from_sunday() as usize;
     let num_days = days_in_month(display_month.year(), display_month.month()) as usize;
     let month_label = display_month.format("%B %Y").to_string();
+    let selected_day_text = selected_date_text_color(t);
 
     let day_headers = ["S", "M", "T", "W", "T", "F", "S"]
         .iter()
@@ -74,7 +75,11 @@ pub(super) fn rp_until_calendar(
                         .rounded(px(99.0))
                         .text_size(px(11.0))
                         .font_family(crate::theme_gpui::FONT_UI)
-                        .text_color(token_hsla(t.text_highlight))
+                        .text_color(token_hsla(if is_selected {
+                            selected_day_text
+                        } else {
+                            t.text_highlight
+                        }))
                         .bg(token_rgba(if is_selected {
                             t.caret_color
                         } else {

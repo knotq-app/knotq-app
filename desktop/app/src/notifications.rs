@@ -60,8 +60,8 @@ fn background_schedule_policy() -> PlatformSchedulePolicy {
     #[cfg(target_os = "macos")]
     {
         return policy
-            .with_add_interval(StdDuration::from_secs(1))
-            .with_verify_delays(StdDuration::from_millis(250), StdDuration::from_millis(750));
+            .with_add_interval(StdDuration::from_millis(150))
+            .with_verify_delays(StdDuration::from_millis(500), StdDuration::from_millis(750));
     }
     #[cfg(not(target_os = "macos"))]
     {
@@ -358,18 +358,23 @@ fn refresh_item_os_notifications_reconciled(
         ReconciliationMode::Targeted,
     );
 
+    if plan.to_cancel.is_empty() && plan.to_schedule.is_empty() {
+        notif_log(&format!(
+            "OS item {} notification schedule unchanged, skipping",
+            item_id,
+        ));
+        return None;
+    }
+
     let cancel_error = cancel_notifications(scheduler, &plan.to_cancel);
     let requests_to_schedule = desired.requests_for(&plan.to_schedule);
     let schedule_error = schedule_requests(scheduler, &requests_to_schedule, policy.add_interval);
-    let verify_error = verify_pending_request_ids(scheduler, &desired, policy);
     let reconciliation_error = cancel_error.or(schedule_error);
 
     if reconciliation_error.is_none() {
         manifest.update_requests(requests);
         save_schedule_manifest(&manifest);
     }
-
-    let first_error = reconciliation_error.or(verify_error);
 
     notif_log(&format!(
         "OS refreshed item {} notification schedule: {} kept, {} added/updated, {} canceled, {} desired",
@@ -380,7 +385,7 @@ fn refresh_item_os_notifications_reconciled(
         plan.desired_count
     ));
 
-    first_error
+    reconciliation_error
 }
 
 fn platform_schedule_snapshot(
@@ -430,13 +435,18 @@ fn schedule_requests(
     requests: &[NotificationRequest],
     add_interval: StdDuration,
 ) -> Option<String> {
+    let eligible: Vec<&NotificationRequest> =
+        requests.iter().filter(|r| r.fire_at > Utc::now()).collect();
+    if eligible.is_empty() {
+        notif_log("OS schedule add pass: 0/0 request(s)");
+        return None;
+    }
+
+    let results = scheduler.schedule_batch(&eligible, add_interval);
     let mut first_error = None;
     let mut scheduled = 0;
-    for (index, request) in requests.iter().enumerate() {
-        if request.fire_at <= Utc::now() {
-            continue;
-        }
-        match scheduler.schedule(request) {
+    for (request, result) in eligible.iter().zip(results) {
+        match result {
             Ok(()) => {
                 scheduled += 1;
                 let delta = (request.fire_at - Utc::now()).num_seconds();
@@ -456,13 +466,10 @@ fn schedule_requests(
                 }
             }
         }
-        if index + 1 < requests.len() && !add_interval.is_zero() {
-            std::thread::sleep(add_interval);
-        }
     }
     notif_log(&format!(
         "OS schedule add pass: {scheduled}/{} request(s)",
-        requests.len()
+        eligible.len()
     ));
     first_error
 }
@@ -472,11 +479,15 @@ fn verify_pending_request_ids(
     desired: &knotq_notifications::DesiredPlatformSchedule,
     policy: PlatformSchedulePolicy,
 ) -> Option<String> {
+    if desired.ids().is_empty() {
+        return None;
+    }
+
     if !policy.initial_verify_delay.is_zero() {
         std::thread::sleep(policy.initial_verify_delay);
     }
 
-    let mut snapshot = match platform_schedule_snapshot(scheduler) {
+    let snapshot = match platform_schedule_snapshot(scheduler) {
         Ok(snapshot) => snapshot,
         Err(err) => {
             let msg = format!("{err}");
@@ -486,50 +497,58 @@ fn verify_pending_request_ids(
             return Some(msg);
         }
     };
-    let mut report = RetentionReport::new(&snapshot, desired);
-    if !report.is_complete() {
-        if !policy.retry_verify_delay.is_zero() {
-            std::thread::sleep(policy.retry_verify_delay);
-        }
-        snapshot = match platform_schedule_snapshot(scheduler) {
-            Ok(snapshot) => snapshot,
-            Err(err) => {
-                let msg = format!("{err}");
-                notif_log(&format!(
-                    "pending OS notification verification retry failed: {msg}"
-                ));
-                return Some(msg);
-            }
-        };
-        report = RetentionReport::new(&snapshot, desired);
-    }
+    let report = RetentionReport::new(&snapshot, desired);
 
     if report.is_complete() {
         notif_log(&format!(
             "OS retained {}/{} pending notification(s)",
             report.retained_count, report.desired_count
         ));
-        if !report.stale.is_empty() {
-            notif_log(&format!(
-                "OS pending schedule has {} stale request(s) after refresh",
-                report.stale.len()
-            ));
-        }
         return None;
     }
 
-    let msg = format!(
-        "OS did not retain {}/{} scheduled notification(s); missing: {preview}",
-        report.missing.len(),
-        report.desired_count,
-        preview = report.missing_preview(3)
-    );
-    notif_log(&msg);
-    if report.retained_count == 0 && report.desired_count > 0 {
-        Some(msg)
+    // Only retry if we lost a significant fraction (more than half missing).
+    if report.missing.len() > report.desired_count / 2 {
+        if !policy.retry_verify_delay.is_zero() {
+            std::thread::sleep(policy.retry_verify_delay);
+        }
+        let retry_snapshot = match platform_schedule_snapshot(scheduler) {
+            Ok(s) => s,
+            Err(_) => {
+                // Log but don't fail on retry.
+                notif_log("OS notification verification retry snapshot failed");
+                return None;
+            }
+        };
+        let retry_report = RetentionReport::new(&retry_snapshot, desired);
+        if retry_report.is_complete() {
+            notif_log(&format!(
+                "OS retained {}/{} pending notification(s) after retry",
+                retry_report.retained_count, retry_report.desired_count
+            ));
+            return None;
+        }
+
+        let msg = format!(
+            "OS did not retain {}/{} scheduled notification(s); missing: {preview}",
+            retry_report.missing.len(),
+            retry_report.desired_count,
+            preview = retry_report.missing_preview(3)
+        );
+        notif_log(&msg);
+        if retry_report.retained_count == 0 && retry_report.desired_count > 0 {
+            return Some(msg);
+        }
     } else {
-        None
+        notif_log(&format!(
+            "OS retained {}/{} pending notification(s) ({} missing, within tolerance)",
+            report.retained_count,
+            report.desired_count,
+            report.missing.len()
+        ));
     }
+
+    None
 }
 
 fn load_schedule_manifest() -> ScheduleManifest {

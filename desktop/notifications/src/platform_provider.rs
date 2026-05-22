@@ -8,7 +8,7 @@ pub const ACTION_SNOOZE_10_MINUTES: &str = "knotq.snooze.10m";
 pub const ACTION_SNOOZE_1_HOUR: &str = "knotq.snooze.1h";
 pub const ACTION_MARK_DONE: &str = "knotq.mark_done";
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
 pub struct NotificationRequest {
     pub id: String,
     pub fire_at: DateTime<Utc>,
@@ -18,6 +18,11 @@ pub struct NotificationRequest {
     pub group: Option<String>,
     pub category: Option<String>,
     pub user_info: BTreeMap<String, String>,
+}
+
+#[cfg(target_os = "linux")]
+pub fn run_linux_notification_helper_from_env() -> bool {
+    platform::run_helper_from_env()
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -141,7 +146,7 @@ impl AuthorizationStatus {
     }
 }
 
-#[derive(Debug, thiserror::Error)]
+#[derive(Clone, Debug, thiserror::Error)]
 pub enum Error {
     #[error("scheduled notifications are unsupported on this platform: {0}")]
     Unsupported(&'static str),
@@ -174,7 +179,7 @@ impl NotificationScheduler {
     }
 
     pub fn configure_notification_handling(&self) {
-        #[cfg(target_os = "macos")]
+        #[cfg(any(target_os = "macos", target_os = "linux"))]
         platform::configure_notification_handling();
     }
 
@@ -195,6 +200,15 @@ impl NotificationScheduler {
 
     pub fn schedule(&self, request: &NotificationRequest) -> Result<()> {
         platform::schedule(&self.app_id, request)
+    }
+
+    /// Schedule multiple notifications, checking authorization only once.
+    pub fn schedule_batch(
+        &self,
+        requests: &[&NotificationRequest],
+        add_interval: std::time::Duration,
+    ) -> Vec<Result<()>> {
+        platform::schedule_batch(&self.app_id, requests, add_interval)
     }
 
     pub fn cancel(&self, ids: &[String]) -> Result<()> {
@@ -230,7 +244,11 @@ mod platform;
 #[path = "platform/windows.rs"]
 mod platform;
 
-#[cfg(not(any(target_os = "macos", windows)))]
+#[cfg(target_os = "linux")]
+#[path = "platform/linux.rs"]
+mod platform;
+
+#[cfg(not(any(target_os = "macos", target_os = "linux", windows)))]
 mod platform {
     use super::{AuthorizationStatus, Error, NotificationRequest, PlatformStatus, Result};
 
@@ -279,6 +297,17 @@ mod platform {
 
     pub fn remove_all_delivered(_app_id: &str) -> Result<()> {
         Err(Error::Unsupported(REASON))
+    }
+
+    pub fn schedule_batch(
+        _app_id: &str,
+        requests: &[&NotificationRequest],
+        _add_interval: std::time::Duration,
+    ) -> Vec<Result<()>> {
+        requests
+            .iter()
+            .map(|_| Err(Error::Unsupported(REASON)))
+            .collect()
     }
 }
 

@@ -66,9 +66,17 @@ jobs:
           path: dist/macos-build/KnotQ-*-unsigned.zip
 
   package-macos:
-    name: macOS package universal DMG
+    name: macOS package (${{ matrix.artifact }})
     runs-on: macos-15
     needs: [build-macos-arch]
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - artifact: macos-arm64
+            arch: arm64
+          - artifact: macos-x86_64
+            arch: x86_64
 
     steps:
       - uses: actions/checkout@v4
@@ -80,17 +88,14 @@ jobs:
       - name: Download macOS app bundles
         uses: actions/download-artifact@v4
         with:
-          pattern: KnotQ-build-macos-*
+          name: KnotQ-build-${{ matrix.artifact }}
           path: dist/macos-input
-          merge-multiple: true
 
       - name: Unpack app bundles
         run: |
-          mkdir -p dist/macos-input/arm64 dist/macos-input/x86_64
-          ditto -x -k dist/macos-input/KnotQ-macos-arm64-unsigned.zip dist/macos-input/arm64
-          ditto -x -k dist/macos-input/KnotQ-macos-x86_64-unsigned.zip dist/macos-input/x86_64
-          test -d dist/macos-input/arm64/KnotQ.app
-          test -d dist/macos-input/x86_64/KnotQ.app
+          mkdir -p "dist/macos-input/${{ matrix.arch }}"
+          ditto -x -k "dist/macos-input/KnotQ-${{ matrix.artifact }}-unsigned.zip" "dist/macos-input/${{ matrix.arch }}"
+          test -d "dist/macos-input/${{ matrix.arch }}/KnotQ.app"
 
       - name: Import macOS signing certificate
         run: |
@@ -129,8 +134,8 @@ jobs:
           bash bundling/macos/post-bundle.sh \
             "${KNOTQ_VERSION}" \
             "${GITHUB_RUN_NUMBER}.${GITHUB_RUN_ATTEMPT}" \
-            "dist/macos-input/arm64/KnotQ.app" \
-            "dist/macos-input/x86_64/KnotQ.app"
+            "${{ matrix.arch }}" \
+            "dist/macos-input/${{ matrix.arch }}/KnotQ.app"
         env:
           KNOTQ_VERSION: ${{ steps.version.outputs.version }}
           CODESIGN_IDENTITY: ${{ secrets.CODESIGN_IDENTITY }}
@@ -144,7 +149,7 @@ jobs:
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: KnotQ-release-macos
+          name: KnotQ-release-${{ matrix.artifact }}
           path: dist/macos/KnotQ-*.dmg
 
   build-windows:

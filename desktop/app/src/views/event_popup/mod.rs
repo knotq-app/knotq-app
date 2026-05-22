@@ -13,9 +13,11 @@ use knotq_model::{
 use knotq_storage_json::{NotificationDefaults, TimeFormat};
 
 use crate::app::{
-    EventScopeAction, KnotQApp, RepeatScope, daily_queue_marker_color, DAILY_QUEUE_TITLE,
+    daily_queue_marker_color, EventScopeAction, KnotQApp, RepeatScope, DAILY_QUEUE_TITLE,
 };
-use crate::theme_gpui::{calendar_item_color, token_hsla, token_rgba, Theme, FONT_UI};
+use crate::theme_gpui::{
+    calendar_item_color, selected_date_text_color, token_hsla, token_rgba, Theme, FONT_UI,
+};
 use crate::views::date_popover::{DATE_POPOVER_WIDTH_12H, DATE_POPOVER_WIDTH_24H};
 use knotq_date_util::{format_date_time, format_time};
 use knotq_ui::checkbox::task_checkbox;

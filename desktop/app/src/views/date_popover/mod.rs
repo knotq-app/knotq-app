@@ -10,7 +10,8 @@ use knotq_storage_json::TimeFormat;
 
 use crate::app::{DatePickerPopover, KnotQApp};
 use crate::theme_gpui::{
-    token_hsla, token_rgba, Theme, FONT_MONO, FONT_SIZE_BODY, FONT_SIZE_CAPTION2, FONT_UI,
+    selected_date_text_color, token_hsla, token_rgba, Theme, FONT_MONO, FONT_SIZE_BODY,
+    FONT_SIZE_CAPTION2, FONT_UI,
 };
 use knotq_ui::date_field::{DateComponentEvent, DateComponentField, DateFieldElement};
 use knotq_ui::{clamped_popover_left, popover_top_biased_below};

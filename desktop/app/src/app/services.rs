@@ -12,7 +12,7 @@ use knotq_storage_json::NotificationDefaults;
 use super::{save_workspace, save_workspace_incremental, workspace_path, KnotQApp};
 
 const SAVE_DEBOUNCE: StdDuration = StdDuration::from_secs(2);
-const NOTIFICATION_DEBOUNCE: StdDuration = StdDuration::from_secs(2);
+const NOTIFICATION_DEBOUNCE: StdDuration = StdDuration::from_secs(4);
 const DEADLINE_SCAN_DAYS: i64 = 370;
 
 #[derive(Clone)]
@@ -90,6 +90,13 @@ impl AppServiceBus {
         item: Item,
         defaults: NotificationDefaults,
     ) {
+        // Skip item-level refresh if a full recompute is already pending.
+        if self
+            .notification_recompute_pending
+            .load(std::sync::atomic::Ordering::Acquire)
+        {
+            return;
+        }
         let _ = self
             .notification_tx
             .try_send(NotificationSignal::RefreshItem(NotificationItemRefresh {
@@ -179,6 +186,11 @@ pub(crate) fn spawn_notification_task(
             handle_notification_actions(&weak, cx);
             update_notification_error(&weak, cx, None);
             refresh_os_notifications(&weak, cx).await;
+
+            // Drain any signals that queued during the startup refresh to
+            // avoid a redundant second reconciliation.
+            bus.clear_notification_recompute_pending();
+            while notification_rx.try_recv().is_ok() {}
 
             while let Ok(signal) = notification_rx.recv().await {
                 let mut batch = NotificationBatch::default();

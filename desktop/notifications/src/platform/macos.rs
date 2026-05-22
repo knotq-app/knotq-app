@@ -185,6 +185,49 @@ pub fn schedule(_app_id: &str, request: &NotificationRequest) -> Result<()> {
     }
 }
 
+/// Schedule multiple notifications, checking authorization only once.
+/// Returns per-request errors but continues scheduling on individual failures.
+pub fn schedule_batch(
+    _app_id: &str,
+    requests: &[&NotificationRequest],
+    add_interval: StdDuration,
+) -> Vec<Result<()>> {
+    if requests.is_empty() {
+        return Vec::new();
+    }
+    unsafe {
+        let _pool = AutoreleasePool::new();
+        let center = match notification_center() {
+            Ok(c) => c,
+            Err(e) => return requests.iter().map(|_| Err(e.clone())).collect(),
+        };
+        let status = match authorization_status() {
+            Ok(s) => s,
+            Err(e) => return requests.iter().map(|_| Err(e.clone())).collect(),
+        };
+        if !status.can_deliver() {
+            let reason = status
+                .unavailable_reason()
+                .unwrap_or("notification authorization unavailable");
+            return requests
+                .iter()
+                .map(|_| Err(Error::Unavailable(reason)))
+                .collect();
+        }
+
+        let mut results = Vec::with_capacity(requests.len());
+        for (i, request) in requests.iter().enumerate() {
+            let trigger = calendar_trigger(request.fire_at);
+            log_trigger_debug(&request.id, trigger);
+            results.push(add_notification_request(center, request, trigger));
+            if i + 1 < requests.len() && !add_interval.is_zero() {
+                std::thread::sleep(add_interval);
+            }
+        }
+        results
+    }
+}
+
 pub fn cancel(_app_id: &str, ids: &[String]) -> Result<()> {
     if ids.is_empty() {
         return Ok(());

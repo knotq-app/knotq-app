@@ -9,7 +9,7 @@ use knotq_model::{
 };
 
 use crate::app::{KnotQApp, RepeatPopover, RepeatScope};
-use crate::theme_gpui::{token_hsla, token_rgba, Theme};
+use crate::theme_gpui::{selected_date_text_color, token_hsla, token_rgba, Theme};
 use knotq_ui::{clamped_popover_left, popover_top_biased_below};
 
 pub(crate) const REPEAT_POPOVER_WIDTH: f32 = 286.0;

@@ -37,3 +37,7 @@ windows = { version = "0.61.3", features = [
     "Win32_UI_Shell_PropertiesSystem",
     "Win32_UI_WindowsAndMessaging",
 ] }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+libc = "0.2"
+zbus = "5.15.0"

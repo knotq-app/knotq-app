@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# post-bundle.sh <version> <build-number> <arm64-app> <x86_64-app>
-# Creates a universal KnotQ.app, signs it, packages it as a DMG, and notarizes
-# the DMG when notarization credentials are present.
+# post-bundle.sh <version> <build-number> <arch> <app>
+# Copies a single-architecture KnotQ.app, signs it, packages it as an
+# architecture-specific DMG, and notarizes the DMG when credentials are present.
 #
 # Signing:
 #   CODESIGN_IDENTITY             Developer ID Application signing identity
@@ -19,10 +19,15 @@ set -euo pipefail
 #   APPLE_NOTARY_PASSWORD
 #   APPLE_NOTARY_TEAM_ID
 
-VERSION="${1:?usage: $0 <version> <build-number> <arm64-app> <x86_64-app>}"
-BUILD_NUMBER="${2:?usage: $0 <version> <build-number> <arm64-app> <x86_64-app>}"
-ARM_APP_INPUT="${3:?usage: $0 <version> <build-number> <arm64-app> <x86_64-app>}"
-X64_APP_INPUT="${4:?usage: $0 <version> <build-number> <arm64-app> <x86_64-app>}"
+VERSION="${1:?usage: $0 <version> <build-number> <arch> <app>}"
+BUILD_NUMBER="${2:?usage: $0 <version> <build-number> <arch> <app>}"
+ARCH="${3:?usage: $0 <version> <build-number> <arch> <app>}"
+APP_INPUT="${4:?usage: $0 <version> <build-number> <arch> <app>}"
+
+case "$ARCH" in
+    arm64 | x86_64) ;;
+    *) echo "[error] unsupported macOS architecture: $ARCH" >&2; exit 1 ;;
+esac
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 
@@ -41,31 +46,24 @@ set_plist_string() {
         || plutil -insert "$key" -string "$value" "$plist"
 }
 
-ARM_APP="$(abs_path "$ARM_APP_INPUT")"
-X64_APP="$(abs_path "$X64_APP_INPUT")"
-OUT_DIR="$ROOT/target/universal-apple-darwin/release/bundle/osx"
+INPUT_APP="$(abs_path "$APP_INPUT")"
+OUT_DIR="$ROOT/target/package-macos/$ARCH"
 APP="$OUT_DIR/KnotQ.app"
 DIST="$ROOT/dist/macos"
-DMG="$DIST/KnotQ-$VERSION-macos-universal.dmg"
+DMG="$DIST/KnotQ-$VERSION-macos-$ARCH.dmg"
 
-[[ -d "$ARM_APP" ]] || { echo "[error] arm64 app bundle not found: $ARM_APP" >&2; exit 1; }
-[[ -d "$X64_APP" ]] || { echo "[error] x86_64 app bundle not found: $X64_APP" >&2; exit 1; }
+[[ -d "$INPUT_APP" ]] || { echo "[error] $ARCH app bundle not found: $INPUT_APP" >&2; exit 1; }
 
 rm -rf "$APP"
 mkdir -p "$OUT_DIR"
-ditto --noextattr --norsrc "$ARM_APP" "$APP"
+ditto --noextattr --norsrc "$INPUT_APP" "$APP"
 
 EXE_NAME="$(/usr/libexec/PlistBuddy -c "Print :CFBundleExecutable" "$APP/Contents/Info.plist")"
-ARM_EXE="$ARM_APP/Contents/MacOS/$EXE_NAME"
-X64_EXE="$X64_APP/Contents/MacOS/$EXE_NAME"
-UNIVERSAL_EXE="$APP/Contents/MacOS/$EXE_NAME"
+EXE="$APP/Contents/MacOS/$EXE_NAME"
 
-[[ -f "$ARM_EXE" ]] || { echo "[error] arm64 executable not found: $ARM_EXE" >&2; exit 1; }
-[[ -f "$X64_EXE" ]] || { echo "[error] x86_64 executable not found: $X64_EXE" >&2; exit 1; }
-
-lipo -create "$ARM_EXE" "$X64_EXE" -output "$UNIVERSAL_EXE"
-chmod +x "$UNIVERSAL_EXE"
-lipo -verify_arch arm64 x86_64 "$UNIVERSAL_EXE"
+[[ -f "$EXE" ]] || { echo "[error] $ARCH executable not found: $EXE" >&2; exit 1; }
+chmod +x "$EXE"
+lipo "$EXE" -verify_arch "$ARCH"
 
 PLIST="$APP/Contents/Info.plist"
 set_plist_string "$PLIST" CFBundleIdentifier "com.enigmadux.knotq"

@@ -173,6 +173,24 @@ pub fn remove_all_delivered(_app_id: &str) -> Result<()> {
     Ok(())
 }
 
+pub fn schedule_batch(
+    app_id: &str,
+    requests: &[&NotificationRequest],
+    add_interval: std::time::Duration,
+) -> Vec<Result<()>> {
+    requests
+        .iter()
+        .enumerate()
+        .map(|(i, req)| {
+            let result = schedule(app_id, req);
+            if i + 1 < requests.len() && !add_interval.is_zero() {
+                std::thread::sleep(add_interval);
+            }
+            result
+        })
+        .collect()
+}
+
 fn notifier(app_id: &str) -> Result<ToastNotifier> {
     if app_id.trim().is_empty() {
         return Err(Error::Unavailable(

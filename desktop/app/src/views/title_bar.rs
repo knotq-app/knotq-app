@@ -5,7 +5,7 @@ use knotq_commands::Command;
 use knotq_model::SchemeId;
 use knotq_storage_json::CalendarViewMode;
 
-use crate::app::{KnotQApp, View, daily_queue_marker_color};
+use crate::app::{daily_queue_marker_color, KnotQApp, View};
 use crate::theme_gpui::{
     palette_hsla, scheme_color, token_hsla, token_rgba, Theme, FONT_SIZE_HEADLINE,
 };

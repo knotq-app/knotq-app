@@ -32,6 +32,28 @@ pub fn token_hsla(c: u32) -> Hsla {
     token_rgba(c).into()
 }
 
+pub fn selected_date_text_color(t: Theme) -> u32 {
+    let selected_bg = t.caret_color;
+    let preferred = t.text_highlight;
+    if contrast_with_bg(preferred, selected_bg) >= MIN_TEXT_CONTRAST {
+        return preferred;
+    }
+
+    let alternate = t.bg_modal;
+    if contrast_with_bg(alternate, selected_bg) >= MIN_TEXT_CONTRAST {
+        return alternate;
+    }
+
+    [t.text_primary, 0xffffffff, 0x000000ff]
+        .into_iter()
+        .max_by(|a, b| {
+            contrast_with_bg(*a, selected_bg)
+                .partial_cmp(&contrast_with_bg(*b, selected_bg))
+                .unwrap_or(std::cmp::Ordering::Equal)
+        })
+        .unwrap_or(preferred)
+}
+
 /// Convert a 0xRRGGBB palette color into [`Rgba`] with the given alpha.
 pub fn palette_rgba(rgb: u32, alpha: f32) -> Rgba {
     Rgba {
@@ -55,6 +77,52 @@ fn swiftui_saturation(color: Rgba, amount: f32) -> Rgba {
         b: mix(color.b),
         a: color.a,
     }
+}
+
+const MIN_TEXT_CONTRAST: f32 = 4.5;
+
+fn contrast_with_bg(fg: u32, bg: u32) -> f32 {
+    let fg = composite_token_over_bg(fg, bg);
+    let bg = token_rgb(bg);
+    contrast_ratio(fg, bg)
+}
+
+fn composite_token_over_bg(fg: u32, bg: u32) -> [f32; 3] {
+    let [fr, fg_channel, fb] = token_rgb(fg);
+    let [br, bg_channel, bb] = token_rgb(bg);
+    let alpha = (fg & 0xff) as f32 / 255.0;
+    [
+        fr * alpha + br * (1.0 - alpha),
+        fg_channel * alpha + bg_channel * (1.0 - alpha),
+        fb * alpha + bb * (1.0 - alpha),
+    ]
+}
+
+fn token_rgb(c: u32) -> [f32; 3] {
+    [
+        ((c >> 24) & 0xff) as f32 / 255.0,
+        ((c >> 16) & 0xff) as f32 / 255.0,
+        ((c >> 8) & 0xff) as f32 / 255.0,
+    ]
+}
+
+fn contrast_ratio(a: [f32; 3], b: [f32; 3]) -> f32 {
+    let a = relative_luminance(a);
+    let b = relative_luminance(b);
+    let (lighter, darker) = if a >= b { (a, b) } else { (b, a) };
+    (lighter + 0.05) / (darker + 0.05)
+}
+
+fn relative_luminance(rgb: [f32; 3]) -> f32 {
+    fn linear(channel: f32) -> f32 {
+        if channel <= 0.03928 {
+            channel / 12.92
+        } else {
+            ((channel + 0.055) / 1.055).powf(2.4)
+        }
+    }
+
+    0.2126 * linear(rgb[0]) + 0.7152 * linear(rgb[1]) + 0.0722 * linear(rgb[2])
 }
 
 /// Color for an item rendered on the calendar, matching old KnotQ's
@@ -150,6 +218,27 @@ pub fn scheme_square_color(color_index: u8, is_dark: bool) -> Rgba {
 mod tests {
     use super::*;
     use chrono::Duration;
+
+    #[test]
+    fn selected_date_text_color_has_readable_contrast() {
+        for theme in [
+            knotq_theme::theme_obsidian(),
+            knotq_theme::theme_rose_pine_moon(),
+            knotq_theme::theme_catppuccin_mocha(),
+            knotq_theme::theme_tokyo_night(),
+            knotq_theme::theme_light(),
+            knotq_theme::theme_parchment(),
+            knotq_theme::theme_rose_pine_dawn(),
+            knotq_theme::theme_catppuccin_latte(),
+        ] {
+            let text = selected_date_text_color(theme);
+            assert!(
+                contrast_with_bg(text, theme.caret_color) >= MIN_TEXT_CONTRAST,
+                "{} selected date text contrast was too low",
+                theme.name
+            );
+        }
+    }
 
     #[test]
     fn event_status_color_marks_ongoing_events_as_today_not_past() {

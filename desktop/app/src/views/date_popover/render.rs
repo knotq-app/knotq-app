@@ -22,6 +22,7 @@ impl KnotQApp {
         let time_format = self.time_format;
         let uses_meridiem = time_format == TimeFormat::TwelveHour;
         let hour_is_pm = popup.hour_is_pm;
+        let selected_day_text = selected_date_text_color(t);
         let card_width = if uses_meridiem {
             DATE_POPOVER_WIDTH_12H
         } else {
@@ -98,7 +99,11 @@ impl KnotQApp {
                             .rounded(px(99.0))
                             .text_size(px(FONT_SIZE_BODY))
                             .font_weight(gpui::FontWeight::MEDIUM)
-                            .text_color(token_hsla(t.text_highlight))
+                            .text_color(token_hsla(if is_selected {
+                                selected_day_text
+                            } else {
+                                t.text_highlight
+                            }))
                             .bg(token_rgba(if is_selected {
                                 t.caret_color
                             } else {

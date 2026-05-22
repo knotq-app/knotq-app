@@ -314,6 +314,11 @@ fn window_decorations() -> Option<WindowDecorations> {
 }
 
 fn main() {
+    #[cfg(target_os = "linux")]
+    if knotq_notifications::run_linux_notification_helper_from_env() {
+        return;
+    }
+
     Application::new()
         .with_assets(AppAssets::new())
         .run(|cx: &mut App| {

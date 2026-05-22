@@ -3136,6 +3136,7 @@ dependencies = [
  "knotq-date-util",
  "knotq-model",
  "knotq-rrule",
+ "libc",
  "objc",
  "serde",
  "serde_json",
@@ -3143,6 +3144,7 @@ dependencies = [
  "thiserror 1.0.69",
  "uuid",
  "windows 0.61.3",
+ "zbus",
 ]
 
 [[package]]
