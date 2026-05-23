@@ -625,6 +625,20 @@ pub fn clear_item_notifications(
     }
 }
 
+pub(crate) fn clear_item_notifications_for_item(
+    scheme_id: SchemeId,
+    item: Item,
+    defaults: NotificationDefaults,
+) {
+    let item_id = item.id;
+    let mut workspace = Workspace::empty();
+    let mut scheme = Scheme::new("", 0);
+    scheme.id = scheme_id;
+    scheme.items.push(item);
+    workspace.schemes.insert(scheme_id, scheme);
+    clear_item_notifications(&workspace, defaults, scheme_id, item_id);
+}
+
 #[derive(Clone, Debug)]
 pub struct NotificationActionTarget {
     pub notification_id: String,

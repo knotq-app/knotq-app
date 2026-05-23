@@ -46,7 +46,7 @@ use knotq_model::{
 pub use knotq_state::{
     add_months, calendar_month_keys_between, calendar_toggle_keys, daily_queue_carryover_command,
     daily_queue_initial_start, daily_queue_scheme_is_blank, daily_queue_scheme_name,
-    editor_undo_key, make_default_workspace_for_date, mark_past_events_done, recurrence_undo_key,
+    editor_undo_key, make_default_workspace_for_date, recurrence_undo_key,
     should_coalesce_editor_undo, should_coalesce_recurrence_undo, AppState, CalendarOccurrenceKey,
     EditorUndoGroup, EditorUndoKey, Selection, View, UNDO_DEPTH,
 };
@@ -445,9 +445,8 @@ impl DerefMut for KnotQApp {
 impl KnotQApp {
     pub fn new(cx: &mut Context<Self>) -> Self {
         let bootstrap = load_or_seed();
-        let mut workspace = bootstrap.workspace;
+        let workspace = bootstrap.workspace;
         let workspace_save_blocked_reason = bootstrap.save_blocked_reason;
-        mark_past_events_done(&mut workspace, Utc::now());
         // Persist IDs generated while loading older scheme files before OS
         // notification actions depend on them.
         let initial_dirty = true;

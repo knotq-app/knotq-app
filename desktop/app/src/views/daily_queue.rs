@@ -14,7 +14,6 @@ const DAILY_EDITOR_BOTTOM_PAD: f32 = 4.0;
 const DAILY_QUEUE_BOTTOM_SPACER: f32 = 360.0;
 const DAILY_SECTION_TOP_PAD: f32 = 4.0;
 const DAILY_SECTION_BOTTOM_PAD: f32 = 2.0;
-const DAILY_HEADER_HEIGHT: f32 = 33.0;
 const DAILY_EDITOR_TOP_PAD: f32 = 0.0;
 const DAILY_EDITOR_INSET_TOP_PAD: f32 = 0.0;
 const DAILY_TITLE_LEFT_PAD: f32 = 33.0;
@@ -46,7 +45,6 @@ impl KnotQApp {
         let time_format = self.time_format;
         let theme = self.theme();
         let mut sections = Vec::with_capacity(dates.len());
-        let mut initial_today_offset = 0.0;
         let mut seen_today = false;
 
         for date in dates.drain(..) {
@@ -91,14 +89,7 @@ impl KnotQApp {
                     });
                 });
             }
-            let section_height = DAILY_SECTION_TOP_PAD
-                + DAILY_HEADER_HEIGHT
-                + DAILY_EDITOR_TOP_PAD
-                + f32::from(editor.read(cx).estimated_height())
-                + DAILY_SECTION_BOTTOM_PAD;
-            if date < today {
-                initial_today_offset += section_height;
-            } else if date == today {
+            if date == today {
                 seen_today = true;
             }
 
@@ -131,8 +122,8 @@ impl KnotQApp {
                 self.selection.scheme_id = self.workspace.daily_queue_scheme_id(today);
                 self.selection.focused_item_id = None;
                 if seen_today {
-                    self.daily_queue_scroll_handle
-                        .set_offset(point(px(0.0), -px((initial_today_offset - 24.0).max(0.0))));
+                    self.daily_queue_scroll_handle.scroll_to_bottom();
+                    self.schedule_daily_queue_scroll_to_bottom(window);
                 }
             }
             self.daily_queue_scroll_initialized = true;
@@ -236,6 +227,20 @@ impl KnotQApp {
             let y = (distance_from_bottom - max_y).clamp(-max_y, Pixels::ZERO);
             scroll_handle.set_offset(point(Pixels::ZERO, y));
             window.refresh();
+        });
+    }
+
+    fn schedule_daily_queue_scroll_to_bottom(&self, window: &mut Window) {
+        let scroll_handle = self.daily_queue_scroll_handle.clone();
+        window.on_next_frame(move |window, _cx| {
+            scroll_handle.scroll_to_bottom();
+            window.refresh();
+
+            let scroll_handle = scroll_handle.clone();
+            window.on_next_frame(move |window, _cx| {
+                scroll_handle.scroll_to_bottom();
+                window.refresh();
+            });
         });
     }
 

@@ -5,7 +5,7 @@ use knotq_model::{Item, ItemId, ItemMarker, OccurrenceId, SchemeId};
 use knotq_ui::single_line_editor::{SingleLineEditor, SingleLineEditorEvent};
 
 use super::{CalendarOccurrenceKey, EventPopup, EventScopeAction, KnotQApp, RepeatScope};
-use crate::app::mark_past_events_done;
+use knotq_state::mark_past_event_completion_keys_done;
 
 impl KnotQApp {
     pub(crate) fn clear_calendar_pointer_state(&mut self, cx: &mut Context<Self>) -> bool {
@@ -354,16 +354,17 @@ impl KnotQApp {
         );
     }
 
-    pub(crate) fn complete_past_events(
+    pub(crate) fn complete_past_event_occurrences(
         &mut self,
+        keys: &[CalendarOccurrenceKey],
         now: DateTime<Utc>,
         cx: &mut Context<Self>,
     ) -> usize {
-        let changed = mark_past_events_done(&mut self.workspace, now);
+        let changed = mark_past_event_completion_keys_done(&mut self.workspace, keys, now);
         if changed == 0 {
             return 0;
         }
-        // mark_past_events_done touches arbitrary schemes; mark them all dirty.
+        // Completion keys can come from any scheme in the background snapshot.
         let all_ids: Vec<_> = self.workspace.schemes.keys().copied().collect();
         for id in all_ids {
             self.dirty_schemes.insert(id);

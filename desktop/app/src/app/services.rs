@@ -34,6 +34,7 @@ pub(crate) struct AppServiceReceivers {
 pub(crate) enum NotificationSignal {
     Recompute,
     RefreshItem(NotificationItemRefresh),
+    ClearItem(NotificationItemRefresh),
     Action,
 }
 
@@ -105,6 +106,21 @@ impl AppServiceBus {
                 item,
                 defaults,
             }));
+    }
+
+    pub(crate) fn signal_clear_item_notifications(
+        &self,
+        scheme_id: SchemeId,
+        item: Item,
+        defaults: NotificationDefaults,
+    ) {
+        let _ =
+            self.notification_tx
+                .try_send(NotificationSignal::ClearItem(NotificationItemRefresh {
+                    scheme_id,
+                    item,
+                    defaults,
+                }));
     }
 
     pub(crate) fn signal_timeline(&self) {
@@ -196,7 +212,10 @@ pub(crate) fn spawn_notification_task(
             while let Ok(signal) = notification_rx.recv().await {
                 let mut batch = NotificationBatch::default();
                 batch.push(signal);
-                if batch.needs_recompute || !batch.item_refreshes.is_empty() {
+                if batch.needs_recompute
+                    || !batch.item_refreshes.is_empty()
+                    || !batch.item_clears.is_empty()
+                {
                     cx.background_executor().timer(NOTIFICATION_DEBOUNCE).await;
                 }
                 while let Ok(signal) = notification_rx.try_recv() {
@@ -208,6 +227,9 @@ pub(crate) fn spawn_notification_task(
 
                 if batch.has_actions {
                     handle_notification_actions(&weak, cx);
+                }
+                if !batch.item_clears.is_empty() {
+                    clear_item_os_notifications(batch.item_clears, cx).await;
                 }
                 if batch.needs_recompute {
                     refresh_os_notifications(&weak, cx).await;
@@ -225,10 +247,7 @@ pub(crate) fn spawn_timeline_task(
 ) -> Task<()> {
     cx.spawn(
         async move |weak: gpui::WeakEntity<KnotQApp>, cx: &mut gpui::AsyncApp| loop {
-            let deadline = weak
-                .update(cx, |app, _cx| app.next_timeline_deadline(Utc::now()))
-                .ok()
-                .flatten();
+            let deadline = compute_next_timeline_deadline(&weak, cx).await;
 
             match deadline {
                 Some(deadline) if deadline > Utc::now() => {
@@ -257,9 +276,7 @@ pub(crate) fn spawn_timeline_task(
             }
             drain_unit_signals(&timeline_rx);
 
-            let _ = weak.update(cx, |app, cx| {
-                app.run_due_timeline_jobs(cx);
-            });
+            run_due_timeline_jobs(&weak, cx).await;
         },
     )
 }
@@ -363,6 +380,58 @@ async fn refresh_item_os_notifications(
     }
 }
 
+async fn clear_item_os_notifications(
+    item_clears: HashMap<(SchemeId, ItemId), NotificationItemRefresh>,
+    cx: &mut gpui::AsyncApp,
+) {
+    cx.background_executor()
+        .spawn(async move {
+            for clear in item_clears.into_values() {
+                crate::notifications::clear_item_notifications_for_item(
+                    clear.scheme_id,
+                    clear.item,
+                    clear.defaults,
+                );
+            }
+        })
+        .await;
+}
+
+async fn compute_next_timeline_deadline(
+    weak: &gpui::WeakEntity<KnotQApp>,
+    cx: &mut gpui::AsyncApp,
+) -> Option<DateTime<Utc>> {
+    let now = Utc::now();
+    let workspace = weak.update(cx, |app, _cx| app.workspace.clone()).ok()?;
+    let event_deadline = cx
+        .background_executor()
+        .spawn(async move { next_event_completion_deadline(&workspace, now) })
+        .await;
+
+    [event_deadline, next_daily_queue_deadline()]
+        .into_iter()
+        .flatten()
+        .min()
+}
+
+async fn run_due_timeline_jobs(weak: &gpui::WeakEntity<KnotQApp>, cx: &mut gpui::AsyncApp) {
+    let now = Utc::now();
+    let workspace = weak.update(cx, |app, _cx| app.workspace.clone()).ok();
+    let completion_keys = match workspace {
+        Some(workspace) => {
+            cx.background_executor()
+                .spawn(async move { knotq_state::past_event_completion_keys(&workspace, now) })
+                .await
+        }
+        None => Vec::new(),
+    };
+
+    let _ = weak.update(cx, |app, cx| {
+        app.complete_past_event_occurrences(&completion_keys, now, cx);
+        app.sync_daily_queue_day_boundary(cx);
+    });
+}
+
 fn handle_notification_actions(weak: &gpui::WeakEntity<KnotQApp>, cx: &mut gpui::AsyncApp) {
     let targets = crate::notifications::drain_notification_action_targets();
     if targets.is_empty() {
@@ -394,6 +463,7 @@ struct NotificationBatch {
     needs_recompute: bool,
     has_actions: bool,
     item_refreshes: HashMap<(SchemeId, ItemId), NotificationItemRefresh>,
+    item_clears: HashMap<(SchemeId, ItemId), NotificationItemRefresh>,
 }
 
 impl NotificationBatch {
@@ -403,6 +473,10 @@ impl NotificationBatch {
             NotificationSignal::RefreshItem(refresh) => {
                 self.item_refreshes
                     .insert((refresh.scheme_id, refresh.item.id), refresh);
+            }
+            NotificationSignal::ClearItem(clear) => {
+                self.item_clears
+                    .insert((clear.scheme_id, clear.item.id), clear);
             }
             NotificationSignal::Action => self.has_actions = true,
         }
@@ -469,22 +543,6 @@ impl KnotQApp {
         }
 
         crate::notifications::notif_log("shutdown flush finished");
-    }
-
-    pub(crate) fn next_timeline_deadline(&self, now: DateTime<Utc>) -> Option<DateTime<Utc>> {
-        [
-            next_event_completion_deadline(&self.workspace, now),
-            next_daily_queue_deadline(),
-        ]
-        .into_iter()
-        .flatten()
-        .min()
-    }
-
-    pub(crate) fn run_due_timeline_jobs(&mut self, cx: &mut Context<Self>) {
-        let now = Utc::now();
-        self.complete_past_events(now, cx);
-        self.sync_daily_queue_day_boundary(cx);
     }
 }
 

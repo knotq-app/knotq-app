@@ -197,11 +197,13 @@ impl KnotQApp {
         deleted.sort_unstable_by_key(|(scheme, item)| (scheme.0, item.0));
         deleted.dedup();
         for (scheme, item) in deleted {
-            crate::notifications::clear_item_notifications(
-                &self.workspace,
-                self.notification_defaults,
+            let Some(item) = workspace_item(&self.workspace, scheme, item).cloned() else {
+                continue;
+            };
+            self.service_bus.signal_clear_item_notifications(
                 scheme,
                 item,
+                self.notification_defaults,
             );
         }
     }

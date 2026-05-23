@@ -3,7 +3,9 @@ use knotq_model::{
     CalendarProvider, CalendarRecurrence, ImportedCalendarSource, Item, NodeRef, OccurrenceId,
     OccurrenceOverride, OccurrenceOverrideStatus, Scheme, SchemeSource, Workspace,
 };
-use knotq_state::mark_past_events_done;
+use knotq_state::{
+    mark_past_event_completion_keys_done, mark_past_events_done, past_event_completion_keys,
+};
 
 #[test]
 fn mark_past_events_done_completes_elapsed_events() {
@@ -14,6 +16,22 @@ fn mark_past_events_done_completes_elapsed_events() {
     let changed = mark_past_events_done(&mut workspace, end + Duration::minutes(1));
 
     let item = &workspace.iter_schemes().next().unwrap().items[0];
+    assert_eq!(changed, 1);
+    assert!(item.single_state().is_done());
+}
+
+#[test]
+fn past_event_completion_keys_can_be_applied_after_background_scan() {
+    let start = Utc.with_ymd_and_hms(2026, 1, 1, 9, 0, 0).unwrap();
+    let end = start + Duration::hours(1);
+    let mut workspace = workspace_with_item(Item::new("Class").with_start(start).with_end(end));
+    let now = end + Duration::minutes(1);
+
+    let keys = past_event_completion_keys(&workspace, now);
+    let changed = mark_past_event_completion_keys_done(&mut workspace, &keys, now);
+
+    let item = &workspace.iter_schemes().next().unwrap().items[0];
+    assert_eq!(keys.len(), 1);
     assert_eq!(changed, 1);
     assert!(item.single_state().is_done());
 }

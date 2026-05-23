@@ -1,5 +1,5 @@
 use anyhow::{anyhow, bail, Context, Result};
-use chrono::{DateTime, Duration, SecondsFormat, Utc};
+use chrono::{DateTime, Duration, Local, SecondsFormat, Utc};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::{
@@ -631,7 +631,10 @@ fn remove_if_exists(path: &Path) -> Result<()> {
 }
 
 fn format_snapshot_label(timestamp: DateTime<Utc>) -> String {
-    timestamp.format("%Y-%m-%d %H:%M UTC").to_string()
+    timestamp
+        .with_timezone(&Local)
+        .format("%Y-%m-%d %H:%M %Z")
+        .to_string()
 }
 
 fn temp_suffix() -> String {

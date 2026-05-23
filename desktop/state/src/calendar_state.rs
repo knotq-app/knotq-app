@@ -63,18 +63,14 @@ pub fn sync_retained_completed_calendar_items(
     }
 }
 
-pub fn mark_past_events_done(workspace: &mut Workspace, now: DateTime<Utc>) -> usize {
-    let active_scheme_ids = workspace
-        .iter_schemes()
-        .map(|scheme| scheme.id)
-        .collect::<Vec<_>>();
-    let mut changed = 0;
+pub fn past_event_completion_keys(
+    workspace: &Workspace,
+    now: DateTime<Utc>,
+) -> Vec<CalendarOccurrenceKey> {
+    let mut keys = Vec::new();
 
-    for scheme_id in active_scheme_ids {
-        let Some(scheme) = workspace.scheme_mut(scheme_id) else {
-            continue;
-        };
-        for item in &mut scheme.items {
+    for scheme in workspace.iter_schemes() {
+        for item in &scheme.items {
             if item.kind() != ItemKind::Event {
                 continue;
             }
@@ -95,16 +91,68 @@ pub fn mark_past_events_done(workspace: &mut Workspace, now: DateTime<Utc>) -> u
                 if occurrence.end.is_none_or(|end| end > now) || occurrence.state.is_done() {
                     continue;
                 }
-                let state = item.state_for_occurrence_mut(occurrence.id);
-                if !state.is_done() {
-                    state.progress = -1;
-                    changed += 1;
-                }
+                keys.push(CalendarOccurrenceKey {
+                    scheme_id: scheme.id,
+                    item_id: item.id,
+                    occurrence: occurrence.id,
+                });
+            }
+        }
+    }
+
+    keys.sort_by_key(|key| (key.scheme_id.0, key.item_id.0, key.occurrence.clone()));
+    keys.dedup();
+    keys
+}
+
+pub fn mark_past_event_completion_keys_done(
+    workspace: &mut Workspace,
+    keys: &[CalendarOccurrenceKey],
+    now: DateTime<Utc>,
+) -> usize {
+    let mut changed = 0;
+
+    for key in keys {
+        let Some(scheme) = workspace.scheme_mut(key.scheme_id) else {
+            continue;
+        };
+        let Some(item) = scheme.item_mut(key.item_id) else {
+            continue;
+        };
+        if item.kind() != ItemKind::Event {
+            continue;
+        }
+        let (Some(start), Some(end)) = (item.start, item.end) else {
+            continue;
+        };
+        if end > now && item.repeats.is_none() {
+            continue;
+        }
+
+        let mut from = recurring_completion_scan_start(item, start, end) - Duration::seconds(1);
+        from = from.max(now - Duration::days(COMPLETION_LOOKBACK_DAYS));
+        let to = now + Duration::seconds(1);
+        let still_due = item.occurrences(from, to).into_iter().any(|occurrence| {
+            occurrence.id == key.occurrence
+                && occurrence.kind == ItemKind::Event
+                && occurrence.end.is_some_and(|end| end <= now)
+                && !occurrence.state.is_done()
+        });
+        if still_due {
+            let state = item.state_for_occurrence_mut(key.occurrence.clone());
+            if !state.is_done() {
+                state.progress = -1;
+                changed += 1;
             }
         }
     }
 
     changed
+}
+
+pub fn mark_past_events_done(workspace: &mut Workspace, now: DateTime<Utc>) -> usize {
+    let keys = past_event_completion_keys(workspace, now);
+    mark_past_event_completion_keys_done(workspace, &keys, now)
 }
 
 fn recurring_completion_scan_start(
