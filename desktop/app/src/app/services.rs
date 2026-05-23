@@ -272,9 +272,6 @@ pub(crate) fn next_event_completion_deadline(
     let mut next = None;
 
     for scheme in workspace.iter_schemes() {
-        if scheme.is_read_only() {
-            continue;
-        }
         for item in &scheme.items {
             if item.kind() != ItemKind::Event {
                 continue;
@@ -494,5 +491,43 @@ impl KnotQApp {
             self.notification_error = Some(err);
         }
         self.sync_daily_queue_day_boundary(cx);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use knotq_model::{
+        CalendarProvider, ImportedCalendarSource, Item, NodeRef, Scheme, SchemeSource,
+    };
+
+    #[test]
+    fn next_event_completion_deadline_includes_read_only_events() {
+        let now = Utc.with_ymd_and_hms(2026, 5, 18, 8, 0, 0).unwrap();
+        let start = Utc.with_ymd_and_hms(2026, 5, 18, 9, 0, 0).unwrap();
+        let end = Utc.with_ymd_and_hms(2026, 5, 18, 10, 0, 0).unwrap();
+        let mut workspace = Workspace::new();
+        let mut scheme = Scheme::new("Imported", 0);
+        scheme.source = SchemeSource::ImportedCalendar(ImportedCalendarSource {
+            provider: CalendarProvider::Google,
+            account_id: "acct".into(),
+            calendar_id: "cal".into(),
+            sync_token: None,
+            read_only: true,
+            last_synced_at: None,
+        });
+        let scheme_id = scheme.id;
+        scheme
+            .items
+            .push(Item::new("Class").with_start(start).with_end(end));
+        workspace.schemes.insert(scheme_id, scheme);
+        workspace
+            .folders
+            .get_mut(&workspace.root)
+            .unwrap()
+            .children
+            .push(NodeRef::Scheme(scheme_id));
+
+        assert_eq!(next_event_completion_deadline(&workspace, now), Some(end));
     }
 }

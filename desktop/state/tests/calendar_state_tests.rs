@@ -1,7 +1,7 @@
 use chrono::{Duration, TimeZone, Utc};
 use knotq_model::{
-    CalendarRecurrence, Item, NodeRef, OccurrenceId, OccurrenceOverride, OccurrenceOverrideStatus,
-    Scheme, Workspace,
+    CalendarProvider, CalendarRecurrence, ImportedCalendarSource, Item, NodeRef, OccurrenceId,
+    OccurrenceOverride, OccurrenceOverrideStatus, Scheme, SchemeSource, Workspace,
 };
 use knotq_state::mark_past_events_done;
 
@@ -10,6 +10,20 @@ fn mark_past_events_done_completes_elapsed_events() {
     let start = Utc.with_ymd_and_hms(2026, 1, 1, 9, 0, 0).unwrap();
     let end = start + Duration::hours(1);
     let mut workspace = workspace_with_item(Item::new("Class").with_start(start).with_end(end));
+
+    let changed = mark_past_events_done(&mut workspace, end + Duration::minutes(1));
+
+    let item = &workspace.iter_schemes().next().unwrap().items[0];
+    assert_eq!(changed, 1);
+    assert!(item.single_state().is_done());
+}
+
+#[test]
+fn mark_past_events_done_completes_elapsed_read_only_events() {
+    let start = Utc.with_ymd_and_hms(2026, 1, 1, 9, 0, 0).unwrap();
+    let end = start + Duration::hours(1);
+    let mut workspace =
+        read_only_workspace_with_item(Item::new("Imported class").with_start(start).with_end(end));
 
     let changed = mark_past_events_done(&mut workspace, end + Duration::minutes(1));
 
@@ -74,8 +88,24 @@ fn mark_past_events_done_completes_elapsed_overridden_recurring_occurrences() {
 }
 
 fn workspace_with_item(item: Item) -> Workspace {
+    workspace_with_scheme_item(Scheme::new("General", 0), item)
+}
+
+fn read_only_workspace_with_item(item: Item) -> Workspace {
+    let mut scheme = Scheme::new("Imported", 0);
+    scheme.source = SchemeSource::ImportedCalendar(ImportedCalendarSource {
+        provider: CalendarProvider::Google,
+        account_id: "acct".into(),
+        calendar_id: "cal".into(),
+        sync_token: None,
+        read_only: true,
+        last_synced_at: None,
+    });
+    workspace_with_scheme_item(scheme, item)
+}
+
+fn workspace_with_scheme_item(mut scheme: Scheme, item: Item) -> Workspace {
     let mut workspace = Workspace::new();
-    let mut scheme = Scheme::new("General", 0);
     scheme.items.push(item);
     let scheme_id = scheme.id;
     workspace.schemes.insert(scheme_id, scheme);

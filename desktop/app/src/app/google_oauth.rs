@@ -1157,10 +1157,23 @@ fn apply_google_calendar_metadata(
 
 fn apply_google_calendar_items(scheme: &mut Scheme, calendar: &ImportedGoogleCalendar) -> bool {
     if calendar.full_sync {
-        if imported_item_lists_equal(&scheme.items, &calendar.items) {
+        let mut items = calendar
+            .items
+            .iter()
+            .cloned()
+            .map(|item| {
+                let existing = item
+                    .external
+                    .as_ref()
+                    .and_then(|external| find_existing_external_item(&scheme.items, external));
+                merge_imported_item(existing, item)
+            })
+            .collect::<Vec<_>>();
+        sort_imported_items(&mut items);
+        if imported_item_lists_equal(&scheme.items, &items) {
             return false;
         }
-        scheme.items = calendar.items.clone();
+        scheme.items = items;
         return true;
     }
 
@@ -1195,8 +1208,7 @@ fn apply_google_calendar_items(scheme: &mut Scheme, calendar: &ImportedGoogleCal
                 .as_ref()
                 .is_some_and(|candidate| external_same_event(candidate, external))
         }) {
-            let mut updated = item;
-            updated.id = existing.id;
+            let updated = merge_imported_item(Some(existing), item);
             if !item_content_eq_ignoring_id(existing, &updated) {
                 *existing = updated;
                 changed = true;
@@ -1210,6 +1222,29 @@ fn apply_google_calendar_items(scheme: &mut Scheme, calendar: &ImportedGoogleCal
         sort_imported_items(&mut scheme.items);
     }
     changed
+}
+
+fn find_existing_external_item<'a>(
+    items: &'a [Item],
+    external: &ExternalItemSource,
+) -> Option<&'a Item> {
+    items.iter().find(|candidate| {
+        candidate
+            .external
+            .as_ref()
+            .is_some_and(|candidate| external_same_event(candidate, external))
+    })
+}
+
+fn merge_imported_item(existing: Option<&Item>, mut imported: Item) -> Item {
+    let Some(existing) = existing else {
+        return imported;
+    };
+    imported.id = existing.id;
+    if item_occurrence_identity_eq(existing, &imported) {
+        imported.state = existing.state.clone();
+    }
+    imported
 }
 
 fn imported_item_lists_equal(existing: &[Item], imported: &[Item]) -> bool {
@@ -1232,6 +1267,14 @@ fn item_content_eq_ignoring_id(left: &Item, right: &Item) -> bool {
         && left.state == right.state
         && left.priority == right.priority
         && left.external == right.external
+}
+
+fn item_occurrence_identity_eq(left: &Item, right: &Item) -> bool {
+    left.marker == right.marker
+        && left.start == right.start
+        && left.end == right.end
+        && left.available == right.available
+        && left.repeats == right.repeats
 }
 
 fn external_matches_key(external: &ExternalItemSource, key: &GoogleExternalEventKey) -> bool {
@@ -1666,5 +1709,98 @@ mod tests {
         assert_eq!(scheme.items.len(), 1);
         assert_eq!(scheme.items[0].id, existing_id);
         assert_eq!(scheme.items[0].text, "Same");
+    }
+
+    #[test]
+    fn incremental_sync_preserves_local_completion_state_for_same_event_time() {
+        let start = dt("2026-05-18T13:00:00Z");
+        let end = dt("2026-05-18T13:30:00Z");
+        let mut scheme = Scheme::new("Work", 0);
+        let mut existing = Item::new("Same").with_start(start).with_end(end).done();
+        existing.external = Some(external("stay"));
+        scheme.items = vec![existing];
+
+        let mut imported = Item::new("Same").with_start(start).with_end(end);
+        imported.external = Some(external("stay"));
+
+        let changed = apply_google_calendar_items(
+            &mut scheme,
+            &ImportedGoogleCalendar {
+                account_id: "acct".to_string(),
+                calendar_id: "cal".to_string(),
+                name: "Work".to_string(),
+                color_index: 0,
+                sync_token: Some("next".to_string()),
+                full_sync: false,
+                items: vec![imported],
+                deleted: Vec::new(),
+            },
+        );
+
+        assert!(!changed);
+        assert!(scheme.items[0].single_state().is_done());
+    }
+
+    #[test]
+    fn full_sync_preserves_local_completion_state_for_same_event_time() {
+        let start = dt("2026-05-18T13:00:00Z");
+        let end = dt("2026-05-18T13:30:00Z");
+        let mut scheme = Scheme::new("Work", 0);
+        let mut existing = Item::new("Same").with_start(start).with_end(end).done();
+        existing.external = Some(external("stay"));
+        scheme.items = vec![existing];
+
+        let mut imported = Item::new("Same").with_start(start).with_end(end);
+        imported.external = Some(external("stay"));
+
+        let changed = apply_google_calendar_items(
+            &mut scheme,
+            &ImportedGoogleCalendar {
+                account_id: "acct".to_string(),
+                calendar_id: "cal".to_string(),
+                name: "Work".to_string(),
+                color_index: 0,
+                sync_token: Some("next".to_string()),
+                full_sync: true,
+                items: vec![imported],
+                deleted: Vec::new(),
+            },
+        );
+
+        assert!(!changed);
+        assert!(scheme.items[0].single_state().is_done());
+    }
+
+    #[test]
+    fn sync_resets_completion_state_when_event_time_changes() {
+        let mut scheme = Scheme::new("Work", 0);
+        let mut existing = Item::new("Same")
+            .with_start(dt("2026-05-18T13:00:00Z"))
+            .with_end(dt("2026-05-18T13:30:00Z"))
+            .done();
+        existing.external = Some(external("stay"));
+        scheme.items = vec![existing];
+
+        let mut imported = Item::new("Same")
+            .with_start(dt("2026-05-19T13:00:00Z"))
+            .with_end(dt("2026-05-19T13:30:00Z"));
+        imported.external = Some(external("stay"));
+
+        let changed = apply_google_calendar_items(
+            &mut scheme,
+            &ImportedGoogleCalendar {
+                account_id: "acct".to_string(),
+                calendar_id: "cal".to_string(),
+                name: "Work".to_string(),
+                color_index: 0,
+                sync_token: Some("next".to_string()),
+                full_sync: false,
+                items: vec![imported],
+                deleted: Vec::new(),
+            },
+        );
+
+        assert!(changed);
+        assert!(!scheme.items[0].single_state().is_done());
     }
 }

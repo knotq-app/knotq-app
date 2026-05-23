@@ -72,9 +72,6 @@ pub fn mark_past_events_done(workspace: &mut Workspace, now: DateTime<Utc>) -> u
         let Some(scheme) = workspace.scheme_mut(scheme_id) else {
             continue;
         };
-        if scheme.is_read_only() {
-            continue;
-        }
         for item in &mut scheme.items {
             if item.kind() != ItemKind::Event {
                 continue;
