@@ -1,7 +1,10 @@
 use gpui::prelude::*;
 use gpui::{Context, Window};
-use knotq_commands::Command;
-use knotq_model::{FolderId, Item, NodeRef, Scheme};
+use knotq_commands::{Command, CommandError};
+use knotq_model::{
+    validate_workspace_node_name, FolderId, Item, NodeRef, Scheme, WorkspaceNodeNameError,
+    WorkspaceNodeNameKind,
+};
 
 use super::{KnotQApp, NewNodeKind, RenameNodeState};
 use knotq_ui::single_line_editor::{SingleLineEditor, SingleLineEditorEvent};
@@ -30,7 +33,9 @@ impl KnotQApp {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.finish_renaming_node(false, window, cx);
+        if !self.finish_renaming_node(false, window, cx) {
+            return;
+        }
         let name = self.unique_new_node_name(parent, kind);
 
         match kind {
@@ -114,6 +119,7 @@ impl KnotQApp {
             target,
             original_name,
             input,
+            error: None,
             _subscription: sub,
         });
         cx.notify();
@@ -137,24 +143,30 @@ impl KnotQApp {
         focus_editor: bool,
         window: &mut Window,
         cx: &mut Context<Self>,
-    ) {
+    ) -> bool {
         let Some(rename) = self.rename_node.take() else {
-            return;
+            return true;
         };
-        let raw = rename.input.read(cx).value().to_string();
-        let trimmed = raw.trim();
-        let name = if trimmed.is_empty() {
-            rename.original_name.clone()
-        } else {
-            trimmed.to_string()
-        };
+        let name = rename.input.read(cx).value().to_string();
         if name != rename.original_name {
-            match rename.target {
-                NodeRef::Folder(id) => {
-                    self.apply(Command::RenameFolder { id, name }, cx);
-                }
-                NodeRef::Scheme(id) => {
-                    self.apply(Command::RenameScheme { id, name }, cx);
+            let kind = node_ref_name_kind(rename.target);
+            if let Err(reason) = validate_workspace_node_name(&name, kind) {
+                self.keep_rename_error(
+                    rename,
+                    workspace_name_error_message(kind, &name, &reason),
+                    cx,
+                );
+                return false;
+            }
+            let command = match rename.target {
+                NodeRef::Folder(id) => Command::RenameFolder { id, name },
+                NodeRef::Scheme(id) => Command::RenameScheme { id, name },
+            };
+            match self.apply_result(command, cx) {
+                Ok(_) => {}
+                Err(err) => {
+                    self.keep_rename_error(rename, command_error_message(&err), cx);
+                    return false;
                 }
             }
         }
@@ -162,6 +174,7 @@ impl KnotQApp {
             self.focus_current_editor(window, cx);
         }
         cx.notify();
+        true
     }
 
     fn on_rename_node_input_event(
@@ -172,8 +185,12 @@ impl KnotQApp {
         cx: &mut Context<Self>,
     ) {
         match event {
-            SingleLineEditorEvent::Submit => self.finish_renaming_node(true, window, cx),
-            SingleLineEditorEvent::Blur => self.finish_renaming_node(false, window, cx),
+            SingleLineEditorEvent::Submit => {
+                self.finish_renaming_node(true, window, cx);
+            }
+            SingleLineEditorEvent::Blur => {
+                self.finish_renaming_node(false, window, cx);
+            }
             SingleLineEditorEvent::Cancel => {
                 let focus_editor = self
                     .rename_node
@@ -185,8 +202,26 @@ impl KnotQApp {
                 }
                 cx.notify();
             }
-            SingleLineEditorEvent::Focus | SingleLineEditorEvent::Change => {}
+            SingleLineEditorEvent::Change => {
+                if let Some(rename) = self.rename_node.as_mut() {
+                    if rename.error.take().is_some() {
+                        cx.notify();
+                    }
+                }
+            }
+            SingleLineEditorEvent::Focus => {}
         }
+    }
+
+    fn keep_rename_error(
+        &mut self,
+        mut rename: RenameNodeState,
+        error: String,
+        cx: &mut Context<Self>,
+    ) {
+        rename.error = Some(error);
+        self.rename_node = Some(rename);
+        cx.notify();
     }
 
     fn unique_new_node_name(&self, parent: FolderId, kind: NewNodeKind) -> String {
@@ -223,5 +258,69 @@ impl KnotQApp {
             }
         }
         unreachable!()
+    }
+}
+
+fn node_ref_name_kind(target: NodeRef) -> WorkspaceNodeNameKind {
+    match target {
+        NodeRef::Folder(_) => WorkspaceNodeNameKind::Folder,
+        NodeRef::Scheme(_) => WorkspaceNodeNameKind::Scheme,
+    }
+}
+
+fn command_error_message(err: &CommandError) -> String {
+    match err {
+        CommandError::DuplicateFolderName { name, .. } => {
+            format!("A folder named \"{name}\" already exists in this location.")
+        }
+        CommandError::DuplicateSchemeName { name, .. } => {
+            format!("An item named \"{name}\" already exists in this folder.")
+        }
+        CommandError::InvalidNodeName { kind, name, reason } => workspace_name_error_message(
+            if *kind == "folder" {
+                WorkspaceNodeNameKind::Folder
+            } else {
+                WorkspaceNodeNameKind::Scheme
+            },
+            name,
+            reason,
+        ),
+        _ => format!("Could not rename: {err}"),
+    }
+}
+
+fn workspace_name_error_message(
+    kind: WorkspaceNodeNameKind,
+    name: &str,
+    reason: &WorkspaceNodeNameError,
+) -> String {
+    let label = match kind {
+        WorkspaceNodeNameKind::Folder => "Folder",
+        WorkspaceNodeNameKind::Scheme => "Item",
+    };
+    match reason {
+        WorkspaceNodeNameError::Empty => format!("{label} name cannot be empty."),
+        WorkspaceNodeNameError::OuterWhitespace => {
+            "File or directory name contains leading or trailing whitespace.".to_string()
+        }
+        WorkspaceNodeNameError::DotSegment => {
+            "File or directory name cannot be . or ...".to_string()
+        }
+        WorkspaceNodeNameError::TrailingPeriod => {
+            "File or directory name cannot end with a period.".to_string()
+        }
+        WorkspaceNodeNameError::PathSeparator => {
+            "File or directory name cannot contain path separators.".to_string()
+        }
+        WorkspaceNodeNameError::ReservedCharacter(ch) => {
+            format!("File or directory name cannot contain {ch:?}.")
+        }
+        WorkspaceNodeNameError::ControlCharacter(_) => {
+            "File or directory name cannot contain control characters.".to_string()
+        }
+        WorkspaceNodeNameError::ReservedName(_) => {
+            format!("\"{name}\" is reserved by the operating system.")
+        }
+        WorkspaceNodeNameError::SchemeExtension => "Item names cannot end in .knotq.".to_string(),
     }
 }

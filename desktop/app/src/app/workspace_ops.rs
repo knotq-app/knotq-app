@@ -173,6 +173,45 @@ impl KnotQApp {
         cx.notify();
     }
 
+    pub fn empty_archive(&mut self, cx: &mut Context<Self>) {
+        let deleted = self.workspace.recently_deleted.clone();
+        if deleted.is_empty() {
+            return;
+        }
+        let commands = deleted
+            .iter()
+            .copied()
+            .map(|id| Command::PermanentlyDeleteScheme { id })
+            .collect::<Vec<_>>();
+        let Some(command) = Command::from_vec(commands) else {
+            return;
+        };
+        if self.apply(command, cx).is_none() {
+            return;
+        }
+        for id in deleted {
+            self.scheme_sessions.remove(&id);
+            if self
+                .scheme_editor
+                .as_ref()
+                .is_some_and(|(editor_id, _)| *editor_id == id)
+            {
+                self.scheme_editor = None;
+                self._editor_subscription = None;
+            }
+        }
+        if let Some(selected) = self.selection.scheme_id {
+            if self.workspace.scheme(selected).is_none() {
+                self.selection.scheme_id = None;
+                self.selection.focused_item_id = None;
+                if matches!(self.selection.view, View::Scheme) {
+                    self.open_union();
+                }
+            }
+        }
+        cx.notify();
+    }
+
     /// Reconcile UI state after a workspace mutation: close popovers for
     /// deleted items, update selections when the active scheme disappears, etc.
     pub(crate) fn reconcile_workspace_ui_state(&mut self) {

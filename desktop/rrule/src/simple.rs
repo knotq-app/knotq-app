@@ -45,9 +45,10 @@ pub(crate) fn expand_linear_days(
     interval_days: usize,
 ) -> Vec<Occurrence> {
     let mut out = Vec::new();
-    let mut index = 0usize;
-    let interval = Duration::days(interval_days.max(1) as i64);
-    let mut current = ctx.anchor;
+    let interval_days = interval_days.max(1);
+    let interval = Duration::days(interval_days as i64);
+    let mut index = first_linear_day_index(ctx, interval_days);
+    let mut current = ctx.anchor + interval * index as i32;
     while current < ctx.to {
         if !repeat_end_allows(recurrence.repeat_end(), index, current) {
             break;
@@ -76,9 +77,10 @@ pub(crate) fn expand_weekly(
     let anchor_week_start = ctx.anchor.date_naive()
         - Duration::days(ctx.anchor.weekday().num_days_from_monday() as i64);
     let mut out = Vec::new();
-    let mut generated = 0usize;
-    let mut cycle = 0usize;
+    let mut cycle = first_weekly_cycle(ctx, anchor_week_start);
     let interval = interval_weeks.max(1);
+    let mut generated =
+        weekly_generated_before_cycle(cycle, interval, &selected, anchor_week_start, ctx.anchor);
 
     loop {
         let week_start = anchor_week_start + Duration::weeks(cycle as i64);
@@ -139,18 +141,24 @@ pub(crate) fn expand_months_or_years(
     yearly: bool,
 ) -> Vec<Occurrence> {
     let mut out = Vec::new();
-    let mut generated = 0usize;
-    let mut step = 0usize;
     let month_stride = if yearly { 12 } else { 1 } * interval.max(1);
+    let mut step = first_month_step(ctx, month_stride);
+    let Some(mut generated) = generated_before_month_step(ctx, recurrence, step, month_stride)
+    else {
+        return out;
+    };
+    let mut invalid_steps = 0usize;
 
     loop {
         let Some(current) = add_months_exact(ctx.anchor, step * month_stride) else {
             step += 1;
-            if step > 4096 {
+            invalid_steps += 1;
+            if invalid_steps > 4096 {
                 break;
             }
             continue;
         };
+        invalid_steps = 0;
         if current >= ctx.to {
             break;
         }
@@ -162,6 +170,98 @@ pub(crate) fn expand_months_or_years(
         step += 1;
     }
     out
+}
+
+fn effective_search_start(ctx: ExpansionCtx<'_>) -> DateTime<Utc> {
+    let max_positive_offset = [ctx.item.start, ctx.item.end, ctx.item.available]
+        .into_iter()
+        .flatten()
+        .map(|dt| dt - ctx.anchor)
+        .filter(|offset| *offset > Duration::zero())
+        .max()
+        .unwrap_or_else(Duration::zero);
+    ctx.from - max_positive_offset
+}
+
+fn first_linear_day_index(ctx: ExpansionCtx<'_>, interval_days: usize) -> usize {
+    let target = effective_search_start(ctx);
+    if target <= ctx.anchor {
+        return 0;
+    }
+    let interval_secs = interval_days.max(1) as i64 * 24 * 60 * 60;
+    let delta_secs = target.signed_duration_since(ctx.anchor).num_seconds();
+    ((delta_secs + interval_secs - 1) / interval_secs) as usize
+}
+
+fn first_weekly_cycle(ctx: ExpansionCtx<'_>, anchor_week_start: chrono::NaiveDate) -> usize {
+    let target = effective_search_start(ctx).date_naive();
+    if target <= anchor_week_start {
+        return 0;
+    }
+    (target - anchor_week_start).num_days().div_euclid(7) as usize
+}
+
+fn weekly_generated_before_cycle(
+    cycle: usize,
+    interval: usize,
+    selected: &[RepeatWeekday],
+    anchor_week_start: chrono::NaiveDate,
+    anchor: DateTime<Utc>,
+) -> usize {
+    if cycle == 0 || selected.is_empty() {
+        return 0;
+    }
+    let active_cycles = ((cycle - 1) / interval.max(1)) + 1;
+    let mut generated = active_cycles * selected.len();
+
+    for weekday in selected {
+        let day = anchor_week_start + Duration::days(weekday.num_days_from_monday() as i64);
+        let current = Utc
+            .with_ymd_and_hms(
+                day.year(),
+                day.month(),
+                day.day(),
+                anchor.hour(),
+                anchor.minute(),
+                anchor.second(),
+            )
+            .single()
+            .unwrap_or(anchor);
+        if current < anchor {
+            generated = generated.saturating_sub(1);
+        }
+    }
+
+    generated
+}
+
+fn first_month_step(ctx: ExpansionCtx<'_>, month_stride: usize) -> usize {
+    let target = effective_search_start(ctx);
+    let anchor_month = ctx.anchor.year() as i64 * 12 + ctx.anchor.month0() as i64;
+    let target_month = target.year() as i64 * 12 + target.month0() as i64;
+    if target_month <= anchor_month {
+        return 0;
+    }
+    ((target_month - anchor_month) as usize) / month_stride.max(1)
+}
+
+fn generated_before_month_step(
+    ctx: ExpansionCtx<'_>,
+    recurrence: &SimpleRecurrence,
+    step: usize,
+    month_stride: usize,
+) -> Option<usize> {
+    let mut generated = 0usize;
+    for previous_step in 0..step {
+        let Some(current) = add_months_exact(ctx.anchor, previous_step * month_stride) else {
+            continue;
+        };
+        if !repeat_end_allows(recurrence.repeat_end(), generated, current) {
+            return None;
+        }
+        generated += 1;
+    }
+    Some(generated)
 }
 
 fn maybe_push_occurrence(

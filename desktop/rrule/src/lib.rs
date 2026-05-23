@@ -14,6 +14,8 @@ pub use expand::*;
 pub use repeat_end::validate_repeat_end;
 pub use scope::*;
 
+const PREV_OCCURRENCE_LOOKBACK_DAYS: i64 = 7;
+
 pub trait OccurrenceExpander: Send + Sync {
     fn expand(&self, item: &Item, range: DateRange) -> Vec<Occurrence>;
     fn next_after(&self, item: &Item, after: DateTime<Utc>) -> Option<Occurrence>;
@@ -36,10 +38,13 @@ impl OccurrenceExpander for DefaultExpander {
     }
 
     fn prev_before(&self, item: &Item, before: DateTime<Utc>) -> Option<Occurrence> {
-        item.occurrences(before - Duration::days(365 * 5), before)
-            .into_iter()
-            .filter(|occ| occurrence_anchor(occ) < Some(before))
-            .max_by_key(occurrence_anchor)
+        item.occurrences(
+            before - Duration::days(PREV_OCCURRENCE_LOOKBACK_DAYS),
+            before,
+        )
+        .into_iter()
+        .filter(|occ| occurrence_anchor(occ) < Some(before))
+        .max_by_key(occurrence_anchor)
     }
 }
 

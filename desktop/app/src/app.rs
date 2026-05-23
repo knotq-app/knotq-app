@@ -172,6 +172,7 @@ pub struct DeleteConfirmation {
 pub enum SidebarContextTarget {
     Background,
     NewMenu { parent: FolderId },
+    Archive,
     Folder(FolderId),
     Scheme { scheme_id: SchemeId },
     DeletedScheme { scheme_id: SchemeId },
@@ -242,6 +243,7 @@ pub struct RenameNodeState {
     pub target: NodeRef,
     pub original_name: String,
     pub input: Entity<SingleLineEditor>,
+    pub error: Option<String>,
     pub _subscription: Subscription,
 }
 

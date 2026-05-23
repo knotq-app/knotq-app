@@ -96,18 +96,49 @@ pub(super) fn nav_icon_slot(icon: gpui::AnyElement) -> gpui::AnyElement {
         .into_any_element()
 }
 
-pub(super) fn inline_rename_input(input: Entity<SingleLineEditor>, t: Theme) -> gpui::AnyElement {
+pub(super) fn inline_rename_input(
+    input: Entity<SingleLineEditor>,
+    error: Option<String>,
+    t: Theme,
+) -> gpui::AnyElement {
+    let has_error = error.is_some();
+    let warning_border = if t.is_dark { 0xe2c16cff } else { 0x9a6a00ff };
+    let warning_bg = if t.is_dark { 0xe2c16c18 } else { 0xffdf8a36 };
     div()
         .flex_1()
         .min_w_0()
-        .h_full()
+        .when(!has_error, |s| s.h_full().overflow_hidden())
+        .when(has_error, |s| s.flex().flex_col().gap(px(3.0)))
         .text_size(px(SIDEBAR_TEXT_SIZE))
         .font_family(FONT_UI)
         .font_weight(gpui::FontWeight::NORMAL)
         .text_color(token_hsla(t.text_primary))
         .line_height(px(SIDEBAR_LINE_HEIGHT))
-        .overflow_hidden()
-        .child(input)
+        .child(
+            div()
+                .w_full()
+                .h(px(NAV_ROW_HEIGHT))
+                .flex()
+                .items_center()
+                .child(input),
+        )
+        .when_some(error, move |s, message| {
+            s.child(
+                div()
+                    .w_full()
+                    .px(px(8.0))
+                    .py(px(6.0))
+                    .rounded(px(3.0))
+                    .border_1()
+                    .border_color(token_rgba(warning_border))
+                    .bg(token_rgba(warning_bg))
+                    .text_size(px(12.0))
+                    .line_height(px(17.0))
+                    .font_weight(gpui::FontWeight::MEDIUM)
+                    .text_color(token_hsla(warning_border))
+                    .child(message),
+            )
+        })
         .into_any_element()
 }
 

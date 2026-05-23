@@ -89,29 +89,40 @@ impl KnotQApp {
             return false;
         }
 
-        let Some((source_parent, source_position)) = self.navigator_node_position(drag.node) else {
-            return false;
-        };
-        if source_parent == new_parent
-            && (position == source_position || position == source_position + 1)
-        {
-            return false;
-        }
+        match drag.source {
+            NavigatorDragSource::Active { .. } => {
+                let Some((source_parent, source_position)) =
+                    self.navigator_node_position(drag.node)
+                else {
+                    return false;
+                };
+                if source_parent == new_parent
+                    && (position == source_position || position == source_position + 1)
+                {
+                    return false;
+                }
 
-        match drag.node {
-            NodeRef::Folder(id) => {
-                id != self.workspace.root
-                    && self.workspace.folder(id).is_some()
-                    && new_parent == self.workspace.root
+                match drag.node {
+                    NodeRef::Folder(id) => {
+                        id != self.workspace.root
+                            && self.workspace.folder(id).is_some()
+                            && new_parent == self.workspace.root
+                    }
+                    NodeRef::Scheme(id) => {
+                        self.workspace.scheme(id).is_some()
+                            && !self.workspace.is_scheme_deleted(id)
+                            && self.is_valid_scheme_drop_folder(new_parent)
+                    }
+                }
             }
-            NodeRef::Scheme(id) => {
-                self.workspace.scheme(id).is_some()
-                    && (new_parent == self.workspace.root
-                        || self
-                            .workspace
-                            .folder(new_parent)
-                            .is_some_and(|folder| folder.parent == Some(self.workspace.root)))
-            }
+            NavigatorDragSource::Archive => match drag.node {
+                NodeRef::Folder(_) => false,
+                NodeRef::Scheme(id) => {
+                    self.workspace.scheme(id).is_some()
+                        && self.workspace.is_scheme_deleted(id)
+                        && self.is_valid_scheme_drop_folder(new_parent)
+                }
+            },
         }
     }
 
@@ -131,23 +142,73 @@ impl KnotQApp {
                 .workspace
                 .folder(new_parent)
                 .is_some_and(|folder| !folder.expanded);
-        let move_cmd = Command::MoveNode {
-            node: drag.node,
-            new_parent,
-            position,
+        let command = match drag.source {
+            NavigatorDragSource::Active { .. } => Command::MoveNode {
+                node: drag.node,
+                new_parent,
+                position,
+            },
+            NavigatorDragSource::Archive => {
+                let NodeRef::Scheme(id) = drag.node else {
+                    return;
+                };
+                let Some(scheme) = self.workspace.scheme(id).cloned() else {
+                    return;
+                };
+                Command::RestoreScheme {
+                    folder: new_parent,
+                    position,
+                    scheme,
+                }
+            }
         };
         let cmd = if should_expand {
             Command::Batch(vec![
-                move_cmd,
+                command,
                 Command::SetFolderExpanded {
                     id: new_parent,
                     expanded: true,
                 },
             ])
         } else {
-            move_cmd
+            command
         };
         self.apply(cmd, cx);
+    }
+
+    pub(super) fn can_archive_navigator_node(&self, drag: &NavigatorDragInfo) -> bool {
+        match (drag.source, drag.node) {
+            (NavigatorDragSource::Active { .. }, NodeRef::Scheme(id)) => self
+                .workspace
+                .scheme(id)
+                .is_some_and(|_| !self.workspace.is_scheme_deleted(id)),
+            (NavigatorDragSource::Active { .. }, NodeRef::Folder(id)) => {
+                id != self.workspace.root && self.workspace.folder(id).is_some()
+            }
+            (NavigatorDragSource::Archive, _) => false,
+        }
+    }
+
+    pub(super) fn archive_navigator_node(
+        &mut self,
+        drag: &NavigatorDragInfo,
+        cx: &mut Context<Self>,
+    ) {
+        if !self.can_archive_navigator_node(drag) {
+            return;
+        }
+        match drag.node {
+            NodeRef::Folder(id) => self.delete_folder(id, cx),
+            NodeRef::Scheme(id) => self.delete_scheme(id, cx),
+        }
+    }
+
+    fn is_valid_scheme_drop_folder(&self, folder_id: FolderId) -> bool {
+        folder_id == self.workspace.root
+            || self
+                .workspace
+                .folder(folder_id)
+                .is_some_and(|folder| folder.parent == Some(self.workspace.root))
     }
 }
 
@@ -275,10 +336,15 @@ pub(super) fn navigator_drop_target_accepts(
     if drag.kind == NavigatorNodeKind::Folder && new_parent != drag.root {
         return false;
     }
-    if drag.source_parent == new_parent
-        && (position == drag.source_position || position == drag.source_position + 1)
+    if let NavigatorDragSource::Active {
+        parent,
+        position: source_position,
+    } = drag.source
     {
-        return false;
+        if parent == new_parent && (position == source_position || position == source_position + 1)
+        {
+            return false;
+        }
     }
     true
 }

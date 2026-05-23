@@ -6,6 +6,8 @@ use knotq_rrule::{DefaultExpander, OccurrenceExpander};
 use crate::format::{body_for, title_for};
 use crate::{lead_offset_for_kind, NotificationKind, NotificationLeadTimes, ScheduledNotification};
 
+const NOTIFICATION_LOOKBACK_DAYS: i64 = 7;
+
 /// Compute notifications scheduled to fire in [from, to).
 pub fn compute_due_notifications(
     workspace: &Workspace,
@@ -118,12 +120,12 @@ pub fn expired_event_notification_keys_with_expander(
     expander: &dyn OccurrenceExpander,
 ) -> Vec<String> {
     let mut out = Vec::new();
-    let range = DateRange {
-        start: now - Duration::days(370),
-        end: now + Duration::seconds(1),
-    };
 
     for scheme in workspace.iter_schemes() {
+        let range = DateRange {
+            start: now - Duration::days(NOTIFICATION_LOOKBACK_DAYS),
+            end: now + Duration::seconds(1),
+        };
         for item in &scheme.items {
             for occurrence in expander.expand(item, range) {
                 if NotificationKind::from_item(occurrence.kind) != Some(NotificationKind::Event) {
@@ -174,7 +176,7 @@ fn expansion_range(
     .max(0);
 
     DateRange {
-        start: from - Duration::days(370),
+        start: from - Duration::days(NOTIFICATION_LOOKBACK_DAYS),
         end: to + Duration::seconds(max_default_lead_secs) + Duration::days(2),
     }
 }

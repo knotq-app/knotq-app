@@ -50,6 +50,7 @@ const PLATFORM_OS_HARD_HORIZON: StdDuration = StdDuration::from_secs(32 * 24 * 6
 pub(crate) const APP_ID: &str = "com.enigmadux.knotq";
 const CATEGORY_ID: &str = "knotq-reminder";
 const SCHEDULE_MANIFEST_FILE: &str = "notification_schedule_manifest.json";
+const NOTIFICATION_LOOKBACK_DAYS: i64 = 7;
 
 static AUTHORIZATION_REQUESTED: AtomicBool = AtomicBool::new(false);
 
@@ -606,7 +607,7 @@ pub fn clear_item_notifications(
         lead_times(defaults),
         scheme_id,
         item_id,
-        now - Duration::days(SCHEDULE_HORIZON_DAYS),
+        now - Duration::days(NOTIFICATION_LOOKBACK_DAYS),
         now + Duration::days(SCHEDULE_HORIZON_DAYS),
     )
     .into_iter()
@@ -741,8 +742,8 @@ fn resolve_notification_target_item_id(
         .notification_key
         .as_deref()
         .and_then(notification_key_kind);
-    let scan_start = target.trigger_at - Duration::days(370);
-    let scan_end = target.trigger_at + Duration::days(370);
+    let scan_start = target.trigger_at - Duration::days(NOTIFICATION_LOOKBACK_DAYS);
+    let scan_end = target.trigger_at + Duration::seconds(1);
     let matches = scheme
         .items
         .iter()

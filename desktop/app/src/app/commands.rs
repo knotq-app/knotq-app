@@ -2,7 +2,7 @@ use std::time::Instant;
 
 use gpui::Context;
 use knotq_commands::{
-    filter_recurring_occurrence_toggles, Command, CommandReceipt, WorkspaceCommandExt,
+    filter_recurring_occurrence_toggles, Command, CommandError, CommandReceipt, WorkspaceCommandExt,
 };
 use knotq_model::{Item, ItemId, ItemKind, SchemeId, Workspace};
 
@@ -15,10 +15,24 @@ use super::{
 impl KnotQApp {
     /// Apply a command, push its inverse onto the undo stack, and mark dirty.
     pub fn apply(&mut self, cmd: Command, cx: &mut Context<Self>) -> Option<CommandReceipt> {
+        match self.apply_result(cmd, cx) {
+            Ok(receipt) => receipt,
+            Err(err) => {
+                eprintln!("command failed: {err}");
+                None
+            }
+        }
+    }
+
+    pub(crate) fn apply_result(
+        &mut self,
+        cmd: Command,
+        cx: &mut Context<Self>,
+    ) -> Result<Option<CommandReceipt>, CommandError> {
         self.editor_undo_group = None;
         let Some(cmd) = filter_recurring_occurrence_toggles(cmd, &self.workspace) else {
             self.recurrence_undo_group = None;
-            return None;
+            return Ok(None);
         };
         let recurrence_key = recurrence_undo_key(&cmd);
         let coalesce_recurrence = should_coalesce_recurrence_undo(
@@ -53,12 +67,9 @@ impl KnotQApp {
                 self.redo_navigation_stack.clear();
                 self.signal_workspace_services(service_signals);
                 cx.notify();
-                Some(receipt)
+                Ok(Some(receipt))
             }
-            Err(err) => {
-                eprintln!("command failed: {err}");
-                None
-            }
+            Err(err) => Err(err),
         }
     }
 

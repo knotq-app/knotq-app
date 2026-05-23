@@ -13,7 +13,8 @@ use super::{save_workspace, save_workspace_incremental, workspace_path, KnotQApp
 
 const SAVE_DEBOUNCE: StdDuration = StdDuration::from_secs(2);
 const NOTIFICATION_DEBOUNCE: StdDuration = StdDuration::from_secs(4);
-const DEADLINE_SCAN_DAYS: i64 = 370;
+const DEADLINE_LOOKBACK_DAYS: i64 = 7;
+const DEADLINE_LOOKAHEAD_DAYS: i64 = 370;
 
 #[derive(Clone)]
 pub(crate) struct AppServiceBus {
@@ -267,8 +268,8 @@ pub(crate) fn next_event_completion_deadline(
     workspace: &Workspace,
     now: DateTime<Utc>,
 ) -> Option<DateTime<Utc>> {
-    let scan_start = now - Duration::days(DEADLINE_SCAN_DAYS);
-    let scan_end = now + Duration::days(DEADLINE_SCAN_DAYS);
+    let scan_start = now - Duration::days(DEADLINE_LOOKBACK_DAYS);
+    let scan_end = now + Duration::days(DEADLINE_LOOKAHEAD_DAYS);
     let mut next = None;
 
     for scheme in workspace.iter_schemes() {
@@ -483,13 +484,6 @@ impl KnotQApp {
     pub(crate) fn run_due_timeline_jobs(&mut self, cx: &mut Context<Self>) {
         let now = Utc::now();
         self.complete_past_events(now, cx);
-        if let Some(err) = crate::notifications::clear_expired_event_notifications(
-            &self.workspace,
-            self.notification_defaults,
-            now,
-        ) {
-            self.notification_error = Some(err);
-        }
         self.sync_daily_queue_day_boundary(cx);
     }
 }
@@ -502,7 +496,7 @@ mod tests {
     };
 
     #[test]
-    fn next_event_completion_deadline_includes_read_only_events() {
+    fn next_event_completion_deadline_includes_read_only_future_events() {
         let now = Utc.with_ymd_and_hms(2026, 5, 18, 8, 0, 0).unwrap();
         let start = Utc.with_ymd_and_hms(2026, 5, 18, 9, 0, 0).unwrap();
         let end = Utc.with_ymd_and_hms(2026, 5, 18, 10, 0, 0).unwrap();
@@ -529,5 +523,27 @@ mod tests {
             .push(NodeRef::Scheme(scheme_id));
 
         assert_eq!(next_event_completion_deadline(&workspace, now), Some(end));
+    }
+
+    #[test]
+    fn next_event_completion_deadline_skips_old_events() {
+        let now = Utc.with_ymd_and_hms(2026, 5, 18, 8, 0, 0).unwrap();
+        let start = now - Duration::days(8);
+        let end = start + Duration::hours(1);
+        let mut workspace = Workspace::new();
+        let mut scheme = Scheme::new("Local", 0);
+        let scheme_id = scheme.id;
+        scheme
+            .items
+            .push(Item::new("Class").with_start(start).with_end(end));
+        workspace.schemes.insert(scheme_id, scheme);
+        workspace
+            .folders
+            .get_mut(&workspace.root)
+            .unwrap()
+            .children
+            .push(NodeRef::Scheme(scheme_id));
+
+        assert_eq!(next_event_completion_deadline(&workspace, now), None);
     }
 }

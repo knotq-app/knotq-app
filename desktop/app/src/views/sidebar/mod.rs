@@ -23,6 +23,7 @@ pub(super) const NAV_ICON_SLOT: f32 = 12.0;
 pub(super) const NAV_ICON_GAP: f32 = 7.0;
 pub(super) const NAV_ROW_HEIGHT: f32 = 26.0;
 pub(super) const NAV_DROP_ZONE_HEIGHT: f32 = 3.0;
+pub(super) const ARCHIVE_MAX_VISIBLE_ROWS: f32 = 8.0;
 pub(super) const SCHEME_SQUARE_SIZE: f32 = 9.0;
 pub(super) const FOLDER_ICON_SIZE: f32 = 10.5;
 pub(super) const SIDEBAR_TEXT_SIZE: f32 = 13.0;
@@ -39,12 +40,17 @@ pub(super) enum NavigatorNodeKind {
 pub(super) struct NavigatorDragInfo {
     node: NodeRef,
     kind: NavigatorNodeKind,
-    source_parent: FolderId,
-    source_position: usize,
+    source: NavigatorDragSource,
     root: FolderId,
     label: String,
     color_index: Option<u8>,
     theme: Theme,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum NavigatorDragSource {
+    Active { parent: FolderId, position: usize },
+    Archive,
 }
 
 mod components;

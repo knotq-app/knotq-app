@@ -19,7 +19,7 @@ fn mark_past_events_done_completes_elapsed_events() {
 }
 
 #[test]
-fn mark_past_events_done_completes_elapsed_read_only_events() {
+fn mark_past_events_done_completes_recent_elapsed_read_only_events() {
     let start = Utc.with_ymd_and_hms(2026, 1, 1, 9, 0, 0).unwrap();
     let end = start + Duration::hours(1);
     let mut workspace =
@@ -30,6 +30,19 @@ fn mark_past_events_done_completes_elapsed_read_only_events() {
     let item = &workspace.iter_schemes().next().unwrap().items[0];
     assert_eq!(changed, 1);
     assert!(item.single_state().is_done());
+}
+
+#[test]
+fn mark_past_events_done_skips_old_events() {
+    let start = Utc.with_ymd_and_hms(2026, 1, 1, 9, 0, 0).unwrap();
+    let end = start + Duration::hours(1);
+    let mut workspace = workspace_with_item(Item::new("Old class").with_start(start).with_end(end));
+
+    let changed = mark_past_events_done(&mut workspace, end + Duration::days(8));
+
+    let item = &workspace.iter_schemes().next().unwrap().items[0];
+    assert_eq!(changed, 0);
+    assert!(!item.single_state().is_done());
 }
 
 #[test]

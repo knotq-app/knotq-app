@@ -178,9 +178,73 @@ impl SchemeEditor {
         let Some(media) = persist_clipboard_image(image) else {
             return false;
         };
-        let mut item = Item::new("");
-        item.media.push(media);
-        self.replace_rows_with_items(self.rich_paste_delete_range(), vec![item], window, cx)
+        let row = self.current_row_index();
+        self.append_media_to_row(row, vec![media], window, cx)
+    }
+
+    pub(super) fn drop_image_paths(
+        &mut self,
+        paths: &ExternalPaths,
+        position: Point<Pixels>,
+        window: Option<&mut Window>,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        if self.read_only {
+            return false;
+        }
+        let media = paths
+            .paths()
+            .iter()
+            .filter_map(|path| persist_image_file(path))
+            .collect::<Vec<_>>();
+        if media.is_empty() {
+            return false;
+        }
+        let row = self
+            .location_for_window_position(position)
+            .row
+            .min(self.rows.len().saturating_sub(1));
+        self.selection = TextSelection::collapsed(TextLocation {
+            row,
+            col: self.line_len(row),
+        });
+        self.append_media_to_row(row, media, window, cx)
+    }
+
+    pub(super) fn append_media_to_row(
+        &mut self,
+        row: usize,
+        media: Vec<ItemMedia>,
+        window: Option<&mut Window>,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        if self.read_only || media.is_empty() || self.rows.is_empty() {
+            return false;
+        }
+        let row = row.min(self.rows.len().saturating_sub(1));
+        let Some(editor_row) = self.rows.get_mut(row) else {
+            return false;
+        };
+        editor_row.item.media.extend(media);
+        let item = editor_row.item.clone();
+        let items: Vec<Item> = self.rows.iter().map(|row| row.item.clone()).collect();
+        let (text, rows) = build_buffer(&items);
+        self.text = text;
+        self.rows = rows;
+        self.refresh_layout_after_content_change(window);
+        self.selection = TextSelection::collapsed(TextLocation {
+            row,
+            col: self.line_len(row),
+        });
+        self.marked_range = None;
+        self.reset_cursor_blink(cx);
+        self.scroll_to_cursor(cx);
+        cx.emit(EditorEvent::Command(Command::ReplaceItem {
+            scheme: self.scheme_id,
+            item,
+        }));
+        cx.notify();
+        true
     }
 
     pub(super) fn paste_rich_items(

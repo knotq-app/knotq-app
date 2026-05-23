@@ -1,4 +1,4 @@
-use chrono::{TimeZone, Utc};
+use chrono::{Duration, TimeZone, Utc};
 use knotq_index::IndexedWorkspace;
 use knotq_model::{Item, NodeRef, Scheme, Workspace};
 
@@ -16,6 +16,18 @@ fn calendar_query_returns_occurrences_with_origin_context() {
     assert_eq!(events[0].scheme_id, scheme_id);
     assert_eq!(events[0].item_id, item_id);
     assert_eq!(events[0].color_index, 2);
+}
+
+#[test]
+fn overdue_query_skips_assignments_older_than_seven_days() {
+    let as_of = Utc.with_ymd_and_hms(2026, 1, 10, 12, 0, 0).unwrap();
+    let due = as_of - Duration::days(8);
+    let (workspace, _, _) = workspace_with_item(Item::new("Old essay").with_end(due));
+    let indexed = IndexedWorkspace::build(workspace);
+
+    let events = indexed.calendar_query().overdue(as_of);
+
+    assert!(events.is_empty());
 }
 
 fn workspace_with_item(item: Item) -> (Workspace, knotq_model::SchemeId, knotq_model::ItemId) {

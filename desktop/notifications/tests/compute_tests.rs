@@ -86,6 +86,18 @@ fn expired_event_notification_keys_are_available_after_event_end() {
 }
 
 #[test]
+fn expired_event_notification_keys_skip_old_events() {
+    let now = Utc.with_ymd_and_hms(2026, 5, 18, 8, 0, 0).unwrap();
+    let start = now - Duration::days(8);
+    let end = start + Duration::hours(1);
+    let workspace = workspace_with_item(Item::new("Class").with_start(start).with_end(end));
+
+    let keys = expired_event_notification_keys(&workspace, NotificationLeadTimes::default(), now);
+
+    assert!(keys.is_empty());
+}
+
+#[test]
 fn snoozed_overdue_assignment_uses_new_fire_time() {
     let due = Utc.with_ymd_and_hms(2026, 5, 10, 12, 0, 0).unwrap();
     let mut item = Item::new("Essay").with_end(due);

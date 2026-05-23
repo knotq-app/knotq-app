@@ -14,6 +14,8 @@ pub enum WorkspaceNodeNameError {
     OuterWhitespace,
     #[error("name cannot be . or ..")]
     DotSegment,
+    #[error("name cannot end with a period")]
+    TrailingPeriod,
     #[error("name contains a path separator")]
     PathSeparator,
     #[error("name contains reserved filesystem character {0:?}")]
@@ -38,6 +40,9 @@ pub fn validate_workspace_node_name(
     }
     if name == "." || name == ".." {
         return Err(WorkspaceNodeNameError::DotSegment);
+    }
+    if name.ends_with('.') {
+        return Err(WorkspaceNodeNameError::TrailingPeriod);
     }
     for ch in name.chars() {
         match ch {

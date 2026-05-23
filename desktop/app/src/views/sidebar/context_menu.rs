@@ -79,6 +79,17 @@ impl KnotQApp {
                     }),
                 ));
             }
+            SidebarContextTarget::Archive => {
+                items.push(sidebar_context_item(
+                    "sidebar-menu-empty-archive",
+                    "Empty Archive",
+                    t,
+                    cx.listener(move |this, _: &ClickEvent, _window, cx| {
+                        this.close_sidebar_context_menu(cx);
+                        this.empty_archive(cx);
+                    }),
+                ));
+            }
             SidebarContextTarget::Folder(folder_id) => {
                 items.push(sidebar_context_item(
                     "sidebar-menu-new-item",

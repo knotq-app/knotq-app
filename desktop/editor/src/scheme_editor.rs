@@ -7,9 +7,9 @@ use gpui::prelude::*;
 use gpui::{
     actions, div, fill, point, px, quad, relative, size, App, BorderStyle, Bounds, ClipboardItem,
     Context, Corners, CursorStyle, DispatchPhase, Element, ElementId, ElementInputHandler, Entity,
-    EventEmitter, FocusHandle, GlobalElementId, Image, IntoElement, KeyBinding, LayoutId,
-    MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, PathBuilder, Pixels, Point,
-    ScrollHandle, SharedString, Style, Subscription, Task, TextAlign, TextRun, Window,
+    EventEmitter, ExternalPaths, FocusHandle, GlobalElementId, Image, IntoElement, KeyBinding,
+    LayoutId, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, PathBuilder, Pixels,
+    Point, ScrollHandle, SharedString, Style, Subscription, Task, TextAlign, TextRun, Window,
 };
 use knotq_commands::{Command, DateKind};
 use knotq_model::TimeFormat;

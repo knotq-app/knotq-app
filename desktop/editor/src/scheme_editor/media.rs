@@ -1,9 +1,11 @@
 use std::fs;
+use std::path::Path;
 use std::sync::Arc;
 
 use crate::assets::image_asset_path;
 use gpui::{
-    px, size, ClipboardEntry, ClipboardItem, Image, ImageFormat as GpuiImageFormat, Pixels,
+    px, size, ClipboardEntry, ClipboardItem, ExternalPaths, Image, ImageFormat as GpuiImageFormat,
+    Pixels,
 };
 use image::GenericImageView;
 use knotq_model::{ImageAssetFormat, ItemMedia};
@@ -33,6 +35,37 @@ pub(super) fn persist_clipboard_image(image: &Image) -> Option<ItemMedia> {
         return None;
     }
     let (width, height) = image_dimensions(format, image.bytes());
+    Some(ItemMedia::Image {
+        asset,
+        format,
+        width,
+        height,
+    })
+}
+
+pub(super) fn external_paths_have_supported_image(paths: &ExternalPaths) -> bool {
+    paths
+        .paths()
+        .iter()
+        .any(|path| image_asset_format_from_path(path).is_some())
+}
+
+pub(super) fn persist_image_file(path: &Path) -> Option<ItemMedia> {
+    let format = image_asset_format_from_path(path)?;
+    let bytes = fs::read(path).ok()?;
+    let asset = Uuid::new_v4();
+    let out_path = image_asset_path(asset, format.extension());
+    if let Some(parent) = out_path.parent() {
+        if let Err(err) = fs::create_dir_all(parent) {
+            eprintln!("image drop failed to create {}: {err}", parent.display());
+            return None;
+        }
+    }
+    if let Err(err) = fs::write(&out_path, &bytes) {
+        eprintln!("image drop failed to write {}: {err}", out_path.display());
+        return None;
+    }
+    let (width, height) = image_dimensions(format, &bytes);
     Some(ItemMedia::Image {
         asset,
         format,
@@ -87,6 +120,20 @@ fn image_asset_format(format: GpuiImageFormat) -> Option<ImageAssetFormat> {
         GpuiImageFormat::Svg => ImageAssetFormat::Svg,
         GpuiImageFormat::Bmp => ImageAssetFormat::Bmp,
         GpuiImageFormat::Tiff => ImageAssetFormat::Tiff,
+    })
+}
+
+fn image_asset_format_from_path(path: &Path) -> Option<ImageAssetFormat> {
+    let extension = path.extension()?.to_str()?.to_ascii_lowercase();
+    Some(match extension.as_str() {
+        "png" => ImageAssetFormat::Png,
+        "jpg" | "jpeg" => ImageAssetFormat::Jpeg,
+        "webp" => ImageAssetFormat::Webp,
+        "gif" => ImageAssetFormat::Gif,
+        "svg" => ImageAssetFormat::Svg,
+        "bmp" => ImageAssetFormat::Bmp,
+        "tif" | "tiff" => ImageAssetFormat::Tiff,
+        _ => return None,
     })
 }
 

@@ -4,6 +4,8 @@ use chrono::{DateTime, Duration, Utc};
 use knotq_model::{Item, ItemKind, OccurrenceId, OccurrenceOverrideStatus, SchemeId, Workspace};
 use knotq_rrule::ItemOccurrenceExt;
 
+const COMPLETION_LOOKBACK_DAYS: i64 = 7;
+
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
 pub struct CalendarOccurrenceKey {
     pub scheme_id: SchemeId,
@@ -83,7 +85,8 @@ pub fn mark_past_events_done(workspace: &mut Workspace, now: DateTime<Utc>) -> u
                 continue;
             }
 
-            let from = recurring_completion_scan_start(item, start, end) - Duration::seconds(1);
+            let mut from = recurring_completion_scan_start(item, start, end) - Duration::seconds(1);
+            from = from.max(now - Duration::days(COMPLETION_LOOKBACK_DAYS));
             let to = now + Duration::seconds(1);
             for occurrence in item.occurrences(from, to) {
                 if occurrence.kind != ItemKind::Event {

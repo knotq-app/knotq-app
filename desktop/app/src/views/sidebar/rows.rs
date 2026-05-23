@@ -19,17 +19,20 @@ impl KnotQApp {
         let folder_name = folder.name.clone();
         let folder_expanded = folder.expanded;
         let folder_group = SharedString::from(format!("folder-row-{}", folder.id));
-        let rename_input = self
+        let rename = self
             .rename_node
             .as_ref()
             .filter(|rename| rename.target == NodeRef::Folder(folder.id))
-            .map(|rename| rename.input.clone());
+            .map(|rename| (rename.input.clone(), rename.error.clone()));
+        let has_rename_error = rename.as_ref().is_some_and(|(_, error)| error.is_some());
         let folder_drop_position = folder.children.len();
         let drag_info = NavigatorDragInfo {
             node: NodeRef::Folder(folder.id),
             kind: NavigatorNodeKind::Folder,
-            source_parent: self.workspace.root,
-            source_position: position,
+            source: NavigatorDragSource::Active {
+                parent: self.workspace.root,
+                position,
+            },
             root: self.workspace.root,
             label: folder.name.clone(),
             color_index: None,
@@ -44,7 +47,9 @@ impl KnotQApp {
             .gap(px(NAV_ICON_GAP))
             .w_full()
             .min_w_0()
-            .h(px(NAV_ROW_HEIGHT))
+            .min_h(px(NAV_ROW_HEIGHT))
+            .when(!has_rename_error, |s| s.h(px(NAV_ROW_HEIGHT)))
+            .when(has_rename_error, |s| s.items_start().py(px(3.0)))
             .pl(px(pl_val))
             .pr(px(4.0))
             .rounded(px(5.0))
@@ -91,15 +96,17 @@ impl KnotQApp {
                     .id(SharedString::from(format!("folder-main-{}", folder.id)))
                     .flex_1()
                     .min_w_0()
-                    .h_full()
+                    .when(!has_rename_error, |s| s.h_full())
                     .flex()
                     .items_center()
+                    .when(has_rename_error, |s| s.items_start())
                     .gap(px(NAV_ICON_GAP))
                     .child(nav_icon_slot(
                         zed_folder_icon(folder_expanded, t).into_any_element(),
                     ));
-                if let Some(input) = rename_input {
-                    base.child(inline_rename_input(input, t)).into_any_element()
+                if let Some((input, error)) = rename {
+                    base.child(inline_rename_input(input, error, t))
+                        .into_any_element()
                 } else {
                     base.cursor_pointer()
                         .on_drag(drag_info, |drag, _position: Point<Pixels>, _w, cx| {
@@ -149,17 +156,20 @@ impl KnotQApp {
         let pl_s = NAV_ROW_INDENT_BASE + depth as f32 * 9.0;
         let square = scheme_square_color(scheme.color_index, t.is_dark);
         let scheme_group = SharedString::from(format!("scheme-row-{}", scheme.id));
-        let rename_input = self
+        let rename = self
             .rename_node
             .as_ref()
             .filter(|rename| rename.target == NodeRef::Scheme(scheme.id))
-            .map(|rename| rename.input.clone());
-        let is_renaming = rename_input.is_some();
+            .map(|rename| (rename.input.clone(), rename.error.clone()));
+        let is_renaming = rename.is_some();
+        let has_rename_error = rename.as_ref().is_some_and(|(_, error)| error.is_some());
         let drag_info = NavigatorDragInfo {
             node: NodeRef::Scheme(scheme.id),
             kind: NavigatorNodeKind::Scheme,
-            source_parent: folder_id,
-            source_position: position,
+            source: NavigatorDragSource::Active {
+                parent: folder_id,
+                position,
+            },
             root: self.workspace.root,
             label: self.scheme_display_name(&scheme),
             color_index: Some(scheme.color_index),
@@ -180,7 +190,9 @@ impl KnotQApp {
                 .gap(px(NAV_ICON_GAP))
                 .w_full()
                 .min_w_0()
-                .h(px(NAV_ROW_HEIGHT))
+                .min_h(px(NAV_ROW_HEIGHT))
+                .when(!has_rename_error, |s| s.h(px(NAV_ROW_HEIGHT)))
+                .when(has_rename_error, |s| s.items_start().py(px(3.0)))
                 .pl(px(pl_s))
                 .pr(px(4.0))
                 .rounded(px(5.0))
@@ -230,9 +242,10 @@ impl KnotQApp {
                         .id(SharedString::from(format!("scheme-main-{}", scheme.id)))
                         .flex_1()
                         .min_w_0()
-                        .h_full()
+                        .when(!has_rename_error, |s| s.h_full())
                         .flex()
                         .items_center()
+                        .when(has_rename_error, |s| s.items_start())
                         .gap(px(NAV_ICON_GAP))
                         .child(nav_icon_slot(
                             div()
@@ -242,8 +255,9 @@ impl KnotQApp {
                                 .bg(square)
                                 .into_any_element(),
                         ));
-                    if let Some(input) = rename_input {
-                        base.child(inline_rename_input(input, t)).into_any_element()
+                    if let Some((input, error)) = rename {
+                        base.child(inline_rename_input(input, error, t))
+                            .into_any_element()
                     } else {
                         base.cursor_pointer()
                             .on_drag(drag_info, |drag, _position: Point<Pixels>, _w, cx| {

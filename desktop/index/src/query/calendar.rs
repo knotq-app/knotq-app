@@ -6,6 +6,8 @@ use knotq_rrule::{DefaultExpander, OccurrenceExpander};
 use crate::calendar::OccurrenceWithContext;
 use crate::IndexedWorkspace;
 
+const OVERDUE_LOOKBACK_DAYS: i64 = 7;
+
 pub struct CalendarQuery<'a> {
     indexed: &'a IndexedWorkspace,
     expander: &'a dyn OccurrenceExpander,
@@ -65,7 +67,7 @@ impl<'a> CalendarQuery<'a> {
 
     pub fn overdue(&self, as_of: DateTime<Utc>) -> Vec<OccurrenceWithContext> {
         let mut events = self.range(DateRange {
-            start: as_of - Duration::days(365),
+            start: as_of - Duration::days(OVERDUE_LOOKBACK_DAYS),
             end: as_of,
         });
         events.retain(|event| {
