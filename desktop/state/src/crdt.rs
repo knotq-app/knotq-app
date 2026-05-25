@@ -4,16 +4,10 @@ use knotq_commands::ChangeSet;
 use knotq_model::{
     DocumentId, Folder, FolderId, Scheme, SchemeId, SyncDocumentKind, SyncDocumentMeta, Workspace,
 };
+use knotq_sync::CrdtDocumentUpdate;
 use serde::{Deserialize, Serialize};
 use yrs::updates::{decoder::Decode, encoder::Encode};
 use yrs::{Array, Doc, In, Map, MapPrelim, ReadTxn, StateVector, Transact, Update};
-
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
-pub struct CrdtDocumentUpdate {
-    pub document: DocumentId,
-    pub kind: SyncDocumentKind,
-    pub update_v1: Vec<u8>,
-}
 
 pub struct WorkspaceCrdtDocuments {
     workspace: YrsJsonDocument,

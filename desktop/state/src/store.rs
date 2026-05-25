@@ -7,9 +7,10 @@ use knotq_commands::{
 };
 use knotq_index::{IndexChangeSet, IndexedWorkspace};
 use knotq_model::{OperationId, ReplicaId, SchemeId, Workspace, WorkspaceId};
+use knotq_sync::CrdtDocumentUpdate;
 use serde::{Deserialize, Serialize};
 
-use crate::crdt::{CrdtDocumentUpdate, WorkspaceCrdtDocuments};
+use crate::crdt::WorkspaceCrdtDocuments;
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct WorkspaceDirtyState {

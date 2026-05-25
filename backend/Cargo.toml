@@ -1,17 +1,22 @@
 [package]
-name = "knotq-state"
+name = "knotq-backend"
 version = "0.1.0"
 edition = "2021"
 
 [dependencies]
 anyhow = { workspace = true }
+axum = { workspace = true }
 chrono = { workspace = true }
-knotq-commands = { workspace = true }
-knotq-index = { workspace = true }
 knotq-model = { workspace = true }
-knotq-notifications = { workspace = true }
-knotq-rrule = { workspace = true }
 knotq-sync = { workspace = true }
+rand = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
+sha2 = { workspace = true }
+tokio = { workspace = true }
+uuid = { workspace = true }
 yrs = { workspace = true }
+
+[dev-dependencies]
+http-body-util = { workspace = true }
+tower = { workspace = true }

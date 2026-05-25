@@ -1,5 +1,6 @@
 [workspace]
 members = [
+    "backend",
     "desktop/app",
     "desktop/commands",
     "desktop/date-util",
@@ -9,7 +10,6 @@ members = [
     "desktop/history",
     "desktop/import",
     "desktop/index",
-    "desktop/model",
     "desktop/notifications",
     "desktop/rrule",
     "desktop/state",
@@ -17,19 +17,25 @@ members = [
     "desktop/storage-json",
     "desktop/theme",
     "desktop/ui",
+    "shared/model",
+    "shared/sync",
 ]
 resolver = "2"
 
 [workspace.dependencies]
 anyhow = "1"
 async-trait = "0.1"
+axum = "0.8.9"
 base64 = "0.22"
 chrono = { version = "0.4", features = ["serde"] }
+http-body-util = "0.1"
 rand = "0.8"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sha2 = "0.10"
 thiserror = "1"
+tokio = { version = "1", features = ["macros", "net", "rt-multi-thread", "signal"] }
+tower = { version = "0.5", features = ["util"] }
 ureq = { version = "2", features = ["json"] }
 urlencoding = "2"
 uuid = { version = "1", features = ["v4", "serde"] }
@@ -43,9 +49,10 @@ knotq-fixtures = { path = "desktop/fixtures" }
 knotq-history = { path = "desktop/history" }
 knotq-import = { path = "desktop/import" }
 knotq-index = { path = "desktop/index" }
-knotq-model = { path = "desktop/model" }
+knotq-model = { path = "shared/model" }
 knotq-notifications = { path = "desktop/notifications" }
 knotq-rrule = { path = "desktop/rrule" }
+knotq-sync = { path = "shared/sync" }
 knotq-state = { path = "desktop/state" }
 knotq-storage = { path = "desktop/storage" }
 knotq-storage-json = { path = "desktop/storage-json" }
