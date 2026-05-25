@@ -6,6 +6,7 @@ pub mod occurrence;
 pub mod recurrence;
 pub mod scheme;
 pub mod settings;
+pub mod sync;
 pub mod workspace;
 
 pub use daily_queue::*;
@@ -16,4 +17,5 @@ pub use occurrence::*;
 pub use recurrence::*;
 pub use scheme::*;
 pub use settings::*;
+pub use sync::*;
 pub use workspace::*;

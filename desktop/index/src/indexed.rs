@@ -11,6 +11,7 @@ pub struct IndexChangeSet {
     pub schemes: Vec<SchemeId>,
 }
 
+#[derive(Clone)]
 pub struct IndexedWorkspace {
     pub workspace: Workspace,
     pub calendar: CalendarIndex,

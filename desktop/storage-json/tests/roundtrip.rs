@@ -43,6 +43,7 @@ fn app_settings_roundtrip_preserves_google_accounts() {
     save_app_settings(&settings_file, &settings).unwrap();
     let loaded = load_app_settings(&settings_file).unwrap();
 
+    assert_eq!(loaded.replica_id, settings.replica_id);
     assert_eq!(loaded.google_accounts.len(), 1);
     assert_eq!(
         loaded.google_accounts[0].email.as_deref(),
@@ -94,7 +95,10 @@ fn save_workspace_splits_scheme_files_and_omits_empty_item_fields() {
     save_workspace(&workspace_file, &workspace).unwrap();
 
     let index = fs::read_to_string(&workspace_file).unwrap();
-    assert!(index.contains("\"version\": 1"));
+    assert!(index.contains("\"version\": 2"));
+    assert!(index.contains("\"sync\""));
+    assert!(index.contains("\"scheme_sync\""));
+    assert!(index.contains("\"crdt\": \"yrs\""));
     assert!(!index.contains("\"items\""));
     assert!(fs::read_to_string(dir.join(".gitignore"))
         .unwrap()
@@ -120,6 +124,7 @@ fn save_workspace_splits_scheme_files_and_omits_empty_item_fields() {
     assert!(scheme_markdown.contains("- [x] done"));
 
     let loaded = load_workspace(&workspace_file).unwrap().unwrap();
+    assert_eq!(loaded.id, workspace.id);
     assert_eq!(loaded.schemes[&scheme_id].items.len(), 3);
     assert_eq!(loaded.schemes[&scheme_id].items[0].text, "plain");
     assert_eq!(

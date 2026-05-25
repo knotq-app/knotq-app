@@ -2,7 +2,10 @@ use chrono::NaiveDate;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashMap, HashSet};
 
-use crate::{FolderId, Scheme, SchemeId};
+use crate::{
+    default_folder_sync, default_scheme_sync, default_workspace_sync, CrdtBackend, FolderId,
+    Scheme, SchemeId, SyncDocumentKind, SyncDocumentMeta, WorkspaceId,
+};
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", content = "id", rename_all = "snake_case")]
@@ -13,9 +16,17 @@ pub enum NodeRef {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Workspace {
+    #[serde(default)]
+    pub id: WorkspaceId,
+    #[serde(default = "default_workspace_sync")]
+    pub sync: SyncDocumentMeta,
     pub root: FolderId,
     pub folders: HashMap<FolderId, Folder>,
     pub schemes: HashMap<SchemeId, Scheme>,
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub scheme_sync: HashMap<SchemeId, SyncDocumentMeta>,
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub folder_sync: HashMap<FolderId, SyncDocumentMeta>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub daily_queue: BTreeMap<NaiveDate, SchemeId>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -26,6 +37,7 @@ pub struct Workspace {
 
 impl Workspace {
     pub fn new() -> Self {
+        let id = WorkspaceId::new();
         let root = FolderId::new();
         let mut folders = HashMap::new();
         folders.insert(
@@ -38,14 +50,20 @@ impl Workspace {
                 expanded: true,
             },
         );
-        Self {
+        let mut workspace = Self {
+            id,
+            sync: default_workspace_sync(),
             root,
             folders,
             schemes: HashMap::new(),
+            scheme_sync: HashMap::new(),
+            folder_sync: HashMap::new(),
             daily_queue: BTreeMap::new(),
             recently_deleted: Vec::new(),
             deleted_scheme_origins: HashMap::new(),
-        }
+        };
+        workspace.ensure_sync_metadata();
+        workspace
     }
 
     pub fn empty() -> Self {
@@ -250,6 +268,62 @@ impl Workspace {
         self.schemes.retain(|id, _| retained_schemes.contains(id));
         if self.schemes.len() != before {
             changed = true;
+        }
+
+        changed
+    }
+
+    pub fn ensure_sync_metadata(&mut self) -> bool {
+        let mut changed = false;
+        if self.sync.kind != SyncDocumentKind::PersonalWorkspace {
+            self.sync.kind = SyncDocumentKind::PersonalWorkspace;
+            changed = true;
+        }
+        if self.sync.crdt != CrdtBackend::Yrs {
+            self.sync.crdt = CrdtBackend::Yrs;
+            changed = true;
+        }
+
+        let scheme_ids: HashSet<SchemeId> = self.schemes.keys().copied().collect();
+        let scheme_sync_before = self.scheme_sync.len();
+        self.scheme_sync.retain(|id, _| scheme_ids.contains(id));
+        if self.scheme_sync.len() != scheme_sync_before {
+            changed = true;
+        }
+        for id in scheme_ids {
+            let entry = self.scheme_sync.entry(id).or_insert_with(|| {
+                changed = true;
+                default_scheme_sync()
+            });
+            if entry.kind != SyncDocumentKind::Scheme {
+                entry.kind = SyncDocumentKind::Scheme;
+                changed = true;
+            }
+            if entry.crdt != CrdtBackend::Yrs {
+                entry.crdt = CrdtBackend::Yrs;
+                changed = true;
+            }
+        }
+
+        let folder_ids: HashSet<FolderId> = self.folders.keys().copied().collect();
+        let folder_sync_before = self.folder_sync.len();
+        self.folder_sync.retain(|id, _| folder_ids.contains(id));
+        if self.folder_sync.len() != folder_sync_before {
+            changed = true;
+        }
+        for id in folder_ids {
+            let entry = self.folder_sync.entry(id).or_insert_with(|| {
+                changed = true;
+                default_folder_sync()
+            });
+            if entry.kind != SyncDocumentKind::Folder {
+                entry.kind = SyncDocumentKind::Folder;
+                changed = true;
+            }
+            if entry.crdt != CrdtBackend::Yrs {
+                entry.crdt = CrdtBackend::Yrs;
+                changed = true;
+            }
         }
 
         changed

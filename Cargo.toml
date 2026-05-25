@@ -33,6 +33,7 @@ thiserror = "1"
 ureq = { version = "2", features = ["json"] }
 urlencoding = "2"
 uuid = { version = "1", features = ["v4", "serde"] }
+yrs = "0.26"
 
 knotq-commands = { path = "desktop/commands" }
 knotq-date-util = { path = "desktop/date-util" }

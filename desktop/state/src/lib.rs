@@ -1,4 +1,5 @@
 mod calendar_state;
+pub mod crdt;
 mod daily_queue;
 mod dates;
 mod dispatch;
@@ -8,6 +9,7 @@ mod notification_state;
 mod selection;
 mod session;
 mod state;
+mod store;
 mod undo;
 
 pub use calendar_state::{
@@ -27,6 +29,7 @@ pub use notification_state::{reschedule_notifications, NotificationState};
 pub use selection::{Selection, View, ViewKind};
 pub use session::{EditorSession, EditorSessions, SchemeEditorMenuState};
 pub use state::AppState;
+pub use store::{StoreOperation, WorkspaceDirtyState, WorkspaceStore};
 pub use undo::{
     calendar_toggle_keys, editor_undo_key, recurrence_undo_key, should_coalesce_editor_undo,
     should_coalesce_recurrence_undo, EditorUndoGroup, EditorUndoKey, RecurrenceUndoGroup,

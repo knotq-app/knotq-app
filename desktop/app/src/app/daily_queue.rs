@@ -190,6 +190,14 @@ impl KnotQApp {
 
     pub(crate) fn sync_daily_queue_day_boundary(&mut self, cx: &mut Context<Self>) {
         let today = Local::now().date_naive();
+        self.sync_daily_queue_day_boundary_to(today, cx);
+    }
+
+    pub(crate) fn sync_daily_queue_day_boundary_to(
+        &mut self,
+        today: NaiveDate,
+        cx: &mut Context<Self>,
+    ) {
         if today == self.daily_queue_today {
             return;
         }

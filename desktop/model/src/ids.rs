@@ -40,6 +40,11 @@ macro_rules! id_newtype {
 id_newtype!(FolderId);
 id_newtype!(SchemeId);
 id_newtype!(ItemId);
+id_newtype!(WorkspaceId);
+id_newtype!(ReplicaId);
+id_newtype!(OperationId);
+id_newtype!(DocumentId);
+id_newtype!(ShareId);
 
 #[derive(Clone, Debug, Default, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]

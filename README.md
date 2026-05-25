@@ -45,57 +45,10 @@ Use the inline date picker to set a start time, end time, or both. KnotQ turns t
 
 ## Download
 
-Download KnotQ from the latest GitHub release:
-
-https://github.com/knotq-app/knotq-app/releases
-
-Linux users can install from the release tarball with:
-
-```sh
-curl -fsSL https://knotq.com/install.sh | sh
-```
+Download KnotQ from our [website](https://knotq.com)
 
 ## Community
 
 Join the KnotQ Discord for questions, feedback, and release discussion:
 
 https://discord.gg/zyeHB77scg
-
-## Development
-
-```sh
-cargo check --workspace
-cargo test --workspace
-./local/run-app.sh
-```
-
-Google Calendar development uses `local/.env`, which is intentionally ignored. Set `KNOTQ_GOOGLE_CLIENT_ID` and, when needed, `KNOTQ_GOOGLE_CLIENT_SECRET`.
-
-## Release
-
-Pushing a tag named `v*` builds and publishes:
-
-- a universal macOS DMG (`arm64` + `x86_64`)
-- a Windows x64 MSIX and Inno Setup installer
-- a Linux x86_64 tarball plus `install.sh`
-
-macOS notarization is enabled when these secrets are present:
-
-- `MACOS_CERTIFICATE_P12`: base64-encoded Developer ID Application `.p12`
-- `MACOS_CERTIFICATE_PASSWORD`
-- `CODESIGN_IDENTITY`: the Developer ID Application identity name
-- `APPLE_NOTARY_APPLE_ID`, `APPLE_NOTARY_PASSWORD`, `APPLE_NOTARY_TEAM_ID`
-- `MACOS_PROVISIONING_PROFILE`: optional base64-encoded `.provisionprofile`, required if the app uses a capability that must be provisioned, such as Time Sensitive Notifications
-
-Local macOS bundle signing can use the same entitlement/profile path with `local/.env`:
-
-```sh
-KNOTQ_CODESIGN_IDENTITY="Developer ID Application: Example, Inc. (TEAMID)"
-KNOTQ_PROVISIONING_PROFILE="/path/to/KnotQ.provisionprofile"
-KNOTQ_ENTITLEMENTS_PATH="bundling/macos/KnotQ.entitlements"
-```
-
-Windows package identity can be configured with:
-
-- `WINDOWS_PUBLISHER`: Microsoft Store publisher subject from Partner Center
-- `WINDOWS_PUBLISHER_DISPLAY_NAME`: optional display name

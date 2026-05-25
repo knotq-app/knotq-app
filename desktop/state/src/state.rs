@@ -1,7 +1,7 @@
 use std::collections::{HashMap, HashSet, VecDeque};
 
 use chrono::NaiveDate;
-use knotq_commands::Command;
+use knotq_commands::{Command, CommandError, CommandOrigin, CommandReceipt};
 use knotq_index::IndexedWorkspace;
 use knotq_model::{
     AppSettings, CalendarViewMode, CalendarWeekRange, NodeRef, NotificationDefaults,
@@ -10,10 +10,11 @@ use knotq_model::{
 
 use crate::{
     DailyQueueState, EditorSessions, EditorUndoGroup, EventBus, NotificationState,
-    RetainedCompletedItems, Selection, UndoRedoStack,
+    RetainedCompletedItems, Selection, UndoRedoStack, WorkspaceDirtyState, WorkspaceStore,
 };
 
 pub struct AppState {
+    pub(crate) store: WorkspaceStore,
     pub indexed: IndexedWorkspace,
     pub settings: AppSettings,
     pub dirty_schemes: HashSet<SchemeId>,
@@ -59,18 +60,17 @@ impl AppState {
         loaded_start: NaiveDate,
         initial_dirty: bool,
     ) -> Self {
-        let indexed = IndexedWorkspace::build(workspace.clone());
+        let store = WorkspaceStore::new(workspace, settings.replica_id, initial_dirty);
+        let indexed = store.indexed().clone();
         let daily_queue = DailyQueueState::new(today, loaded_start);
         let notifications = NotificationState {
             scheduled_ids: settings.scheduled_notification_ids.clone(),
             pending_action_drains: 0,
         };
-        let dirty_schemes = if initial_dirty {
-            workspace.schemes.keys().copied().collect()
-        } else {
-            HashSet::new()
-        };
+        let workspace = store.workspace().clone();
+        let dirty_schemes = store.dirty().schemes.clone();
         Self {
+            store,
             indexed,
             settings: settings.clone(),
             dirty_schemes,
@@ -136,18 +136,20 @@ impl AppState {
     /// Mark the workspace as dirty due to a command. Tracks which schemes were
     /// affected so only their files need to be written.
     pub fn mark_dirty_from_command(&mut self, cmd: &Command) {
-        self.index_dirty = true;
-        collect_affected_schemes(cmd, &mut self.dirty_schemes);
+        self.store.mark_dirty_from_command(cmd);
+        self.sync_compat_from_store_dirty();
     }
 
     /// Mark a single scheme as dirty.
     pub fn mark_scheme_dirty(&mut self, scheme_id: SchemeId) {
+        self.store.mark_scheme_dirty(scheme_id);
         self.dirty_schemes.insert(scheme_id);
         self.index_dirty = true;
     }
 
     /// Mark only the workspace index as dirty (folder structure changes, etc.)
     pub fn mark_index_dirty(&mut self) {
+        self.store.mark_index_dirty();
         self.index_dirty = true;
     }
 
@@ -156,16 +158,43 @@ impl AppState {
         self.index_dirty || !self.dirty_schemes.is_empty()
     }
 
+    pub fn sync_store_from_compat(&mut self) {
+        let dirty = WorkspaceDirtyState::from_parts(self.dirty_schemes.clone(), self.index_dirty);
+        self.store
+            .replace_workspace(self.workspace.clone(), dirty, false);
+    }
+
+    pub fn sync_compat_from_store(&mut self) {
+        self.workspace = self.store.workspace().clone();
+        self.indexed = self.store.indexed().clone();
+        self.sync_compat_from_store_dirty();
+    }
+
+    pub fn sync_compat_from_store_dirty(&mut self) {
+        self.dirty_schemes = self.store.dirty().schemes.clone();
+        self.index_dirty = self.store.dirty().index;
+    }
+
+    pub fn apply_prechecked_local_command(
+        &mut self,
+        command: Command,
+        origin: CommandOrigin,
+    ) -> Result<CommandReceipt, CommandError> {
+        self.sync_store_from_compat();
+        let receipt = self.store.apply_prechecked_local(command, origin)?;
+        self.sync_compat_from_store();
+        Ok(receipt)
+    }
+
     pub fn replace_workspace(
         &mut self,
         workspace: Workspace,
         today: NaiveDate,
         loaded_start: NaiveDate,
     ) {
-        self.indexed = IndexedWorkspace::build(workspace.clone());
-        self.workspace = workspace;
-        self.dirty_schemes.clear();
-        self.index_dirty = false;
+        self.store
+            .replace_workspace(workspace, WorkspaceDirtyState::default(), true);
+        self.sync_compat_from_store();
         self.undo = UndoRedoStack::default();
         self.editor_undo_group = None;
         self.recurrence_undo_group = None;
@@ -180,46 +209,5 @@ impl AppState {
         self.daily_queue_loaded_start = loaded_start;
         self.daily_queue_visible_dates = daily_queue.visible_dates;
         self.daily_queue_loaded_calendar_months = daily_queue.loaded_calendar_months;
-    }
-}
-
-fn collect_affected_schemes(cmd: &Command, out: &mut HashSet<SchemeId>) {
-    match cmd {
-        Command::InsertItem { scheme, .. }
-        | Command::UpdateItemText { scheme, .. }
-        | Command::ReplaceItem { scheme, .. }
-        | Command::SetItemIndent { scheme, .. }
-        | Command::SetItemMarker { scheme, .. }
-        | Command::SetItemDate { scheme, .. }
-        | Command::SetItemRecurrence { scheme, .. }
-        | Command::SetItemPriority { scheme, .. }
-        | Command::SetOccurrenceNotificationOffset { scheme, .. }
-        | Command::ToggleOccurrence { scheme, .. }
-        | Command::DeleteItem { scheme, .. }
-        | Command::ReorderItem { scheme, .. }
-        | Command::RenameScheme { id: scheme, .. }
-        | Command::SetSchemeColor { id: scheme, .. }
-        | Command::SetSchemeGsync { id: scheme, .. }
-        | Command::SetSchemeSource { id: scheme, .. }
-        | Command::DeleteScheme { id: scheme }
-        | Command::PermanentlyDeleteScheme { id: scheme } => {
-            out.insert(*scheme);
-        }
-        Command::RestoreScheme { scheme, .. } | Command::RestoreDeletedScheme { scheme, .. } => {
-            out.insert(scheme.id);
-        }
-        Command::Batch(cmds) => {
-            for cmd in cmds {
-                collect_affected_schemes(cmd, out);
-            }
-        }
-        // Folder operations only affect the index.
-        Command::CreateFolder { .. }
-        | Command::RestoreFolder { .. }
-        | Command::RenameFolder { .. }
-        | Command::SetFolderExpanded { .. }
-        | Command::DeleteFolder { .. }
-        | Command::CreateScheme { .. }
-        | Command::MoveNode { .. } => {}
     }
 }

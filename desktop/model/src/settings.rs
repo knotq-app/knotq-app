@@ -1,6 +1,8 @@
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
+use crate::ReplicaId;
+
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum CalendarViewMode {
@@ -48,6 +50,8 @@ pub struct SavedWindowPosition {
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct AppSettings {
+    #[serde(default)]
+    pub replica_id: ReplicaId,
     #[serde(default)]
     pub calendar_view: CalendarViewMode,
     #[serde(default)]

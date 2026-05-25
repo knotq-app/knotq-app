@@ -1,6 +1,9 @@
 use anyhow::{anyhow, Result};
 use chrono::NaiveDate;
-use knotq_model::{DeletedSchemeOrigin, Folder, Scheme, SchemeId, SchemeSource, Workspace};
+use knotq_model::{
+    default_workspace_sync, DeletedSchemeOrigin, Folder, Scheme, SchemeId, SchemeSource,
+    SyncDocumentMeta, Workspace, WorkspaceId,
+};
 use serde::{Deserialize, Serialize};
 use std::{
     collections::{BTreeMap, HashMap, HashSet},
@@ -23,9 +26,17 @@ pub(crate) struct WorkspaceEnvelope {
 
 #[derive(Clone, Serialize, Deserialize)]
 pub(crate) struct WorkspaceIndex {
+    #[serde(default)]
+    pub(crate) id: WorkspaceId,
+    #[serde(default = "default_workspace_sync")]
+    pub(crate) sync: SyncDocumentMeta,
     pub(crate) root: knotq_model::FolderId,
     pub(crate) folders: HashMap<knotq_model::FolderId, Folder>,
     pub(crate) schemes: HashMap<SchemeId, SchemeIndex>,
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub(crate) scheme_sync: HashMap<SchemeId, SyncDocumentMeta>,
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub(crate) folder_sync: HashMap<knotq_model::FolderId, SyncDocumentMeta>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub(crate) daily_queue: Vec<DailyQueueIndexEntry>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -64,6 +75,8 @@ impl WorkspaceIndex {
         workspace: &Workspace,
         existing_daily_queue: Vec<DailyQueueIndexEntry>,
     ) -> Self {
+        let mut workspace = workspace.clone();
+        workspace.ensure_sync_metadata();
         let daily_ids: HashSet<SchemeId> = workspace.daily_queue.values().copied().collect();
         let schemes = workspace
             .schemes
@@ -91,9 +104,13 @@ impl WorkspaceIndex {
             .collect();
 
         Self {
+            id: workspace.id,
+            sync: workspace.sync.clone(),
             root: workspace.root,
             folders: workspace.folders.clone(),
             schemes,
+            scheme_sync: workspace.scheme_sync.clone(),
+            folder_sync: workspace.folder_sync.clone(),
             daily_queue,
             recently_deleted: workspace.recently_deleted.clone(),
             deleted_scheme_origins: workspace.deleted_scheme_origins.clone(),
@@ -107,8 +124,12 @@ impl WorkspaceIndex {
     ) -> Result<Workspace> {
         let WorkspaceIndex {
             root,
+            id,
+            sync,
             folders,
             schemes: scheme_index,
+            scheme_sync,
+            folder_sync,
             daily_queue: daily_queue_index,
             recently_deleted,
             deleted_scheme_origins,
@@ -153,14 +174,20 @@ impl WorkspaceIndex {
             schemes.insert(id, scheme_from_index(entry.scheme, file.items));
         }
 
-        Ok(Workspace {
+        let mut workspace = Workspace {
+            id,
+            sync,
             root,
             folders,
             schemes,
+            scheme_sync,
+            folder_sync,
             daily_queue,
             recently_deleted,
             deleted_scheme_origins,
-        })
+        };
+        workspace.ensure_sync_metadata();
+        Ok(workspace)
     }
 }
 

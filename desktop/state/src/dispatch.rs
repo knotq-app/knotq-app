@@ -1,9 +1,8 @@
 use std::time::Instant;
 
 use knotq_commands::{
-    filter_recurring_occurrence_toggles, ChangeSet, Command, CommandReceipt, WorkspaceCommandExt,
+    filter_recurring_occurrence_toggles, ChangeSet, Command, CommandOrigin, CommandReceipt,
 };
-use knotq_index::IndexChangeSet;
 
 use crate::{
     calendar_toggle_keys, editor_undo_key, recurrence_undo_key, should_coalesce_editor_undo,
@@ -59,7 +58,12 @@ impl AppState {
             .undo
             .pop_undo()
             .or_else(|| self.undo_stack.pop_back())?;
-        let receipt = self.workspace.apply(command).ok()?;
+        self.sync_store_from_compat();
+        let receipt = self
+            .store
+            .apply_prechecked_local(command, CommandOrigin::User)
+            .ok()?;
+        self.sync_compat_from_store();
         self.after_workspace_change(&receipt.touched);
         self.undo.push_redo(receipt.inverse.clone());
         self.redo_stack.push_back(receipt.inverse.clone());
@@ -73,7 +77,12 @@ impl AppState {
             .undo
             .pop_redo()
             .or_else(|| self.redo_stack.pop_back())?;
-        let receipt = self.workspace.apply(command).ok()?;
+        self.sync_store_from_compat();
+        let receipt = self
+            .store
+            .apply_prechecked_local(command, CommandOrigin::User)
+            .ok()?;
+        self.sync_compat_from_store();
         self.after_workspace_change(&receipt.touched);
         self.undo.push_undo(receipt.inverse.clone());
         self.undo_stack.push_back(receipt.inverse.clone());
@@ -93,7 +102,12 @@ impl AppState {
             false
         };
         let recurrence_key = recurrence_undo_key(&command);
-        let receipt = self.workspace.apply(command).ok()?;
+        self.sync_store_from_compat();
+        let receipt = self
+            .store
+            .apply_prechecked_local(command, CommandOrigin::User)
+            .ok()?;
+        self.sync_compat_from_store();
         let _toggled = calendar_toggle_keys(&receipt.inverse);
         if !coalesce {
             self.undo.push_undo(receipt.inverse.clone());
@@ -117,18 +131,6 @@ impl AppState {
     }
 
     fn after_workspace_change(&mut self, changeset: &ChangeSet) {
-        for scheme_id in &changeset.schemes {
-            self.dirty_schemes.insert(*scheme_id);
-        }
-        self.index_dirty = true;
-        self.indexed.workspace = self.workspace.clone();
-        self.indexed.apply_changeset(
-            &IndexChangeSet {
-                folders: changeset.folders.clone(),
-                schemes: changeset.schemes.clone(),
-            },
-            &knotq_rrule::DefaultExpander,
-        );
         self.event_bus
             .emit(AppEvent::WorkspaceChanged(changeset.clone()));
     }

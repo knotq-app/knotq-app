@@ -83,6 +83,7 @@ impl KnotQApp {
     }
 
     pub fn open_daily_queue(&mut self, cx: &mut Context<Self>) {
+        self.sync_daily_queue_day_boundary(cx);
         self.selection.view = View::DailyQueue;
         let scheme_id = self.ensure_daily_queue_scheme(self.daily_queue_today, cx);
         self.selection.scheme_id = Some(scheme_id);

@@ -2,7 +2,7 @@ use std::time::Instant;
 
 use gpui::Context;
 use knotq_commands::{
-    filter_recurring_occurrence_toggles, Command, CommandError, CommandReceipt, WorkspaceCommandExt,
+    filter_recurring_occurrence_toggles, Command, CommandError, CommandOrigin, CommandReceipt,
 };
 use knotq_model::{Item, ItemId, ItemKind, SchemeId, Workspace};
 
@@ -44,8 +44,7 @@ impl KnotQApp {
         let toggled = calendar_toggle_keys(&cmd);
         let service_signals = service_signals_for_command(&cmd, &self.workspace);
         self.clear_deleted_item_notifications(&cmd);
-        self.state.mark_dirty_from_command(&cmd);
-        match self.workspace.apply(cmd) {
+        match self.apply_workspace_store_command(cmd, CommandOrigin::User) {
             Ok(receipt) => {
                 self.sync_retained_completed_calendar_items(&toggled);
                 self.recurrence_undo_group = recurrence_key.map(|key| EditorUndoGroup {
@@ -87,8 +86,7 @@ impl KnotQApp {
         let toggled = calendar_toggle_keys(&cmd);
         let service_signals = service_signals_for_command(&cmd, &self.workspace);
         self.clear_deleted_item_notifications(&cmd);
-        self.state.mark_dirty_from_command(&cmd);
-        match self.workspace.apply(cmd) {
+        match self.apply_workspace_store_command(cmd, CommandOrigin::User) {
             Ok(receipt) => {
                 self.sync_retained_completed_calendar_items(&toggled);
                 self.redo_stack.clear();
@@ -145,9 +143,7 @@ impl KnotQApp {
         let toggled = calendar_toggle_keys(&cmd);
         let service_signals = service_signals_for_command(&cmd, &self.workspace);
         self.clear_deleted_item_notifications(&cmd);
-        self.state.mark_dirty_from_command(&cmd);
-
-        match self.workspace.apply(cmd) {
+        match self.apply_workspace_store_command(cmd, CommandOrigin::User) {
             Ok(receipt) => {
                 self.sync_retained_completed_calendar_items(&toggled);
                 self.editor_undo_group = key.map(|key| EditorUndoGroup {
@@ -304,8 +300,7 @@ impl KnotQApp {
             let navigation = self.undo_navigation_stack.pop_back();
             let toggled = calendar_toggle_keys(&inv);
             let service_signals = service_signals_for_command(&inv, &self.workspace);
-            self.state.mark_dirty_from_command(&inv);
-            if let Ok(receipt) = self.workspace.apply(inv) {
+            if let Ok(receipt) = self.apply_workspace_store_command(inv, CommandOrigin::User) {
                 self.sync_retained_completed_calendar_items(&toggled);
                 self.redo_stack.push_back(receipt.inverse);
                 if let Some(navigation) = navigation.as_ref() {
@@ -328,8 +323,7 @@ impl KnotQApp {
             let navigation = self.redo_navigation_stack.pop_back();
             let toggled = calendar_toggle_keys(&inv);
             let service_signals = service_signals_for_command(&inv, &self.workspace);
-            self.state.mark_dirty_from_command(&inv);
-            if let Ok(receipt) = self.workspace.apply(inv) {
+            if let Ok(receipt) = self.apply_workspace_store_command(inv, CommandOrigin::User) {
                 self.sync_retained_completed_calendar_items(&toggled);
                 if let Some(navigation) = navigation.as_ref() {
                     self.push_undo(receipt.inverse, navigation.clone());
@@ -366,6 +360,14 @@ impl KnotQApp {
         if signals.timeline {
             self.service_bus.signal_timeline();
         }
+    }
+
+    fn apply_workspace_store_command(
+        &mut self,
+        cmd: Command,
+        origin: CommandOrigin,
+    ) -> Result<CommandReceipt, CommandError> {
+        self.state.apply_prechecked_local_command(cmd, origin)
     }
 }
 

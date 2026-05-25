@@ -13,6 +13,7 @@ use super::{save_workspace, save_workspace_incremental, workspace_path, KnotQApp
 
 const SAVE_DEBOUNCE: StdDuration = StdDuration::from_secs(2);
 const NOTIFICATION_DEBOUNCE: StdDuration = StdDuration::from_secs(4);
+const TIMELINE_POLL_INTERVAL: StdDuration = StdDuration::from_secs(5 * 60);
 const DEADLINE_LOOKBACK_DAYS: i64 = 7;
 const DEADLINE_LOOKAHEAD_DAYS: i64 = 370;
 
@@ -247,15 +248,36 @@ pub(crate) fn spawn_timeline_task(
 ) -> Task<()> {
     cx.spawn(
         async move |weak: gpui::WeakEntity<KnotQApp>, cx: &mut gpui::AsyncApp| loop {
+            sync_daily_queue_day_boundary_if_needed(&weak, cx);
             let deadline = compute_next_timeline_deadline(&weak, cx).await;
+            let mut should_run_due_jobs = false;
 
             match deadline {
                 Some(deadline) if deadline > Utc::now() => {
-                    let wait = deadline
-                        .signed_duration_since(Utc::now())
-                        .to_std()
-                        .unwrap_or(StdDuration::ZERO);
+                    let wait = timeline_wait_until(deadline, Utc::now());
                     let timer = cx.background_executor().timer(wait).fuse();
+                    let signal = timeline_rx.recv().fuse();
+                    pin_mut!(timer, signal);
+                    select! {
+                        _ = timer => {
+                            should_run_due_jobs = deadline <= Utc::now();
+                        }
+                        result = signal => {
+                            if result.is_err() {
+                                break;
+                            }
+                            should_run_due_jobs = true;
+                        }
+                    }
+                }
+                Some(_) => {
+                    should_run_due_jobs = true;
+                }
+                None => {
+                    let timer = cx
+                        .background_executor()
+                        .timer(TIMELINE_POLL_INTERVAL)
+                        .fuse();
                     let signal = timeline_rx.recv().fuse();
                     pin_mut!(timer, signal);
                     select! {
@@ -264,21 +286,26 @@ pub(crate) fn spawn_timeline_task(
                             if result.is_err() {
                                 break;
                             }
+                            should_run_due_jobs = true;
                         }
                     }
                 }
-                Some(_) => {}
-                None => {
-                    if timeline_rx.recv().await.is_err() {
-                        break;
-                    }
-                }
             }
-            drain_unit_signals(&timeline_rx);
+            should_run_due_jobs |= drain_unit_signals(&timeline_rx);
 
-            run_due_timeline_jobs(&weak, cx).await;
+            if should_run_due_jobs {
+                run_due_timeline_jobs(&weak, cx).await;
+            }
         },
     )
+}
+
+fn timeline_wait_until(deadline: DateTime<Utc>, now: DateTime<Utc>) -> StdDuration {
+    deadline
+        .signed_duration_since(now)
+        .to_std()
+        .unwrap_or(StdDuration::ZERO)
+        .min(TIMELINE_POLL_INTERVAL)
 }
 
 pub(crate) fn next_event_completion_deadline(
@@ -414,6 +441,16 @@ async fn compute_next_timeline_deadline(
         .min()
 }
 
+fn sync_daily_queue_day_boundary_if_needed(
+    weak: &gpui::WeakEntity<KnotQApp>,
+    cx: &mut gpui::AsyncApp,
+) {
+    let today = Local::now().date_naive();
+    let _ = weak.update(cx, |app, cx| {
+        app.sync_daily_queue_day_boundary_to(today, cx);
+    });
+}
+
 async fn run_due_timeline_jobs(weak: &gpui::WeakEntity<KnotQApp>, cx: &mut gpui::AsyncApp) {
     let now = Utc::now();
     let workspace = weak.update(cx, |app, _cx| app.workspace.clone()).ok();
@@ -454,8 +491,12 @@ fn update_notification_error(
     });
 }
 
-fn drain_unit_signals(rx: &Receiver<()>) {
-    while rx.try_recv().is_ok() {}
+fn drain_unit_signals(rx: &Receiver<()>) -> bool {
+    let mut drained = false;
+    while rx.try_recv().is_ok() {
+        drained = true;
+    }
+    drained
 }
 
 #[derive(Default)]
@@ -552,6 +593,33 @@ mod tests {
     use knotq_model::{
         CalendarProvider, ImportedCalendarSource, Item, NodeRef, Scheme, SchemeSource,
     };
+
+    #[test]
+    fn timeline_wait_is_capped_for_distant_deadlines() {
+        let now = Utc.with_ymd_and_hms(2026, 5, 18, 8, 0, 0).unwrap();
+        let deadline = now + Duration::hours(4);
+
+        assert_eq!(timeline_wait_until(deadline, now), TIMELINE_POLL_INTERVAL);
+    }
+
+    #[test]
+    fn timeline_wait_uses_near_deadline() {
+        let now = Utc.with_ymd_and_hms(2026, 5, 18, 8, 0, 0).unwrap();
+        let deadline = now + Duration::seconds(15);
+
+        assert_eq!(
+            timeline_wait_until(deadline, now),
+            StdDuration::from_secs(15)
+        );
+    }
+
+    #[test]
+    fn timeline_wait_is_zero_for_due_deadlines() {
+        let now = Utc.with_ymd_and_hms(2026, 5, 18, 8, 0, 0).unwrap();
+        let deadline = now - Duration::seconds(1);
+
+        assert_eq!(timeline_wait_until(deadline, now), StdDuration::ZERO);
+    }
 
     #[test]
     fn next_event_completion_deadline_includes_read_only_future_events() {

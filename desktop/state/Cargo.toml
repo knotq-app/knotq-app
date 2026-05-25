@@ -11,3 +11,6 @@ knotq-index = { workspace = true }
 knotq-model = { workspace = true }
 knotq-notifications = { workspace = true }
 knotq-rrule = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+yrs = { workspace = true }

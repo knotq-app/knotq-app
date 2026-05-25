@@ -17,7 +17,7 @@ use crate::{
     },
 };
 
-pub(crate) const SCHEMA_VERSION: u32 = 1;
+pub(crate) const SCHEMA_VERSION: u32 = 2;
 pub(crate) const SETTINGS_SCHEMA_VERSION: u32 = 1;
 const WORKSPACE_GITIGNORE: &str =
     "# KnotQ local files\n.knotq-history/\nbackups/\n*.tmp\n.DS_Store\n";
@@ -113,6 +113,9 @@ pub fn load_daily_queue_schemes_for_calendar_range(
 }
 
 pub fn save_workspace(path: &Path, workspace: &Workspace) -> Result<()> {
+    let mut workspace = workspace.clone();
+    workspace.ensure_sync_metadata();
+    let workspace = &workspace;
     let base_dir = path.parent().unwrap_or_else(|| Path::new("."));
     fs::create_dir_all(base_dir).with_context(|| format!("create {}", base_dir.display()))?;
     ensure_workspace_gitignore(base_dir)?;
@@ -165,6 +168,9 @@ pub fn save_workspace_incremental(
     workspace: &Workspace,
     dirty_scheme_ids: &HashSet<SchemeId>,
 ) -> Result<()> {
+    let mut workspace = workspace.clone();
+    workspace.ensure_sync_metadata();
+    let workspace = &workspace;
     let base_dir = path.parent().unwrap_or_else(|| Path::new("."));
     fs::create_dir_all(base_dir).with_context(|| format!("create {}", base_dir.display()))?;
     ensure_workspace_gitignore(base_dir)?;
@@ -227,9 +233,9 @@ pub(crate) fn read_workspace_envelope(path: &Path) -> Result<Option<WorkspaceEnv
 }
 
 pub(crate) fn validate_workspace_version(version: u32) -> Result<()> {
-    if version != SCHEMA_VERSION {
+    if !(1..=SCHEMA_VERSION).contains(&version) {
         return Err(anyhow!(
-            "unsupported workspace schema version {}, expected {}",
+            "unsupported workspace schema version {}, expected 1..={}",
             version,
             SCHEMA_VERSION
         ));

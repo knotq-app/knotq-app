@@ -115,6 +115,7 @@ impl KnotQApp {
 
     pub(crate) fn save_app_settings(&self) {
         let settings = AppSettings {
+            replica_id: self.settings.replica_id,
             calendar_view: self.calendar_view,
             calendar_week_range: self.calendar_week_range,
             theme_mode: self.theme_mode,
