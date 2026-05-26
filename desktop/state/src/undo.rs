@@ -19,8 +19,6 @@ pub struct EditorUndoGroup {
     pub last_edit: Instant,
 }
 
-pub type RecurrenceUndoGroup = EditorUndoGroup;
-
 #[derive(Clone, Debug)]
 pub struct UndoRedoStack {
     undo: VecDeque<Command>,

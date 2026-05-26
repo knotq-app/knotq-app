@@ -183,7 +183,6 @@ pub enum GoogleOAuthStatus {
     #[default]
     Idle,
     InProgress,
-    Success,
     Error,
 }
 

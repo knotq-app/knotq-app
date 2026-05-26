@@ -156,13 +156,13 @@ pub(crate) fn spawn_save_task(save_rx: Receiver<()>, cx: &mut Context<KnotQApp>)
                             return None;
                         }
                         let dirty_ids = std::mem::take(&mut app.state.dirty_schemes);
-                        let index_dirty = std::mem::replace(&mut app.state.index_dirty, false);
-                        Some((app.workspace.clone(), dirty_ids, index_dirty))
+                        app.state.index_dirty = false;
+                        Some((app.workspace.clone(), dirty_ids))
                     })
                     .ok()
                     .flatten();
 
-                if let Some((ws, dirty_ids, _index_dirty)) = snapshot {
+                if let Some((ws, dirty_ids)) = snapshot {
                     let path = workspace_path();
                     let result = cx
                         .background_executor()

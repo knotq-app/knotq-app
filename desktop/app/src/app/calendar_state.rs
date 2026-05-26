@@ -1,6 +1,7 @@
-use chrono::{DateTime, Datelike, Local, NaiveDate, TimeZone, Utc};
+use chrono::{DateTime, NaiveDate, Utc};
 use gpui::{AppContext, Context, Pixels, Point, Window};
 use knotq_commands::{event_popup_commit_commands, Command, DateEditScope, EventPopupDraft};
+use knotq_date_util::snapped_calendar_datetime;
 use knotq_model::{Item, ItemId, ItemMarker, OccurrenceId, SchemeId};
 use knotq_ui::single_line_editor::{SingleLineEditor, SingleLineEditorEvent};
 
@@ -703,20 +704,6 @@ impl KnotQApp {
             self.apply(cmd, cx);
         }
     }
-}
-
-fn snapped_calendar_datetime(date: NaiveDate, hour: f32) -> DateTime<Utc> {
-    let total_minutes = (hour * 60.0).round() as i64;
-    let snapped = ((total_minutes + 7) / 15 * 15).clamp(0, 24 * 60);
-    let day = date + chrono::Duration::days(snapped / (24 * 60));
-    let minute_of_day = snapped % (24 * 60);
-    let h = (minute_of_day / 60) as u32;
-    let m = (minute_of_day % 60) as u32;
-    Local
-        .with_ymd_and_hms(day.year(), day.month(), day.day(), h, m, 0)
-        .single()
-        .map(|dt| dt.with_timezone(&Utc))
-        .unwrap_or_else(Utc::now)
 }
 
 fn date_edit_scope(scope: RepeatScope) -> DateEditScope {

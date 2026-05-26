@@ -26,12 +26,11 @@ pub use dispatch::CommandDispatcher;
 pub use events::{AppEvent, EventBus};
 pub use external::{ExternalModification, ExternalModificationQueue};
 pub use notification_state::{reschedule_notifications, NotificationState};
-pub use selection::{Selection, View, ViewKind};
+pub use selection::{Selection, View};
 pub use session::{EditorSession, EditorSessions, SchemeEditorMenuState};
 pub use state::AppState;
 pub use store::{StoreOperation, WorkspaceDirtyState, WorkspaceStore};
 pub use undo::{
     calendar_toggle_keys, editor_undo_key, recurrence_undo_key, should_coalesce_editor_undo,
-    should_coalesce_recurrence_undo, EditorUndoGroup, EditorUndoKey, RecurrenceUndoGroup,
-    UndoRedoStack, UNDO_DEPTH,
+    should_coalesce_recurrence_undo, EditorUndoGroup, EditorUndoKey, UndoRedoStack, UNDO_DEPTH,
 };

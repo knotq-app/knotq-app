@@ -22,8 +22,6 @@ pub enum CommandError {
     BadFolderDepth,
     #[error("position {0} out of bounds")]
     BadPosition(usize),
-    #[error("occurrence {0} out of bounds")]
-    BadOccurrence(usize),
     #[error("scheme {0} is read-only")]
     ReadOnlyScheme(SchemeId),
     #[error("invalid {kind} name {name:?}: {reason}")]
@@ -196,10 +194,6 @@ pub fn validate_sibling_name_for_node(
             ensure_scheme_name_available(workspace, parent, &name, Some(id))
         }
     }
-}
-
-pub fn enforce_marker_constraints(item: &mut knotq_model::Item) {
-    item.enforce_marker_constraints();
 }
 
 pub fn ensure_command_allowed_for_user(

@@ -41,10 +41,6 @@ struct GoogleOAuthConfig {
     client_secret: Option<String>,
 }
 
-struct GoogleOAuthResult {
-    account: GoogleOAuthAccount,
-}
-
 #[derive(Clone)]
 struct ExistingGoogleCalendarSource {
     account_id: String,
@@ -400,30 +396,7 @@ impl KnotQApp {
         cx: &mut Context<Self>,
     ) {
         self.google_oauth_task = None;
-        match result {
-            Ok(result) => {
-                self.upsert_google_accounts(result.accounts);
-                let applied =
-                    self.apply_imported_google_calendars(parent, result.calendars, true, true);
-                self.google_oauth_status = if !result.failures.is_empty() {
-                    for failure in result.failures {
-                        eprintln!("Google Calendar import failed: {failure}");
-                    }
-                    GoogleOAuthStatus::Error
-                } else {
-                    GoogleOAuthStatus::Success
-                };
-                self.save_app_settings();
-                if applied.content_changed {
-                    self.reschedule_notifications();
-                }
-            }
-            Err(err) => {
-                eprintln!("Google Calendar import failed: {err}");
-                self.google_oauth_status = GoogleOAuthStatus::Error;
-            }
-        }
-        cx.notify();
+        self.finish_google_sync_result(result, parent, true, true, true, "import", cx);
     }
 
     fn finish_google_calendar_scheme_refresh(
@@ -432,36 +405,15 @@ impl KnotQApp {
         cx: &mut Context<Self>,
     ) {
         self.google_oauth_task = None;
-        match result {
-            Ok(result) => {
-                let accounts_changed = self.upsert_google_accounts(result.accounts);
-                let applied = self.apply_imported_google_calendars(
-                    self.workspace.root,
-                    result.calendars,
-                    false,
-                    false,
-                );
-                if accounts_changed {
-                    self.save_app_settings();
-                }
-                self.google_oauth_status = if !result.failures.is_empty() {
-                    for failure in result.failures {
-                        eprintln!("Google Calendar refresh failed: {failure}");
-                    }
-                    GoogleOAuthStatus::Error
-                } else {
-                    GoogleOAuthStatus::Success
-                };
-                if applied.content_changed {
-                    self.reschedule_notifications();
-                }
-            }
-            Err(err) => {
-                eprintln!("Google Calendar refresh failed: {err}");
-                self.google_oauth_status = GoogleOAuthStatus::Error;
-            }
-        }
-        cx.notify();
+        self.finish_google_sync_result(
+            result,
+            self.workspace.root,
+            false,
+            false,
+            true,
+            "refresh",
+            cx,
+        );
     }
 
     fn finish_google_calendar_background_sync(
@@ -469,28 +421,62 @@ impl KnotQApp {
         result: std::result::Result<GoogleCalendarImportResult, String>,
         cx: &mut Context<Self>,
     ) {
+        self.finish_google_sync_result(
+            result,
+            self.workspace.root,
+            false,
+            false,
+            false,
+            "background sync",
+            cx,
+        );
+    }
+
+    fn finish_google_sync_result(
+        &mut self,
+        result: std::result::Result<GoogleCalendarImportResult, String>,
+        parent: FolderId,
+        create_missing: bool,
+        open_first_imported: bool,
+        always_notify: bool,
+        label: &str,
+        cx: &mut Context<Self>,
+    ) {
         match result {
             Ok(result) => {
                 let accounts_changed = self.upsert_google_accounts(result.accounts);
                 let applied = self.apply_imported_google_calendars(
-                    self.workspace.root,
+                    parent,
                     result.calendars,
-                    false,
-                    false,
+                    create_missing,
+                    open_first_imported,
                 );
-                if accounts_changed {
+                if accounts_changed || create_missing {
                     self.save_app_settings();
                 }
-                for failure in result.failures {
-                    eprintln!("background Google Calendar sync failed: {failure}");
+                if !result.failures.is_empty() {
+                    for failure in result.failures {
+                        eprintln!("Google Calendar {label} failed: {failure}");
+                    }
+                    if always_notify {
+                        self.google_oauth_status = GoogleOAuthStatus::Error;
+                    }
+                } else if always_notify {
+                    self.google_oauth_status = GoogleOAuthStatus::Idle;
                 }
                 if applied.content_changed {
                     self.reschedule_notifications();
+                }
+                if always_notify || applied.content_changed {
                     cx.notify();
                 }
             }
             Err(err) => {
-                eprintln!("background Google Calendar sync failed: {err}");
+                eprintln!("Google Calendar {label} failed: {err}");
+                if always_notify {
+                    self.google_oauth_status = GoogleOAuthStatus::Error;
+                    cx.notify();
+                }
             }
         }
     }
@@ -631,7 +617,7 @@ fn run_google_calendar_import(
     _existing_accounts: Vec<GoogleOAuthAccount>,
     existing_sources: Vec<ExistingGoogleCalendarSource>,
 ) -> Result<GoogleCalendarImportResult> {
-    let accounts = vec![run_google_oauth(config.clone())?.account];
+    let accounts = vec![run_google_oauth(config.clone())?];
     run_google_calendar_sync(
         config,
         accounts,
@@ -699,7 +685,7 @@ fn run_google_calendar_sync(
     })
 }
 
-fn run_google_oauth(config: GoogleOAuthConfig) -> Result<GoogleOAuthResult> {
+fn run_google_oauth(config: GoogleOAuthConfig) -> Result<GoogleOAuthAccount> {
     let listener = TcpListener::bind("127.0.0.1:0").context("bind OAuth loopback listener")?;
     listener
         .set_nonblocking(true)
@@ -734,16 +720,14 @@ fn run_google_oauth(config: GoogleOAuthConfig) -> Result<GoogleOAuthResult> {
         .expires_in
         .map(|seconds| Utc::now() + Duration::seconds(seconds));
 
-    Ok(GoogleOAuthResult {
-        account: GoogleOAuthAccount {
-            account_id,
-            email: claims.and_then(|claims| claims.email),
-            client_id: config.client_id,
-            access_token: token.access_token,
-            refresh_token,
-            expires_at,
-            scope: token.scope.unwrap_or(scope),
-        },
+    Ok(GoogleOAuthAccount {
+        account_id,
+        email: claims.and_then(|claims| claims.email),
+        client_id: config.client_id,
+        access_token: token.access_token,
+        refresh_token,
+        expires_at,
+        scope: token.scope.unwrap_or(scope),
     })
 }
 

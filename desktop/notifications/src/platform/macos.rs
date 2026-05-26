@@ -180,7 +180,6 @@ pub fn schedule(_app_id: &str, request: &NotificationRequest) -> Result<()> {
             ));
         }
         let trigger = calendar_trigger(request.fire_at);
-        log_trigger_debug(&request.id, trigger);
         add_notification_request(center, request, trigger)
     }
 }
@@ -218,7 +217,6 @@ pub fn schedule_batch(
         let mut results = Vec::with_capacity(requests.len());
         for (i, request) in requests.iter().enumerate() {
             let trigger = calendar_trigger(request.fire_at);
-            log_trigger_debug(&request.id, trigger);
             results.push(add_notification_request(center, request, trigger));
             if i + 1 < requests.len() && !add_interval.is_zero() {
                 std::thread::sleep(add_interval);
@@ -407,35 +405,6 @@ unsafe fn calendar_trigger(fire_at: chrono::DateTime<chrono::Utc>) -> *mut Objec
         triggerWithDateMatchingComponents: components
         repeats: NO
     ]
-}
-
-unsafe fn log_trigger_debug(request_id: &str, trigger: *mut Object) {
-    let description = if trigger.is_null() {
-        "nil trigger".to_string()
-    } else {
-        let next_date: *mut Object = msg_send![trigger, nextTriggerDate];
-        let next_description: *mut Object = if next_date.is_null() {
-            std::ptr::null_mut()
-        } else {
-            msg_send![next_date, description]
-        };
-        support::nsstring_to_string(next_description)
-            .unwrap_or_else(|| "nil nextTriggerDate".into())
-    };
-    platform_log(&format!(
-        "macOS trigger request_id={request_id} next={description}"
-    ));
-}
-
-fn platform_log(msg: &str) {
-    use std::io::Write;
-    if let Ok(mut f) = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open("/tmp/knotq-notif.log")
-    {
-        let _ = writeln!(f, "[{}] {}", chrono::Utc::now().format("%H:%M:%S"), msg);
-    }
 }
 
 unsafe fn pending_request_ids(requests: *mut Object) -> Vec<String> {

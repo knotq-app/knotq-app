@@ -1,4 +1,5 @@
 use super::*;
+use knotq_date_util::{days_in_month, next_month, prev_month};
 
 pub(super) fn rp_until_calendar(
     display_month: NaiveDate,
@@ -200,16 +201,4 @@ pub(super) fn rp_until_calendar(
         .child(div().grid().grid_cols(7).children(day_headers))
         .child(div().grid().grid_cols(7).gap(px(1.0)).children(day_cells))
         .into_any_element()
-}
-
-fn days_in_month(year: i32, month: u32) -> u32 {
-    let (next_year, next_month) = if month == 12 {
-        (year + 1, 1)
-    } else {
-        (year, month + 1)
-    };
-    NaiveDate::from_ymd_opt(next_year, next_month, 1)
-        .and_then(|d| d.pred_opt())
-        .map(|d| d.day())
-        .unwrap_or(31)
 }

@@ -16,8 +16,6 @@ pub trait WorkspaceCommandExt {
         new_parent: FolderId,
         position: usize,
     ) -> Result<CommandReceipt, CommandError>;
-    fn is_descendant(&self, candidate: FolderId, ancestor: FolderId) -> bool;
-    fn is_valid_scheme_parent(&self, folder_id: FolderId) -> bool;
 }
 
 impl WorkspaceCommandExt for Workspace {
@@ -45,20 +43,4 @@ impl WorkspaceCommandExt for Workspace {
     ) -> Result<CommandReceipt, CommandError> {
         crate::apply::move_node(self, node, new_parent, position)
     }
-
-    fn is_descendant(&self, candidate: FolderId, ancestor: FolderId) -> bool {
-        crate::invariants::is_descendant(self, candidate, ancestor)
-    }
-
-    fn is_valid_scheme_parent(&self, folder_id: FolderId) -> bool {
-        crate::invariants::is_valid_scheme_parent(self, folder_id)
-    }
-}
-
-pub fn apply(
-    workspace: &mut Workspace,
-    cmd: Command,
-    origin: CommandOrigin,
-) -> Result<CommandReceipt, CommandError> {
-    crate::apply::apply(workspace, cmd, origin)
 }

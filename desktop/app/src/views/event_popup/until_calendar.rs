@@ -1,4 +1,5 @@
 use super::*;
+pub(super) use knotq_date_util::{days_in_month, month_start, next_month, prev_month};
 
 pub(super) fn until_mini_calendar_popup(
     display_month: NaiveDate,
@@ -201,38 +202,4 @@ pub(super) fn until_mini_calendar_popup(
         .child(div().grid().grid_cols(7).children(day_headers))
         .child(div().grid().grid_cols(7).gap(px(1.0)).children(day_cells))
         .into_any_element()
-}
-
-fn days_in_month(year: i32, month: u32) -> u32 {
-    let (ny, nm) = if month == 12 {
-        (year + 1, 1)
-    } else {
-        (year, month + 1)
-    };
-    NaiveDate::from_ymd_opt(ny, nm, 1)
-        .and_then(|d| d.pred_opt())
-        .map(|d| d.day())
-        .unwrap_or(31)
-}
-
-fn prev_month(date: NaiveDate) -> NaiveDate {
-    let (y, m) = if date.month() == 1 {
-        (date.year() - 1, 12u32)
-    } else {
-        (date.year(), date.month() - 1)
-    };
-    NaiveDate::from_ymd_opt(y, m, 1).unwrap_or(date)
-}
-
-pub(super) fn month_start(date: NaiveDate) -> NaiveDate {
-    NaiveDate::from_ymd_opt(date.year(), date.month(), 1).unwrap_or(date)
-}
-
-fn next_month(date: NaiveDate) -> NaiveDate {
-    let (y, m) = if date.month() == 12 {
-        (date.year() + 1, 1u32)
-    } else {
-        (date.year(), date.month() + 1)
-    };
-    NaiveDate::from_ymd_opt(y, m, 1).unwrap_or(date)
 }

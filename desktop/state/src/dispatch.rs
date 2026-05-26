@@ -5,8 +5,8 @@ use knotq_commands::{
 };
 
 use crate::{
-    calendar_toggle_keys, editor_undo_key, recurrence_undo_key, should_coalesce_editor_undo,
-    AppEvent, AppState, EditorUndoGroup,
+    editor_undo_key, recurrence_undo_key, should_coalesce_editor_undo, AppEvent, AppState,
+    EditorUndoGroup,
 };
 
 pub struct CommandDispatcher<'a> {
@@ -108,7 +108,6 @@ impl AppState {
             .apply_prechecked_local(command, CommandOrigin::User)
             .ok()?;
         self.sync_compat_from_store();
-        let _toggled = calendar_toggle_keys(&receipt.inverse);
         if !coalesce {
             self.undo.push_undo(receipt.inverse.clone());
             self.undo_stack.push_back(receipt.inverse.clone());

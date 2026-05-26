@@ -5,6 +5,7 @@ pub mod overrides;
 mod repeat_end;
 mod scope;
 mod simple;
+pub mod weekday_util;
 
 use chrono::{DateTime, Duration, Utc};
 use knotq_date_util::DateRange;

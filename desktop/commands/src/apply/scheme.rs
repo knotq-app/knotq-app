@@ -2,8 +2,8 @@ use knotq_model::{FolderId, NodeRef, Scheme, SchemeId, SchemeSource, Workspace};
 
 use crate::invariants::CommandError;
 use crate::invariants::{
-    enforce_marker_constraints, ensure_scheme_name_available, is_valid_scheme_parent,
-    sanitize_scheme_name, scheme_parent, validate_position,
+    ensure_scheme_name_available, is_valid_scheme_parent, sanitize_scheme_name, scheme_parent,
+    validate_position,
 };
 use crate::{ChangeSet, Command, CommandReceipt};
 
@@ -93,7 +93,7 @@ fn restore_scheme(
         .len();
     validate_position(position, folder_len)?;
     for item in &mut scheme.items {
-        enforce_marker_constraints(item);
+        item.enforce_marker_constraints();
     }
     let id = scheme.id;
     workspace.unmark_scheme_deleted(id);
@@ -119,7 +119,7 @@ fn restore_deleted_scheme(
     validate_position(position, workspace.recently_deleted.len())?;
     scheme.name = sanitize_scheme_name(&scheme.name)?;
     for item in &mut scheme.items {
-        enforce_marker_constraints(item);
+        item.enforce_marker_constraints();
     }
     let id = scheme.id;
     workspace.schemes.insert(id, scheme);

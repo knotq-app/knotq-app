@@ -8,8 +8,6 @@ pub enum View {
     Settings,
 }
 
-pub type ViewKind = View;
-
 #[derive(Clone, Debug)]
 pub struct Selection {
     pub view: View,

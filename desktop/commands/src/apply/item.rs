@@ -1,6 +1,6 @@
 use knotq_model::{Item, ItemId, ItemMarker, OccurrenceId, Recurrence, SchemeId, Workspace};
 
-use crate::invariants::{enforce_marker_constraints, CommandError};
+use crate::invariants::CommandError;
 use crate::{ChangeSet, Command, CommandReceipt, DateKind};
 
 pub(crate) fn apply_item(
@@ -73,7 +73,7 @@ fn insert_item(
     if position > scheme_obj.items.len() {
         return Err(CommandError::BadPosition(position));
     }
-    enforce_marker_constraints(&mut item);
+    item.enforce_marker_constraints();
     let id = item.id;
     scheme_obj.items.insert(position, item);
     Ok(CommandReceipt {
@@ -112,7 +112,7 @@ fn replace_item(
     let pos = scheme_obj
         .item_index(item.id)
         .ok_or(CommandError::ItemMissing(item.id, scheme))?;
-    enforce_marker_constraints(&mut item);
+    item.enforce_marker_constraints();
     let prev = std::mem::replace(&mut scheme_obj.items[pos], item);
     Ok(CommandReceipt {
         inverse: Command::ReplaceItem { scheme, item: prev },
@@ -148,7 +148,7 @@ fn set_item_marker(
     let item_ref = item_mut(workspace, scheme, item)?;
     let prev = item_ref.clone();
     item_ref.marker = marker;
-    enforce_marker_constraints(item_ref);
+    item_ref.enforce_marker_constraints();
     Ok(CommandReceipt {
         inverse: Command::ReplaceItem { scheme, item: prev },
         touched: ChangeSet::default().touched_scheme(scheme),
@@ -163,15 +163,14 @@ fn set_item_date(
     date: Option<chrono::DateTime<chrono::Utc>>,
 ) -> Result<CommandReceipt, CommandError> {
     let item_ref = item_mut(workspace, scheme, item)?;
-    if date.is_some() && item_ref.marker != ItemMarker::Checkbox {
-        let prev = item_ref.clone();
-        item_ref.marker = ItemMarker::Checkbox;
-        enforce_marker_constraints(item_ref);
-        *date_slot(item_ref, kind) = date;
-        return Ok(CommandReceipt {
-            inverse: Command::ReplaceItem { scheme, item: prev },
-            touched: ChangeSet::default().touched_scheme(scheme),
-        });
+    if date.is_some() {
+        if let Some(prev) = ensure_checkbox(item_ref) {
+            *date_slot(item_ref, kind) = date;
+            return Ok(CommandReceipt {
+                inverse: Command::ReplaceItem { scheme, item: prev },
+                touched: ChangeSet::default().touched_scheme(scheme),
+            });
+        }
     }
     let prev = std::mem::replace(date_slot(item_ref, kind), date);
     Ok(CommandReceipt {
@@ -192,15 +191,14 @@ fn set_item_recurrence(
     repeats: Option<Recurrence>,
 ) -> Result<CommandReceipt, CommandError> {
     let item_ref = item_mut(workspace, scheme, item)?;
-    if repeats.is_some() && item_ref.marker != ItemMarker::Checkbox {
-        let prev = item_ref.clone();
-        item_ref.marker = ItemMarker::Checkbox;
-        enforce_marker_constraints(item_ref);
-        item_ref.repeats = repeats;
-        return Ok(CommandReceipt {
-            inverse: Command::ReplaceItem { scheme, item: prev },
-            touched: ChangeSet::default().touched_scheme(scheme),
-        });
+    if repeats.is_some() {
+        if let Some(prev) = ensure_checkbox(item_ref) {
+            item_ref.repeats = repeats;
+            return Ok(CommandReceipt {
+                inverse: Command::ReplaceItem { scheme, item: prev },
+                touched: ChangeSet::default().touched_scheme(scheme),
+            });
+        }
     }
     let prev = std::mem::replace(&mut item_ref.repeats, repeats);
     Ok(CommandReceipt {
@@ -240,12 +238,7 @@ fn set_occurrence_notification_offset(
     offset_secs: Option<i64>,
 ) -> Result<CommandReceipt, CommandError> {
     let item_ref = item_mut(workspace, scheme, item)?;
-    let promoted = item_ref.marker != ItemMarker::Checkbox;
-    let prev_item = promoted.then(|| item_ref.clone());
-    if promoted {
-        item_ref.marker = ItemMarker::Checkbox;
-        enforce_marker_constraints(item_ref);
-    }
+    let prev_item = ensure_checkbox(item_ref);
     let state = item_ref.state_for_occurrence_mut(occurrence.clone());
     let prev = std::mem::replace(&mut state.notification_offset_secs, offset_secs);
     item_ref.normalize_state();
@@ -271,12 +264,7 @@ fn toggle_occurrence(
     occurrence: OccurrenceId,
 ) -> Result<CommandReceipt, CommandError> {
     let item_ref = item_mut(workspace, scheme, item)?;
-    let promoted = item_ref.marker != ItemMarker::Checkbox;
-    let prev = promoted.then(|| item_ref.clone());
-    if promoted {
-        item_ref.marker = ItemMarker::Checkbox;
-        enforce_marker_constraints(item_ref);
-    }
+    let prev = ensure_checkbox(item_ref);
     let state = item_ref.state_for_occurrence_mut(occurrence.clone());
     state.progress = if state.progress < 0 { 0 } else { -1 };
     Ok(CommandReceipt {
@@ -339,6 +327,18 @@ fn reorder_item(
         },
         touched: ChangeSet::default().touched_scheme(scheme),
     })
+}
+
+/// If the item is not already a Checkbox, promotes it and returns the original.
+fn ensure_checkbox(item: &mut Item) -> Option<Item> {
+    if item.marker != ItemMarker::Checkbox {
+        let prev = item.clone();
+        item.marker = ItemMarker::Checkbox;
+        item.enforce_marker_constraints();
+        Some(prev)
+    } else {
+        None
+    }
 }
 
 fn item_mut(

@@ -1,8 +1,10 @@
-//! Theme palette. Pure data - GPUI type conversions live in the app crate.
+//! Theme palette and GPUI color conversion utilities.
 
 mod dark;
 mod light;
 pub mod palette;
+
+use gpui::{Hsla, Rgba};
 
 pub use dark::*;
 pub use light::*;
@@ -81,4 +83,19 @@ pub struct Theme {
 
 pub fn all_themes() -> [Theme; 2] {
     [theme_obsidian(), theme_light()]
+}
+
+/// Convert a packed 0xRRGGBBAA token into [`Rgba`].
+pub fn token_rgba(c: u32) -> Rgba {
+    Rgba {
+        r: ((c >> 24) & 0xff) as f32 / 255.0,
+        g: ((c >> 16) & 0xff) as f32 / 255.0,
+        b: ((c >> 8) & 0xff) as f32 / 255.0,
+        a: (c & 0xff) as f32 / 255.0,
+    }
+}
+
+/// Convert a packed 0xRRGGBBAA token into [`Hsla`].
+pub fn token_hsla(c: u32) -> Hsla {
+    token_rgba(c).into()
 }

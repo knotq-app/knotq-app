@@ -3152,31 +3152,12 @@ dependencies = [
  "image",
  "knotq-commands",
  "knotq-date-util",
- "knotq-editor-core",
  "knotq-model",
  "knotq-theme",
+ "knotq-ui",
  "serde",
  "serde_json",
  "uuid",
-]
-
-[[package]]
-name = "knotq-editor-core"
-version = "0.1.0"
-dependencies = [
- "chrono",
- "knotq-commands",
- "knotq-date-util",
- "knotq-model",
-]
-
-[[package]]
-name = "knotq-fixtures"
-version = "0.1.0"
-dependencies = [
- "chrono",
- "knotq-commands",
- "knotq-model",
 ]
 
 [[package]]
@@ -3308,6 +3289,9 @@ dependencies = [
 [[package]]
 name = "knotq-theme"
 version = "0.1.0"
+dependencies = [
+ "gpui",
+]
 
 [[package]]
 name = "knotq-ui"

@@ -318,24 +318,6 @@ pub(super) fn rp_clear_button(
         .into_any_element()
 }
 
-pub(super) fn prev_month(date: NaiveDate) -> NaiveDate {
-    let (year, month) = if date.month() == 1 {
-        (date.year() - 1, 12u32)
-    } else {
-        (date.year(), date.month() - 1)
-    };
-    NaiveDate::from_ymd_opt(year, month, 1).unwrap_or(date)
-}
-
-pub(super) fn next_month(date: NaiveDate) -> NaiveDate {
-    let (year, month) = if date.month() == 12 {
-        (date.year() + 1, 1u32)
-    } else {
-        (date.year(), date.month() + 1)
-    };
-    NaiveDate::from_ymd_opt(year, month, 1).unwrap_or(date)
-}
-
 pub(super) fn repeat_weekday_button(
     weekday: RepeatWeekday,
     active: bool,
@@ -379,14 +361,4 @@ pub(super) fn repeat_weekday_button(
         .into_any_element()
 }
 
-pub(super) fn repeat_weekday_initial(weekday: RepeatWeekday) -> &'static str {
-    match weekday {
-        RepeatWeekday::Mon => "M",
-        RepeatWeekday::Tue => "T",
-        RepeatWeekday::Wed => "W",
-        RepeatWeekday::Thu => "T",
-        RepeatWeekday::Fri => "F",
-        RepeatWeekday::Sat => "S",
-        RepeatWeekday::Sun => "S",
-    }
-}
+pub(super) use knotq_rrule::weekday_util::repeat_weekday_initial;
