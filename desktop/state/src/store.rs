@@ -97,6 +97,10 @@ impl WorkspaceStore {
         &self.dirty
     }
 
+    pub fn replace_dirty_state(&mut self, dirty: WorkspaceDirtyState) {
+        self.dirty = dirty;
+    }
+
     pub fn pending_operations(&self) -> &VecDeque<StoreOperation> {
         &self.pending_operations
     }

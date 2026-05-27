@@ -21,6 +21,8 @@ impl SchemeEditor {
         let done = item_is_done(&row.item);
         let partial = item_is_partial(&row.item);
 
+        self.paint_indentation_guides(&row.item, row_ix, line_origin, checkbox_bounds, window);
+
         match row.item.marker {
             ItemMarker::Blank => {}
             ItemMarker::Bullet => {
@@ -94,6 +96,59 @@ impl SchemeEditor {
                     size(px(1.0), (bar_bottom - bar_top).max(px(1.0))),
                 ),
                 annotation_color,
+            ));
+        }
+    }
+
+    pub(super) fn paint_indentation_guides(
+        &self,
+        item: &Item,
+        row_ix: usize,
+        line_origin: Point<Pixels>,
+        checkbox_bounds: Bounds<Pixels>,
+        window: &mut Window,
+    ) {
+        let indent = item.indent.min(MAX_INDENT);
+        if indent == 0 {
+            return;
+        }
+
+        let guide_color = token_rgba(self.theme.divider_soft);
+        let guide_margin = px(3.0);
+        let row_height = self
+            .line_map
+            .item_line(row_ix)
+            .map(SchemeItemLine::height)
+            .unwrap_or_else(|| self.line_map.row_line_height(row_ix));
+        let own_bar_x = checkbox_bounds.left() - px(ANNOTATION_BAR_GAP + INDENT_GUIDE_X_SHIFT);
+
+        for guide_indent in 1..=indent {
+            let level_offset = px((indent - guide_indent) as f32 * INDENT_WIDTH);
+            let previous_has_guide = row_ix
+                .checked_sub(1)
+                .and_then(|ix| self.rows.get(ix))
+                .is_some_and(|row| row.item.indent.min(MAX_INDENT) >= guide_indent);
+            let next_has_guide = self
+                .rows
+                .get(row_ix + 1)
+                .is_some_and(|row| row.item.indent.min(MAX_INDENT) >= guide_indent);
+            let top_margin = if previous_has_guide {
+                px(0.0)
+            } else {
+                guide_margin
+            };
+            let bottom_margin = if next_has_guide {
+                px(0.0)
+            } else {
+                guide_margin
+            };
+
+            window.paint_quad(fill(
+                Bounds::new(
+                    point(own_bar_x - level_offset, line_origin.y + top_margin),
+                    size(px(1.0), (row_height - top_margin - bottom_margin).max(px(1.0))),
+                ),
+                guide_color,
             ));
         }
     }

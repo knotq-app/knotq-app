@@ -30,6 +30,9 @@ pub struct AppState {
     pub(crate) daily_queue: DailyQueueState,
     pub(crate) notifications: NotificationState,
     pub(crate) event_bus: EventBus,
+    // True when legacy app code has mutated `workspace` directly and the
+    // canonical store must be rebuilt before the next dispatched command.
+    compat_workspace_dirty: bool,
 
     // Compatibility fields still read directly by knotq-app during the shell
     // slimming phase. Keep them synchronized when dispatching through state.
@@ -86,6 +89,7 @@ impl AppState {
             daily_queue: daily_queue.clone(),
             notifications,
             event_bus: EventBus::default(),
+            compat_workspace_dirty: false,
             workspace,
             theme_mode: settings.theme_mode,
             system_theme_dark: true,
@@ -138,6 +142,7 @@ impl AppState {
     pub fn mark_dirty_from_command(&mut self, cmd: &Command) {
         self.store.mark_dirty_from_command(cmd);
         self.sync_compat_from_store_dirty();
+        self.compat_workspace_dirty = true;
     }
 
     /// Mark a single scheme as dirty.
@@ -145,12 +150,18 @@ impl AppState {
         self.store.mark_scheme_dirty(scheme_id);
         self.dirty_schemes.insert(scheme_id);
         self.index_dirty = true;
+        self.compat_workspace_dirty = true;
     }
 
     /// Mark only the workspace index as dirty (folder structure changes, etc.)
     pub fn mark_index_dirty(&mut self) {
         self.store.mark_index_dirty();
         self.index_dirty = true;
+        self.compat_workspace_dirty = true;
+    }
+
+    pub fn mark_compat_workspace_dirty(&mut self) {
+        self.compat_workspace_dirty = true;
     }
 
     /// Returns true if any scheme or the index needs saving.
@@ -160,14 +171,20 @@ impl AppState {
 
     pub fn sync_store_from_compat(&mut self) {
         let dirty = WorkspaceDirtyState::from_parts(self.dirty_schemes.clone(), self.index_dirty);
-        self.store
-            .replace_workspace(self.workspace.clone(), dirty, false);
+        if self.compat_workspace_dirty {
+            self.store
+                .replace_workspace(self.workspace.clone(), dirty, false);
+            self.compat_workspace_dirty = false;
+        } else {
+            self.store.replace_dirty_state(dirty);
+        }
     }
 
     pub fn sync_compat_from_store(&mut self) {
         self.workspace = self.store.workspace().clone();
         self.indexed = self.store.indexed().clone();
         self.sync_compat_from_store_dirty();
+        self.compat_workspace_dirty = false;
     }
 
     pub fn sync_compat_from_store_dirty(&mut self) {

@@ -12,3 +12,6 @@ build
 
 # Self-contained local run artifacts.
 .knotq-run/
+
+# Mobile lives in its own nested repository.
+mobile/

@@ -30,6 +30,7 @@ impl KnotQApp {
             match load_daily_queue_scheme(&workspace_path(), date) {
                 Ok(Some(scheme)) if scheme.id == existing => {
                     self.workspace.schemes.insert(existing, scheme);
+                    self.state.mark_compat_workspace_dirty();
                     if should_notify {
                         cx.notify();
                     }
@@ -49,6 +50,7 @@ impl KnotQApp {
                 }
             }
             self.workspace.daily_queue.remove(&date);
+            self.state.mark_compat_workspace_dirty();
         }
 
         let mut scheme = Scheme::new(daily_queue_scheme_name(date), DAILY_QUEUE_COLOR_INDEX);
@@ -96,6 +98,7 @@ impl KnotQApp {
                         continue;
                     }
                     self.workspace.schemes.insert(scheme.id, scheme);
+                    self.state.mark_compat_workspace_dirty();
                     changed = true;
                 }
                 self.daily_queue_loaded_calendar_months.extend(months);

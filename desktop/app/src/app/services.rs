@@ -535,6 +535,7 @@ impl KnotQApp {
                 self.dirty_schemes.insert(id);
             }
             self.index_dirty = true;
+            self.state.mark_compat_workspace_dirty();
             crate::notifications::notif_log(&format!(
                 "shutdown marked {completed} elapsed event occurrence(s) complete"
             ));
