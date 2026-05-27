@@ -146,7 +146,10 @@ impl SchemeEditor {
             window.paint_quad(fill(
                 Bounds::new(
                     point(own_bar_x - level_offset, line_origin.y + top_margin),
-                    size(px(1.0), (row_height - top_margin - bottom_margin).max(px(1.0))),
+                    size(
+                        px(1.0),
+                        (row_height - top_margin - bottom_margin).max(px(1.0)),
+                    ),
                 ),
                 guide_color,
             ));

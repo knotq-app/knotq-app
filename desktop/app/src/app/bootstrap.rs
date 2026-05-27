@@ -68,7 +68,7 @@ mod tests {
         let raw =
             fs::read_to_string(&path)
                 .unwrap()
-                .replacen("\"version\": 2", "\"version\": 999", 1);
+                .replacen("\"version\": 1", "\"version\": 999", 1);
         fs::write(&path, raw).unwrap();
 
         let bootstrap = load_or_seed_from_path(&path, today);

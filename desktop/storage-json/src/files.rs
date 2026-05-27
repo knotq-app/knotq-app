@@ -17,7 +17,7 @@ use crate::{
     },
 };
 
-pub(crate) const SCHEMA_VERSION: u32 = 2;
+pub(crate) const SCHEMA_VERSION: u32 = 1;
 pub(crate) const SETTINGS_SCHEMA_VERSION: u32 = 1;
 const WORKSPACE_GITIGNORE: &str =
     "# KnotQ local files\n.knotq-history/\nbackups/\n*.tmp\n.DS_Store\n";

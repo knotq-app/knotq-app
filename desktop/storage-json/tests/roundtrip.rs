@@ -95,7 +95,7 @@ fn save_workspace_splits_scheme_files_and_omits_empty_item_fields() {
     save_workspace(&workspace_file, &workspace).unwrap();
 
     let index = fs::read_to_string(&workspace_file).unwrap();
-    assert!(index.contains("\"version\": 2"));
+    assert!(index.contains("\"version\": 1"));
     assert!(index.contains("\"sync\""));
     assert!(index.contains("\"scheme_sync\""));
     assert!(index.contains("\"crdt\": \"yrs\""));
