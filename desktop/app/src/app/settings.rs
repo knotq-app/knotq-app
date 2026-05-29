@@ -125,6 +125,7 @@ impl KnotQApp {
             window_size: self.window_size,
             window_position: self.window_position,
             google_accounts: self.settings.google_accounts.clone(),
+            sync_account: self.settings.sync_account.clone(),
             onboarding_completed: self.settings.onboarding_completed,
         };
         if let Err(err) = save_app_settings(&settings_path(), &settings) {

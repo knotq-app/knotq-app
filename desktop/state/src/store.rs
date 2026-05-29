@@ -6,7 +6,7 @@ use knotq_commands::{
     WorkspaceCommandExt,
 };
 use knotq_index::{IndexChangeSet, IndexedWorkspace};
-use knotq_model::{OperationId, ReplicaId, SchemeId, Workspace, WorkspaceId};
+use knotq_model::{DocumentId, OperationId, ReplicaId, SchemeId, Workspace, WorkspaceId};
 use knotq_sync::{
     CrdtDocumentUpdate, PendingCrdtEdit, WorkspaceCrdtChangeSet, WorkspaceCrdtDocuments,
 };
@@ -137,6 +137,27 @@ impl WorkspaceStore {
             self.pending_operations.pop_front();
         }
         before - self.pending_operations.len()
+    }
+
+    pub fn clear_pushed_crdt_edits(
+        &mut self,
+        document: DocumentId,
+        through_local_sequence: u64,
+    ) -> usize {
+        let mut cleared = 0;
+        for operation in &mut self.pending_operations {
+            if operation.sequence > through_local_sequence {
+                continue;
+            }
+            let before = operation.crdt_updates.len();
+            operation
+                .crdt_updates
+                .retain(|update| update.document != document);
+            cleared += before - operation.crdt_updates.len();
+        }
+        self.pending_operations
+            .retain(|operation| !operation.crdt_updates.is_empty());
+        cleared
     }
 
     pub fn replace_workspace(

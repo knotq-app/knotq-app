@@ -26,6 +26,8 @@ mod nav;
 mod node_rename;
 mod services;
 mod settings;
+mod sync_auth;
+mod sync_service;
 mod workspace_ops;
 
 // Re-export public initialization helpers used by main.rs.
@@ -58,6 +60,7 @@ use knotq_storage_json::{
 
 use bootstrap::load_or_seed;
 use services::{spawn_notification_task, spawn_save_task, spawn_timeline_task, AppServiceBus};
+use sync_service::spawn_sync_task;
 
 use knotq_editor::{SchemeEditor, SchemeEditorSessionState};
 use knotq_ui::date_field::DateComponentField;
@@ -184,6 +187,20 @@ pub enum GoogleOAuthStatus {
     Idle,
     InProgress,
     Error,
+}
+
+#[derive(Clone, Debug, Default)]
+pub enum SyncAuthStatus {
+    #[default]
+    Idle,
+    InProgress,
+    Error(String),
+}
+
+pub struct SyncSignInState {
+    pub api_input: Entity<InputState>,
+    pub email_input: Entity<InputState>,
+    pub password_input: Entity<InputState>,
 }
 
 #[derive(Clone, Debug)]
@@ -404,6 +421,9 @@ pub struct KnotQApp {
     pub editor_context_menu: Option<EditorContextMenu>,
     pub google_oauth_status: GoogleOAuthStatus,
     pub google_oauth_task: Option<Task<()>>,
+    pub sync_sign_in: Option<SyncSignInState>,
+    pub sync_auth_status: SyncAuthStatus,
+    pub sync_auth_task: Option<Task<()>>,
     pub(crate) scheme_sessions: HashMap<SchemeId, SchemeSessionState>,
     pub(crate) service_bus: AppServiceBus,
     pub(crate) workspace_save_blocked_reason: Option<String>,
@@ -415,6 +435,7 @@ pub struct KnotQApp {
     pub _save_task: Task<()>,
     pub _notification_task: Task<()>,
     pub _state_task: Task<()>,
+    pub _sync_task: Task<()>,
     pub _google_calendar_sync_task: Task<()>,
     pub _editor_subscription: Option<Subscription>,
     pub _search_subscription: Option<Subscription>,
@@ -459,6 +480,7 @@ impl KnotQApp {
         let notification_task =
             spawn_notification_task(service_bus.clone(), service_receivers.notification_rx, cx);
         let state_task = spawn_timeline_task(service_receivers.timeline_rx, cx);
+        let sync_task = spawn_sync_task(service_receivers.sync_rx, cx);
         let google_calendar_sync_task = Self::spawn_google_calendar_sync_task(cx);
         let quit_subscription = cx.on_app_quit(|app, _cx| {
             app.flush_for_shutdown("app quit");
@@ -502,6 +524,9 @@ impl KnotQApp {
             editor_context_menu: None,
             google_oauth_status: GoogleOAuthStatus::Idle,
             google_oauth_task: None,
+            sync_sign_in: None,
+            sync_auth_status: SyncAuthStatus::Idle,
+            sync_auth_task: None,
             scheme_sessions: HashMap::new(),
             service_bus,
             workspace_save_blocked_reason,
@@ -513,6 +538,7 @@ impl KnotQApp {
             _save_task: save_task,
             _notification_task: notification_task,
             _state_task: state_task,
+            _sync_task: sync_task,
             _google_calendar_sync_task: google_calendar_sync_task,
             _editor_subscription: None,
             _search_subscription: None,

@@ -70,8 +70,25 @@ pub struct AppSettings {
     pub window_position: Option<SavedWindowPosition>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub google_accounts: Vec<GoogleOAuthAccount>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sync_account: Option<SyncAccountSettings>,
     #[serde(default)]
     pub onboarding_completed: bool,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct SyncAccountSettings {
+    pub api_base: String,
+    pub user_id: String,
+    pub email: String,
+    #[serde(default = "default_true")]
+    pub supports_sync: bool,
+    pub bearer_token: String,
+    pub expires_at: DateTime<Utc>,
+}
+
+fn default_true() -> bool {
+    true
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]

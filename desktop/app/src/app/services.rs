@@ -22,6 +22,7 @@ pub(crate) struct AppServiceBus {
     save_tx: Sender<()>,
     notification_tx: Sender<NotificationSignal>,
     timeline_tx: Sender<()>,
+    sync_tx: Sender<()>,
     notification_recompute_pending: std::sync::Arc<std::sync::atomic::AtomicBool>,
 }
 
@@ -29,6 +30,7 @@ pub(crate) struct AppServiceReceivers {
     pub(crate) save_rx: Receiver<()>,
     pub(crate) notification_rx: Receiver<NotificationSignal>,
     pub(crate) timeline_rx: Receiver<()>,
+    pub(crate) sync_rx: Receiver<()>,
 }
 
 #[derive(Clone)]
@@ -51,11 +53,13 @@ impl AppServiceBus {
         let (save_tx, save_rx) = async_channel::bounded(1);
         let (notification_tx, notification_rx) = async_channel::unbounded();
         let (timeline_tx, timeline_rx) = async_channel::bounded(1);
+        let (sync_tx, sync_rx) = async_channel::bounded(1);
         (
             Self {
                 save_tx,
                 notification_tx,
                 timeline_tx,
+                sync_tx,
                 notification_recompute_pending: std::sync::Arc::new(
                     std::sync::atomic::AtomicBool::new(false),
                 ),
@@ -64,6 +68,7 @@ impl AppServiceBus {
                 save_rx,
                 notification_rx,
                 timeline_rx,
+                sync_rx,
             },
         )
     }
@@ -72,6 +77,7 @@ impl AppServiceBus {
         self.signal_save();
         self.signal_notifications();
         self.signal_timeline();
+        self.signal_sync();
     }
 
     pub(crate) fn signal_save(&self) {
@@ -126,6 +132,10 @@ impl AppServiceBus {
 
     pub(crate) fn signal_timeline(&self) {
         let _ = self.timeline_tx.try_send(());
+    }
+
+    pub(crate) fn signal_sync(&self) {
+        let _ = self.sync_tx.try_send(());
     }
 
     fn signal_notification_action(&self) -> bool {

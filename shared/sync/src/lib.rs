@@ -8,7 +8,8 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 pub use crdt::{
-    WorkspaceCrdtChangeSet, WorkspaceCrdtDocuments, WorkspaceCrdtSyncOutcome, YrsSchemeDocument,
+    validate_crdt_update_sequence, WorkspaceCrdtApplyOutcome, WorkspaceCrdtChangeSet,
+    WorkspaceCrdtDocuments, WorkspaceCrdtSyncOutcome, YrsSchemeDocument,
 };
 
 pub const SYNC_API_VERSION: &str = "2026-05-29-crdt-sync-beta";
@@ -65,9 +66,37 @@ pub struct DevLoginRequest {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct AccountSignupRequest {
+    pub email: String,
+    pub password: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct AccountLoginRequest {
+    pub email: String,
+    pub password: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct AccountResponse {
+    pub user_id: UserId,
+    pub email: String,
+    #[serde(default = "default_supports_sync")]
+    pub supports_sync: bool,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct AuthSession {
     pub user_id: UserId,
+    pub email: String,
+    #[serde(default = "default_supports_sync")]
+    pub supports_sync: bool,
     pub bearer_token: String,
+    pub expires_at: DateTime<Utc>,
+}
+
+pub fn default_supports_sync() -> bool {
+    true
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]

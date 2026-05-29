@@ -4,7 +4,7 @@ use chrono::NaiveDate;
 use knotq_commands::{Command, CommandError, CommandOrigin, CommandReceipt};
 use knotq_index::IndexedWorkspace;
 use knotq_model::{
-    AppSettings, CalendarViewMode, CalendarWeekRange, NodeRef, NotificationDefaults,
+    AppSettings, CalendarViewMode, CalendarWeekRange, DocumentId, NodeRef, NotificationDefaults,
     SavedWindowPosition, SavedWindowSize, SchemeId, ThemeMode, TimeFormat, Workspace,
 };
 use knotq_sync::PendingCrdtEdit;
@@ -174,6 +174,15 @@ impl AppState {
         self.store.pending_crdt_edits()
     }
 
+    pub fn clear_pushed_crdt_edits(
+        &mut self,
+        document: DocumentId,
+        through_local_sequence: u64,
+    ) -> usize {
+        self.store
+            .clear_pushed_crdt_edits(document, through_local_sequence)
+    }
+
     pub fn sync_store_from_compat(&mut self) {
         let dirty = WorkspaceDirtyState::from_parts(self.dirty_schemes.clone(), self.index_dirty);
         if self.compat_workspace_dirty {
@@ -231,5 +240,16 @@ impl AppState {
         self.daily_queue_loaded_start = loaded_start;
         self.daily_queue_visible_dates = daily_queue.visible_dates;
         self.daily_queue_loaded_calendar_months = daily_queue.loaded_calendar_months;
+    }
+
+    pub fn replace_workspace_from_sync(&mut self, workspace: Workspace) {
+        let dirty = WorkspaceDirtyState::all(&workspace);
+        self.store.replace_workspace(workspace, dirty, false);
+        self.sync_compat_from_store();
+        self.undo = UndoRedoStack::default();
+        self.editor_undo_group = None;
+        self.recurrence_undo_group = None;
+        self.undo_stack.clear();
+        self.redo_stack.clear();
     }
 }

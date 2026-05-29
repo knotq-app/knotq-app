@@ -1,16 +1,16 @@
 use std::collections::{HashMap, HashSet};
 
 use anyhow::{anyhow, Context};
-use chrono::NaiveDate;
+use chrono::{DateTime, NaiveDate};
 use knotq_model::{
-    DeletedSchemeOrigin, DocumentId, Folder, FolderId, Item, Scheme, SchemeId, SchemeSource,
-    SyncDocumentKind, SyncDocumentMeta, Workspace,
+    DeletedSchemeOrigin, DocumentId, Folder, FolderId, Item, ItemId, Scheme, SchemeId,
+    SchemeSource, SyncDocumentKind, SyncDocumentMeta, Workspace,
 };
-use serde::{Deserialize, Serialize};
+use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use yrs::updates::{decoder::Decode, encoder::Encode};
 use yrs::{Array, Doc, In, Map, MapPrelim, ReadTxn, StateVector, Transact, Update};
 
-use crate::CrdtDocumentUpdate;
+use crate::{CrdtDocumentUpdate, StoredCrdtUpdate};
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct WorkspaceCrdtChangeSet {
@@ -51,12 +51,52 @@ impl WorkspaceCrdtSyncOutcome {
     }
 }
 
+#[derive(Clone, Debug)]
+pub struct WorkspaceCrdtApplyOutcome {
+    pub workspace: Workspace,
+    pub applied: usize,
+    pub errors: Vec<String>,
+}
+
+impl WorkspaceCrdtApplyOutcome {
+    pub fn is_ok(&self) -> bool {
+        self.errors.is_empty()
+    }
+
+    fn push_error(&mut self, context: impl std::fmt::Display, error: anyhow::Error) {
+        self.errors.push(format!("{context}: {error:#}"));
+    }
+}
+
 pub struct WorkspaceCrdtDocuments {
     workspace: YrsJsonDocument,
     schemes: HashMap<SchemeId, YrsSchemeDocument>,
 }
 
+pub fn validate_crdt_update_sequence<'a>(
+    kind: SyncDocumentKind,
+    updates_v1: impl IntoIterator<Item = &'a [u8]>,
+) -> anyhow::Result<()> {
+    let doc = Doc::new();
+    for update in updates_v1 {
+        doc.transact_mut()
+            .apply_update(Update::decode_v1(update).context("decode update_v1")?)
+            .context("apply update_v1")?;
+    }
+
+    match kind {
+        SyncDocumentKind::PersonalWorkspace => validate_workspace_document(&doc),
+        SyncDocumentKind::Scheme => validate_scheme_document(&doc),
+        SyncDocumentKind::Folder => Err(anyhow!("folder CRDT documents are not supported")),
+    }
+}
+
 impl WorkspaceCrdtDocuments {
+    pub fn snapshot_updates(workspace: &Workspace) -> WorkspaceCrdtSyncOutcome {
+        let mut docs = Self::empty(workspace);
+        docs.sync_changes(workspace, &WorkspaceCrdtChangeSet::default().workspace())
+    }
+
     pub fn empty(workspace: &Workspace) -> Self {
         let mut workspace = workspace.clone();
         workspace.ensure_sync_metadata();
@@ -149,6 +189,343 @@ impl WorkspaceCrdtDocuments {
 
         outcome
     }
+
+    pub fn apply_remote_updates(
+        &mut self,
+        current: &Workspace,
+        updates: &[StoredCrdtUpdate],
+    ) -> WorkspaceCrdtApplyOutcome {
+        let mut outcome = WorkspaceCrdtApplyOutcome {
+            workspace: current.clone(),
+            applied: 0,
+            errors: Vec::new(),
+        };
+
+        for update in updates
+            .iter()
+            .filter(|update| update.kind == SyncDocumentKind::PersonalWorkspace)
+        {
+            if update.document != self.workspace.id {
+                outcome.push_error(
+                    format!("workspace update {}", update.sequence),
+                    anyhow!(
+                        "document id mismatch: expected {}, got {}",
+                        self.workspace.id,
+                        update.document
+                    ),
+                );
+                continue;
+            }
+            match self.workspace.apply_update_v1(&update.update_v1) {
+                Ok(()) => outcome.applied += 1,
+                Err(err) => {
+                    outcome.push_error(format!("workspace update {}", update.sequence), err)
+                }
+            }
+        }
+
+        match self.materialize_workspace(current) {
+            Ok(workspace) => outcome.workspace = workspace,
+            Err(err) => {
+                outcome.push_error("workspace materialization", err);
+                return outcome;
+            }
+        }
+
+        self.schemes
+            .retain(|id, _| outcome.workspace.schemes.contains_key(id));
+        for update in updates
+            .iter()
+            .filter(|update| update.kind == SyncDocumentKind::Scheme)
+        {
+            let Some(scheme_id) = scheme_id_for_document(&outcome.workspace, update.document)
+            else {
+                outcome.push_error(
+                    format!("scheme update {}", update.sequence),
+                    anyhow!("unknown scheme document {}", update.document),
+                );
+                continue;
+            };
+            match self
+                .schemes
+                .entry(scheme_id)
+                .or_insert_with(|| YrsSchemeDocument::new(update.document))
+                .apply_update_v1(&update.update_v1)
+            {
+                Ok(()) => outcome.applied += 1,
+                Err(err) => outcome.push_error(format!("scheme update {}", update.sequence), err),
+            }
+        }
+
+        if updates
+            .iter()
+            .any(|update| update.kind == SyncDocumentKind::Scheme)
+        {
+            match self.materialize_workspace(current) {
+                Ok(workspace) => outcome.workspace = workspace,
+                Err(err) => outcome.push_error("scheme materialization", err),
+            }
+        }
+
+        for update in updates
+            .iter()
+            .filter(|update| update.kind == SyncDocumentKind::Folder)
+        {
+            outcome.push_error(
+                format!("folder update {}", update.sequence),
+                anyhow!("folder CRDT documents are not supported"),
+            );
+        }
+
+        outcome
+    }
+
+    fn materialize_workspace(&self, current: &Workspace) -> anyhow::Result<Workspace> {
+        let snapshot: WorkspaceDocumentSnapshot = self.workspace.snapshot()?;
+        let scheme_sync = snapshot
+            .scheme_sync
+            .into_iter()
+            .map(|entry| (entry.scheme, entry.sync))
+            .collect::<HashMap<_, _>>();
+        let folder_sync = snapshot
+            .folder_sync
+            .into_iter()
+            .map(|entry| (entry.folder, entry.sync))
+            .collect::<HashMap<_, _>>();
+        let mut workspace = Workspace {
+            id: snapshot.id,
+            sync: snapshot.sync,
+            root: snapshot.root,
+            folders: snapshot
+                .folders
+                .into_iter()
+                .map(|folder| (folder.id, folder))
+                .collect(),
+            schemes: HashMap::new(),
+            scheme_sync,
+            folder_sync,
+            daily_queue: snapshot
+                .daily_queue
+                .into_iter()
+                .map(|entry| (entry.date, entry.scheme))
+                .collect(),
+            recently_deleted: snapshot.recently_deleted,
+            deleted_scheme_origins: snapshot
+                .deleted_scheme_origins
+                .into_iter()
+                .map(|entry| (entry.scheme, entry.origin))
+                .collect(),
+        };
+
+        for entry in snapshot.schemes {
+            let items = self
+                .schemes
+                .get(&entry.id)
+                .and_then(|doc| doc.scheme_items().ok())
+                .or_else(|| {
+                    current
+                        .schemes
+                        .get(&entry.id)
+                        .map(|scheme| scheme.items.clone())
+                })
+                .unwrap_or_default();
+            workspace.schemes.insert(
+                entry.id,
+                Scheme {
+                    id: entry.id,
+                    name: entry.name,
+                    color_index: entry.color_index,
+                    gsync: entry.gsync,
+                    source: entry.source,
+                    items,
+                },
+            );
+        }
+
+        workspace.ensure_sync_metadata();
+        Ok(workspace)
+    }
+}
+
+fn validate_workspace_document(doc: &Doc) -> anyhow::Result<()> {
+    let document = doc.get_or_insert_map("document");
+    let txn = doc.transact();
+    let snapshot = document
+        .get_as::<_, Option<String>>(&txn, "snapshot")
+        .context("read workspace snapshot")?
+        .ok_or_else(|| anyhow!("workspace snapshot missing"))?;
+    let snapshot: serde_json::Value =
+        serde_json::from_str(&snapshot).context("workspace snapshot is not JSON")?;
+    let object = snapshot
+        .as_object()
+        .ok_or_else(|| anyhow!("workspace snapshot is not an object"))?;
+    require_json_string(object, "schema", "knotq.workspace.v1")?;
+    parse_json_uuid(object, "id")?;
+    parse_json_uuid(object, "root")?;
+    require_json_object(object, "sync")?;
+    require_json_array(object, "folders")?;
+    require_json_array(object, "schemes")?;
+    require_json_array(object, "daily_queue")?;
+    require_json_array(object, "recently_deleted")?;
+    require_json_array(object, "deleted_scheme_origins")?;
+    require_json_array(object, "scheme_sync")?;
+    require_json_array(object, "folder_sync")?;
+    Ok(())
+}
+
+fn validate_scheme_document(doc: &Doc) -> anyhow::Result<()> {
+    let metadata = doc.get_or_insert_map("scheme_file");
+    let item_order = doc.get_or_insert_array("item_order");
+    let items_by_id = doc.get_or_insert_map("items_by_id");
+    let txn = doc.transact();
+
+    let schema = metadata
+        .get_as::<_, Option<String>>(&txn, "schema")
+        .context("read scheme schema")?
+        .ok_or_else(|| anyhow!("scheme schema missing"))?;
+    if schema != "knotq.scheme_file.v1" {
+        return Err(anyhow!("scheme schema invalid"));
+    }
+    let scheme_id = metadata
+        .get_as::<_, Option<String>>(&txn, "id")
+        .context("read scheme id")?
+        .ok_or_else(|| anyhow!("scheme id missing"))?;
+    scheme_id.parse::<SchemeId>().context("scheme id invalid")?;
+
+    let mut ordered = HashSet::new();
+    for index in 0..item_order.len(&txn) {
+        let item_id = item_order
+            .get_as::<_, Option<String>>(&txn, index)
+            .with_context(|| format!("read item_order[{index}]"))?
+            .ok_or_else(|| anyhow!("item_order entry missing"))?;
+        let parsed_item_id = item_id
+            .parse::<ItemId>()
+            .with_context(|| format!("item id invalid: {item_id}"))?;
+        if !ordered.insert(item_id.clone()) {
+            return Err(anyhow!("duplicate item id in item_order: {item_id}"));
+        }
+
+        let item = items_by_id
+            .get_as::<_, Option<YrsSchemeItemSnapshot>>(&txn, &item_id)
+            .with_context(|| format!("read item {item_id}"))?
+            .ok_or_else(|| anyhow!("item_order references missing item: {item_id}"))?;
+        validate_scheme_item(&item_id, parsed_item_id, item)?;
+    }
+
+    let item_keys = items_by_id
+        .keys(&txn)
+        .map(str::to_string)
+        .collect::<HashSet<_>>();
+    if item_keys != ordered {
+        return Err(anyhow!("items_by_id does not match item_order"));
+    }
+
+    Ok(())
+}
+
+fn validate_scheme_item(
+    item_id: &str,
+    parsed_item_id: ItemId,
+    item: YrsSchemeItemSnapshot,
+) -> anyhow::Result<()> {
+    if item.schema != "knotq.item.v2" {
+        return Err(anyhow!("item schema invalid: {item_id}"));
+    }
+    if item.id != item_id {
+        return Err(anyhow!("item id mismatch: {item_id}"));
+    }
+    item.id.parse::<ItemId>().context("item id invalid")?;
+    if !matches!(
+        item.marker.as_str(),
+        "blank" | "bullet" | "numbered" | "checkbox"
+    ) {
+        return Err(anyhow!("item marker invalid: {item_id}"));
+    }
+    if !(0..=i64::from(u8::MAX)).contains(&item.indent) {
+        return Err(anyhow!("item indent invalid: {item_id}"));
+    }
+    parse_optional_rfc3339(&item.start)
+        .with_context(|| format!("item start invalid: {item_id}"))?;
+    parse_optional_rfc3339(&item.end).with_context(|| format!("item end invalid: {item_id}"))?;
+    parse_optional_rfc3339(&item.available)
+        .with_context(|| format!("item available invalid: {item_id}"))?;
+    parse_json_value(&item.media_json).with_context(|| format!("item media invalid: {item_id}"))?;
+    parse_json_value(&item.repeats_json)
+        .with_context(|| format!("item repeats invalid: {item_id}"))?;
+    parse_json_value(&item.state_json).with_context(|| format!("item state invalid: {item_id}"))?;
+    parse_json_value(&item.priority_json)
+        .with_context(|| format!("item priority invalid: {item_id}"))?;
+    parse_json_value(&item.external_json)
+        .with_context(|| format!("item external invalid: {item_id}"))?;
+
+    let snapshot: Item = serde_json::from_str(&item.snapshot_json)
+        .with_context(|| format!("item snapshot invalid: {item_id}"))?;
+    if snapshot.id != parsed_item_id {
+        return Err(anyhow!("item snapshot id mismatch: {item_id}"));
+    }
+    if snapshot.text != item.text {
+        return Err(anyhow!("item snapshot text mismatch: {item_id}"));
+    }
+
+    Ok(())
+}
+
+fn parse_optional_rfc3339(value: &str) -> anyhow::Result<()> {
+    if !value.is_empty() {
+        DateTime::parse_from_rfc3339(value)?;
+    }
+    Ok(())
+}
+
+fn parse_json_value(value: &str) -> anyhow::Result<serde_json::Value> {
+    Ok(serde_json::from_str(value)?)
+}
+
+fn require_json_string(
+    object: &serde_json::Map<String, serde_json::Value>,
+    key: &str,
+    expected: &str,
+) -> anyhow::Result<()> {
+    match object.get(key).and_then(serde_json::Value::as_str) {
+        Some(actual) if actual == expected => Ok(()),
+        Some(_) => Err(anyhow!("{key} invalid")),
+        None => Err(anyhow!("{key} missing")),
+    }
+}
+
+fn require_json_object(
+    object: &serde_json::Map<String, serde_json::Value>,
+    key: &str,
+) -> anyhow::Result<()> {
+    object
+        .get(key)
+        .and_then(serde_json::Value::as_object)
+        .ok_or_else(|| anyhow!("{key} must be an object"))?;
+    Ok(())
+}
+
+fn require_json_array(
+    object: &serde_json::Map<String, serde_json::Value>,
+    key: &str,
+) -> anyhow::Result<()> {
+    object
+        .get(key)
+        .and_then(serde_json::Value::as_array)
+        .ok_or_else(|| anyhow!("{key} must be an array"))?;
+    Ok(())
+}
+
+fn parse_json_uuid(
+    object: &serde_json::Map<String, serde_json::Value>,
+    key: &str,
+) -> anyhow::Result<()> {
+    object
+        .get(key)
+        .and_then(serde_json::Value::as_str)
+        .ok_or_else(|| anyhow!("{key} missing"))?
+        .parse::<uuid::Uuid>()
+        .with_context(|| format!("{key} invalid"))?;
+    Ok(())
 }
 
 fn documents_missing(docs: &WorkspaceCrdtDocuments, workspace: &Workspace) -> bool {
@@ -269,6 +646,26 @@ impl YrsSchemeDocument {
         }
         Ok(out)
     }
+
+    fn scheme_items(&self) -> anyhow::Result<Vec<Item>> {
+        let item_order = self.doc.get_or_insert_array("item_order");
+        let items_by_id = self.doc.get_or_insert_map("items_by_id");
+        let txn = self.doc.transact();
+        let mut out = Vec::new();
+        for index in 0..item_order.len(&txn) {
+            let item_id = item_order
+                .get_as::<_, Option<String>>(&txn, index)?
+                .ok_or_else(|| anyhow!("item_order[{index}] missing"))?;
+            let item = items_by_id
+                .get_as::<_, Option<YrsSchemeItemSnapshot>>(&txn, &item_id)?
+                .ok_or_else(|| anyhow!("missing item snapshot {item_id}"))?;
+            out.push(
+                serde_json::from_str::<Item>(&item.snapshot_json)
+                    .with_context(|| format!("parse item snapshot {item_id}"))?,
+            );
+        }
+        Ok(out)
+    }
 }
 
 fn item_prelim(item: &Item) -> anyhow::Result<MapPrelim> {
@@ -357,6 +754,22 @@ impl YrsJsonDocument {
         document.insert(&mut txn, "snapshot", json);
         Ok(true)
     }
+
+    fn apply_update_v1(&self, update: &[u8]) -> anyhow::Result<()> {
+        self.doc
+            .transact_mut()
+            .apply_update(Update::decode_v1(update)?)?;
+        Ok(())
+    }
+
+    fn snapshot<T: DeserializeOwned>(&self) -> anyhow::Result<T> {
+        let document = self.doc.get_or_insert_map("document");
+        let txn = self.doc.transact();
+        let json = document
+            .get_as::<_, Option<String>>(&txn, "snapshot")?
+            .ok_or_else(|| anyhow!("workspace snapshot missing"))?;
+        Ok(serde_json::from_str(&json)?)
+    }
 }
 
 #[derive(Deserialize)]
@@ -364,9 +777,27 @@ struct YrsSchemeItem {
     text: String,
 }
 
-#[derive(Serialize)]
+#[derive(Deserialize)]
+struct YrsSchemeItemSnapshot {
+    schema: String,
+    id: String,
+    text: String,
+    marker: String,
+    indent: i64,
+    start: String,
+    end: String,
+    available: String,
+    media_json: String,
+    repeats_json: String,
+    state_json: String,
+    priority_json: String,
+    external_json: String,
+    snapshot_json: String,
+}
+
+#[derive(Deserialize, Serialize)]
 struct WorkspaceDocumentSnapshot {
-    schema: &'static str,
+    schema: String,
     id: knotq_model::WorkspaceId,
     sync: SyncDocumentMeta,
     root: FolderId,
@@ -379,7 +810,7 @@ struct WorkspaceDocumentSnapshot {
     folder_sync: Vec<FolderSyncEntry>,
 }
 
-#[derive(Serialize)]
+#[derive(Deserialize, Serialize)]
 struct SchemeWorkspaceEntry {
     id: SchemeId,
     name: String,
@@ -388,25 +819,25 @@ struct SchemeWorkspaceEntry {
     source: SchemeSource,
 }
 
-#[derive(Serialize)]
+#[derive(Deserialize, Serialize)]
 struct DailyQueueEntry {
     date: NaiveDate,
     scheme: SchemeId,
 }
 
-#[derive(Serialize)]
+#[derive(Deserialize, Serialize)]
 struct DeletedSchemeOriginEntry {
     scheme: SchemeId,
     origin: DeletedSchemeOrigin,
 }
 
-#[derive(Serialize)]
+#[derive(Deserialize, Serialize)]
 struct SchemeSyncEntry {
     scheme: SchemeId,
     sync: SyncDocumentMeta,
 }
 
-#[derive(Serialize)]
+#[derive(Deserialize, Serialize)]
 struct FolderSyncEntry {
     folder: FolderId,
     sync: SyncDocumentMeta,
@@ -469,7 +900,7 @@ fn workspace_document_snapshot(workspace: &Workspace) -> WorkspaceDocumentSnapsh
     folder_sync.sort_by_key(|entry| entry.folder.to_string());
 
     WorkspaceDocumentSnapshot {
-        schema: "knotq.workspace.v1",
+        schema: "knotq.workspace.v1".to_string(),
         id: workspace.id,
         sync: workspace.sync.clone(),
         root: workspace.root,
@@ -488,6 +919,15 @@ fn scheme_meta(workspace: &Workspace, id: SchemeId) -> anyhow::Result<&SyncDocum
         .scheme_sync
         .get(&id)
         .ok_or_else(|| anyhow!("workspace missing scheme sync metadata for {id}"))
+}
+
+fn scheme_id_for_document(
+    workspace: &Workspace,
+    document: knotq_model::DocumentId,
+) -> Option<SchemeId> {
+    workspace.scheme_sync.iter().find_map(|(scheme, meta)| {
+        (meta.id == document && meta.kind == SyncDocumentKind::Scheme).then_some(*scheme)
+    })
 }
 
 #[cfg(test)]
@@ -512,6 +952,174 @@ mod tests {
     }
 
     #[test]
+    fn crdt_schema_validation_accepts_workspace_snapshots() {
+        let mut workspace = Workspace::new();
+        let scheme = Scheme::new("Plan", 0);
+        workspace.schemes.insert(scheme.id, scheme);
+        workspace.ensure_sync_metadata();
+
+        let mut docs = WorkspaceCrdtDocuments::empty(&workspace);
+        let updates = docs
+            .sync_changes(&workspace, &WorkspaceCrdtChangeSet::default().workspace())
+            .updates;
+        let workspace_updates = updates
+            .iter()
+            .filter(|update| update.kind == SyncDocumentKind::PersonalWorkspace)
+            .map(|update| update.update_v1.as_slice());
+
+        validate_crdt_update_sequence(SyncDocumentKind::PersonalWorkspace, workspace_updates)
+            .unwrap();
+    }
+
+    #[test]
+    fn crdt_schema_validation_accepts_scheme_history_and_delta() {
+        let document = DocumentId::new();
+        let mut scheme = Scheme::new("Plan", 0);
+        scheme.items.push(Item::new("First"));
+        let doc = YrsSchemeDocument::from_scheme(document, &scheme).unwrap();
+        let initial = doc.encode_update_v1(&[]).unwrap();
+
+        scheme.items[0].text = "Changed".to_string();
+        let delta = doc.sync_scheme(&scheme).unwrap().unwrap().update_v1;
+
+        validate_crdt_update_sequence(
+            SyncDocumentKind::Scheme,
+            [initial.as_slice(), delta.as_slice()],
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn crdt_schema_validation_rejects_malformed_update_bytes() {
+        let err = validate_crdt_update_sequence(SyncDocumentKind::Scheme, [&[1, 2, 3][..]])
+            .unwrap_err()
+            .to_string();
+
+        assert!(err.contains("decode update_v1"));
+    }
+
+    #[test]
+    fn crdt_schema_validation_rejects_delta_without_base_document() {
+        let document = DocumentId::new();
+        let mut scheme = Scheme::new("Plan", 0);
+        scheme.items.push(Item::new("First"));
+        let doc = YrsSchemeDocument::from_scheme(document, &scheme).unwrap();
+        let _initial = doc.encode_update_v1(&[]).unwrap();
+
+        scheme.items[0].text = "Changed".to_string();
+        let delta = doc.sync_scheme(&scheme).unwrap().unwrap().update_v1;
+
+        assert!(
+            validate_crdt_update_sequence(SyncDocumentKind::Scheme, [delta.as_slice()]).is_err()
+        );
+    }
+
+    #[test]
+    fn crdt_schema_validation_rejects_bad_workspace_schema() {
+        let doc = Doc::new();
+        let document = doc.get_or_insert_map("document");
+        let mut txn = doc.transact_mut();
+        document.insert(
+            &mut txn,
+            "snapshot",
+            serde_json::json!({
+                "schema": "bad.workspace",
+                "id": Workspace::new().id,
+                "sync": {},
+                "root": FolderId::new(),
+                "folders": [],
+                "schemes": [],
+                "daily_queue": [],
+                "recently_deleted": [],
+                "deleted_scheme_origins": [],
+                "scheme_sync": [],
+                "folder_sync": []
+            })
+            .to_string(),
+        );
+        drop(txn);
+
+        assert!(validate_crdt_update_sequence(
+            SyncDocumentKind::PersonalWorkspace,
+            [encode_full_update(&doc).as_slice()]
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn crdt_schema_validation_rejects_bad_scheme_schema() {
+        let doc = valid_single_item_scheme_doc();
+        let metadata = doc.get_or_insert_map("scheme_file");
+        metadata.insert(&mut doc.transact_mut(), "schema", "bad.scheme");
+
+        assert!(validate_crdt_update_sequence(
+            SyncDocumentKind::Scheme,
+            [encode_full_update(&doc).as_slice()]
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn crdt_schema_validation_rejects_duplicate_item_order_entries() {
+        let doc = valid_single_item_scheme_doc();
+        let item_order = doc.get_or_insert_array("item_order");
+        let txn = doc.transact();
+        let item_id = item_order
+            .get_as::<_, Option<String>>(&txn, 0)
+            .unwrap()
+            .unwrap();
+        drop(txn);
+        item_order.push_back(&mut doc.transact_mut(), item_id);
+
+        assert!(validate_crdt_update_sequence(
+            SyncDocumentKind::Scheme,
+            [encode_full_update(&doc).as_slice()]
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn crdt_schema_validation_rejects_missing_item_map_entry() {
+        let doc = valid_single_item_scheme_doc();
+        let item_order = doc.get_or_insert_array("item_order");
+        item_order.push_back(&mut doc.transact_mut(), ItemId::new().to_string());
+
+        assert!(validate_crdt_update_sequence(
+            SyncDocumentKind::Scheme,
+            [encode_full_update(&doc).as_slice()]
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn crdt_schema_validation_rejects_extra_item_map_entry() {
+        let doc = valid_single_item_scheme_doc();
+        let items_by_id = doc.get_or_insert_map("items_by_id");
+        let item = Item::new("Extra");
+        items_by_id.insert(
+            &mut doc.transact_mut(),
+            item.id.to_string(),
+            item_prelim(&item).unwrap(),
+        );
+
+        assert!(validate_crdt_update_sequence(
+            SyncDocumentKind::Scheme,
+            [encode_full_update(&doc).as_slice()]
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn crdt_schema_validation_rejects_folder_documents() {
+        let doc = Doc::new();
+        assert!(validate_crdt_update_sequence(
+            SyncDocumentKind::Folder,
+            [encode_full_update(&doc).as_slice()]
+        )
+        .is_err());
+    }
+
+    #[test]
     fn workspace_crdt_documents_emit_scheme_updates_for_touched_schemes() {
         let mut workspace = Workspace::new();
         let mut scheme = Scheme::new("Plan", 0);
@@ -532,6 +1140,51 @@ mod tests {
         assert!(updates
             .iter()
             .any(|update| update.kind == SyncDocumentKind::Scheme));
+    }
+
+    #[test]
+    fn remote_crdt_updates_materialize_workspace_and_scheme_items() {
+        let mut source = Workspace::new();
+        let mut scheme = Scheme::new("Remote Plan", 2);
+        scheme.items.push(Item::new("First remote line"));
+        let scheme_id = scheme.id;
+        source
+            .folders
+            .get_mut(&source.root)
+            .unwrap()
+            .children
+            .push(NodeRef::Scheme(scheme_id));
+        source.schemes.insert(scheme_id, scheme);
+        source.ensure_sync_metadata();
+
+        let updates = WorkspaceCrdtDocuments::snapshot_updates(&source)
+            .updates
+            .into_iter()
+            .enumerate()
+            .map(|(index, update)| StoredCrdtUpdate {
+                workspace_id: source.id,
+                document: update.document,
+                kind: update.kind,
+                replica_id: knotq_model::ReplicaId::new(),
+                sequence: (index + 1) as u64,
+                received_at: chrono::Utc::now(),
+                update_v1: update.update_v1,
+            })
+            .collect::<Vec<_>>();
+
+        let mut target = source.clone();
+        target.schemes.get_mut(&scheme_id).unwrap().items.clear();
+        let mut docs = WorkspaceCrdtDocuments::try_new(&target).unwrap();
+        let outcome = docs.apply_remote_updates(&target, &updates);
+
+        assert!(outcome.is_ok(), "{:?}", outcome.errors);
+        assert_eq!(
+            outcome.workspace.schemes[&scheme_id].items[0].text,
+            "First remote line"
+        );
+        assert!(outcome.workspace.folders[&outcome.workspace.root]
+            .children
+            .contains(&NodeRef::Scheme(scheme_id)));
     }
 
     #[test]
@@ -590,5 +1243,26 @@ mod tests {
         assert!(!updates
             .iter()
             .any(|update| update.kind == SyncDocumentKind::Folder));
+    }
+
+    fn valid_single_item_scheme_doc() -> Doc {
+        let doc = Doc::new();
+        let metadata = doc.get_or_insert_map("scheme_file");
+        let item_order = doc.get_or_insert_array("item_order");
+        let items_by_id = doc.get_or_insert_map("items_by_id");
+        let scheme = Scheme::new("Plan", 0);
+        let item = Item::new("First");
+        let item_id = item.id.to_string();
+        let mut txn = doc.transact_mut();
+        metadata.insert(&mut txn, "schema", "knotq.scheme_file.v1");
+        metadata.insert(&mut txn, "id", scheme.id.to_string());
+        item_order.push_back(&mut txn, item_id.clone());
+        items_by_id.insert(&mut txn, item_id, item_prelim(&item).unwrap());
+        drop(txn);
+        doc
+    }
+
+    fn encode_full_update(doc: &Doc) -> Vec<u8> {
+        doc.transact().encode_diff_v1(&StateVector::default())
     }
 }

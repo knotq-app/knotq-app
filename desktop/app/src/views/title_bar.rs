@@ -238,6 +238,43 @@ impl KnotQApp {
                             .children(calendar_mode_controls),
                     )
                 })
+                .child(
+                    div()
+                        .id("title-sync-account")
+                        .h(px(26.0))
+                        .w(px(108.0))
+                        .px(px(8.0))
+                        .rounded(px(7.0))
+                        .border_1()
+                        .border_color(token_rgba(t.border_soft))
+                        .bg(token_rgba(t.button_bg))
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .gap(px(6.0))
+                        .cursor_pointer()
+                        .hover({
+                            let c = t.button_hover;
+                            move |s| s.bg(token_rgba(c))
+                        })
+                        .on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
+                            this.open_sync_sign_in(window, cx);
+                        }))
+                        .child(
+                            Icon::new(IconName::CircleUser)
+                                .xsmall()
+                                .text_color(token_hsla(t.text_dim)),
+                        )
+                        .child(
+                            div()
+                                .min_w_0()
+                                .truncate()
+                                .text_size(px(12.0))
+                                .font_weight(gpui::FontWeight::NORMAL)
+                                .text_color(token_hsla(t.text_dim))
+                                .child(self.sync_account_label()),
+                        ),
+                )
                 .child(search_control)
                 .child(
                     div()

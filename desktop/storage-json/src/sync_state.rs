@@ -42,7 +42,15 @@ pub fn save_local_sync_state(workspace_path: &Path, state: &LocalSyncState) -> R
 
 pub fn save_pending_crdt_edits(workspace_path: &Path, pending: &[PendingCrdtEdit]) -> Result<()> {
     let mut state = load_local_sync_state(workspace_path)?;
-    state.replace_pending(pending.iter().cloned());
+    for edit in pending {
+        if !state.pending.iter().any(|existing| {
+            existing.operation_id == edit.operation_id
+                && existing.document == edit.document
+                && existing.local_sequence == edit.local_sequence
+        }) {
+            state.push_pending(edit.clone());
+        }
+    }
     save_local_sync_state(workspace_path, &state)
 }
 

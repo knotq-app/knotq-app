@@ -1,8 +1,10 @@
 use gpui::prelude::*;
-use gpui::{div, px, ClickEvent, Context, FontWeight, IntoElement, SharedString, Window};
+use gpui::{div, px, ClickEvent, Context, Entity, FontWeight, IntoElement, SharedString, Window};
+use gpui_component::input::{Input, InputState};
+use gpui_component::Sizable as _;
 use knotq_storage_json::CalendarViewMode;
 
-use crate::app::{KnotQApp, View};
+use crate::app::{KnotQApp, SyncAuthStatus, View};
 use crate::theme_gpui::{token_hsla, token_rgba};
 
 // ── Onboarding spotlight steps ───────────────────────────────────────────
@@ -119,6 +121,35 @@ fn step_spotlight(step: usize, vw: f32, vh: f32) -> (SpotlightRect, CardSide) {
             CardSide::Left,
         ),
     }
+}
+
+fn sign_in_field(
+    label: &'static str,
+    input: &Entity<InputState>,
+    masked: bool,
+    t: crate::theme_gpui::Theme,
+) -> gpui::AnyElement {
+    div()
+        .flex()
+        .flex_col()
+        .gap(px(5.0))
+        .child(
+            div()
+                .text_size(px(11.0))
+                .font_weight(gpui::FontWeight::SEMIBOLD)
+                .text_color(token_hsla(t.text_soft))
+                .child(label),
+        )
+        .child(
+            Input::new(input)
+                .appearance(false)
+                .bordered(true)
+                .focus_bordered(true)
+                .small()
+                .w_full()
+                .when(masked, |input| input.mask_toggle()),
+        )
+        .into_any_element()
 }
 
 impl KnotQApp {
@@ -255,6 +286,167 @@ impl KnotQApp {
                                         .child(pending.confirm_label),
                                 ),
                         ),
+                )
+                .into_any_element(),
+        )
+    }
+
+    pub(crate) fn render_sync_sign_in_modal(
+        &mut self,
+        cx: &mut Context<Self>,
+    ) -> Option<gpui::AnyElement> {
+        let state = self.sync_sign_in.as_ref()?;
+        let t = self.theme();
+        let signed_in = self.settings.sync_account.clone();
+        let in_progress = matches!(self.sync_auth_status, SyncAuthStatus::InProgress);
+        let status = match &self.sync_auth_status {
+            SyncAuthStatus::Idle => None,
+            SyncAuthStatus::InProgress => Some(("Signing in...".to_string(), false)),
+            SyncAuthStatus::Error(message) => Some((message.clone(), true)),
+        };
+
+        let mut actions = div().flex().items_center().justify_between().gap(px(8.0));
+        if signed_in.is_some() {
+            actions = actions.child(
+                div()
+                    .id("sync-sign-out")
+                    .px(px(10.0))
+                    .py(px(5.0))
+                    .rounded(px(5.0))
+                    .bg(token_rgba(t.button_bg))
+                    .text_size(px(12.0))
+                    .text_color(token_hsla(t.text_primary))
+                    .cursor_pointer()
+                    .hover({
+                        let c = t.button_hover;
+                        move |s| s.bg(token_rgba(c))
+                    })
+                    .on_click(cx.listener(|this, _: &ClickEvent, _window, cx| {
+                        this.sign_out_sync_account(cx);
+                    }))
+                    .child("Sign out"),
+            );
+        } else {
+            actions = actions.child(div().flex_1());
+        }
+
+        actions = actions.child(
+            div()
+                .flex()
+                .items_center()
+                .justify_end()
+                .gap(px(8.0))
+                .child(
+                    div()
+                        .id("sync-sign-in-cancel")
+                        .px(px(10.0))
+                        .py(px(5.0))
+                        .rounded(px(5.0))
+                        .bg(token_rgba(t.button_bg))
+                        .text_size(px(12.0))
+                        .text_color(token_hsla(t.text_primary))
+                        .cursor_pointer()
+                        .hover({
+                            let c = t.button_hover;
+                            move |s| s.bg(token_rgba(c))
+                        })
+                        .on_click(cx.listener(|this, _: &ClickEvent, _window, cx| {
+                            this.close_sync_sign_in(cx);
+                        }))
+                        .child("Cancel"),
+                )
+                .child(
+                    div()
+                        .id("sync-sign-in-submit")
+                        .px(px(10.0))
+                        .py(px(5.0))
+                        .rounded(px(5.0))
+                        .bg(token_rgba(if in_progress {
+                            t.button_hover
+                        } else {
+                            t.text_highlight
+                        }))
+                        .text_size(px(12.0))
+                        .font_weight(gpui::FontWeight::SEMIBOLD)
+                        .text_color(token_hsla(0xffffffff))
+                        .when(!in_progress, |s| {
+                            s.cursor_pointer()
+                                .hover(|s| s.bg(token_rgba(0xe66f1fff)))
+                                .on_click(cx.listener(|this, _: &ClickEvent, _window, cx| {
+                                    this.submit_sync_sign_in(cx);
+                                }))
+                        })
+                        .when(in_progress, |s| s.opacity(0.65))
+                        .child(if in_progress { "Signing in" } else { "Sign in" }),
+                ),
+        );
+
+        let current_account = signed_in.map(|account| {
+            div()
+                .text_size(px(12.0))
+                .line_height(px(17.0))
+                .text_color(token_hsla(t.text_soft))
+                .child(format!("Signed in as {}", account.email))
+        });
+
+        Some(
+            div()
+                .id("sync-sign-in-scrim")
+                .absolute()
+                .inset_0()
+                .bg(token_rgba(t.overlay_scrim))
+                .flex()
+                .items_center()
+                .justify_center()
+                .on_click(cx.listener(|this, _: &ClickEvent, _window, cx| {
+                    this.close_sync_sign_in(cx);
+                }))
+                .child(
+                    div()
+                        .id("sync-sign-in-modal")
+                        .w(px(380.0))
+                        .bg(token_hsla(t.bg_modal))
+                        .border_1()
+                        .border_color(token_rgba(t.border_overlay))
+                        .rounded(px(8.0))
+                        .shadow_lg()
+                        .p(px(14.0))
+                        .flex()
+                        .flex_col()
+                        .gap(px(11.0))
+                        .on_click(|_: &ClickEvent, _window, cx| cx.stop_propagation())
+                        .child(
+                            div()
+                                .text_size(px(14.0))
+                                .font_weight(gpui::FontWeight::SEMIBOLD)
+                                .text_color(token_hsla(t.text_primary))
+                                .child("Sync sign in"),
+                        )
+                        .child(
+                            div()
+                                .text_size(px(12.0))
+                                .line_height(px(18.0))
+                                .text_color(token_hsla(t.text_muted))
+                                .child("Connect this app to the local Cloudflare sync Worker."),
+                        )
+                        .when_some(current_account, |s, account| s.child(account))
+                        .child(sign_in_field("Sync API", &state.api_input, false, t))
+                        .child(sign_in_field("Email", &state.email_input, false, t))
+                        .child(sign_in_field("Password", &state.password_input, true, t))
+                        .when_some(status, |s, (message, is_error)| {
+                            s.child(
+                                div()
+                                    .text_size(px(12.0))
+                                    .line_height(px(17.0))
+                                    .text_color(token_hsla(if is_error {
+                                        0xff5a53ff
+                                    } else {
+                                        t.text_soft
+                                    }))
+                                    .child(message),
+                            )
+                        })
+                        .child(actions),
                 )
                 .into_any_element(),
         )

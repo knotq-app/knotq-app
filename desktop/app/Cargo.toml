@@ -38,6 +38,7 @@ knotq-index = { workspace = true }
 knotq-model = { workspace = true }
 knotq-rrule = { workspace = true }
 knotq-state = { workspace = true }
+knotq-sync = { workspace = true }
 knotq-notifications = { workspace = true }
 knotq-storage-json = { workspace = true }
 knotq-theme = { workspace = true }
