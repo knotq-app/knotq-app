@@ -17,6 +17,7 @@ use knotq_notifications::{
 use knotq_rrule::ItemOccurrenceExt;
 use knotq_storage_json::data_dir;
 use knotq_storage_json::NotificationDefaults;
+use knotq_sync::NotificationScheduleSnapshot;
 use sha2::{Digest, Sha256};
 use std::collections::BTreeSet;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -129,6 +130,54 @@ pub fn pending_notifications(
     .filter(|note| note.fire_at > now)
     .take(DEFAULT_DURABLE_NOTIFICATION_LIMIT)
     .collect()
+}
+
+pub(crate) fn notification_schedule_snapshot(
+    workspace: &Workspace,
+    defaults: NotificationDefaults,
+    now: DateTime<Utc>,
+    sequence: u64,
+) -> NotificationScheduleSnapshot {
+    let window_start = DateTime::from_naive_utc_and_offset(
+        now.date_naive()
+            .and_hms_opt(0, 0, 0)
+            .expect("midnight is always valid"),
+        Utc,
+    );
+    let window_end = window_start + Duration::days(SCHEDULE_HORIZON_DAYS);
+    let mut notifications = compute_due_notifications_with_lead_times(
+        workspace,
+        lead_times(defaults),
+        window_start,
+        window_end,
+    );
+    notifications.sort_by(|left, right| {
+        left.fire_at
+            .cmp(&right.fire_at)
+            .then_with(|| left.key.cmp(&right.key))
+    });
+
+    let mut hasher = Sha256::new();
+    hasher.update(b"knotq.notification_schedule.v1");
+    hasher.update([0]);
+    hasher.update(window_start.to_rfc3339().as_bytes());
+    hasher.update([0]);
+    hasher.update(window_end.to_rfc3339().as_bytes());
+    for notification in &notifications {
+        hasher.update([0]);
+        let json = serde_json::to_vec(notification).unwrap_or_default();
+        hasher.update(json);
+    }
+    let digest = hasher.finalize();
+    let hash = digest.iter().map(|byte| format!("{byte:02x}")).collect();
+
+    NotificationScheduleSnapshot {
+        sequence,
+        hash,
+        window_start,
+        window_end,
+        occurrence_count: notifications.len(),
+    }
 }
 
 pub(crate) fn pending_notification_requests_for_item(

@@ -8,7 +8,7 @@ use gpui_component::input::InputState;
 use knotq_model::SyncAccountSettings;
 use serde::{Deserialize, Serialize};
 
-use super::{KnotQApp, SyncAuthStatus, SyncSignInState};
+use super::{KnotQApp, SyncAuthStatus, SyncRunStatus, SyncSignInState};
 
 const DEFAULT_SYNC_API_BASE: &str = "http://127.0.0.1:8787";
 
@@ -93,6 +93,7 @@ impl KnotQApp {
             self.save_app_settings();
         }
         self.sync_auth_status = SyncAuthStatus::Idle;
+        self.sync_run_status = SyncRunStatus::Idle;
         cx.notify();
     }
 
@@ -180,14 +181,6 @@ impl KnotQApp {
             }
         }
         cx.notify();
-    }
-
-    pub fn sync_account_label(&self) -> String {
-        self.settings
-            .sync_account
-            .as_ref()
-            .map(|account| account.email.clone())
-            .unwrap_or_else(|| "Sign in".to_string())
     }
 }
 

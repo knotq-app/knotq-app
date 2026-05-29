@@ -1,4 +1,6 @@
 use std::collections::{HashMap, HashSet};
+use std::fs;
+use std::io::Read;
 use std::time::Duration as StdDuration;
 
 use anyhow::{anyhow, Context as AnyhowContext, Result};
@@ -7,17 +9,20 @@ use chrono::Utc;
 use futures::{pin_mut, select, FutureExt};
 use gpui::{Context, Task};
 use knotq_model::{
-    DocumentId, ReplicaId, SyncAccountSettings, SyncDocumentKind, Workspace, WorkspaceId,
+    DocumentId, ImageAssetFormat, ItemMedia, ReplicaId, SyncAccountSettings, SyncDocumentKind,
+    Workspace, WorkspaceId,
 };
 use knotq_storage_json::{
-    load_local_sync_state, save_local_sync_state, save_workspace, workspace_path,
+    image_asset_path, load_local_sync_state, save_local_sync_state, save_workspace, workspace_path,
 };
 use knotq_sync::{
-    DocumentResponse, ErrorResponse, LocalSyncState, PendingCrdtEdit, PullUpdatesResponse,
-    PushUpdatesRequest, PushUpdatesResponse, UpsertDocumentRequest, WorkspaceCrdtDocuments,
+    DocumentResponse, ErrorResponse, LocalSyncState, NotificationScheduleSnapshot, PendingCrdtEdit,
+    PullUpdatesResponse, PushUpdatesRequest, PushUpdatesResponse, UpsertDocumentRequest,
+    WorkspaceCrdtDocuments, MAX_SYNC_MEDIA_BYTES,
 };
+use sha2::{Digest, Sha256};
 
-use super::KnotQApp;
+use super::{KnotQApp, SyncRunStatus};
 
 const SYNC_DEBOUNCE: StdDuration = StdDuration::from_secs(2);
 const SYNC_POLL_INTERVAL: StdDuration = StdDuration::from_secs(30);
@@ -29,6 +34,7 @@ struct SyncSnapshot {
     account: SyncAccountSettings,
     replica_id: ReplicaId,
     pending: Vec<PendingCrdtEdit>,
+    notification_schedule: NotificationScheduleSnapshot,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -41,12 +47,26 @@ struct SyncRunResult {
     workspace: Workspace,
     pushed: Vec<PushedDocument>,
     remote_updates_applied: usize,
+    remaining_pending: usize,
 }
 
 #[derive(Clone, Copy)]
 struct SyncDocumentRef {
     document: DocumentId,
     kind: SyncDocumentKind,
+}
+
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+struct SyncMediaAsset {
+    document: DocumentId,
+    asset: uuid::Uuid,
+    format: ImageAssetFormat,
+}
+
+impl SyncMediaAsset {
+    fn image_name(self) -> String {
+        format!("{}.{}", self.asset, self.format.extension())
+    }
 }
 
 struct SyncHttpClient {
@@ -89,12 +109,29 @@ async fn run_sync_once(weak: &gpui::WeakEntity<KnotQApp>, cx: &mut gpui::AsyncAp
                 return None;
             }
             let account = app.settings.sync_account.clone()?;
+            if !account.supports_sync {
+                app.sync_run_status = SyncRunStatus::Idle;
+                _cx.notify();
+                return None;
+            }
             app.state.sync_store_from_compat();
+            let pending = app.state.pending_crdt_edits();
+            app.sync_run_status = SyncRunStatus::Running {
+                pending: pending.len(),
+            };
+            _cx.notify();
+            let notification_schedule = crate::notifications::notification_schedule_snapshot(
+                &app.workspace,
+                app.settings.notification_defaults,
+                Utc::now(),
+                0,
+            );
             Some(SyncSnapshot {
                 workspace: app.workspace.clone(),
                 account,
                 replica_id: app.settings.replica_id,
-                pending: app.state.pending_crdt_edits(),
+                pending,
+                notification_schedule,
             })
         })
         .ok()
@@ -103,9 +140,6 @@ async fn run_sync_once(weak: &gpui::WeakEntity<KnotQApp>, cx: &mut gpui::AsyncAp
     let Some(snapshot) = snapshot else {
         return;
     };
-    if !snapshot.account.supports_sync {
-        return;
-    }
 
     let result = cx
         .background_executor()
@@ -117,11 +151,15 @@ async fn run_sync_once(weak: &gpui::WeakEntity<KnotQApp>, cx: &mut gpui::AsyncAp
             let remote_updates_applied = result.remote_updates_applied;
             let pushed = result.pushed.clone();
             let workspace = result.workspace.clone();
+            let remaining_pending = result.remaining_pending;
             let _ = weak.update(cx, |app, cx| {
                 for pushed in pushed {
                     app.state
                         .clear_pushed_crdt_edits(pushed.document, pushed.through_local_sequence);
                 }
+                app.sync_run_status = SyncRunStatus::Synced {
+                    pending: remaining_pending,
+                };
                 if remote_updates_applied > 0 {
                     app.state.replace_workspace_from_sync(workspace);
                     app.service_bus.signal_save();
@@ -133,6 +171,14 @@ async fn run_sync_once(weak: &gpui::WeakEntity<KnotQApp>, cx: &mut gpui::AsyncAp
         }
         Err(err) => {
             eprintln!("sync failed: {err:#}");
+            let message = format!("{err:#}");
+            let _ = weak.update(cx, |app, cx| {
+                app.sync_run_status = SyncRunStatus::Error {
+                    message,
+                    pending: app.state.pending_crdt_edits().len(),
+                };
+                cx.notify();
+            });
         }
     }
 }
@@ -161,6 +207,7 @@ fn sync_snapshot(snapshot: SyncSnapshot) -> Result<SyncRunResult> {
     let mut remote_updates_applied = 0;
 
     upsert_documents(&client, workspace.id, sync_documents(&workspace))?;
+    upload_local_media_assets(&client, &mut local_state, workspace.id, &workspace)?;
 
     let workspace_doc = SyncDocumentRef {
         document: workspace.sync.id,
@@ -189,6 +236,7 @@ fn sync_snapshot(snapshot: SyncSnapshot) -> Result<SyncRunResult> {
     );
 
     upsert_documents(&client, workspace.id, sync_documents(&workspace))?;
+    download_missing_media_assets(&client, &workspace)?;
 
     let mut scheme_updates = Vec::new();
     for doc in scheme_documents(&workspace) {
@@ -213,9 +261,16 @@ fn sync_snapshot(snapshot: SyncSnapshot) -> Result<SyncRunResult> {
         remote_updates_applied += outcome.applied;
         workspace = outcome.workspace;
     }
+    download_missing_media_assets(&client, &workspace)?;
 
     queue_bootstrap_updates(&mut local_state, &workspace, &remote_latest);
-    push_pending_documents(&client, &mut local_state, workspace.id, &mut pushed)?;
+    push_pending_documents(
+        &client,
+        &mut local_state,
+        workspace.id,
+        &mut pushed,
+        &snapshot.notification_schedule,
+    )?;
 
     save_local_sync_state(&path, &local_state)?;
     if remote_updates_applied > 0 {
@@ -226,6 +281,7 @@ fn sync_snapshot(snapshot: SyncSnapshot) -> Result<SyncRunResult> {
         workspace,
         pushed,
         remote_updates_applied,
+        remaining_pending: local_state.pending.len(),
     })
 }
 
@@ -331,6 +387,7 @@ fn push_pending_documents(
     local_state: &mut LocalSyncState,
     workspace_id: WorkspaceId,
     pushed: &mut Vec<PushedDocument>,
+    notification_schedule: &NotificationScheduleSnapshot,
 ) -> Result<()> {
     loop {
         let Some(document) = local_state.pending.front().map(|edit| edit.document) else {
@@ -342,7 +399,7 @@ fn push_pending_documents(
         }
         let kind = pending[0].kind;
         client.upsert_document(workspace_id, SyncDocumentRef { document, kind })?;
-        let request = local_state
+        let mut request = local_state
             .next_push_request(document, SYNC_BATCH_LIMIT)
             .ok_or_else(|| anyhow!("missing push request for pending document"))?;
         let through_local_sequence = pending
@@ -350,6 +407,9 @@ fn push_pending_documents(
             .map(|edit| edit.local_sequence)
             .max()
             .unwrap_or(0);
+        let mut notification_schedule = notification_schedule.clone();
+        notification_schedule.sequence = through_local_sequence;
+        request.notification_schedule = Some(notification_schedule);
         let response = client.push_updates(workspace_id, document, &request)?;
         if response.accepted != request.updates.len() {
             return Err(anyhow!(
@@ -386,6 +446,96 @@ fn scheme_documents(workspace: &Workspace) -> Vec<SyncDocumentRef> {
             kind: SyncDocumentKind::Scheme,
         })
         .collect()
+}
+
+fn workspace_media_assets(workspace: &Workspace) -> Vec<SyncMediaAsset> {
+    let mut seen = HashSet::new();
+    let mut assets = Vec::new();
+    for scheme in workspace.iter_schemes() {
+        let Some(meta) = workspace.scheme_sync.get(&scheme.id) else {
+            continue;
+        };
+        for item in &scheme.items {
+            for media in &item.media {
+                let ItemMedia::Image { asset, format, .. } = media;
+                let media = SyncMediaAsset {
+                    document: meta.id,
+                    asset: *asset,
+                    format: *format,
+                };
+                if seen.insert(media) {
+                    assets.push(media);
+                }
+            }
+        }
+    }
+    assets
+}
+
+fn upload_local_media_assets(
+    client: &SyncHttpClient,
+    local_state: &mut LocalSyncState,
+    workspace_id: WorkspaceId,
+    workspace: &Workspace,
+) -> Result<()> {
+    for media in workspace_media_assets(workspace) {
+        let path = image_asset_path(media.asset, media.format.extension());
+        let Ok(metadata) = fs::metadata(&path) else {
+            continue;
+        };
+        if !metadata.is_file() {
+            continue;
+        }
+        let byte_length = metadata.len();
+        if byte_length > MAX_SYNC_MEDIA_BYTES as u64 {
+            return Err(anyhow!(
+                "image {} is {} bytes, above the {} byte sync limit",
+                media.image_name(),
+                byte_length,
+                MAX_SYNC_MEDIA_BYTES
+            ));
+        }
+        let image_name = media.image_name();
+        let bytes = fs::read(&path).with_context(|| format!("read {}", path.display()))?;
+        if bytes.len() > MAX_SYNC_MEDIA_BYTES {
+            return Err(anyhow!(
+                "image {} is {} bytes, above the {} byte sync limit",
+                image_name,
+                bytes.len(),
+                MAX_SYNC_MEDIA_BYTES
+            ));
+        }
+        let sha256 = media_sha256(&bytes);
+        if local_state.media_upload_is_current(&image_name, media.document, byte_length, &sha256) {
+            continue;
+        }
+        client.upload_media_asset(workspace_id, media, &bytes)?;
+        local_state.mark_media_uploaded(image_name, media.document, byte_length, sha256);
+    }
+    Ok(())
+}
+
+fn download_missing_media_assets(client: &SyncHttpClient, workspace: &Workspace) -> Result<()> {
+    for media in workspace_media_assets(workspace) {
+        let path = image_asset_path(media.asset, media.format.extension());
+        if path.exists() {
+            continue;
+        }
+        let bytes = client.download_media_asset(workspace.id, media)?;
+        if bytes.len() > MAX_SYNC_MEDIA_BYTES {
+            return Err(anyhow!(
+                "downloaded image {} is {} bytes, above the {} byte sync limit",
+                media.image_name(),
+                bytes.len(),
+                MAX_SYNC_MEDIA_BYTES
+            ));
+        }
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent).with_context(|| format!("create {}", parent.display()))?;
+        }
+        fs::write(&path, bytes).with_context(|| format!("write {}", path.display()))?;
+    }
+    Ok(())
 }
 
 impl SyncHttpClient {
@@ -425,6 +575,57 @@ impl SyncHttpClient {
         self.post_json(&url, request)
     }
 
+    fn upload_media_asset(
+        &self,
+        workspace_id: WorkspaceId,
+        media: SyncMediaAsset,
+        bytes: &[u8],
+    ) -> Result<()> {
+        let url = self.media_url(workspace_id, media);
+        self.authorized(ureq::put(&url))
+            .set("content-type", media_content_type(media.format))
+            .send_bytes(bytes)
+            .map_err(sync_http_error)?;
+        Ok(())
+    }
+
+    fn download_media_asset(
+        &self,
+        workspace_id: WorkspaceId,
+        media: SyncMediaAsset,
+    ) -> Result<Vec<u8>> {
+        let url = self.media_url(workspace_id, media);
+        let response = self
+            .authorized(ureq::get(&url))
+            .call()
+            .map_err(sync_http_error)?;
+        let mut reader = response
+            .into_reader()
+            .take((MAX_SYNC_MEDIA_BYTES + 1) as u64);
+        let mut bytes = Vec::new();
+        reader
+            .read_to_end(&mut bytes)
+            .with_context(|| format!("read media response from {url}"))?;
+        if bytes.len() > MAX_SYNC_MEDIA_BYTES {
+            return Err(anyhow!(
+                "sync backend returned image {} above the {} byte sync limit",
+                media.image_name(),
+                MAX_SYNC_MEDIA_BYTES
+            ));
+        }
+        Ok(bytes)
+    }
+
+    fn media_url(&self, workspace_id: WorkspaceId, media: SyncMediaAsset) -> String {
+        format!(
+            "{}/v1/workspaces/{}/documents/{}/media/{}",
+            self.api_base,
+            workspace_id,
+            media.document,
+            media.image_name()
+        )
+    }
+
     fn get_json<T: serde::de::DeserializeOwned>(&self, url: &str) -> Result<T> {
         self.authorized(ureq::get(url))
             .call()
@@ -462,6 +663,23 @@ impl SyncHttpClient {
             .timeout(SYNC_POLL_INTERVAL)
             .set("authorization", &format!("Bearer {}", self.bearer_token))
     }
+}
+
+fn media_content_type(format: ImageAssetFormat) -> &'static str {
+    match format {
+        ImageAssetFormat::Png => "image/png",
+        ImageAssetFormat::Jpeg => "image/jpeg",
+        ImageAssetFormat::Webp => "image/webp",
+        ImageAssetFormat::Gif => "image/gif",
+        ImageAssetFormat::Svg => "image/svg+xml",
+        ImageAssetFormat::Bmp => "image/bmp",
+        ImageAssetFormat::Tiff => "image/tiff",
+    }
+}
+
+fn media_sha256(bytes: &[u8]) -> String {
+    let digest = Sha256::digest(bytes);
+    digest.iter().map(|byte| format!("{byte:02x}")).collect()
 }
 
 fn sync_http_error(error: ureq::Error) -> anyhow::Error {

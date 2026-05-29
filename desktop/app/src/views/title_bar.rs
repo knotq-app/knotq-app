@@ -1,11 +1,12 @@
 use gpui::prelude::*;
 use gpui::{div, px, ClickEvent, Context, IntoElement, MouseButton, Window, WindowControlArea};
+use gpui_component::tooltip::Tooltip;
 use gpui_component::{Icon, IconName, Sizable};
 use knotq_commands::Command;
 use knotq_model::SchemeId;
 use knotq_storage_json::CalendarViewMode;
 
-use crate::app::{daily_queue_marker_color, KnotQApp, View};
+use crate::app::{daily_queue_marker_color, KnotQApp, SyncAuthStatus, SyncRunStatus, View};
 use crate::theme_gpui::{
     palette_hsla, scheme_color, token_hsla, token_rgba, Theme, FONT_SIZE_HEADLINE,
 };
@@ -17,6 +18,14 @@ const TITLE_MARKER_SIZE: f32 = 18.0;
 const TITLE_TEXT_W: f32 = 190.0;
 const LINUX_TITLE_TEXT_W: f32 = 150.0;
 const COLOR_SWATCH_ORDER: &[u8] = &[0, 1, 5, 2, 3, 4];
+
+struct TitleSyncStatus {
+    label: String,
+    tooltip: String,
+    icon: IconName,
+    dot_color: u32,
+    text_color: u32,
+}
 
 impl KnotQApp {
     pub(crate) fn render_title_bar(
@@ -147,16 +156,9 @@ impl KnotQApp {
         }
 
         let search_control = self.render_title_bar_search(window, t, cx);
+        let sync_control = self.render_title_bar_sync_control(t, cx);
 
         base.child(
-            div().flex_1().h_full().flex().items_center().child(
-                div()
-                    .flex_1()
-                    .h_full()
-                    .window_control_area(WindowControlArea::Drag),
-            ),
-        )
-        .child(
             div()
                 .id("title-drag-region")
                 .absolute()
@@ -208,6 +210,21 @@ impl KnotQApp {
                         ),
                 ),
         )
+        .child(
+            div()
+                .flex_1()
+                .h_full()
+                .flex()
+                .items_center()
+                .gap(px(8.0))
+                .child(sync_control)
+                .child(
+                    div()
+                        .flex_1()
+                        .h_full()
+                        .window_control_area(WindowControlArea::Drag),
+                ),
+        )
         .child(div().w(px(title_content_w)).flex_shrink_0().h_full())
         .child(
             div()
@@ -238,43 +255,6 @@ impl KnotQApp {
                             .children(calendar_mode_controls),
                     )
                 })
-                .child(
-                    div()
-                        .id("title-sync-account")
-                        .h(px(26.0))
-                        .w(px(108.0))
-                        .px(px(8.0))
-                        .rounded(px(7.0))
-                        .border_1()
-                        .border_color(token_rgba(t.border_soft))
-                        .bg(token_rgba(t.button_bg))
-                        .flex()
-                        .items_center()
-                        .justify_center()
-                        .gap(px(6.0))
-                        .cursor_pointer()
-                        .hover({
-                            let c = t.button_hover;
-                            move |s| s.bg(token_rgba(c))
-                        })
-                        .on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
-                            this.open_sync_sign_in(window, cx);
-                        }))
-                        .child(
-                            Icon::new(IconName::CircleUser)
-                                .xsmall()
-                                .text_color(token_hsla(t.text_dim)),
-                        )
-                        .child(
-                            div()
-                                .min_w_0()
-                                .truncate()
-                                .text_size(px(12.0))
-                                .font_weight(gpui::FontWeight::NORMAL)
-                                .text_color(token_hsla(t.text_dim))
-                                .child(self.sync_account_label()),
-                        ),
-                )
                 .child(search_control)
                 .child(
                     div()
@@ -307,6 +287,144 @@ impl KnotQApp {
         )
         .children(self.render_linux_window_controls(window, t, cx))
         .into_any_element()
+    }
+
+    fn render_title_bar_sync_control(&self, t: Theme, cx: &mut Context<Self>) -> gpui::AnyElement {
+        let status = self.title_sync_status(t);
+        let tooltip = status.tooltip.clone();
+
+        div()
+            .id("title-sync-account")
+            .h(px(26.0))
+            .w(px(118.0))
+            .px(px(8.0))
+            .rounded(px(7.0))
+            .border_1()
+            .border_color(token_rgba(t.border_soft))
+            .bg(token_rgba(t.button_bg))
+            .flex()
+            .items_center()
+            .justify_center()
+            .gap(px(6.0))
+            .cursor_pointer()
+            .hover({
+                let c = t.button_hover;
+                move |s| s.bg(token_rgba(c))
+            })
+            .on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
+                this.open_sync_sign_in(window, cx);
+            }))
+            .tooltip(move |window, cx| Tooltip::new(tooltip.clone()).build(window, cx))
+            .child(
+                Icon::new(status.icon)
+                    .xsmall()
+                    .text_color(token_hsla(status.text_color)),
+            )
+            .child(
+                div()
+                    .w(px(6.0))
+                    .h(px(6.0))
+                    .rounded(px(3.0))
+                    .bg(token_rgba(status.dot_color)),
+            )
+            .child(
+                div()
+                    .min_w_0()
+                    .truncate()
+                    .text_size(px(12.0))
+                    .font_weight(gpui::FontWeight::NORMAL)
+                    .text_color(token_hsla(status.text_color))
+                    .child(status.label),
+            )
+            .into_any_element()
+    }
+
+    fn title_sync_status(&self, t: Theme) -> TitleSyncStatus {
+        let local_pending = self.state.pending_crdt_edits().len();
+        let account = self.settings.sync_account.as_ref();
+        let account_label = account
+            .map(|account| account.email.as_str())
+            .unwrap_or("No account");
+        let pending_from_run = match &self.sync_run_status {
+            SyncRunStatus::Running { pending }
+            | SyncRunStatus::Synced { pending }
+            | SyncRunStatus::Error { pending, .. } => *pending,
+            SyncRunStatus::Idle => 0,
+        };
+        let pending = local_pending.max(pending_from_run);
+
+        if matches!(self.sync_auth_status, SyncAuthStatus::InProgress) {
+            return TitleSyncStatus {
+                label: "Signing in".to_string(),
+                tooltip: "Signing in to the local sync Worker.".to_string(),
+                icon: IconName::LoaderCircle,
+                dot_color: 0x3b82f6ff,
+                text_color: t.text_dim,
+            };
+        }
+
+        if account.is_none() {
+            return TitleSyncStatus {
+                label: "Sign in".to_string(),
+                tooltip: "Sign in to enable Cloudflare sync.".to_string(),
+                icon: IconName::CircleUser,
+                dot_color: t.text_muted,
+                text_color: t.text_dim,
+            };
+        }
+
+        if account.is_some_and(|account| !account.supports_sync) {
+            return TitleSyncStatus {
+                label: "Not allowed".to_string(),
+                tooltip: format!("Sync is not allowed on this account: {account_label}."),
+                icon: IconName::TriangleAlert,
+                dot_color: 0xef4444ff,
+                text_color: t.text_dim,
+            };
+        }
+
+        match &self.sync_run_status {
+            SyncRunStatus::Running { .. } => TitleSyncStatus {
+                label: "Syncing".to_string(),
+                tooltip: if pending > 0 {
+                    format!("Syncing {pending} local change(s) for {account_label}.")
+                } else {
+                    format!("Checking remote sync updates for {account_label}.")
+                },
+                icon: IconName::LoaderCircle,
+                dot_color: 0x3b82f6ff,
+                text_color: t.text_dim,
+            },
+            SyncRunStatus::Error { message, .. } => TitleSyncStatus {
+                label: if pending > 0 {
+                    format!("{pending} pending")
+                } else {
+                    "Error".to_string()
+                },
+                tooltip: if pending > 0 {
+                    format!("{pending} local change(s) pending sync for {account_label}. Last sync failed: {message}")
+                } else {
+                    format!("Last sync failed for {account_label}: {message}")
+                },
+                icon: IconName::TriangleAlert,
+                dot_color: 0xef4444ff,
+                text_color: t.text_dim,
+            },
+            _ if pending > 0 => TitleSyncStatus {
+                label: format!("{pending} pending"),
+                tooltip: format!("{pending} local change(s) pending sync for {account_label}."),
+                icon: IconName::Redo2,
+                dot_color: 0xf59e0bff,
+                text_color: t.text_dim,
+            },
+            _ => TitleSyncStatus {
+                label: "Synced".to_string(),
+                tooltip: format!("Local changes are synced for {account_label}."),
+                icon: IconName::CircleCheck,
+                dot_color: 0x22c55eff,
+                text_color: t.text_dim,
+            },
+        }
     }
 
     fn uses_linux_client_decorations() -> bool {

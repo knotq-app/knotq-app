@@ -14,6 +14,7 @@ pub use crdt::{
 
 pub const SYNC_API_VERSION: &str = "2026-05-29-crdt-sync-beta";
 pub const LOCAL_SYNC_STATE_FILE: &str = "sync-state.json";
+pub const MAX_SYNC_MEDIA_BYTES: usize = 3 * 1024 * 1024;
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq, Serialize, Deserialize)]
 #[serde(transparent)]
@@ -256,6 +257,16 @@ pub struct DocumentSyncCursor {
     pub last_pushed_sequence: u64,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct MediaSyncCursor {
+    pub image_name: String,
+    pub document: DocumentId,
+    pub byte_length: u64,
+    #[serde(default)]
+    pub sha256: String,
+    pub uploaded_at: DateTime<Utc>,
+}
+
 #[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
 pub struct LocalSyncState {
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -268,6 +279,8 @@ pub struct LocalSyncState {
     pub bearer_token: Option<String>,
     #[serde(default)]
     pub document_cursors: HashMap<DocumentId, DocumentSyncCursor>,
+    #[serde(default)]
+    pub media_cursors: HashMap<String, MediaSyncCursor>,
     #[serde(default)]
     pub pending: VecDeque<PendingCrdtEdit>,
 }
@@ -321,6 +334,7 @@ impl LocalSyncState {
             replica_id,
             updates,
             notification_schedule_changed: false,
+            notification_schedule: None,
         })
     }
 
@@ -368,6 +382,39 @@ impl LocalSyncState {
         cursor.kind = kind;
         cursor.last_pulled_sequence = cursor.last_pulled_sequence.max(latest_sequence);
     }
+
+    pub fn media_upload_is_current(
+        &self,
+        image_name: &str,
+        document: DocumentId,
+        byte_length: u64,
+        sha256: &str,
+    ) -> bool {
+        self.media_cursors.get(image_name).is_some_and(|cursor| {
+            cursor.document == document
+                && cursor.byte_length == byte_length
+                && cursor.sha256 == sha256
+        })
+    }
+
+    pub fn mark_media_uploaded(
+        &mut self,
+        image_name: String,
+        document: DocumentId,
+        byte_length: u64,
+        sha256: String,
+    ) {
+        self.media_cursors.insert(
+            image_name.clone(),
+            MediaSyncCursor {
+                image_name,
+                document,
+                byte_length,
+                sha256,
+                uploaded_at: Utc::now(),
+            },
+        );
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -376,6 +423,17 @@ pub struct PushUpdatesRequest {
     pub updates: Vec<CrdtDocumentUpdate>,
     #[serde(default)]
     pub notification_schedule_changed: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub notification_schedule: Option<NotificationScheduleSnapshot>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct NotificationScheduleSnapshot {
+    pub sequence: u64,
+    pub hash: String,
+    pub window_start: DateTime<Utc>,
+    pub window_end: DateTime<Utc>,
+    pub occurrence_count: usize,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -471,6 +529,48 @@ pub struct NotificationScheduleStatusResponse {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct ListDevicesResponse {
+    pub workspace_id: WorkspaceId,
+    pub user_id: UserId,
+    pub devices: Vec<DeviceSyncStatus>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct DeviceSyncStatus {
+    pub replica_id: ReplicaId,
+    pub registered_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub display_name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub platform: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub app_version: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub notification_permission: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub local_scheduler_supported: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_pushed_sequence: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_sequence_at: Option<DateTime<Utc>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_sync_at: Option<DateTime<Utc>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub notification_schedule_sequence: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub notification_schedule_hash: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub notification_schedule_window_start: Option<DateTime<Utc>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub notification_schedule_window_end: Option<DateTime<Utc>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub notification_schedule_occurrence_count: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub notification_schedule_updated_at: Option<DateTime<Utc>>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct DeviceNotificationScheduleStatus {
     pub replica_id: ReplicaId,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -486,6 +586,22 @@ pub struct DeviceNotificationScheduleStatus {
     pub notification_permission: NotificationPermissionState,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub local_scheduler_supported: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_pushed_sequence: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_sequence_at: Option<DateTime<Utc>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_sync_at: Option<DateTime<Utc>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub notification_schedule_sequence: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub notification_schedule_hash: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub notification_schedule_window_start: Option<DateTime<Utc>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub notification_schedule_window_end: Option<DateTime<Utc>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub notification_schedule_updated_at: Option<DateTime<Utc>>,
     pub acknowledged_schedule_revision: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_ack_at: Option<DateTime<Utc>>,

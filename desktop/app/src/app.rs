@@ -197,6 +197,22 @@ pub enum SyncAuthStatus {
     Error(String),
 }
 
+#[derive(Clone, Debug, Default)]
+pub enum SyncRunStatus {
+    #[default]
+    Idle,
+    Running {
+        pending: usize,
+    },
+    Synced {
+        pending: usize,
+    },
+    Error {
+        message: String,
+        pending: usize,
+    },
+}
+
 pub struct SyncSignInState {
     pub api_input: Entity<InputState>,
     pub email_input: Entity<InputState>,
@@ -423,6 +439,7 @@ pub struct KnotQApp {
     pub google_oauth_task: Option<Task<()>>,
     pub sync_sign_in: Option<SyncSignInState>,
     pub sync_auth_status: SyncAuthStatus,
+    pub sync_run_status: SyncRunStatus,
     pub sync_auth_task: Option<Task<()>>,
     pub(crate) scheme_sessions: HashMap<SchemeId, SchemeSessionState>,
     pub(crate) service_bus: AppServiceBus,
@@ -526,6 +543,7 @@ impl KnotQApp {
             google_oauth_task: None,
             sync_sign_in: None,
             sync_auth_status: SyncAuthStatus::Idle,
+            sync_run_status: SyncRunStatus::Idle,
             sync_auth_task: None,
             scheme_sessions: HashMap::new(),
             service_bus,

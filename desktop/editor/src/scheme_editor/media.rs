@@ -13,6 +13,8 @@ use uuid::Uuid;
 
 use super::{IMAGE_FALLBACK_HEIGHT, IMAGE_FALLBACK_WIDTH, IMAGE_MAX_HEIGHT};
 
+const MAX_IMAGE_ASSET_BYTES: usize = 3 * 1024 * 1024;
+
 pub(super) fn clipboard_image(item: &ClipboardItem) -> Option<&Image> {
     item.entries().iter().find_map(|entry| match entry {
         ClipboardEntry::Image(image) => Some(image),
@@ -22,6 +24,14 @@ pub(super) fn clipboard_image(item: &ClipboardItem) -> Option<&Image> {
 
 pub(super) fn persist_clipboard_image(image: &Image) -> Option<ItemMedia> {
     let format = image_asset_format(image.format())?;
+    if image.bytes().len() > MAX_IMAGE_ASSET_BYTES {
+        eprintln!(
+            "image paste rejected: {} bytes exceeds {} byte sync limit",
+            image.bytes().len(),
+            MAX_IMAGE_ASSET_BYTES
+        );
+        return None;
+    }
     let asset = Uuid::new_v4();
     let path = image_asset_path(asset, format.extension());
     if let Some(parent) = path.parent() {
@@ -53,6 +63,14 @@ pub(super) fn external_paths_have_supported_image(paths: &ExternalPaths) -> bool
 pub(super) fn persist_image_file(path: &Path) -> Option<ItemMedia> {
     let format = image_asset_format_from_path(path)?;
     let bytes = fs::read(path).ok()?;
+    if bytes.len() > MAX_IMAGE_ASSET_BYTES {
+        eprintln!(
+            "image drop rejected: {} bytes exceeds {} byte sync limit",
+            bytes.len(),
+            MAX_IMAGE_ASSET_BYTES
+        );
+        return None;
+    }
     let asset = Uuid::new_v4();
     let out_path = image_asset_path(asset, format.extension());
     if let Some(parent) = out_path.parent() {
