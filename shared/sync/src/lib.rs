@@ -1,13 +1,18 @@
 use std::collections::{HashMap, VecDeque};
 
+mod crdt;
+
 use chrono::{DateTime, Utc};
 use knotq_model::{DocumentId, OperationId, ReplicaId, ShareId, SyncDocumentKind, WorkspaceId};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
+pub use crdt::{
+    WorkspaceCrdtChangeSet, WorkspaceCrdtDocuments, WorkspaceCrdtSyncOutcome, YrsSchemeDocument,
+};
+
 pub const SYNC_API_VERSION: &str = "2026-05-29-crdt-sync-beta";
-pub const LOCAL_SYNC_DIR: &str = ".knotq-sync";
-pub const LOCAL_SYNC_STATE_FILE: &str = "state.json";
+pub const LOCAL_SYNC_STATE_FILE: &str = "sync-state.json";
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq, Serialize, Deserialize)]
 #[serde(transparent)]

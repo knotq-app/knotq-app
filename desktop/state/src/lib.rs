@@ -1,5 +1,4 @@
 mod calendar_state;
-pub mod crdt;
 mod daily_queue;
 mod dates;
 mod dispatch;

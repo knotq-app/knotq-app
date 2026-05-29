@@ -2,17 +2,24 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
-use knotq_sync::{LocalSyncState, PendingCrdtEdit, LOCAL_SYNC_DIR, LOCAL_SYNC_STATE_FILE};
+use knotq_sync::{LocalSyncState, PendingCrdtEdit, LOCAL_SYNC_STATE_FILE};
 
-pub fn sync_state_dir(workspace_path: &Path) -> PathBuf {
-    workspace_path
-        .parent()
-        .unwrap_or_else(|| Path::new("."))
-        .join(LOCAL_SYNC_DIR)
+pub fn sync_state_data_dir(workspace_path: &Path) -> PathBuf {
+    let workspace_dir = workspace_path.parent().unwrap_or_else(|| Path::new("."));
+    if workspace_dir
+        .file_name()
+        .is_some_and(|name| name == "workspace")
+    {
+        return workspace_dir
+            .parent()
+            .unwrap_or_else(|| Path::new("."))
+            .to_path_buf();
+    }
+    workspace_dir.to_path_buf()
 }
 
 pub fn sync_state_path(workspace_path: &Path) -> PathBuf {
-    sync_state_dir(workspace_path).join(LOCAL_SYNC_STATE_FILE)
+    sync_state_data_dir(workspace_path).join(LOCAL_SYNC_STATE_FILE)
 }
 
 pub fn load_local_sync_state(workspace_path: &Path) -> Result<LocalSyncState> {
@@ -49,7 +56,7 @@ mod tests {
     #[test]
     fn pending_crdt_edits_round_trip_through_sync_state_file() {
         let dir = std::env::temp_dir().join(format!("knotq-sync-state-test-{}", Uuid::new_v4()));
-        let workspace_path = dir.join("workspace.json");
+        let workspace_path = dir.join("workspace").join("workspace.json");
         let workspace_id = WorkspaceId::new();
         let replica_id = ReplicaId::new();
         let document = DocumentId::new();
@@ -67,6 +74,10 @@ mod tests {
         save_pending_crdt_edits(&workspace_path, &pending).unwrap();
         let loaded = load_local_sync_state(&workspace_path).unwrap();
 
+        assert_eq!(
+            sync_state_path(&workspace_path),
+            dir.join("sync-state.json")
+        );
         assert_eq!(loaded.pending.len(), 1);
         assert_eq!(loaded.pending[0].document, document);
         assert_eq!(loaded.pending[0].update_v1, vec![1, 2, 3]);

@@ -3246,8 +3246,6 @@ dependencies = [
  "knotq-rrule",
  "knotq-sync",
  "serde",
- "serde_json",
- "yrs",
 ]
 
 [[package]]
@@ -3281,10 +3279,13 @@ dependencies = [
 name = "knotq-sync"
 version = "0.1.0"
 dependencies = [
+ "anyhow",
  "chrono",
  "knotq-model",
  "serde",
+ "serde_json",
  "uuid",
+ "yrs",
 ]
 
 [[package]]

@@ -18,7 +18,7 @@ use crate::{
 pub(crate) const SCHEMA_VERSION: u32 = 1;
 pub(crate) const SETTINGS_SCHEMA_VERSION: u32 = 1;
 const WORKSPACE_GITIGNORE: &str =
-    "# KnotQ local files\n.knotq-history/\n.knotq-sync/\nbackups/\n*.tmp\n.DS_Store\n";
+    "# KnotQ local files\n.knotq-history/\nbackups/\n*.tmp\n.DS_Store\n";
 
 pub fn load_workspace(path: &Path) -> Result<Option<Workspace>> {
     load_workspace_with_options(path, WorkspaceLoadOptions::all())
@@ -224,13 +224,7 @@ fn ensure_workspace_gitignore(base_dir: &Path) -> Result<()> {
     }
     let existing = fs::read_to_string(&path).with_context(|| format!("read {}", path.display()))?;
     let mut updated = existing.clone();
-    for line in [
-        ".knotq-history/",
-        ".knotq-sync/",
-        "backups/",
-        "*.tmp",
-        ".DS_Store",
-    ] {
+    for line in [".knotq-history/", "backups/", "*.tmp", ".DS_Store"] {
         if !existing.lines().any(|existing_line| existing_line == line) {
             if !updated.ends_with('\n') {
                 updated.push('\n');

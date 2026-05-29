@@ -7,10 +7,10 @@ use knotq_commands::{
 };
 use knotq_index::{IndexChangeSet, IndexedWorkspace};
 use knotq_model::{OperationId, ReplicaId, SchemeId, Workspace, WorkspaceId};
-use knotq_sync::{CrdtDocumentUpdate, PendingCrdtEdit};
+use knotq_sync::{
+    CrdtDocumentUpdate, PendingCrdtEdit, WorkspaceCrdtChangeSet, WorkspaceCrdtDocuments,
+};
 use serde::{Deserialize, Serialize};
-
-use crate::crdt::WorkspaceCrdtDocuments;
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct WorkspaceDirtyState {
@@ -73,7 +73,7 @@ impl WorkspaceStore {
         };
         dirty.index |= sync_metadata_dirty;
         let indexed = IndexedWorkspace::build(workspace.clone());
-        let crdt = WorkspaceCrdtDocuments::new(&workspace);
+        let crdt = new_workspace_crdt(&workspace);
         Self {
             workspace,
             indexed,
@@ -151,7 +151,7 @@ impl WorkspaceStore {
         dirty.index |= sync_metadata_dirty;
         self.workspace = workspace.clone();
         self.indexed = IndexedWorkspace::build(workspace);
-        self.crdt = WorkspaceCrdtDocuments::new(&self.workspace);
+        self.crdt = new_workspace_crdt(&self.workspace);
         self.dirty = dirty;
         if clear_pending_operations {
             self.pending_operations.clear();
@@ -189,7 +189,8 @@ impl WorkspaceStore {
         origin: CommandOrigin,
     ) -> Result<CommandReceipt, knotq_commands::CommandError> {
         let receipt = self.workspace.apply(command.clone())?;
-        let crdt_updates = self.after_workspace_change(&receipt.touched);
+        let crdt_changes = crdt_change_set_for_command(&command);
+        let crdt_updates = self.after_workspace_change(&receipt.touched, crdt_changes);
         self.pending_operations.push_back(StoreOperation {
             id: OperationId::new(),
             workspace_id: self.workspace.id,
@@ -211,17 +212,25 @@ impl WorkspaceStore {
         let Some(command) = filter_recurring_occurrence_toggles(command, &self.workspace) else {
             return Ok(None);
         };
+        let crdt_changes = crdt_change_set_for_command(&command);
         let receipt = self.workspace.apply(command)?;
-        self.after_workspace_change(&receipt.touched);
+        self.after_workspace_change(&receipt.touched, crdt_changes);
         Ok(Some(receipt))
     }
 
-    fn after_workspace_change(&mut self, changeset: &ChangeSet) -> Vec<CrdtDocumentUpdate> {
+    fn after_workspace_change(
+        &mut self,
+        changeset: &ChangeSet,
+        mut crdt_changes: WorkspaceCrdtChangeSet,
+    ) -> Vec<CrdtDocumentUpdate> {
         for scheme_id in &changeset.schemes {
             self.dirty.schemes.insert(*scheme_id);
         }
         self.dirty.index = true;
-        self.dirty.index |= self.workspace.ensure_sync_metadata();
+        if self.workspace.ensure_sync_metadata() {
+            self.dirty.index = true;
+            crdt_changes.workspace = true;
+        }
         self.indexed.workspace = self.workspace.clone();
         self.indexed.apply_changeset(
             &IndexChangeSet {
@@ -230,7 +239,70 @@ impl WorkspaceStore {
             },
             &knotq_rrule::DefaultExpander,
         );
-        self.crdt.sync_changes(&self.workspace, changeset)
+        let outcome = self.crdt.sync_changes(&self.workspace, &crdt_changes);
+        for error in &outcome.errors {
+            eprintln!("CRDT sync update failed: {error}");
+        }
+        outcome.updates
+    }
+}
+
+fn new_workspace_crdt(workspace: &Workspace) -> WorkspaceCrdtDocuments {
+    match WorkspaceCrdtDocuments::try_new(workspace) {
+        Ok(crdt) => crdt,
+        Err(err) => {
+            eprintln!("initial CRDT snapshot failed: {err:#}");
+            WorkspaceCrdtDocuments::empty(workspace)
+        }
+    }
+}
+
+fn crdt_change_set_for_command(command: &Command) -> WorkspaceCrdtChangeSet {
+    let mut changes = WorkspaceCrdtChangeSet::default();
+    collect_crdt_changes(command, &mut changes);
+    changes
+}
+
+fn collect_crdt_changes(command: &Command, out: &mut WorkspaceCrdtChangeSet) {
+    match command {
+        Command::CreateFolder { .. }
+        | Command::RestoreFolder { .. }
+        | Command::RenameFolder { .. }
+        | Command::SetFolderExpanded { .. }
+        | Command::DeleteFolder { .. }
+        | Command::CreateScheme { .. }
+        | Command::RenameScheme { .. }
+        | Command::SetSchemeColor { .. }
+        | Command::SetSchemeGsync { .. }
+        | Command::SetSchemeSource { .. }
+        | Command::DeleteScheme { .. }
+        | Command::PermanentlyDeleteScheme { .. }
+        | Command::MoveNode { .. } => {
+            out.workspace = true;
+        }
+        Command::RestoreScheme { scheme, .. } | Command::RestoreDeletedScheme { scheme, .. } => {
+            out.workspace = true;
+            out.schemes.insert(scheme.id);
+        }
+        Command::InsertItem { scheme, .. }
+        | Command::UpdateItemText { scheme, .. }
+        | Command::ReplaceItem { scheme, .. }
+        | Command::SetItemIndent { scheme, .. }
+        | Command::SetItemMarker { scheme, .. }
+        | Command::SetItemDate { scheme, .. }
+        | Command::SetItemRecurrence { scheme, .. }
+        | Command::SetItemPriority { scheme, .. }
+        | Command::SetOccurrenceNotificationOffset { scheme, .. }
+        | Command::ToggleOccurrence { scheme, .. }
+        | Command::DeleteItem { scheme, .. }
+        | Command::ReorderItem { scheme, .. } => {
+            out.schemes.insert(*scheme);
+        }
+        Command::Batch(commands) => {
+            for command in commands {
+                collect_crdt_changes(command, out);
+            }
+        }
     }
 }
 
