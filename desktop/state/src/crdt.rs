@@ -2,7 +2,8 @@ use std::collections::{HashMap, HashSet};
 
 use knotq_commands::ChangeSet;
 use knotq_model::{
-    DocumentId, Folder, FolderId, Scheme, SchemeId, SyncDocumentKind, SyncDocumentMeta, Workspace,
+    DocumentId, Folder, FolderId, Item, Scheme, SchemeId, SyncDocumentKind, SyncDocumentMeta,
+    Workspace,
 };
 use knotq_sync::CrdtDocumentUpdate;
 use serde::{Deserialize, Serialize};
@@ -149,7 +150,9 @@ pub struct YrsSchemeDocument {
 impl YrsSchemeDocument {
     pub fn new(id: DocumentId) -> Self {
         let doc = Doc::new();
-        doc.get_or_insert_array("items");
+        doc.get_or_insert_map("scheme");
+        doc.get_or_insert_array("item_order");
+        doc.get_or_insert_map("items_by_id");
         Self { id, doc }
     }
 
@@ -172,22 +175,45 @@ impl YrsSchemeDocument {
     }
 
     pub fn replace_scheme(&self, scheme: &Scheme) {
-        let items = self.doc.get_or_insert_array("items");
+        let metadata = self.doc.get_or_insert_map("scheme");
+        let item_order = self.doc.get_or_insert_array("item_order");
+        let items_by_id = self.doc.get_or_insert_map("items_by_id");
         let mut txn = self.doc.transact_mut();
-        let len = items.len(&txn);
+
+        metadata.insert(&mut txn, "schema", "knotq.scheme.v2");
+        metadata.insert(&mut txn, "id", scheme.id.to_string());
+        metadata.insert(&mut txn, "name", scheme.name.clone());
+        metadata.insert(&mut txn, "color_index", i64::from(scheme.color_index));
+        metadata.insert(&mut txn, "gsync", scheme.gsync);
+        metadata.insert(
+            &mut txn,
+            "source_json",
+            serde_json::to_string(&scheme.source).expect("serialize scheme source"),
+        );
+
+        let len = item_order.len(&txn);
         if len > 0 {
-            items.remove_range(&mut txn, 0, len);
+            item_order.remove_range(&mut txn, 0, len);
         }
+
+        let retained = scheme
+            .items
+            .iter()
+            .map(|item| item.id.to_string())
+            .collect::<HashSet<_>>();
+        let stale_keys = items_by_id
+            .keys(&txn)
+            .filter(|key| !retained.contains(*key))
+            .map(str::to_string)
+            .collect::<Vec<_>>();
+        for key in stale_keys {
+            items_by_id.remove(&mut txn, &key);
+        }
+
         for item in &scheme.items {
-            let item_json = serde_json::to_string(item).expect("serialize scheme item");
-            items.push_back(
-                &mut txn,
-                MapPrelim::from([
-                    ("id", In::from(item.id.to_string())),
-                    ("text", In::from(item.text.clone())),
-                    ("item", In::from(item_json)),
-                ]),
-            );
+            let item_id = item.id.to_string();
+            item_order.push_back(&mut txn, item_id.clone());
+            items_by_id.insert(&mut txn, item_id, item_prelim(item));
         }
     }
 
@@ -212,16 +238,76 @@ impl YrsSchemeDocument {
     }
 
     pub fn item_texts(&self) -> anyhow::Result<Vec<String>> {
-        let items = self.doc.get_or_insert_array("items");
+        let item_order = self.doc.get_or_insert_array("item_order");
+        let items_by_id = self.doc.get_or_insert_map("items_by_id");
         let txn = self.doc.transact();
         let mut out = Vec::new();
-        for index in 0..items.len(&txn) {
-            if let Some(item) = items.get_as::<_, Option<YrsSchemeItem>>(&txn, index)? {
+        for index in 0..item_order.len(&txn) {
+            let Some(item_id) = item_order.get_as::<_, Option<String>>(&txn, index)? else {
+                continue;
+            };
+            if let Some(item) = items_by_id.get_as::<_, Option<YrsSchemeItem>>(&txn, &item_id)? {
                 out.push(item.text);
             }
         }
         Ok(out)
     }
+}
+
+fn item_prelim(item: &Item) -> MapPrelim {
+    MapPrelim::from([
+        ("schema", In::from("knotq.item.v2")),
+        ("id", In::from(item.id.to_string())),
+        ("text", In::from(item.text.clone())),
+        (
+            "marker",
+            In::from(serde_json_string_value(&item.marker).expect("serialize item marker")),
+        ),
+        ("indent", In::from(i64::from(item.indent))),
+        (
+            "start",
+            In::from(item.start.map(|dt| dt.to_rfc3339()).unwrap_or_default()),
+        ),
+        (
+            "end",
+            In::from(item.end.map(|dt| dt.to_rfc3339()).unwrap_or_default()),
+        ),
+        (
+            "available",
+            In::from(item.available.map(|dt| dt.to_rfc3339()).unwrap_or_default()),
+        ),
+        (
+            "media_json",
+            In::from(serde_json::to_string(&item.media).expect("serialize item media")),
+        ),
+        (
+            "repeats_json",
+            In::from(serde_json::to_string(&item.repeats).expect("serialize item recurrence")),
+        ),
+        (
+            "state_json",
+            In::from(serde_json::to_string(&item.state).expect("serialize item state")),
+        ),
+        (
+            "priority_json",
+            In::from(serde_json::to_string(&item.priority).expect("serialize item priority")),
+        ),
+        (
+            "external_json",
+            In::from(
+                serde_json::to_string(&item.external).expect("serialize item external source"),
+            ),
+        ),
+        (
+            "snapshot_json",
+            In::from(serde_json::to_string(item).expect("serialize item snapshot")),
+        ),
+    ])
+}
+
+fn serde_json_string_value(value: &impl Serialize) -> anyhow::Result<String> {
+    let value = serde_json::to_value(value)?;
+    Ok(value.as_str().unwrap_or_default().to_string())
 }
 
 struct YrsJsonDocument {

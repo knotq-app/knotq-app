@@ -7,6 +7,7 @@ use knotq_model::{
     AppSettings, CalendarViewMode, CalendarWeekRange, NodeRef, NotificationDefaults,
     SavedWindowPosition, SavedWindowSize, SchemeId, ThemeMode, TimeFormat, Workspace,
 };
+use knotq_sync::PendingCrdtEdit;
 
 use crate::{
     DailyQueueState, EditorSessions, EditorUndoGroup, EventBus, NotificationState,
@@ -167,6 +168,10 @@ impl AppState {
     /// Returns true if any scheme or the index needs saving.
     pub fn is_dirty(&self) -> bool {
         self.index_dirty || !self.dirty_schemes.is_empty()
+    }
+
+    pub fn pending_crdt_edits(&self) -> Vec<PendingCrdtEdit> {
+        self.store.pending_crdt_edits()
     }
 
     pub fn sync_store_from_compat(&mut self) {

@@ -15,3 +15,6 @@ build
 
 # Mobile lives in its own nested repository.
 mobile/
+
+# Backend lives in its own nested repository.
+backend/

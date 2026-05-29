@@ -6,6 +6,7 @@ mod schema;
 mod scheme_file;
 mod scheme_markdown;
 mod settings;
+mod sync_state;
 
 use async_trait::async_trait;
 use chrono::NaiveDate;
@@ -31,6 +32,10 @@ pub use paths::{
 };
 pub use scheme_file::scheme_path_for_workspace;
 pub use settings::{load_app_settings, save_app_settings};
+pub use sync_state::{
+    load_local_sync_state, save_local_sync_state, save_pending_crdt_edits, sync_state_dir,
+    sync_state_path,
+};
 
 #[derive(Clone, Debug)]
 pub struct JsonBackend {

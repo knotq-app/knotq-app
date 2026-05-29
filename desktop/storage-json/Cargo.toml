@@ -11,6 +11,7 @@ knotq-commands = { workspace = true }
 knotq-history = { workspace = true }
 knotq-model = { workspace = true }
 knotq-storage = { workspace = true }
+knotq-sync = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 uuid = { workspace = true }

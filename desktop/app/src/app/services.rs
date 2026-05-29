@@ -7,7 +7,7 @@ use futures::{pin_mut, select, FutureExt};
 use gpui::{Context, Task};
 use knotq_model::{Item, ItemId, ItemKind, SchemeId, Workspace};
 use knotq_rrule::ItemOccurrenceExt;
-use knotq_storage_json::NotificationDefaults;
+use knotq_storage_json::{save_pending_crdt_edits, NotificationDefaults};
 
 use super::{save_workspace, save_workspace_incremental, workspace_path, KnotQApp};
 
@@ -155,23 +155,25 @@ pub(crate) fn spawn_save_task(save_rx: Receiver<()>, cx: &mut Context<KnotQApp>)
                         if !app.state.is_dirty() {
                             return None;
                         }
+                        let pending_crdt_edits = app.state.pending_crdt_edits();
                         let dirty_ids = std::mem::take(&mut app.state.dirty_schemes);
                         app.state.index_dirty = false;
-                        Some((app.workspace.clone(), dirty_ids))
+                        Some((app.workspace.clone(), dirty_ids, pending_crdt_edits))
                     })
                     .ok()
                     .flatten();
 
-                if let Some((ws, dirty_ids)) = snapshot {
+                if let Some((ws, dirty_ids, pending_crdt_edits)) = snapshot {
                     let path = workspace_path();
                     let result = cx
                         .background_executor()
                         .spawn(async move {
-                            if dirty_ids.is_empty() {
+                            let result = if dirty_ids.is_empty() {
                                 save_workspace(&path, &ws)
                             } else {
                                 save_workspace_incremental(&path, &ws, &dirty_ids)
-                            }
+                            };
+                            result.and_then(|_| save_pending_crdt_edits(&path, &pending_crdt_edits))
                         })
                         .await;
                     if let Err(err) = result {

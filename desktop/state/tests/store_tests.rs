@@ -35,6 +35,37 @@ fn local_commands_are_recorded_as_pending_store_operations() {
     assert_eq!(operation.sequence, 1);
     assert_eq!(operation.origin, CommandOrigin::User);
     assert!(!operation.crdt_updates.is_empty());
+
+    let pending_edits = store.pending_crdt_edits();
+    assert_eq!(pending_edits.len(), operation.crdt_updates.len());
+    assert!(pending_edits
+        .iter()
+        .all(|edit| edit.workspace_id == workspace_id && edit.replica_id == replica_id));
+}
+
+#[test]
+fn acknowledged_store_operations_are_removed_in_order() {
+    let workspace = Workspace::new();
+    let root = workspace.root;
+    let replica_id = ReplicaId::new();
+    let mut store = WorkspaceStore::new(workspace, replica_id, false);
+
+    for name in ["A", "B"] {
+        store
+            .apply_local(
+                Command::CreateFolder {
+                    parent: root,
+                    name: name.to_string(),
+                    position: None,
+                },
+                CommandOrigin::User,
+            )
+            .unwrap();
+    }
+
+    assert_eq!(store.clear_pending_operations_through(1), 1);
+    assert_eq!(store.pending_operations().len(), 1);
+    assert_eq!(store.pending_operations()[0].sequence, 2);
 }
 
 #[test]

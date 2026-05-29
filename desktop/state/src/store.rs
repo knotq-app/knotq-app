@@ -7,7 +7,7 @@ use knotq_commands::{
 };
 use knotq_index::{IndexChangeSet, IndexedWorkspace};
 use knotq_model::{OperationId, ReplicaId, SchemeId, Workspace, WorkspaceId};
-use knotq_sync::CrdtDocumentUpdate;
+use knotq_sync::{CrdtDocumentUpdate, PendingCrdtEdit};
 use serde::{Deserialize, Serialize};
 
 use crate::crdt::WorkspaceCrdtDocuments;
@@ -103,6 +103,40 @@ impl WorkspaceStore {
 
     pub fn pending_operations(&self) -> &VecDeque<StoreOperation> {
         &self.pending_operations
+    }
+
+    pub fn pending_crdt_edits(&self) -> Vec<PendingCrdtEdit> {
+        self.pending_operations
+            .iter()
+            .flat_map(|operation| {
+                operation
+                    .crdt_updates
+                    .iter()
+                    .cloned()
+                    .map(|update| PendingCrdtEdit {
+                        operation_id: operation.id,
+                        workspace_id: operation.workspace_id,
+                        replica_id: operation.replica_id,
+                        local_sequence: operation.sequence,
+                        created_at: operation.created_at,
+                        document: update.document,
+                        kind: update.kind,
+                        update_v1: update.update_v1,
+                    })
+            })
+            .collect()
+    }
+
+    pub fn clear_pending_operations_through(&mut self, sequence: u64) -> usize {
+        let before = self.pending_operations.len();
+        while self
+            .pending_operations
+            .front()
+            .is_some_and(|operation| operation.sequence <= sequence)
+        {
+            self.pending_operations.pop_front();
+        }
+        before - self.pending_operations.len()
     }
 
     pub fn replace_workspace(

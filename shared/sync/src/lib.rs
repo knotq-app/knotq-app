@@ -1,9 +1,13 @@
+use std::collections::{HashMap, VecDeque};
+
 use chrono::{DateTime, Utc};
-use knotq_model::{DocumentId, ReplicaId, ShareId, SyncDocumentKind, WorkspaceId};
+use knotq_model::{DocumentId, OperationId, ReplicaId, ShareId, SyncDocumentKind, WorkspaceId};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-pub const SYNC_API_VERSION: &str = "2026-05-25-notification-schedule";
+pub const SYNC_API_VERSION: &str = "2026-05-29-crdt-sync-beta";
+pub const LOCAL_SYNC_DIR: &str = ".knotq-sync";
+pub const LOCAL_SYNC_STATE_FILE: &str = "state.json";
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq, Serialize, Deserialize)]
 #[serde(transparent)]
@@ -187,6 +191,152 @@ pub struct CrdtDocumentUpdate {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct PendingCrdtEdit {
+    pub operation_id: OperationId,
+    pub workspace_id: WorkspaceId,
+    pub replica_id: ReplicaId,
+    pub local_sequence: u64,
+    pub created_at: DateTime<Utc>,
+    pub document: DocumentId,
+    pub kind: SyncDocumentKind,
+    pub update_v1: Vec<u8>,
+}
+
+impl PendingCrdtEdit {
+    pub fn as_update(&self) -> CrdtDocumentUpdate {
+        CrdtDocumentUpdate {
+            document: self.document,
+            kind: self.kind,
+            update_v1: self.update_v1.clone(),
+        }
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct DocumentSyncCursor {
+    pub document: DocumentId,
+    pub kind: SyncDocumentKind,
+    #[serde(default)]
+    pub last_pulled_sequence: u64,
+    #[serde(default)]
+    pub last_pushed_sequence: u64,
+}
+
+#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+pub struct LocalSyncState {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workspace_id: Option<WorkspaceId>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub replica_id: Option<ReplicaId>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub server_url: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bearer_token: Option<String>,
+    #[serde(default)]
+    pub document_cursors: HashMap<DocumentId, DocumentSyncCursor>,
+    #[serde(default)]
+    pub pending: VecDeque<PendingCrdtEdit>,
+}
+
+impl LocalSyncState {
+    pub fn is_configured(&self) -> bool {
+        self.workspace_id.is_some()
+            && self.replica_id.is_some()
+            && self
+                .server_url
+                .as_deref()
+                .is_some_and(|url| !url.is_empty())
+            && self
+                .bearer_token
+                .as_deref()
+                .is_some_and(|token| !token.is_empty())
+    }
+
+    pub fn replace_pending(&mut self, pending: impl IntoIterator<Item = PendingCrdtEdit>) {
+        self.pending = pending.into_iter().collect();
+    }
+
+    pub fn push_pending(&mut self, edit: PendingCrdtEdit) {
+        self.pending.push_back(edit);
+    }
+
+    pub fn pending_for_document(&self, document: DocumentId, limit: usize) -> Vec<PendingCrdtEdit> {
+        self.pending
+            .iter()
+            .filter(|edit| edit.document == document)
+            .take(limit)
+            .cloned()
+            .collect()
+    }
+
+    pub fn next_push_request(
+        &self,
+        document: DocumentId,
+        limit: usize,
+    ) -> Option<PushUpdatesRequest> {
+        let replica_id = self.replica_id?;
+        let updates = self
+            .pending_for_document(document, limit)
+            .into_iter()
+            .map(|edit| edit.as_update())
+            .collect::<Vec<_>>();
+        if updates.is_empty() {
+            return None;
+        }
+        Some(PushUpdatesRequest {
+            replica_id,
+            updates,
+            notification_schedule_changed: false,
+        })
+    }
+
+    pub fn mark_pushed(&mut self, document: DocumentId, through_local_sequence: u64) -> usize {
+        let before = self.pending.len();
+        let mut kind = None;
+        self.pending.retain(|edit| {
+            if edit.document == document && edit.local_sequence <= through_local_sequence {
+                kind = Some(edit.kind);
+                false
+            } else {
+                true
+            }
+        });
+        if let Some(kind) = kind {
+            let cursor = self
+                .document_cursors
+                .entry(document)
+                .or_insert(DocumentSyncCursor {
+                    document,
+                    kind,
+                    last_pulled_sequence: 0,
+                    last_pushed_sequence: 0,
+                });
+            cursor.last_pushed_sequence = cursor.last_pushed_sequence.max(through_local_sequence);
+        }
+        before - self.pending.len()
+    }
+
+    pub fn mark_pulled(
+        &mut self,
+        document: DocumentId,
+        kind: SyncDocumentKind,
+        latest_sequence: u64,
+    ) {
+        let cursor = self
+            .document_cursors
+            .entry(document)
+            .or_insert(DocumentSyncCursor {
+                document,
+                kind,
+                last_pulled_sequence: 0,
+                last_pushed_sequence: 0,
+            });
+        cursor.kind = kind;
+        cursor.last_pulled_sequence = cursor.last_pulled_sequence.max(latest_sequence);
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct PushUpdatesRequest {
     pub replica_id: ReplicaId,
     pub updates: Vec<CrdtDocumentUpdate>,
@@ -341,4 +491,67 @@ pub struct BackgroundPushIntent {
 #[serde(rename_all = "snake_case")]
 pub enum BackgroundPushKind {
     NotificationScheduleChanged,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn local_sync_state_builds_document_push_requests() {
+        let workspace_id = WorkspaceId::new();
+        let replica_id = ReplicaId::new();
+        let document = DocumentId::new();
+        let mut state = LocalSyncState {
+            workspace_id: Some(workspace_id),
+            replica_id: Some(replica_id),
+            ..LocalSyncState::default()
+        };
+        state.push_pending(PendingCrdtEdit {
+            operation_id: OperationId::new(),
+            workspace_id,
+            replica_id,
+            local_sequence: 1,
+            created_at: Utc::now(),
+            document,
+            kind: SyncDocumentKind::Scheme,
+            update_v1: vec![1, 2, 3],
+        });
+
+        let request = state.next_push_request(document, 10).unwrap();
+
+        assert_eq!(request.replica_id, replica_id);
+        assert_eq!(request.updates.len(), 1);
+        assert_eq!(request.updates[0].document, document);
+    }
+
+    #[test]
+    fn mark_pushed_removes_only_acknowledged_document_edits() {
+        let workspace_id = WorkspaceId::new();
+        let replica_id = ReplicaId::new();
+        let left = DocumentId::new();
+        let right = DocumentId::new();
+        let mut state = LocalSyncState::default();
+        for (document, sequence) in [(left, 1), (right, 2), (left, 3)] {
+            state.push_pending(PendingCrdtEdit {
+                operation_id: OperationId::new(),
+                workspace_id,
+                replica_id,
+                local_sequence: sequence,
+                created_at: Utc::now(),
+                document,
+                kind: SyncDocumentKind::Scheme,
+                update_v1: vec![sequence as u8],
+            });
+        }
+
+        assert_eq!(state.mark_pushed(left, 1), 1);
+
+        assert_eq!(state.pending.len(), 2);
+        assert!(state.pending.iter().any(|edit| edit.document == right));
+        assert!(state
+            .pending
+            .iter()
+            .any(|edit| edit.document == left && edit.local_sequence == 3));
+    }
 }
