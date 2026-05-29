@@ -379,14 +379,8 @@ fn state_is_single_done(state: &[OccurrenceState]) -> bool {
 }
 
 fn item_needs_stable_id(item: &Item, checked_marker_represents_state: bool) -> bool {
-    item.start.is_some()
-        || item.end.is_some()
-        || item.available.is_some()
-        || item.repeats.is_some()
-        || !item.media.is_empty()
-        || item.external.is_some()
-        || (!state_is_default(&item.state)
-            && !(checked_marker_represents_state && state_is_single_done(&item.state)))
+    let _ = (item, checked_marker_represents_state);
+    true
 }
 
 #[cfg(test)]

@@ -1,9 +1,6 @@
 use anyhow::{anyhow, Context, Result};
 use chrono::{Datelike, NaiveDate};
-use knotq_model::{
-    validate_workspace_node_name, Folder, FolderId, NodeRef, Scheme, SchemeId, Workspace,
-    WorkspaceNodeNameKind,
-};
+use knotq_model::{Folder, FolderId, Scheme, SchemeId, Workspace};
 use serde::{Deserialize, Serialize};
 use std::{
     collections::{HashMap, HashSet},
@@ -13,13 +10,12 @@ use std::{
 
 use crate::{
     files::write_atomic,
-    paths::{daily_queue_file_path, schemes_dir},
+    paths::schemes_dir,
     schema::{DailyQueueIndexEntry, SchemeIndex, WorkspaceEnvelope},
     scheme_markdown::{decode_scheme_file, encode_scheme_file},
 };
 
 const SCHEME_EXT: &str = "knotq";
-const TRASH_DIR: &str = ".trash";
 
 #[derive(Serialize, Deserialize)]
 pub(crate) struct SchemeFile {
@@ -65,9 +61,10 @@ pub(crate) fn read_daily_queue_file(
     date: NaiveDate,
     id: SchemeId,
 ) -> Result<SchemeFile> {
-    let path = daily_queue_file_path(base_dir, date);
+    let path = scheme_file_path(base_dir, id);
     let raw = fs::read_to_string(&path).with_context(|| format!("read {}", path.display()))?;
     decode_scheme_file(&raw, &path, id)
+        .with_context(|| format!("read daily queue scheme for {date}"))
 }
 
 pub(crate) fn write_scheme_file(
@@ -85,67 +82,38 @@ pub(crate) fn write_scheme_file(
     write_atomic(&path, markdown.as_bytes())
 }
 
-pub(crate) fn write_daily_queue_file(
-    base_dir: &Path,
-    date: NaiveDate,
-    scheme: &Scheme,
-) -> Result<()> {
-    let markdown = encode_scheme_file(scheme)?;
-    write_atomic(&daily_queue_file_path(base_dir, date), markdown.as_bytes())
-}
-
 pub fn scheme_path_for_workspace(
     base_dir: &Path,
     workspace: &Workspace,
     scheme_id: SchemeId,
 ) -> Result<Option<PathBuf>> {
-    let Some(scheme) = workspace.schemes.get(&scheme_id) else {
+    if !workspace.schemes.contains_key(&scheme_id) {
         return Ok(None);
-    };
-    if workspace.is_scheme_deleted(scheme_id) {
-        return deleted_scheme_path(base_dir, &scheme.name, scheme_id).map(Some);
     }
-    let Some(parent) = active_scheme_parent(&workspace.folders, scheme_id) else {
-        return Ok(None);
-    };
-    active_scheme_path(
-        base_dir,
-        workspace.root,
-        &workspace.folders,
-        parent,
-        &scheme.name,
-    )
-    .map(Some)
+    Ok(Some(scheme_file_path(base_dir, scheme_id)))
 }
 
 pub(crate) fn scheme_path_for_index(
     base_dir: &Path,
-    root: FolderId,
-    folders: &HashMap<FolderId, Folder>,
-    recently_deleted: &[SchemeId],
+    _root: FolderId,
+    _folders: &HashMap<FolderId, Folder>,
+    _recently_deleted: &[SchemeId],
     scheme_id: SchemeId,
-    scheme_name: &str,
+    _scheme_name: &str,
 ) -> Result<PathBuf> {
-    if recently_deleted.contains(&scheme_id) {
-        return deleted_scheme_path(base_dir, scheme_name, scheme_id);
-    }
-    let parent = active_scheme_parent(folders, scheme_id)
-        .ok_or_else(|| anyhow!("scheme {scheme_id} is not referenced by any folder"))?;
-    active_scheme_path(base_dir, root, folders, parent, scheme_name)
+    Ok(scheme_file_path(base_dir, scheme_id))
 }
 
 pub(crate) fn ensure_scheme_directories(base_dir: &Path, workspace: &Workspace) -> Result<()> {
-    retained_scheme_paths(base_dir, workspace)?;
-    let dirs = retained_scheme_dirs(base_dir, workspace)?;
-    for dir in dirs {
-        fs::create_dir_all(&dir).with_context(|| format!("create {}", dir.display()))?;
-    }
+    let _ = workspace;
+    fs::create_dir_all(schemes_dir(base_dir))
+        .with_context(|| format!("create {}", schemes_dir(base_dir).display()))?;
     Ok(())
 }
 
 pub(crate) fn prune_removed_scheme_files(base_dir: &Path, workspace: &Workspace) -> Result<()> {
     let retained_files = retained_scheme_paths(base_dir, workspace)?;
-    let retained_dirs = retained_scheme_dirs(base_dir, workspace)?;
+    let retained_dirs = HashSet::from([schemes_dir(base_dir)]);
     let root = schemes_dir(base_dir);
     if !root.exists() {
         return Ok(());
@@ -154,45 +122,11 @@ pub(crate) fn prune_removed_scheme_files(base_dir: &Path, workspace: &Workspace)
     Ok(())
 }
 
-pub(crate) fn prune_removed_daily_queue_files(
-    daily_queue_dir: &Path,
-    workspace: &Workspace,
-) -> Result<()> {
-    if !daily_queue_dir.exists() {
-        return Ok(());
-    }
-    let retained: HashSet<PathBuf> = workspace
-        .daily_queue
-        .keys()
-        .map(|date| {
-            daily_queue_file_path(
-                daily_queue_dir.parent().unwrap_or_else(|| Path::new(".")),
-                *date,
-            )
-        })
-        .collect();
-    for year_entry in fs::read_dir(daily_queue_dir)
-        .with_context(|| format!("read {}", daily_queue_dir.display()))?
-    {
-        let year_path = year_entry?.path();
-        if !year_path.is_dir() {
-            continue;
-        }
-        prune_daily_queue_months(&year_path, &retained)?;
-    }
-    Ok(())
-}
-
 pub(crate) fn write_daily_backup(base_dir: &Path, workspace_json: &str, workspace: &Workspace) {
     let backup_dir = base_dir.join("backups").join(weekday_name());
     let _ = fs::create_dir_all(schemes_dir(&backup_dir));
     let _ = fs::write(backup_dir.join("workspace.json"), workspace_json);
-    let daily_ids: HashSet<SchemeId> = workspace.daily_queue.values().copied().collect();
-    for scheme in workspace
-        .schemes
-        .values()
-        .filter(|scheme| !daily_ids.contains(&scheme.id))
-    {
+    for scheme in workspace.schemes.values() {
         let Ok(Some(path)) = scheme_path_for_workspace(&backup_dir, workspace, scheme.id) else {
             continue;
         };
@@ -203,32 +137,21 @@ pub(crate) fn write_daily_backup(base_dir: &Path, workspace_json: &str, workspac
             let _ = fs::write(path, markdown);
         }
     }
-    for (date, scheme_id) in &workspace.daily_queue {
-        let Some(scheme) = workspace.schemes.get(scheme_id) else {
-            continue;
-        };
-        if let Ok(markdown) = encode_scheme_file(scheme) {
-            let path = daily_queue_file_path(&backup_dir, *date);
-            if let Some(parent) = path.parent() {
-                let _ = fs::create_dir_all(parent);
-            }
-            let _ = fs::write(path, markdown);
-        }
-    }
 }
 
 fn retained_scheme_paths(base_dir: &Path, workspace: &Workspace) -> Result<HashSet<PathBuf>> {
-    let daily_ids: HashSet<SchemeId> = workspace.daily_queue.values().copied().collect();
     let mut retained = HashSet::new();
     let mut retained_keys = HashSet::new();
+    let mut ids = HashSet::new();
     for id in workspace
         .schemes
         .keys()
-        .filter(|id| !daily_ids.contains(id))
+        .chain(workspace.daily_queue.values())
     {
-        let path = scheme_path_for_workspace(base_dir, workspace, *id)?.ok_or_else(|| {
-            anyhow!("scheme {id} is not in the workspace tree or recently deleted list")
-        })?;
+        if !ids.insert(*id) {
+            continue;
+        }
+        let path = scheme_file_path(base_dir, *id);
         if !retained_keys.insert(path_key(&path)) {
             return Err(anyhow!(
                 "multiple schemes resolve to the same file {}",
@@ -240,113 +163,12 @@ fn retained_scheme_paths(base_dir: &Path, workspace: &Workspace) -> Result<HashS
     Ok(retained)
 }
 
-fn retained_scheme_dirs(base_dir: &Path, workspace: &Workspace) -> Result<HashSet<PathBuf>> {
-    let root = schemes_dir(base_dir);
-    let mut dirs = HashSet::from([root.clone()]);
-    let mut dir_keys = HashSet::from([path_key(&root)]);
-    for (id, folder) in &workspace.folders {
-        if *id == workspace.root {
-            continue;
-        }
-        validate_folder_name(&folder.name)?;
-        let dir = active_folder_path(base_dir, workspace.root, &workspace.folders, *id)?;
-        if !dir_keys.insert(path_key(&dir)) {
-            return Err(anyhow!(
-                "multiple folders resolve to the same directory {}",
-                dir.display()
-            ));
-        }
-        dirs.insert(dir);
-    }
-    if !workspace.recently_deleted.is_empty() {
-        dirs.insert(root.join(TRASH_DIR));
-    }
-    Ok(dirs)
-}
-
 fn path_key(path: &Path) -> String {
     path.to_string_lossy().to_ascii_lowercase()
 }
 
-fn active_scheme_parent(
-    folders: &HashMap<FolderId, Folder>,
-    scheme_id: SchemeId,
-) -> Option<FolderId> {
-    folders.iter().find_map(|(folder_id, folder)| {
-        folder
-            .children
-            .iter()
-            .any(|child| *child == NodeRef::Scheme(scheme_id))
-            .then_some(*folder_id)
-    })
-}
-
-fn active_scheme_path(
-    base_dir: &Path,
-    root: FolderId,
-    folders: &HashMap<FolderId, Folder>,
-    parent: FolderId,
-    scheme_name: &str,
-) -> Result<PathBuf> {
-    validate_scheme_name(scheme_name)?;
-    let file_name = scheme_file_name(scheme_name)?;
-    Ok(active_folder_path(base_dir, root, folders, parent)?.join(file_name))
-}
-
-fn active_folder_path(
-    base_dir: &Path,
-    root: FolderId,
-    folders: &HashMap<FolderId, Folder>,
-    folder_id: FolderId,
-) -> Result<PathBuf> {
-    let mut segments = Vec::new();
-    let mut seen = HashSet::new();
-    let mut current = folder_id;
-    while current != root {
-        if !seen.insert(current) {
-            return Err(anyhow!("folder tree contains a cycle at folder {current}"));
-        }
-        let folder = folders
-            .get(&current)
-            .ok_or_else(|| anyhow!("folder {current} missing for scheme path"))?;
-        validate_folder_name(&folder.name)?;
-        segments.push(folder.name.clone());
-        current = folder
-            .parent
-            .ok_or_else(|| anyhow!("folder {current} is missing a parent"))?;
-    }
-    let mut path = schemes_dir(base_dir);
-    for segment in segments.iter().rev() {
-        path.push(segment);
-    }
-    Ok(path)
-}
-
-fn deleted_scheme_path(base_dir: &Path, scheme_name: &str, scheme_id: SchemeId) -> Result<PathBuf> {
-    validate_scheme_name(scheme_name)?;
-    Ok(schemes_dir(base_dir).join(TRASH_DIR).join(format!(
-        "{scheme_name} ({}).{SCHEME_EXT}",
-        short_id(scheme_id)
-    )))
-}
-
-fn scheme_file_name(scheme_name: &str) -> Result<String> {
-    validate_scheme_name(scheme_name)?;
-    Ok(format!("{scheme_name}.{SCHEME_EXT}"))
-}
-
-fn validate_folder_name(name: &str) -> Result<()> {
-    validate_workspace_node_name(name, WorkspaceNodeNameKind::Folder)
-        .with_context(|| format!("invalid folder name {name:?}"))
-}
-
-fn validate_scheme_name(name: &str) -> Result<()> {
-    validate_workspace_node_name(name, WorkspaceNodeNameKind::Scheme)
-        .with_context(|| format!("invalid scheme name {name:?}"))
-}
-
-fn short_id(id: SchemeId) -> String {
-    id.to_string().chars().take(8).collect()
+fn scheme_file_path(base_dir: &Path, id: SchemeId) -> PathBuf {
+    schemes_dir(base_dir).join(format!("{id}.{SCHEME_EXT}"))
 }
 
 fn prune_scheme_dir(
@@ -376,30 +198,6 @@ fn is_empty_dir(path: &Path) -> Result<bool> {
         .with_context(|| format!("read {}", path.display()))?
         .next()
         .is_none())
-}
-
-fn prune_daily_queue_months(year_path: &Path, retained: &HashSet<PathBuf>) -> Result<()> {
-    for month_entry in
-        fs::read_dir(year_path).with_context(|| format!("read {}", year_path.display()))?
-    {
-        let month_path = month_entry?.path();
-        if !month_path.is_dir() {
-            continue;
-        }
-        for day_entry in
-            fs::read_dir(&month_path).with_context(|| format!("read {}", month_path.display()))?
-        {
-            let day_path = day_entry?.path();
-            if day_path.extension().and_then(|ext| ext.to_str()) != Some(SCHEME_EXT) {
-                continue;
-            }
-            if !retained.contains(&day_path) {
-                fs::remove_file(&day_path)
-                    .with_context(|| format!("remove {}", day_path.display()))?;
-            }
-        }
-    }
-    Ok(())
 }
 
 fn weekday_name() -> &'static str {

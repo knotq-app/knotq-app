@@ -166,8 +166,8 @@ impl WorkspaceIndex {
             };
             if file.id != id {
                 return Err(anyhow!(
-                    "daily queue file {} contains id {}",
-                    crate::paths::daily_queue_file_path(base_dir, entry.date).display(),
+                    "daily queue scheme {} contains id {}",
+                    entry.scheme.id,
                     file.id
                 ));
             }

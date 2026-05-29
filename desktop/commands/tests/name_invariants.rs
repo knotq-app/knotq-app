@@ -1,106 +1,65 @@
-use knotq_commands::{Command, CommandError, WorkspaceCommandExt};
+use knotq_commands::{Command, WorkspaceCommandExt};
 use knotq_model::{FolderId, NodeRef, Scheme, SchemeId, Workspace};
 
 #[test]
-fn invalid_folder_and_scheme_names_are_rejected_without_sanitizing() {
+fn file_like_node_names_are_allowed_without_sanitizing() {
     let mut workspace = Workspace::new();
     let root = workspace.root;
 
-    let err = workspace
-        .apply(Command::CreateFolder {
-            parent: root,
-            name: " Bad/Folder? ".into(),
-            position: None,
-        })
-        .unwrap_err();
-    assert!(matches!(err, CommandError::InvalidNodeName { .. }));
-    assert_eq!(workspace.folders[&root].children, Vec::<NodeRef>::new());
+    let folder_id = create_folder(&mut workspace, root, " Bad/Folder? ");
+    assert_eq!(workspace.folders[&folder_id].name, " Bad/Folder? ");
 
-    let err = workspace
-        .apply(Command::CreateScheme {
-            folder: root,
-            name: "Notes.knotq".into(),
-            color_index: 0,
-            position: None,
-        })
-        .unwrap_err();
-    assert!(matches!(err, CommandError::InvalidNodeName { .. }));
-    assert_eq!(workspace.folders[&root].children, Vec::<NodeRef>::new());
+    let scheme_id = create_scheme(&mut workspace, root, "Notes.knotq");
+    assert_eq!(workspace.schemes[&scheme_id].name, "Notes.knotq");
 
-    let scheme_id = create_scheme(&mut workspace, root, "Notes");
-    let err = workspace
+    workspace
         .apply(Command::RenameScheme {
             id: scheme_id,
             name: "Plan: A/B? <draft>.knotq".into(),
         })
-        .unwrap_err();
-    assert!(matches!(err, CommandError::InvalidNodeName { .. }));
-    assert_eq!(workspace.schemes[&scheme_id].name, "Notes");
+        .unwrap();
+    assert_eq!(
+        workspace.schemes[&scheme_id].name,
+        "Plan: A/B? <draft>.knotq"
+    );
+
+    workspace
+        .apply(Command::RenameFolder {
+            id: folder_id,
+            name: ".hidden".into(),
+        })
+        .unwrap();
+    assert_eq!(workspace.folders[&folder_id].name, ".hidden");
 }
 
 #[test]
-fn fully_illegal_names_are_rejected_without_sanitizing() {
+fn duplicate_folder_and_scheme_names_are_allowed() {
     let mut workspace = Workspace::new();
     let root = workspace.root;
 
-    let err = workspace
-        .apply(Command::CreateFolder {
-            parent: root,
-            name: "..??".into(),
-            position: None,
-        })
-        .unwrap_err();
-    assert!(matches!(err, CommandError::InvalidNodeName { .. }));
+    let first_folder = create_folder(&mut workspace, root, "Projects");
+    let second_folder = create_folder(&mut workspace, root, "projects");
+    assert_eq!(
+        workspace.folders[&root].children,
+        vec![
+            NodeRef::Folder(first_folder),
+            NodeRef::Folder(second_folder)
+        ]
+    );
 
-    let scheme_id = create_scheme(&mut workspace, root, "Notes");
-    let err = workspace
-        .apply(Command::RenameScheme {
-            id: scheme_id,
-            name: "?.knotq".into(),
-        })
-        .unwrap_err();
-    assert!(matches!(err, CommandError::InvalidNodeName { .. }));
-    assert_eq!(workspace.schemes[&scheme_id].name, "Notes");
+    let first_scheme = create_scheme(&mut workspace, first_folder, "Notes");
+    let second_scheme = create_scheme(&mut workspace, first_folder, "notes");
+    assert_eq!(
+        workspace.folders[&first_folder].children,
+        vec![
+            NodeRef::Scheme(first_scheme),
+            NodeRef::Scheme(second_scheme)
+        ]
+    );
 }
 
 #[test]
-fn folder_names_are_unique_at_the_root() {
-    let mut workspace = Workspace::new();
-    let root = workspace.root;
-    create_folder(&mut workspace, root, "Projects");
-
-    let err = workspace
-        .apply(Command::CreateFolder {
-            parent: root,
-            name: "projects".into(),
-            position: None,
-        })
-        .unwrap_err();
-    assert!(matches!(err, CommandError::DuplicateFolderName { .. }));
-}
-
-#[test]
-fn scheme_names_are_unique_within_a_folder_but_not_globally() {
-    let mut workspace = Workspace::new();
-    let root = workspace.root;
-    let first_folder = create_folder(&mut workspace, root, "Work");
-    let second_folder = create_folder(&mut workspace, root, "Personal");
-    create_scheme(&mut workspace, first_folder, "Notes");
-    create_scheme(&mut workspace, second_folder, "Notes");
-
-    let err = workspace
-        .apply(Command::CreateScheme {
-            folder: first_folder,
-            name: "notes".into(),
-            color_index: 0,
-            position: None,
-        })
-        .unwrap_err();
-    assert!(matches!(err, CommandError::DuplicateSchemeName { .. }));
-}
-
-#[test]
-fn rename_restore_and_move_cannot_create_duplicate_scheme_names() {
+fn rename_restore_and_move_can_create_duplicate_scheme_names() {
     let mut workspace = Workspace::new();
     let root = workspace.root;
     let source_folder = create_folder(&mut workspace, root, "Source");
@@ -109,41 +68,39 @@ fn rename_restore_and_move_cannot_create_duplicate_scheme_names() {
     let target_id = create_scheme(&mut workspace, target_folder, "Plan");
     let other_id = create_scheme(&mut workspace, source_folder, "Other");
 
-    let err = workspace
+    workspace
         .apply(Command::RenameScheme {
             id: other_id,
             name: "plan".into(),
         })
-        .unwrap_err();
-    assert!(matches!(err, CommandError::DuplicateSchemeName { .. }));
-    assert_eq!(workspace.schemes[&other_id].name, "Other");
+        .unwrap();
+    assert_eq!(workspace.schemes[&other_id].name, "plan");
 
-    let err = workspace
+    workspace
         .apply(Command::MoveNode {
             node: NodeRef::Scheme(source_id),
             new_parent: target_folder,
             position: 1,
         })
-        .unwrap_err();
-    assert!(matches!(err, CommandError::DuplicateSchemeName { .. }));
-    assert_eq!(
-        workspace.folders[&source_folder].children,
-        vec![NodeRef::Scheme(source_id), NodeRef::Scheme(other_id)]
-    );
+        .unwrap();
     assert_eq!(
         workspace.folders[&target_folder].children,
-        vec![NodeRef::Scheme(target_id)]
+        vec![NodeRef::Scheme(target_id), NodeRef::Scheme(source_id)]
     );
 
-    let duplicate = Scheme::new("Other", 0);
-    let err = workspace
+    let duplicate = Scheme::new("plan", 0);
+    let duplicate_id = duplicate.id;
+    workspace
         .apply(Command::RestoreScheme {
             folder: source_folder,
             position: 0,
             scheme: duplicate,
         })
-        .unwrap_err();
-    assert!(matches!(err, CommandError::DuplicateSchemeName { .. }));
+        .unwrap();
+    assert_eq!(
+        workspace.folders[&source_folder].children,
+        vec![NodeRef::Scheme(duplicate_id), NodeRef::Scheme(other_id)]
+    );
 }
 
 fn create_folder(workspace: &mut Workspace, parent: FolderId, name: &str) -> FolderId {

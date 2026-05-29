@@ -61,8 +61,11 @@ fn save_workspace_splits_scheme_files_and_omits_empty_item_fields() {
     let mut workspace = Workspace::new();
     let root = workspace.root;
     let mut scheme = Scheme::new("Notes", 2);
-    scheme.items.push(Item::new("plain"));
+    let plain = Item::new("plain");
+    let plain_item_id = plain.id;
+    scheme.items.push(plain);
     let mut done = Item::new("done");
+    let done_item_id = done.id;
     done.marker = ItemMarker::Checkbox;
     done.state[0].state.progress = -1;
     scheme.items.push(done);
@@ -107,9 +110,14 @@ fn save_workspace_splits_scheme_files_and_omits_empty_item_fields() {
     let scheme_path = scheme_path_for_workspace(&dir, &workspace, scheme_id)
         .unwrap()
         .unwrap();
-    assert_eq!(scheme_path, dir.join("schemes").join("Notes.knotq"));
+    assert_eq!(
+        scheme_path,
+        dir.join("schemes").join(format!("{scheme_id}.knotq"))
+    );
     let scheme_markdown = fs::read_to_string(scheme_path).unwrap();
-    assert!(scheme_markdown.starts_with("plain\n- [x] done\nimage "));
+    assert!(scheme_markdown.starts_with("plain !knotq"));
+    assert!(scheme_markdown.contains("- [x] done !knotq"));
+    assert!(scheme_markdown.contains("image !knotq"));
     assert!(!scheme_markdown.starts_with("!knotq{type=\"scheme\""));
     assert!(!scheme_markdown.contains("\"items\""));
     assert!(!scheme_markdown.contains("start="));
@@ -119,7 +127,9 @@ fn save_workspace_splits_scheme_files_and_omits_empty_item_fields() {
     assert!(scheme_markdown.contains("external="));
     assert!(scheme_markdown.contains("google"));
     assert!(scheme_markdown.contains("png"));
-    assert_eq!(scheme_markdown.matches("id=").count(), 1);
+    assert_eq!(scheme_markdown.matches("id=").count(), 3);
+    assert!(scheme_markdown.contains(&format!("id=\"{plain_item_id}\"")));
+    assert!(scheme_markdown.contains(&format!("id=\"{done_item_id}\"")));
     assert!(scheme_markdown.contains(&format!("id=\"{image_item_id}\"")));
     assert!(scheme_markdown.contains("- [x] done"));
 
@@ -141,8 +151,8 @@ fn save_workspace_splits_scheme_files_and_omits_empty_item_fields() {
 }
 
 #[test]
-fn schemes_are_saved_under_named_folder_paths() {
-    let dir = unique_temp_dir("knotq-storage-named-paths");
+fn schemes_are_saved_under_uuid_paths() {
+    let dir = unique_temp_dir("knotq-storage-uuid-paths");
     let workspace_file = dir.join("workspace.json");
     let mut workspace = Workspace::new();
     let root = workspace.root;
@@ -171,9 +181,10 @@ fn schemes_are_saved_under_named_folder_paths() {
 
     save_workspace(&workspace_file, &workspace).unwrap();
 
-    let path = dir.join("schemes").join("Projects").join("Research.knotq");
+    let path = dir.join("schemes").join(format!("{scheme_id}.knotq"));
     assert!(path.exists());
     assert!(fs::read_to_string(&path).unwrap().contains("Read paper"));
+    assert!(!dir.join("schemes").join("Projects").exists());
 
     let loaded = load_workspace(&workspace_file).unwrap().unwrap();
     assert_eq!(loaded.schemes[&scheme_id].items[0].text, "Read paper");
@@ -182,8 +193,8 @@ fn schemes_are_saved_under_named_folder_paths() {
 }
 
 #[test]
-fn schemes_are_saved_under_nested_folder_paths() {
-    let dir = unique_temp_dir("knotq-storage-nested-paths");
+fn nested_folders_do_not_affect_scheme_file_paths() {
+    let dir = unique_temp_dir("knotq-storage-nested-uuid-paths");
     let workspace_file = dir.join("workspace.json");
     let mut workspace = Workspace::new();
     let root = workspace.root;
@@ -223,12 +234,9 @@ fn schemes_are_saved_under_nested_folder_paths() {
 
     save_workspace(&workspace_file, &workspace).unwrap();
 
-    let path = dir
-        .join("schemes")
-        .join("Projects")
-        .join("Research")
-        .join("ELSAN.knotq");
+    let path = dir.join("schemes").join(format!("{scheme_id}.knotq"));
     assert!(path.exists());
+    assert!(!dir.join("schemes").join("Projects").exists());
 
     let loaded = load_workspace(&workspace_file).unwrap().unwrap();
     assert_eq!(loaded.schemes[&scheme_id].items[0].text, "Read paper");
@@ -250,13 +258,7 @@ fn missing_daily_queue_files_do_not_block_workspace_load() {
     workspace.schemes.insert(daily_id, daily);
 
     save_workspace(&workspace_file, &workspace).unwrap();
-    fs::remove_file(
-        dir.join("daily_queue")
-            .join("2026")
-            .join("05")
-            .join("17.knotq"),
-    )
-    .unwrap();
+    fs::remove_file(dir.join("schemes").join(format!("{daily_id}.knotq"))).unwrap();
 
     let loaded = load_workspace_with_options(
         &workspace_file,
@@ -276,8 +278,8 @@ fn missing_daily_queue_files_do_not_block_workspace_load() {
 }
 
 #[test]
-fn save_workspace_rejects_duplicate_scheme_file_paths() {
-    let dir = unique_temp_dir("knotq-storage-duplicate-paths");
+fn duplicate_scheme_names_are_saved_to_distinct_uuid_paths() {
+    let dir = unique_temp_dir("knotq-storage-duplicate-names");
     let workspace_file = dir.join("workspace.json");
     let mut workspace = Workspace::new();
     let root = workspace.root;
@@ -295,10 +297,15 @@ fn save_workspace_rejects_duplicate_scheme_file_paths() {
         .children
         .extend([NodeRef::Scheme(first_id), NodeRef::Scheme(second_id)]);
 
-    let err = save_workspace(&workspace_file, &workspace).unwrap_err();
-    assert!(err
-        .to_string()
-        .contains("multiple schemes resolve to the same file"));
+    save_workspace(&workspace_file, &workspace).unwrap();
+    assert!(dir
+        .join("schemes")
+        .join(format!("{first_id}.knotq"))
+        .exists());
+    assert!(dir
+        .join("schemes")
+        .join(format!("{second_id}.knotq"))
+        .exists());
 
     let _ = fs::remove_dir_all(dir);
 }
@@ -424,7 +431,7 @@ fn version_history_restores_saved_workspace_files() {
     let snapshots = knotq_storage_json::list_workspace_snapshots(&dir).unwrap();
     assert_eq!(snapshots.len(), 1);
     let first_snapshot = snapshots[0].id.clone();
-    let first_scheme_path = dir.join("schemes").join("Projects").join("Draft.knotq");
+    let first_scheme_path = dir.join("schemes").join(format!("{scheme_id}.knotq"));
     assert!(first_scheme_path.exists());
 
     workspace.schemes.get_mut(&scheme_id).unwrap().items[0].text = "second version".into();

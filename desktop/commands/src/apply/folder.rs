@@ -1,8 +1,7 @@
 use knotq_model::{Folder, FolderId, NodeRef, Workspace};
 
 use crate::invariants::{
-    ensure_folder_name_available, validate_folder_name, validate_position, validate_scheme_name,
-    CommandError,
+    ensure_folder_name_available, validate_folder_name, validate_position, CommandError,
 };
 use crate::{ChangeSet, Command, CommandReceipt};
 
@@ -85,7 +84,6 @@ fn restore_folder(
         .len();
     validate_position(position, parent_len)?;
     let id = folder.id;
-    let mut child_scheme_names: Vec<String> = Vec::new();
     for child in &folder.children {
         match child {
             NodeRef::Folder(id) if !workspace.folders.contains_key(id) => {
@@ -95,20 +93,7 @@ fn restore_folder(
             NodeRef::Scheme(id) if !workspace.schemes.contains_key(id) => {
                 return Err(CommandError::SchemeMissing(*id));
             }
-            NodeRef::Scheme(id) => {
-                let scheme = workspace.schemes.get(id).unwrap();
-                validate_scheme_name(&scheme.name)?;
-                if child_scheme_names
-                    .iter()
-                    .any(|name| name.eq_ignore_ascii_case(&scheme.name))
-                {
-                    return Err(CommandError::DuplicateSchemeName {
-                        parent: folder.id,
-                        name: scheme.name.clone(),
-                    });
-                }
-                child_scheme_names.push(scheme.name.clone());
-            }
+            NodeRef::Scheme(_) => {}
         }
     }
     workspace

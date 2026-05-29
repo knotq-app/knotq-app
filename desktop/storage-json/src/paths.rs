@@ -1,4 +1,3 @@
-use chrono::{Datelike, NaiveDate};
 use std::path::PathBuf;
 use uuid::Uuid;
 
@@ -54,12 +53,4 @@ pub fn image_asset_path(asset: Uuid, extension: &str) -> PathBuf {
 
 pub(crate) fn schemes_dir(base_dir: &std::path::Path) -> PathBuf {
     base_dir.join("schemes")
-}
-
-pub(crate) fn daily_queue_file_path(base_dir: &std::path::Path, date: NaiveDate) -> PathBuf {
-    base_dir
-        .join("daily_queue")
-        .join(format!("{:04}", date.year()))
-        .join(format!("{:02}", date.month()))
-        .join(format!("{:02}.knotq", date.day()))
 }

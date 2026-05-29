@@ -8,12 +8,10 @@ use std::{fs, path::Path};
 use crate::{
     cal_index::daily_queue_calendar_index_matches_range,
     options::WorkspaceLoadOptions,
-    paths::daily_queue_file_path,
     schema::{WorkspaceEnvelope, WorkspaceIndex},
     scheme_file::{
-        ensure_scheme_directories, prune_removed_daily_queue_files, prune_removed_scheme_files,
-        read_daily_queue_file, read_existing_daily_queue_index, write_daily_backup,
-        write_daily_queue_file, write_scheme_file,
+        ensure_scheme_directories, prune_removed_scheme_files, read_daily_queue_file,
+        read_existing_daily_queue_index, write_daily_backup, write_scheme_file,
     },
 };
 
@@ -59,8 +57,8 @@ pub fn load_daily_queue_scheme(path: &Path, date: NaiveDate) -> Result<Option<Sc
     };
     if file.id != entry.scheme.id {
         return Err(anyhow!(
-            "daily queue file {} contains id {}",
-            daily_queue_file_path(base_dir, date).display(),
+            "daily queue scheme {} contains id {}",
+            entry.scheme.id,
             file.id
         ));
     }
@@ -99,8 +97,8 @@ pub fn load_daily_queue_schemes_for_calendar_range(
         };
         if file.id != entry.scheme.id {
             return Err(anyhow!(
-                "daily queue file {} contains id {}",
-                daily_queue_file_path(base_dir, entry.date).display(),
+                "daily queue scheme {} contains id {}",
+                entry.scheme.id,
                 file.id
             ));
         }
@@ -123,29 +121,11 @@ pub fn save_workspace(path: &Path, workspace: &Workspace) -> Result<()> {
     fs::create_dir_all(&schemes_dir)
         .with_context(|| format!("create {}", schemes_dir.display()))?;
     ensure_scheme_directories(base_dir, workspace)?;
-    let daily_queue_dir = base_dir.join("daily_queue");
-    fs::create_dir_all(&daily_queue_dir)
-        .with_context(|| format!("create {}", daily_queue_dir.display()))?;
-
-    let daily_ids: HashSet<SchemeId> = workspace.daily_queue.values().copied().collect();
-
-    for scheme in workspace
-        .schemes
-        .values()
-        .filter(|scheme| !daily_ids.contains(&scheme.id))
-    {
+    for scheme in workspace.schemes.values() {
         write_scheme_file(base_dir, workspace, scheme)
             .with_context(|| format!("write scheme {}", scheme.id))?;
     }
     prune_removed_scheme_files(base_dir, workspace)?;
-
-    for (date, scheme_id) in &workspace.daily_queue {
-        if let Some(scheme) = workspace.schemes.get(scheme_id) {
-            write_daily_queue_file(base_dir, *date, scheme)
-                .with_context(|| format!("write daily queue {}", date))?;
-        }
-    }
-    prune_removed_daily_queue_files(&daily_queue_dir, workspace)?;
 
     let existing_daily_queue = read_existing_daily_queue_index(path)?;
     let env = WorkspaceEnvelope {
@@ -178,30 +158,11 @@ pub fn save_workspace_incremental(
     fs::create_dir_all(&schemes_dir)
         .with_context(|| format!("create {}", schemes_dir.display()))?;
     ensure_scheme_directories(base_dir, workspace)?;
-    let daily_queue_dir = base_dir.join("daily_queue");
-    fs::create_dir_all(&daily_queue_dir)
-        .with_context(|| format!("create {}", daily_queue_dir.display()))?;
-
-    let daily_ids: HashSet<SchemeId> = workspace.daily_queue.values().copied().collect();
-
     // Write only dirty scheme files.
     for scheme_id in dirty_scheme_ids {
         if let Some(scheme) = workspace.schemes.get(scheme_id) {
-            if daily_ids.contains(scheme_id) {
-                if let Some(date) = workspace.daily_queue.iter().find_map(|(date, id)| {
-                    if id == scheme_id {
-                        Some(*date)
-                    } else {
-                        None
-                    }
-                }) {
-                    write_daily_queue_file(base_dir, date, scheme)
-                        .with_context(|| format!("write daily queue {}", date))?;
-                }
-            } else {
-                write_scheme_file(base_dir, workspace, scheme)
-                    .with_context(|| format!("write scheme {}", scheme.id))?;
-            }
+            write_scheme_file(base_dir, workspace, scheme)
+                .with_context(|| format!("write scheme {}", scheme.id))?;
         }
     }
     prune_removed_scheme_files(base_dir, workspace)?;
