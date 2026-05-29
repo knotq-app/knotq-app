@@ -1,7 +1,7 @@
 use knotq_model::{Folder, FolderId, NodeRef, Workspace};
 
 use crate::invariants::{
-    ensure_folder_name_available, sanitize_folder_name, validate_position, validate_scheme_name,
+    ensure_folder_name_available, validate_folder_name, validate_position, validate_scheme_name,
     CommandError,
 };
 use crate::{ChangeSet, Command, CommandReceipt};
@@ -37,7 +37,7 @@ fn create_folder(
     if parent != workspace.root {
         return Err(CommandError::BadFolderDepth);
     }
-    let name = sanitize_folder_name(&name)?;
+    validate_folder_name(&name)?;
     ensure_folder_name_available(workspace, parent, &name, None)?;
     let parent_folder = workspace
         .folders
@@ -70,12 +70,12 @@ fn restore_folder(
     workspace: &mut Workspace,
     parent: FolderId,
     position: usize,
-    mut folder: Folder,
+    folder: Folder,
 ) -> Result<CommandReceipt, CommandError> {
     if parent != workspace.root {
         return Err(CommandError::BadFolderDepth);
     }
-    folder.name = sanitize_folder_name(&folder.name)?;
+    validate_folder_name(&folder.name)?;
     ensure_folder_name_available(workspace, parent, &folder.name, Some(folder.id))?;
     let parent_len = workspace
         .folders
@@ -129,7 +129,7 @@ fn rename_folder(
     id: FolderId,
     name: String,
 ) -> Result<CommandReceipt, CommandError> {
-    let name = sanitize_folder_name(&name)?;
+    validate_folder_name(&name)?;
     let parent = workspace
         .folders
         .get(&id)

@@ -2,56 +2,44 @@ use knotq_commands::{Command, CommandError, WorkspaceCommandExt};
 use knotq_model::{FolderId, NodeRef, Scheme, SchemeId, Workspace};
 
 #[test]
-fn invalid_characters_are_dropped_from_folder_and_scheme_names() {
+fn invalid_folder_and_scheme_names_are_rejected_without_sanitizing() {
     let mut workspace = Workspace::new();
     let root = workspace.root;
 
-    let folder_id = match workspace
+    let err = workspace
         .apply(Command::CreateFolder {
             parent: root,
             name: " Bad/Folder? ".into(),
             position: None,
         })
-        .unwrap()
-        .inverse
-    {
-        Command::DeleteFolder { id } => id,
-        _ => unreachable!(),
-    };
-    assert_eq!(workspace.folders[&folder_id].name, "BadFolder");
+        .unwrap_err();
+    assert!(matches!(err, CommandError::InvalidNodeName { .. }));
+    assert_eq!(workspace.folders[&root].children, Vec::<NodeRef>::new());
 
-    let scheme_id = match workspace
+    let err = workspace
         .apply(Command::CreateScheme {
             folder: root,
             name: "Notes.knotq".into(),
             color_index: 0,
             position: None,
         })
-        .unwrap()
-        .inverse
-    {
-        Command::Batch(commands) => commands
-            .into_iter()
-            .find_map(|command| match command {
-                Command::DeleteScheme { id } => Some(id),
-                _ => None,
-            })
-            .unwrap(),
-        _ => unreachable!(),
-    };
-    assert_eq!(workspace.schemes[&scheme_id].name, "Notes");
+        .unwrap_err();
+    assert!(matches!(err, CommandError::InvalidNodeName { .. }));
+    assert_eq!(workspace.folders[&root].children, Vec::<NodeRef>::new());
 
-    workspace
+    let scheme_id = create_scheme(&mut workspace, root, "Notes");
+    let err = workspace
         .apply(Command::RenameScheme {
             id: scheme_id,
             name: "Plan: A/B? <draft>.knotq".into(),
         })
-        .unwrap();
-    assert_eq!(workspace.schemes[&scheme_id].name, "Plan AB draft");
+        .unwrap_err();
+    assert!(matches!(err, CommandError::InvalidNodeName { .. }));
+    assert_eq!(workspace.schemes[&scheme_id].name, "Notes");
 }
 
 #[test]
-fn fully_illegal_names_are_rejected_after_sanitizing() {
+fn fully_illegal_names_are_rejected_without_sanitizing() {
     let mut workspace = Workspace::new();
     let root = workspace.root;
 

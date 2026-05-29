@@ -203,8 +203,16 @@ impl KnotQApp {
                 cx.notify();
             }
             SingleLineEditorEvent::Change => {
+                let next_error = self.rename_node.as_ref().and_then(|rename| {
+                    let name = rename.input.read(cx).value().to_string();
+                    let kind = node_ref_name_kind(rename.target);
+                    validate_workspace_node_name(&name, kind)
+                        .err()
+                        .map(|reason| workspace_name_error_message(kind, &name, &reason))
+                });
                 if let Some(rename) = self.rename_node.as_mut() {
-                    if rename.error.take().is_some() {
+                    if rename.error != next_error {
+                        rename.error = next_error;
                         cx.notify();
                     }
                 }
