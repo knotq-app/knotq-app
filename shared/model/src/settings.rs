@@ -1,7 +1,7 @@
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
-use crate::ReplicaId;
+use crate::{ReplicaId, WorkspaceId};
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -22,8 +22,8 @@ pub enum CalendarWeekRange {
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum ThemeMode {
-    System,
     #[default]
+    System,
     Dark,
     Light,
 }
@@ -80,6 +80,10 @@ pub struct AppSettings {
 pub struct SyncAccountSettings {
     pub api_base: String,
     pub user_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workspace_id: Option<WorkspaceId>,
     pub email: String,
     #[serde(default = "default_true")]
     pub supports_sync: bool,

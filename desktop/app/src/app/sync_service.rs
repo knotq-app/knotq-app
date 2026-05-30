@@ -17,12 +17,12 @@ use knotq_storage_json::{
 };
 use knotq_sync::{
     DocumentResponse, ErrorResponse, LocalSyncState, NotificationScheduleSnapshot, PendingCrdtEdit,
-    PullUpdatesResponse, PushUpdatesRequest, PushUpdatesResponse, UpsertDocumentRequest,
-    WorkspaceCrdtDocuments, MAX_SYNC_MEDIA_BYTES,
+    PullUpdatesResponse, PushUpdatesRequest, PushUpdatesResponse, StoredCrdtSnapshot,
+    StoredCrdtUpdate, UpsertDocumentRequest, WorkspaceCrdtDocuments, MAX_SYNC_MEDIA_BYTES,
 };
 use sha2::{Digest, Sha256};
 
-use super::{KnotQApp, SyncRunStatus};
+use super::{KnotQApp, NoticeModal, SyncRunStatus};
 
 const SYNC_DEBOUNCE: StdDuration = StdDuration::from_secs(2);
 const SYNC_POLL_INTERVAL: StdDuration = StdDuration::from_secs(30);
@@ -48,6 +48,7 @@ struct SyncRunResult {
     pushed: Vec<PushedDocument>,
     remote_updates_applied: usize,
     remaining_pending: usize,
+    forced_snapshot_applied: bool,
 }
 
 #[derive(Clone, Copy)]
@@ -102,6 +103,17 @@ pub(crate) fn spawn_sync_task(sync_rx: Receiver<()>, cx: &mut Context<KnotQApp>)
     )
 }
 
+impl KnotQApp {
+    fn show_sync_snapshot_notice(&mut self, cx: &mut Context<Self>) {
+        self.notice_modal = Some(NoticeModal {
+            title: "Sync snapshot applied".to_string(),
+            message: "This device was far enough behind that the sync server had already compacted older CRDT changes. KnotQ applied the latest compacted snapshot and then continued syncing from there.".to_string(),
+            button_label: "OK".to_string(),
+        });
+        cx.notify();
+    }
+}
+
 async fn run_sync_once(weak: &gpui::WeakEntity<KnotQApp>, cx: &mut gpui::AsyncApp) {
     let snapshot = weak
         .update(cx, |app, _cx| {
@@ -152,6 +164,7 @@ async fn run_sync_once(weak: &gpui::WeakEntity<KnotQApp>, cx: &mut gpui::AsyncAp
             let pushed = result.pushed.clone();
             let workspace = result.workspace.clone();
             let remaining_pending = result.remaining_pending;
+            let forced_snapshot_applied = result.forced_snapshot_applied;
             let _ = weak.update(cx, |app, cx| {
                 for pushed in pushed {
                     app.state
@@ -165,6 +178,9 @@ async fn run_sync_once(weak: &gpui::WeakEntity<KnotQApp>, cx: &mut gpui::AsyncAp
                     app.service_bus.signal_save();
                     app.service_bus.signal_notifications();
                     app.service_bus.signal_timeline();
+                }
+                if forced_snapshot_applied {
+                    app.show_sync_snapshot_notice(cx);
                 }
                 cx.notify();
             });
@@ -187,11 +203,12 @@ fn sync_snapshot(snapshot: SyncSnapshot) -> Result<SyncRunResult> {
     let path = workspace_path();
     let mut workspace = snapshot.workspace;
     workspace.ensure_sync_metadata();
+    let server_workspace_id = snapshot.account.workspace_id.unwrap_or(workspace.id);
 
     let mut local_state = load_local_sync_state(&path).unwrap_or_default();
     configure_local_state(
         &mut local_state,
-        workspace.id,
+        server_workspace_id,
         snapshot.replica_id,
         &snapshot.account,
     );
@@ -205,9 +222,10 @@ fn sync_snapshot(snapshot: SyncSnapshot) -> Result<SyncRunResult> {
     let mut remote_latest = HashMap::new();
     let mut pushed = Vec::new();
     let mut remote_updates_applied = 0;
+    let mut forced_snapshot_applied = false;
 
-    upsert_documents(&client, workspace.id, sync_documents(&workspace))?;
-    upload_local_media_assets(&client, &mut local_state, workspace.id, &workspace)?;
+    upsert_documents(&client, server_workspace_id, sync_documents(&workspace))?;
+    upload_local_media_assets(&client, &mut local_state, server_workspace_id, &workspace)?;
 
     let workspace_doc = SyncDocumentRef {
         document: workspace.sync.id,
@@ -216,13 +234,15 @@ fn sync_snapshot(snapshot: SyncSnapshot) -> Result<SyncRunResult> {
     let workspace_pull = pull_document(
         &client,
         &local_state,
-        workspace.id,
+        server_workspace_id,
         workspace_doc,
         snapshot.replica_id,
     )?;
     remote_latest.insert(workspace_doc.document, workspace_pull.latest_sequence);
-    if !workspace_pull.updates.is_empty() {
-        let outcome = crdt_docs.apply_remote_updates(&workspace, &workspace_pull.updates);
+    let workspace_updates = pull_response_updates(&workspace_pull);
+    forced_snapshot_applied |= workspace_pull.forced_snapshot;
+    if !workspace_updates.is_empty() {
+        let outcome = crdt_docs.apply_remote_updates(&workspace, &workspace_updates);
         if !outcome.is_ok() {
             return Err(anyhow!("workspace CRDT apply failed: {:?}", outcome.errors));
         }
@@ -235,21 +255,23 @@ fn sync_snapshot(snapshot: SyncSnapshot) -> Result<SyncRunResult> {
         workspace_pull.latest_sequence,
     );
 
-    upsert_documents(&client, workspace.id, sync_documents(&workspace))?;
-    download_missing_media_assets(&client, &workspace)?;
+    upsert_documents(&client, server_workspace_id, sync_documents(&workspace))?;
+    download_missing_media_assets(&client, server_workspace_id, &workspace)?;
 
     let mut scheme_updates = Vec::new();
     for doc in scheme_documents(&workspace) {
         let pull = pull_document(
             &client,
             &local_state,
-            workspace.id,
+            server_workspace_id,
             doc,
             snapshot.replica_id,
         )?;
         remote_latest.insert(doc.document, pull.latest_sequence);
-        if !pull.updates.is_empty() {
-            scheme_updates.extend(pull.updates);
+        forced_snapshot_applied |= pull.forced_snapshot;
+        let updates = pull_response_updates(&pull);
+        if !updates.is_empty() {
+            scheme_updates.extend(updates);
         }
         local_state.mark_pulled(doc.document, doc.kind, pull.latest_sequence);
     }
@@ -261,13 +283,13 @@ fn sync_snapshot(snapshot: SyncSnapshot) -> Result<SyncRunResult> {
         remote_updates_applied += outcome.applied;
         workspace = outcome.workspace;
     }
-    download_missing_media_assets(&client, &workspace)?;
+    download_missing_media_assets(&client, server_workspace_id, &workspace)?;
 
     queue_bootstrap_updates(&mut local_state, &workspace, &remote_latest);
     push_pending_documents(
         &client,
         &mut local_state,
-        workspace.id,
+        server_workspace_id,
         &mut pushed,
         &snapshot.notification_schedule,
     )?;
@@ -282,7 +304,29 @@ fn sync_snapshot(snapshot: SyncSnapshot) -> Result<SyncRunResult> {
         pushed,
         remote_updates_applied,
         remaining_pending: local_state.pending.len(),
+        forced_snapshot_applied,
     })
+}
+
+fn pull_response_updates(response: &PullUpdatesResponse) -> Vec<StoredCrdtUpdate> {
+    let mut updates = Vec::new();
+    if let Some(snapshot) = &response.snapshot {
+        updates.push(snapshot_as_update(snapshot));
+    }
+    updates.extend(response.updates.iter().cloned());
+    updates
+}
+
+fn snapshot_as_update(snapshot: &StoredCrdtSnapshot) -> StoredCrdtUpdate {
+    StoredCrdtUpdate {
+        workspace_id: snapshot.workspace_id,
+        document: snapshot.document,
+        kind: snapshot.kind,
+        replica_id: ReplicaId::new(),
+        sequence: snapshot.sequence,
+        received_at: snapshot.compacted_at,
+        update_v1: snapshot.update_v1.clone(),
+    }
 }
 
 fn configure_local_state(
@@ -515,13 +559,17 @@ fn upload_local_media_assets(
     Ok(())
 }
 
-fn download_missing_media_assets(client: &SyncHttpClient, workspace: &Workspace) -> Result<()> {
+fn download_missing_media_assets(
+    client: &SyncHttpClient,
+    workspace_id: WorkspaceId,
+    workspace: &Workspace,
+) -> Result<()> {
     for media in workspace_media_assets(workspace) {
         let path = image_asset_path(media.asset, media.format.extension());
         if path.exists() {
             continue;
         }
-        let bytes = client.download_media_asset(workspace.id, media)?;
+        let bytes = client.download_media_asset(workspace_id, media)?;
         if bytes.len() > MAX_SYNC_MEDIA_BYTES {
             return Err(anyhow!(
                 "downloaded image {} is {} bytes, above the {} byte sync limit",

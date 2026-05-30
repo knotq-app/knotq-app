@@ -50,8 +50,8 @@ mod tests {
     use super::*;
 
     #[test]
-    fn app_settings_default_to_dark_theme() {
-        assert_eq!(AppSettings::default().theme_mode, ThemeMode::Dark);
+    fn app_settings_default_to_system_theme() {
+        assert_eq!(AppSettings::default().theme_mode, ThemeMode::System);
         assert_eq!(
             AppSettings::default().calendar_week_range,
             CalendarWeekRange::NextSevenDays

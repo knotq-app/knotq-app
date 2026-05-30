@@ -172,6 +172,13 @@ pub struct DeleteConfirmation {
 }
 
 #[derive(Clone, Debug)]
+pub struct NoticeModal {
+    pub title: String,
+    pub message: String,
+    pub button_label: String,
+}
+
+#[derive(Clone, Debug)]
 pub enum SidebarContextTarget {
     Background,
     NewMenu { parent: FolderId },
@@ -433,6 +440,7 @@ pub struct KnotQApp {
     pub rename_node: Option<RenameNodeState>,
     pub trash_expanded: bool,
     pub pending_delete: Option<DeleteConfirmation>,
+    pub notice_modal: Option<NoticeModal>,
     pub sidebar_context_menu: Option<SidebarContextMenu>,
     pub editor_context_menu: Option<EditorContextMenu>,
     pub google_oauth_status: GoogleOAuthStatus,
@@ -537,6 +545,7 @@ impl KnotQApp {
             rename_node: None,
             trash_expanded: false,
             pending_delete: None,
+            notice_modal: None,
             sidebar_context_menu: None,
             editor_context_menu: None,
             google_oauth_status: GoogleOAuthStatus::Idle,

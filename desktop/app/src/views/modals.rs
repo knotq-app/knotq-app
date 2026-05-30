@@ -153,6 +153,12 @@ fn sign_in_field(
 }
 
 impl KnotQApp {
+    pub(crate) fn dismiss_notice_modal(&mut self, cx: &mut Context<Self>) {
+        if self.notice_modal.take().is_some() {
+            cx.notify();
+        }
+    }
+
     fn set_onboarding_page(&mut self, page: usize, cx: &mut Context<Self>) {
         self.onboarding_page = page.min(STEPS.len().saturating_sub(1));
         let Some(step) = STEPS.get(self.onboarding_page) else {
@@ -447,6 +453,76 @@ impl KnotQApp {
                             )
                         })
                         .child(actions),
+                )
+                .into_any_element(),
+        )
+    }
+
+    pub(crate) fn render_notice_modal(
+        &mut self,
+        cx: &mut Context<Self>,
+    ) -> Option<gpui::AnyElement> {
+        let notice = self.notice_modal.clone()?;
+        let t = self.theme();
+        Some(
+            div()
+                .id("notice-modal-scrim")
+                .absolute()
+                .inset_0()
+                .bg(token_rgba(t.overlay_scrim))
+                .flex()
+                .items_center()
+                .justify_center()
+                .on_click(cx.listener(|this, _: &ClickEvent, _window, cx| {
+                    this.dismiss_notice_modal(cx);
+                }))
+                .child(
+                    div()
+                        .id("notice-modal")
+                        .w(px(360.0))
+                        .bg(token_hsla(t.bg_modal))
+                        .border_1()
+                        .border_color(token_rgba(t.border_overlay))
+                        .rounded(px(8.0))
+                        .shadow_lg()
+                        .p(px(14.0))
+                        .flex()
+                        .flex_col()
+                        .gap(px(12.0))
+                        .on_click(|_: &ClickEvent, _window, cx| cx.stop_propagation())
+                        .child(
+                            div()
+                                .text_size(px(14.0))
+                                .font_weight(gpui::FontWeight::SEMIBOLD)
+                                .text_color(token_hsla(t.text_primary))
+                                .child(notice.title),
+                        )
+                        .child(
+                            div()
+                                .text_size(px(12.0))
+                                .line_height(px(18.0))
+                                .text_color(token_hsla(t.text_muted))
+                                .child(notice.message),
+                        )
+                        .child(
+                            div().flex().justify_end().child(
+                                div()
+                                    .id("notice-modal-ok")
+                                    .px(px(10.0))
+                                    .py(px(5.0))
+                                    .rounded(px(5.0))
+                                    .bg(token_rgba(t.text_highlight))
+                                    .text_size(px(12.0))
+                                    .font_weight(gpui::FontWeight::SEMIBOLD)
+                                    .text_color(token_hsla(0xffffffff))
+                                    .cursor_pointer()
+                                    .hover(|s| s.bg(token_rgba(0xe66f1fff)))
+                                    .on_click(cx.listener(|this, _: &ClickEvent, _window, cx| {
+                                        this.dismiss_notice_modal(cx);
+                                    }))
+                                    .child(notice.button_label),
+                            ),
+                        ),
                 )
                 .into_any_element(),
         )

@@ -5,7 +5,7 @@ use anyhow::{anyhow, Context as AnyhowContext, Result};
 use chrono::{DateTime, Utc};
 use gpui::{AppContext, Context, Window};
 use gpui_component::input::InputState;
-use knotq_model::SyncAccountSettings;
+use knotq_model::{SyncAccountSettings, WorkspaceId};
 use serde::{Deserialize, Serialize};
 
 use super::{KnotQApp, SyncAuthStatus, SyncRunStatus, SyncSignInState};
@@ -20,7 +20,11 @@ struct LoginRequest {
 
 #[derive(Deserialize)]
 struct LoginResponse {
+    #[serde(default)]
+    session_id: Option<String>,
     user_id: String,
+    #[serde(default)]
+    workspace_id: Option<WorkspaceId>,
     email: String,
     #[serde(default = "default_supports_sync")]
     supports_sync: bool,
@@ -89,7 +93,10 @@ impl KnotQApp {
     }
 
     pub fn sign_out_sync_account(&mut self, cx: &mut Context<Self>) {
-        if self.settings.sync_account.take().is_some() {
+        if let Some(account) = self.settings.sync_account.take() {
+            std::thread::spawn(move || {
+                let _ = logout_sync_backend(&account);
+            });
             self.save_app_settings();
         }
         self.sync_auth_status = SyncAuthStatus::Idle;
@@ -214,11 +221,25 @@ fn login_to_sync_backend(
     Ok(SyncAccountSettings {
         api_base: normalize_api_base(api_base)?,
         user_id: session.user_id,
+        session_id: session.session_id,
+        workspace_id: session.workspace_id,
         email: session.email,
         supports_sync: session.supports_sync,
         bearer_token: session.bearer_token,
         expires_at: session.expires_at,
     })
+}
+
+fn logout_sync_backend(account: &SyncAccountSettings) -> Result<()> {
+    let url = format!("{}/v1/auth/logout", normalize_api_base(&account.api_base)?);
+    match ureq::post(&url)
+        .timeout(StdDuration::from_secs(5))
+        .set("authorization", &format!("Bearer {}", account.bearer_token))
+        .send_json(serde_json::json!({}))
+    {
+        Ok(_) | Err(ureq::Error::Status(401, _)) => Ok(()),
+        Err(error) => Err(anyhow!("Could not revoke sync session: {error}")),
+    }
 }
 
 fn default_supports_sync() -> bool {

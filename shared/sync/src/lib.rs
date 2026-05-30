@@ -81,6 +81,7 @@ pub struct AccountLoginRequest {
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct AccountResponse {
     pub user_id: UserId,
+    pub workspace_id: WorkspaceId,
     pub email: String,
     #[serde(default = "default_supports_sync")]
     pub supports_sync: bool,
@@ -88,7 +89,9 @@ pub struct AccountResponse {
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct AuthSession {
+    pub session_id: String,
     pub user_id: UserId,
+    pub workspace_id: WorkspaceId,
     pub email: String,
     #[serde(default = "default_supports_sync")]
     pub supports_sync: bool,
@@ -446,9 +449,23 @@ pub struct PushUpdatesResponse {
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct PullUpdatesResponse {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub snapshot: Option<StoredCrdtSnapshot>,
+    #[serde(default)]
+    pub forced_snapshot: bool,
     pub updates: Vec<StoredCrdtUpdate>,
     pub latest_sequence: u64,
     pub notification_schedule_revision: u64,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct StoredCrdtSnapshot {
+    pub workspace_id: WorkspaceId,
+    pub document: DocumentId,
+    pub kind: SyncDocumentKind,
+    pub sequence: u64,
+    pub compacted_at: DateTime<Utc>,
+    pub update_v1: Vec<u8>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -551,13 +568,7 @@ pub struct DeviceSyncStatus {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub local_scheduler_supported: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub last_pushed_sequence: Option<u64>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub last_sequence_at: Option<DateTime<Utc>>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_sync_at: Option<DateTime<Utc>>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub notification_schedule_sequence: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub notification_schedule_hash: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -587,13 +598,7 @@ pub struct DeviceNotificationScheduleStatus {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub local_scheduler_supported: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub last_pushed_sequence: Option<u64>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub last_sequence_at: Option<DateTime<Utc>>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_sync_at: Option<DateTime<Utc>>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub notification_schedule_sequence: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub notification_schedule_hash: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
