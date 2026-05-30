@@ -31,6 +31,7 @@ uuid = { workspace = true }
 anyhow = { workspace = true }
 async-channel = "2.5.0"
 futures = "0.3"
+knotq-auto-update = { workspace = true }
 knotq-commands = { workspace = true }
 knotq-date-util = { workspace = true }
 knotq-editor = { workspace = true }

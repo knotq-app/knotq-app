@@ -461,6 +461,7 @@ fn app_settings_default_to_system_theme() {
         knotq_model::AppSettings::default().calendar_week_range,
         CalendarWeekRange::NextSevenDays
     );
+    assert!(knotq_model::AppSettings::default().auto_update);
 }
 
 fn unique_temp_dir(prefix: &str) -> PathBuf {

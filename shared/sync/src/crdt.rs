@@ -8,9 +8,11 @@ use knotq_model::{
 };
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use yrs::updates::{decoder::Decode, encoder::Encode};
-use yrs::{Array, Doc, In, Map, MapPrelim, ReadTxn, StateVector, Transact, Update};
+use yrs::{Doc, In, Map, MapPrelim, ReadTxn, StateVector, Transact, Update};
 
 use crate::{CrdtDocumentUpdate, StoredCrdtUpdate};
+
+const SCHEME_SCHEMA_V2: &str = "knotq.scheme_file.v2";
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct WorkspaceCrdtChangeSet {
@@ -201,6 +203,7 @@ impl WorkspaceCrdtDocuments {
             errors: Vec::new(),
         };
 
+        let mut workspace_applied = false;
         for update in updates
             .iter()
             .filter(|update| update.kind == SyncDocumentKind::PersonalWorkspace)
@@ -217,10 +220,23 @@ impl WorkspaceCrdtDocuments {
                 continue;
             }
             match self.workspace.apply_update_v1(&update.update_v1) {
-                Ok(()) => outcome.applied += 1,
+                Ok(()) => {
+                    outcome.applied += 1;
+                    workspace_applied = true;
+                }
                 Err(err) => {
                     outcome.push_error(format!("workspace update {}", update.sequence), err)
                 }
+            }
+        }
+
+        // Defense in depth: the client does not blindly trust remote bytes. After
+        // applying remote updates, re-run the same schema validation the server
+        // performs before materializing/persisting anything.
+        if workspace_applied {
+            if let Err(err) = self.workspace.validate() {
+                outcome.push_error("workspace validation", err);
+                return outcome;
             }
         }
 
@@ -234,12 +250,13 @@ impl WorkspaceCrdtDocuments {
 
         self.schemes
             .retain(|id, _| outcome.workspace.schemes.contains_key(id));
+        let scheme_by_document = scheme_documents_by_id(&outcome.workspace);
+        let mut touched_schemes: HashSet<SchemeId> = HashSet::new();
         for update in updates
             .iter()
             .filter(|update| update.kind == SyncDocumentKind::Scheme)
         {
-            let Some(scheme_id) = scheme_id_for_document(&outcome.workspace, update.document)
-            else {
+            let Some(scheme_id) = scheme_by_document.get(&update.document).copied() else {
                 outcome.push_error(
                     format!("scheme update {}", update.sequence),
                     anyhow!("unknown scheme document {}", update.document),
@@ -252,15 +269,23 @@ impl WorkspaceCrdtDocuments {
                 .or_insert_with(|| YrsSchemeDocument::new(update.document))
                 .apply_update_v1(&update.update_v1)
             {
-                Ok(()) => outcome.applied += 1,
+                Ok(()) => {
+                    outcome.applied += 1;
+                    touched_schemes.insert(scheme_id);
+                }
                 Err(err) => outcome.push_error(format!("scheme update {}", update.sequence), err),
             }
         }
 
-        if updates
-            .iter()
-            .any(|update| update.kind == SyncDocumentKind::Scheme)
-        {
+        for scheme_id in &touched_schemes {
+            if let Some(doc) = self.schemes.get(scheme_id) {
+                if let Err(err) = doc.validate() {
+                    outcome.push_error(format!("scheme validation {scheme_id}"), err);
+                }
+            }
+        }
+
+        if !touched_schemes.is_empty() {
             match self.materialize_workspace(current) {
                 Ok(workspace) => outcome.workspace = workspace,
                 Err(err) => outcome.push_error("scheme materialization", err),
@@ -375,7 +400,6 @@ fn validate_workspace_document(doc: &Doc) -> anyhow::Result<()> {
 
 fn validate_scheme_document(doc: &Doc) -> anyhow::Result<()> {
     let metadata = doc.get_or_insert_map("scheme_file");
-    let item_order = doc.get_or_insert_array("item_order");
     let items_by_id = doc.get_or_insert_map("items_by_id");
     let txn = doc.transact();
 
@@ -383,7 +407,7 @@ fn validate_scheme_document(doc: &Doc) -> anyhow::Result<()> {
         .get_as::<_, Option<String>>(&txn, "schema")
         .context("read scheme schema")?
         .ok_or_else(|| anyhow!("scheme schema missing"))?;
-    if schema != "knotq.scheme_file.v1" {
+    if schema != SCHEME_SCHEMA_V2 {
         return Err(anyhow!("scheme schema invalid"));
     }
     let scheme_id = metadata
@@ -392,32 +416,21 @@ fn validate_scheme_document(doc: &Doc) -> anyhow::Result<()> {
         .ok_or_else(|| anyhow!("scheme id missing"))?;
     scheme_id.parse::<SchemeId>().context("scheme id invalid")?;
 
-    let mut ordered = HashSet::new();
-    for index in 0..item_order.len(&txn) {
-        let item_id = item_order
-            .get_as::<_, Option<String>>(&txn, index)
-            .with_context(|| format!("read item_order[{index}]"))?
-            .ok_or_else(|| anyhow!("item_order entry missing"))?;
-        let parsed_item_id = item_id
-            .parse::<ItemId>()
-            .with_context(|| format!("item id invalid: {item_id}"))?;
-        if !ordered.insert(item_id.clone()) {
-            return Err(anyhow!("duplicate item id in item_order: {item_id}"));
-        }
-
-        let item = items_by_id
-            .get_as::<_, Option<YrsSchemeItemSnapshot>>(&txn, &item_id)
-            .with_context(|| format!("read item {item_id}"))?
-            .ok_or_else(|| anyhow!("item_order references missing item: {item_id}"))?;
-        validate_scheme_item(&item_id, parsed_item_id, item)?;
-    }
-
+    // Items are keyed by id in the map, so id uniqueness is structural — there is
+    // no separate order array to keep consistent or to duplicate under merge.
     let item_keys = items_by_id
         .keys(&txn)
         .map(str::to_string)
-        .collect::<HashSet<_>>();
-    if item_keys != ordered {
-        return Err(anyhow!("items_by_id does not match item_order"));
+        .collect::<Vec<_>>();
+    for item_id in item_keys {
+        let parsed_item_id = item_id
+            .parse::<ItemId>()
+            .with_context(|| format!("item id invalid: {item_id}"))?;
+        let item = items_by_id
+            .get_as::<_, Option<YrsSchemeItemSnapshot>>(&txn, &item_id)
+            .with_context(|| format!("read item {item_id}"))?
+            .ok_or_else(|| anyhow!("item entry missing: {item_id}"))?;
+        validate_scheme_item(&item_id, parsed_item_id, item)?;
     }
 
     Ok(())
@@ -435,6 +448,9 @@ fn validate_scheme_item(
         return Err(anyhow!("item id mismatch: {item_id}"));
     }
     item.id.parse::<ItemId>().context("item id invalid")?;
+    if item.position.is_empty() {
+        return Err(anyhow!("item position missing: {item_id}"));
+    }
     if !matches!(
         item.marker.as_str(),
         "blank" | "bullet" | "numbered" | "checkbox"
@@ -550,7 +566,6 @@ impl YrsSchemeDocument {
     pub fn new(id: DocumentId) -> Self {
         let doc = Doc::new();
         doc.get_or_insert_map("scheme_file");
-        doc.get_or_insert_array("item_order");
         doc.get_or_insert_map("items_by_id");
         Self { id, doc }
     }
@@ -577,23 +592,81 @@ impl YrsSchemeDocument {
 
     pub fn replace_scheme(&self, scheme: &Scheme) -> anyhow::Result<()> {
         let metadata = self.doc.get_or_insert_map("scheme_file");
-        let item_order = self.doc.get_or_insert_array("item_order");
         let items_by_id = self.doc.get_or_insert_map("items_by_id");
         let mut txn = self.doc.transact_mut();
 
-        metadata.insert(&mut txn, "schema", "knotq.scheme_file.v1");
-        metadata.insert(&mut txn, "id", scheme.id.to_string());
-
-        let len = item_order.len(&txn);
-        if len > 0 {
-            item_order.remove_range(&mut txn, 0, len);
+        if metadata
+            .get_as::<_, Option<String>>(&txn, "schema")
+            .ok()
+            .flatten()
+            .as_deref()
+            != Some(SCHEME_SCHEMA_V2)
+        {
+            metadata.insert(&mut txn, "schema", SCHEME_SCHEMA_V2);
+        }
+        let scheme_id = scheme.id.to_string();
+        if metadata
+            .get_as::<_, Option<String>>(&txn, "id")
+            .ok()
+            .flatten()
+            .as_deref()
+            != Some(scheme_id.as_str())
+        {
+            metadata.insert(&mut txn, "id", scheme_id);
         }
 
-        let retained = scheme
+        // Snapshot what is currently stored so we can reuse positions and skip
+        // unchanged entries.
+        let stored_keys = items_by_id
+            .keys(&txn)
+            .map(str::to_string)
+            .collect::<Vec<_>>();
+        let mut stored: HashMap<String, YrsSchemeItemSnapshot> = HashMap::new();
+        for key in stored_keys {
+            if let Some(entry) = items_by_id
+                .get_as::<_, Option<YrsSchemeItemSnapshot>>(&txn, &key)
+                .ok()
+                .flatten()
+            {
+                stored.insert(key, entry);
+            }
+        }
+
+        // Assign each item a fractional `position`. Ordering lives on the item,
+        // not in a shared array, so concurrent inserts/reorders merge without the
+        // duplicate-id wedge. Keep an existing position whenever it still sorts
+        // after the previous item; otherwise mint a fresh key between neighbors.
+        let desired = scheme
             .items
             .iter()
-            .map(|item| item.id.to_string())
-            .collect::<HashSet<_>>();
+            .map(|i| i.id.to_string())
+            .collect::<Vec<_>>();
+        let mut positions: Vec<String> = Vec::with_capacity(desired.len());
+        for (idx, id) in desired.iter().enumerate() {
+            let prev = positions.last().cloned();
+            let existing = stored.get(id).map(|entry| entry.position.clone());
+            let keep = match (&existing, &prev) {
+                (Some(existing), Some(prev)) => existing.as_str() > prev.as_str(),
+                (Some(_), None) => true,
+                (None, _) => false,
+            };
+            let position = if keep {
+                existing.unwrap()
+            } else {
+                let upper = desired[idx + 1..].iter().find_map(|next_id| {
+                    stored
+                        .get(next_id)
+                        .map(|entry| entry.position.clone())
+                        .filter(|candidate| {
+                            prev.as_deref().is_none_or(|prev| candidate.as_str() > prev)
+                        })
+                });
+                crate::fractional::between(prev.as_deref(), upper.as_deref())
+            };
+            positions.push(position);
+        }
+
+        let retained = desired.iter().cloned().collect::<HashSet<_>>();
         let stale_keys = items_by_id
             .keys(&txn)
             .filter(|key| !retained.contains(*key))
@@ -603,10 +676,17 @@ impl YrsSchemeDocument {
             items_by_id.remove(&mut txn, &key);
         }
 
-        for item in &scheme.items {
+        // Re-insert an entry only when its content or its position changed, so a
+        // single edit produces a single map-entry delta.
+        for (item, position) in scheme.items.iter().zip(&positions) {
             let item_id = item.id.to_string();
-            item_order.push_back(&mut txn, item_id.clone());
-            items_by_id.insert(&mut txn, item_id, item_prelim(item)?);
+            let next_snapshot = serde_json::to_string(item)?;
+            let unchanged = stored.get(&item_id).is_some_and(|existing| {
+                existing.snapshot_json == next_snapshot && existing.position == *position
+            });
+            if !unchanged {
+                items_by_id.insert(&mut txn, item_id, item_prelim(item, position)?);
+            }
         }
         Ok(())
     }
@@ -631,47 +711,59 @@ impl YrsSchemeDocument {
         Ok(())
     }
 
-    pub fn item_texts(&self) -> anyhow::Result<Vec<String>> {
-        let item_order = self.doc.get_or_insert_array("item_order");
+    fn validate(&self) -> anyhow::Result<()> {
+        validate_scheme_document(&self.doc)
+    }
+
+    /// All stored item entries sorted by `(position, item_id)`. The id breaks
+    /// ties so replicas that independently generated the same fractional key
+    /// still converge to one deterministic order.
+    fn sorted_entries(&self) -> anyhow::Result<Vec<(String, YrsSchemeItemSnapshot)>> {
         let items_by_id = self.doc.get_or_insert_map("items_by_id");
         let txn = self.doc.transact();
-        let mut out = Vec::new();
-        for index in 0..item_order.len(&txn) {
-            let Some(item_id) = item_order.get_as::<_, Option<String>>(&txn, index)? else {
-                continue;
-            };
-            if let Some(item) = items_by_id.get_as::<_, Option<YrsSchemeItem>>(&txn, &item_id)? {
-                out.push(item.text);
-            }
+        let keys = items_by_id
+            .keys(&txn)
+            .map(str::to_string)
+            .collect::<Vec<_>>();
+        let mut entries = Vec::with_capacity(keys.len());
+        for key in keys {
+            let entry = items_by_id
+                .get_as::<_, Option<YrsSchemeItemSnapshot>>(&txn, &key)?
+                .ok_or_else(|| anyhow!("missing item snapshot {key}"))?;
+            entries.push((key, entry));
         }
-        Ok(out)
+        entries.sort_by(|(left_id, left), (right_id, right)| {
+            left.position
+                .cmp(&right.position)
+                .then_with(|| left_id.cmp(right_id))
+        });
+        Ok(entries)
+    }
+
+    pub fn item_texts(&self) -> anyhow::Result<Vec<String>> {
+        Ok(self
+            .sorted_entries()?
+            .into_iter()
+            .map(|(_, entry)| entry.text)
+            .collect())
     }
 
     fn scheme_items(&self) -> anyhow::Result<Vec<Item>> {
-        let item_order = self.doc.get_or_insert_array("item_order");
-        let items_by_id = self.doc.get_or_insert_map("items_by_id");
-        let txn = self.doc.transact();
-        let mut out = Vec::new();
-        for index in 0..item_order.len(&txn) {
-            let item_id = item_order
-                .get_as::<_, Option<String>>(&txn, index)?
-                .ok_or_else(|| anyhow!("item_order[{index}] missing"))?;
-            let item = items_by_id
-                .get_as::<_, Option<YrsSchemeItemSnapshot>>(&txn, &item_id)?
-                .ok_or_else(|| anyhow!("missing item snapshot {item_id}"))?;
-            out.push(
-                serde_json::from_str::<Item>(&item.snapshot_json)
-                    .with_context(|| format!("parse item snapshot {item_id}"))?,
-            );
-        }
-        Ok(out)
+        self.sorted_entries()?
+            .into_iter()
+            .map(|(id, entry)| {
+                serde_json::from_str::<Item>(&entry.snapshot_json)
+                    .with_context(|| format!("parse item snapshot {id}"))
+            })
+            .collect()
     }
 }
 
-fn item_prelim(item: &Item) -> anyhow::Result<MapPrelim> {
+fn item_prelim(item: &Item, position: &str) -> anyhow::Result<MapPrelim> {
     Ok(MapPrelim::from([
         ("schema", In::from("knotq.item.v2")),
         ("id", In::from(item.id.to_string())),
+        ("position", In::from(position.to_string())),
         ("text", In::from(item.text.clone())),
         ("marker", In::from(serde_json_string_value(&item.marker)?)),
         ("indent", In::from(i64::from(item.indent))),
@@ -762,6 +854,14 @@ impl YrsJsonDocument {
         Ok(())
     }
 
+    fn validate(&self) -> anyhow::Result<()> {
+        match self.kind {
+            SyncDocumentKind::PersonalWorkspace => validate_workspace_document(&self.doc),
+            SyncDocumentKind::Scheme => validate_scheme_document(&self.doc),
+            SyncDocumentKind::Folder => Err(anyhow!("folder CRDT documents are not supported")),
+        }
+    }
+
     fn snapshot<T: DeserializeOwned>(&self) -> anyhow::Result<T> {
         let document = self.doc.get_or_insert_map("document");
         let txn = self.doc.transact();
@@ -773,14 +873,11 @@ impl YrsJsonDocument {
 }
 
 #[derive(Deserialize)]
-struct YrsSchemeItem {
-    text: String,
-}
-
-#[derive(Deserialize)]
 struct YrsSchemeItemSnapshot {
     schema: String,
     id: String,
+    #[serde(default)]
+    position: String,
     text: String,
     marker: String,
     indent: i64,
@@ -921,13 +1018,13 @@ fn scheme_meta(workspace: &Workspace, id: SchemeId) -> anyhow::Result<&SyncDocum
         .ok_or_else(|| anyhow!("workspace missing scheme sync metadata for {id}"))
 }
 
-fn scheme_id_for_document(
-    workspace: &Workspace,
-    document: knotq_model::DocumentId,
-) -> Option<SchemeId> {
-    workspace.scheme_sync.iter().find_map(|(scheme, meta)| {
-        (meta.id == document && meta.kind == SyncDocumentKind::Scheme).then_some(*scheme)
-    })
+fn scheme_documents_by_id(workspace: &Workspace) -> HashMap<knotq_model::DocumentId, SchemeId> {
+    workspace
+        .scheme_sync
+        .iter()
+        .filter(|(_, meta)| meta.kind == SyncDocumentKind::Scheme)
+        .map(|(scheme, meta)| (meta.id, *scheme))
+        .collect()
 }
 
 #[cfg(test)]
@@ -949,6 +1046,43 @@ mod tests {
         right.apply_update_v1(&update).unwrap();
 
         assert_eq!(right.item_texts().unwrap(), vec!["First", "Second"]);
+    }
+
+    #[test]
+    fn concurrent_content_edits_to_distinct_items_merge_without_duplicates() {
+        let document = DocumentId::new();
+        let mut base = Scheme::new("Plan", 0);
+        base.items.push(Item::new("First"));
+        base.items.push(Item::new("Second"));
+
+        // Two replicas start from the same base state.
+        let left = YrsSchemeDocument::from_scheme(document, &base).unwrap();
+        let base_update = left.encode_update_v1(&[]).unwrap();
+        let right = YrsSchemeDocument::new(document);
+        right.apply_update_v1(&base_update).unwrap();
+
+        // Each replica edits a *different* item's text concurrently.
+        let mut scheme_left = base.clone();
+        scheme_left.items[0].text = "First edited".to_string();
+        let delta_left = left.sync_scheme(&scheme_left).unwrap().unwrap().update_v1;
+
+        let mut scheme_right = base.clone();
+        scheme_right.items[1].text = "Second edited".to_string();
+        let delta_right = right.sync_scheme(&scheme_right).unwrap().unwrap().update_v1;
+
+        // A third replica merges both concurrent deltas.
+        let merged = YrsSchemeDocument::new(document);
+        merged.apply_update_v1(&base_update).unwrap();
+        merged.apply_update_v1(&delta_left).unwrap();
+        merged.apply_update_v1(&delta_right).unwrap();
+
+        // The order array is not rewritten on a content-only edit, so the merge
+        // does not produce duplicate item_order entries and stays schema-valid.
+        merged.validate().unwrap();
+        assert_eq!(
+            merged.item_texts().unwrap(),
+            vec!["First edited", "Second edited"]
+        );
     }
 
     #[test]
@@ -1060,53 +1194,88 @@ mod tests {
     }
 
     #[test]
-    fn crdt_schema_validation_rejects_duplicate_item_order_entries() {
-        let doc = valid_single_item_scheme_doc();
-        let item_order = doc.get_or_insert_array("item_order");
-        let txn = doc.transact();
-        let item_id = item_order
-            .get_as::<_, Option<String>>(&txn, 0)
-            .unwrap()
-            .unwrap();
-        drop(txn);
-        item_order.push_back(&mut doc.transact_mut(), item_id);
-
-        assert!(validate_crdt_update_sequence(
-            SyncDocumentKind::Scheme,
-            [encode_full_update(&doc).as_slice()]
-        )
-        .is_err());
-    }
-
-    #[test]
-    fn crdt_schema_validation_rejects_missing_item_map_entry() {
-        let doc = valid_single_item_scheme_doc();
-        let item_order = doc.get_or_insert_array("item_order");
-        item_order.push_back(&mut doc.transact_mut(), ItemId::new().to_string());
-
-        assert!(validate_crdt_update_sequence(
-            SyncDocumentKind::Scheme,
-            [encode_full_update(&doc).as_slice()]
-        )
-        .is_err());
-    }
-
-    #[test]
-    fn crdt_schema_validation_rejects_extra_item_map_entry() {
-        let doc = valid_single_item_scheme_doc();
+    fn crdt_schema_validation_rejects_item_without_position() {
+        let doc = Doc::new();
+        let metadata = doc.get_or_insert_map("scheme_file");
         let items_by_id = doc.get_or_insert_map("items_by_id");
-        let item = Item::new("Extra");
+        let item = Item::new("First");
+        let mut txn = doc.transact_mut();
+        metadata.insert(&mut txn, "schema", SCHEME_SCHEMA_V2);
+        metadata.insert(&mut txn, "id", SchemeId::new().to_string());
         items_by_id.insert(
-            &mut doc.transact_mut(),
+            &mut txn,
             item.id.to_string(),
-            item_prelim(&item).unwrap(),
+            item_prelim(&item, "").unwrap(),
         );
+        drop(txn);
 
         assert!(validate_crdt_update_sequence(
             SyncDocumentKind::Scheme,
             [encode_full_update(&doc).as_slice()]
         )
         .is_err());
+    }
+
+    #[test]
+    fn crdt_schema_validation_rejects_item_id_key_mismatch() {
+        let doc = Doc::new();
+        let metadata = doc.get_or_insert_map("scheme_file");
+        let items_by_id = doc.get_or_insert_map("items_by_id");
+        let item = Item::new("First");
+        let mut txn = doc.transact_mut();
+        metadata.insert(&mut txn, "schema", SCHEME_SCHEMA_V2);
+        metadata.insert(&mut txn, "id", SchemeId::new().to_string());
+        // Store the item under a different (still valid) key than its own id.
+        items_by_id.insert(
+            &mut txn,
+            ItemId::new().to_string(),
+            item_prelim(&item, "V").unwrap(),
+        );
+        drop(txn);
+
+        assert!(validate_crdt_update_sequence(
+            SyncDocumentKind::Scheme,
+            [encode_full_update(&doc).as_slice()]
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn concurrent_inserts_into_same_gap_merge_without_wedge() {
+        let document = DocumentId::new();
+        let mut base = Scheme::new("Plan", 0);
+        base.items.push(Item::new("A"));
+        base.items.push(Item::new("B"));
+
+        let left = YrsSchemeDocument::from_scheme(document, &base).unwrap();
+        let base_update = left.encode_update_v1(&[]).unwrap();
+        let right = YrsSchemeDocument::new(document);
+        right.apply_update_v1(&base_update).unwrap();
+
+        // Both replicas insert a new item into the *same* gap (between A and B)
+        // offline, so they independently generate the same fractional position.
+        let mut left_scheme = base.clone();
+        left_scheme.items.insert(1, Item::new("X"));
+        let delta_left = left.sync_scheme(&left_scheme).unwrap().unwrap().update_v1;
+
+        let mut right_scheme = base.clone();
+        right_scheme.items.insert(1, Item::new("Y"));
+        let delta_right = right.sync_scheme(&right_scheme).unwrap().unwrap().update_v1;
+
+        let merged = YrsSchemeDocument::new(document);
+        merged.apply_update_v1(&base_update).unwrap();
+        merged.apply_update_v1(&delta_left).unwrap();
+        merged.apply_update_v1(&delta_right).unwrap();
+
+        // Identical positions are fine: the id tiebreak keeps a deterministic
+        // total order, both inserts survive, and the schema stays valid.
+        merged.validate().unwrap();
+        let texts = merged.item_texts().unwrap();
+        assert_eq!(texts.len(), 4, "{texts:?}");
+        assert_eq!(texts[0], "A");
+        assert_eq!(texts[3], "B");
+        assert!(texts.contains(&"X".to_string()));
+        assert!(texts.contains(&"Y".to_string()));
     }
 
     #[test]
@@ -1248,16 +1417,14 @@ mod tests {
     fn valid_single_item_scheme_doc() -> Doc {
         let doc = Doc::new();
         let metadata = doc.get_or_insert_map("scheme_file");
-        let item_order = doc.get_or_insert_array("item_order");
         let items_by_id = doc.get_or_insert_map("items_by_id");
         let scheme = Scheme::new("Plan", 0);
         let item = Item::new("First");
         let item_id = item.id.to_string();
         let mut txn = doc.transact_mut();
-        metadata.insert(&mut txn, "schema", "knotq.scheme_file.v1");
+        metadata.insert(&mut txn, "schema", SCHEME_SCHEMA_V2);
         metadata.insert(&mut txn, "id", scheme.id.to_string());
-        item_order.push_back(&mut txn, item_id.clone());
-        items_by_id.insert(&mut txn, item_id, item_prelim(&item).unwrap());
+        items_by_id.insert(&mut txn, item_id, item_prelim(&item, "V").unwrap());
         drop(txn);
         doc
     }

@@ -48,7 +48,7 @@ pub struct SavedWindowPosition {
     pub y: f32,
 }
 
-#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct AppSettings {
     #[serde(default)]
     pub replica_id: ReplicaId,
@@ -62,6 +62,8 @@ pub struct AppSettings {
     pub time_format: TimeFormat,
     #[serde(default)]
     pub notification_defaults: NotificationDefaults,
+    #[serde(default = "default_true")]
+    pub auto_update: bool,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub scheduled_notification_ids: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -74,6 +76,26 @@ pub struct AppSettings {
     pub sync_account: Option<SyncAccountSettings>,
     #[serde(default)]
     pub onboarding_completed: bool,
+}
+
+impl Default for AppSettings {
+    fn default() -> Self {
+        Self {
+            replica_id: ReplicaId::default(),
+            calendar_view: CalendarViewMode::default(),
+            calendar_week_range: CalendarWeekRange::default(),
+            theme_mode: ThemeMode::default(),
+            time_format: TimeFormat::default(),
+            notification_defaults: NotificationDefaults::default(),
+            auto_update: default_true(),
+            scheduled_notification_ids: Vec::new(),
+            window_size: None,
+            window_position: None,
+            google_accounts: Vec::new(),
+            sync_account: None,
+            onboarding_completed: false,
+        }
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]

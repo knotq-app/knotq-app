@@ -1,4 +1,4 @@
-use chrono::{Duration, Utc};
+use chrono::{DateTime, Duration, Local, Utc};
 use gpui::prelude::*;
 use gpui::{div, px, ClickEvent, Context, IntoElement};
 use gpui_component::scroll::ScrollableElement as _;
@@ -7,6 +7,7 @@ use knotq_storage_json::{
     NotificationDefaults, ThemeMode, TimeFormat, WorkspaceSnapshot,
 };
 
+use crate::app::auto_update::AutoUpdateUiStatus;
 use crate::app::KnotQApp;
 use crate::theme_gpui::{all_themes, token_hsla, token_rgba, Theme as UiTheme};
 
@@ -152,6 +153,7 @@ impl KnotQApp {
             ));
         }
         let history_rows = self.version_history_rows(t, cx);
+        let update_rows = self.auto_update_rows(t, cx);
 
         div()
             .flex_1()
@@ -174,10 +176,27 @@ impl KnotQApp {
                         .child(settings_section("Calendar", calendar_rows, t))
                         .child(settings_section("Time", time_rows, t))
                         .child(settings_section("Notifications", notification_rows, t))
+                        .child(settings_section("Updates", update_rows, t))
                         .child(settings_section("Version History", history_rows, t)),
                 ),
             )
             .into_any_element()
+    }
+
+    fn auto_update_rows(&mut self, t: UiTheme, cx: &mut Context<Self>) -> Vec<gpui::AnyElement> {
+        let auto_update_enabled = self.settings.auto_update;
+        let mut rows = vec![choice_row(
+            ("auto-update-setting", 0),
+            "Automatically check for updates",
+            auto_update_enabled,
+            active_marker(auto_update_enabled, t),
+            t,
+            cx,
+            move |this, cx| this.set_auto_update_enabled(!auto_update_enabled, cx),
+        )];
+
+        rows.push(update_status_row(self.auto_update_status.clone(), t, cx));
+        rows
     }
 
     fn version_history_rows(
@@ -421,6 +440,144 @@ fn history_snapshot_row(
                 .child("Restore"),
         )
         .into_any_element()
+}
+
+fn update_status_row(
+    status: AutoUpdateUiStatus,
+    t: UiTheme,
+    cx: &mut Context<KnotQApp>,
+) -> gpui::AnyElement {
+    match status {
+        AutoUpdateUiStatus::Disabled { reason } => settings_message(reason, false, t),
+        AutoUpdateUiStatus::Idle => settings_action_row(
+            "auto-update-check",
+            "Current version".to_string(),
+            format!("KnotQ {}", env!("CARGO_PKG_VERSION")),
+            "Check",
+            t,
+            cx,
+            |this, cx| this.check_for_updates(cx),
+        ),
+        AutoUpdateUiStatus::Checking => {
+            settings_message("Checking for updates...".to_string(), false, t)
+        }
+        AutoUpdateUiStatus::Downloading { version } => {
+            settings_message(format!("Downloading KnotQ {version}..."), false, t)
+        }
+        AutoUpdateUiStatus::Ready { update } => {
+            let button = match update.install_strategy {
+                knotq_auto_update::InstallStrategy::InstalledOnRestart => "Restart",
+                knotq_auto_update::InstallStrategy::RunInstallerAndQuit => "Install",
+            };
+            settings_action_row(
+                "auto-update-install",
+                format!("KnotQ {} is ready", update.version),
+                update.asset_name,
+                button,
+                t,
+                cx,
+                |this, cx| this.install_ready_update(cx),
+            )
+        }
+        AutoUpdateUiStatus::UpToDate {
+            version,
+            checked_at,
+        } => settings_action_row(
+            "auto-update-check",
+            "KnotQ is up to date".to_string(),
+            format!(
+                "Latest: {version} - checked {}",
+                checked_time_label(checked_at)
+            ),
+            "Check",
+            t,
+            cx,
+            |this, cx| this.check_for_updates(cx),
+        ),
+        AutoUpdateUiStatus::Errored { message, .. } => settings_action_row(
+            "auto-update-check",
+            "Update check failed".to_string(),
+            message,
+            "Check",
+            t,
+            cx,
+            |this, cx| this.check_for_updates(cx),
+        ),
+    }
+}
+
+fn settings_action_row<F>(
+    id: &'static str,
+    title: String,
+    detail: String,
+    button_label: &'static str,
+    t: UiTheme,
+    cx: &mut Context<KnotQApp>,
+    on_click: F,
+) -> gpui::AnyElement
+where
+    F: Fn(&mut KnotQApp, &mut Context<KnotQApp>) + 'static,
+{
+    div()
+        .id(id)
+        .px(px(8.0))
+        .py(px(5.0))
+        .min_h(px(38.0))
+        .flex()
+        .items_center()
+        .justify_between()
+        .gap(px(8.0))
+        .border_b_1()
+        .border_color(token_rgba(t.divider_tiny))
+        .child(
+            div()
+                .min_w_0()
+                .flex()
+                .flex_col()
+                .gap(px(2.0))
+                .child(
+                    div()
+                        .text_size(px(12.0))
+                        .font_weight(gpui::FontWeight::SEMIBOLD)
+                        .text_color(token_hsla(t.text_primary))
+                        .child(title),
+                )
+                .child(
+                    div()
+                        .text_size(px(11.0))
+                        .line_height(px(14.0))
+                        .text_color(token_hsla(t.text_soft))
+                        .child(detail),
+                ),
+        )
+        .child(
+            div()
+                .id((id, 0_usize))
+                .flex_shrink_0()
+                .px(px(7.0))
+                .py(px(3.0))
+                .rounded(px(3.0))
+                .border_1()
+                .border_color(token_rgba(t.border_main))
+                .bg(token_rgba(t.button_bg))
+                .hover({
+                    let c = t.button_hover;
+                    move |h| h.bg(token_rgba(c))
+                })
+                .cursor_pointer()
+                .text_size(px(11.0))
+                .font_weight(gpui::FontWeight::SEMIBOLD)
+                .text_color(token_hsla(t.text_primary))
+                .on_click(cx.listener(move |this, _: &ClickEvent, _w, cx| {
+                    on_click(this, cx);
+                }))
+                .child(button_label),
+        )
+        .into_any_element()
+}
+
+fn checked_time_label(checked_at: DateTime<Utc>) -> String {
+    checked_at.with_timezone(&Local).format("%H:%M").to_string()
 }
 
 fn snapshot_detail(snapshot: &WorkspaceSnapshot, short_id: String) -> String {

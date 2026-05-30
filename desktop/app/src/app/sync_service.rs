@@ -231,7 +231,7 @@ fn sync_snapshot(snapshot: SyncSnapshot) -> Result<SyncRunResult> {
         document: workspace.sync.id,
         kind: SyncDocumentKind::PersonalWorkspace,
     };
-    let workspace_pull = pull_document(
+    let workspace_pull = pull_document_all(
         &client,
         &local_state,
         server_workspace_id,
@@ -239,7 +239,7 @@ fn sync_snapshot(snapshot: SyncSnapshot) -> Result<SyncRunResult> {
         snapshot.replica_id,
     )?;
     remote_latest.insert(workspace_doc.document, workspace_pull.latest_sequence);
-    let workspace_updates = pull_response_updates(&workspace_pull);
+    let workspace_updates = workspace_pull.updates;
     forced_snapshot_applied |= workspace_pull.forced_snapshot;
     if !workspace_updates.is_empty() {
         let outcome = crdt_docs.apply_remote_updates(&workspace, &workspace_updates);
@@ -260,7 +260,7 @@ fn sync_snapshot(snapshot: SyncSnapshot) -> Result<SyncRunResult> {
 
     let mut scheme_updates = Vec::new();
     for doc in scheme_documents(&workspace) {
-        let pull = pull_document(
+        let pull = pull_document_all(
             &client,
             &local_state,
             server_workspace_id,
@@ -269,9 +269,8 @@ fn sync_snapshot(snapshot: SyncSnapshot) -> Result<SyncRunResult> {
         )?;
         remote_latest.insert(doc.document, pull.latest_sequence);
         forced_snapshot_applied |= pull.forced_snapshot;
-        let updates = pull_response_updates(&pull);
-        if !updates.is_empty() {
-            scheme_updates.extend(updates);
+        if !pull.updates.is_empty() {
+            scheme_updates.extend(pull.updates);
         }
         local_state.mark_pulled(doc.document, doc.kind, pull.latest_sequence);
     }
@@ -367,19 +366,50 @@ fn upsert_documents(
     Ok(())
 }
 
-fn pull_document(
+struct AccumulatedPull {
+    updates: Vec<StoredCrdtUpdate>,
+    latest_sequence: u64,
+    forced_snapshot: bool,
+}
+
+/// Pull a document one bounded page at a time, following the server's `has_more`
+/// flag until caught up. Paging keeps individual responses small even when a
+/// replica is far behind.
+fn pull_document_all(
     client: &SyncHttpClient,
     local_state: &LocalSyncState,
     workspace_id: WorkspaceId,
     doc: SyncDocumentRef,
     replica_id: ReplicaId,
-) -> Result<PullUpdatesResponse> {
-    let after = local_state
+) -> Result<AccumulatedPull> {
+    let mut after = local_state
         .document_cursors
         .get(&doc.document)
         .map(|cursor| cursor.last_pulled_sequence)
         .unwrap_or(0);
-    client.pull_updates(workspace_id, doc.document, after, replica_id)
+    let mut updates = Vec::new();
+    let mut latest_sequence;
+    let mut forced_snapshot = false;
+    loop {
+        let response = client.pull_updates(workspace_id, doc.document, after, replica_id)?;
+        latest_sequence = response.latest_sequence;
+        forced_snapshot |= response.forced_snapshot;
+        let page = pull_response_updates(&response);
+        let page_max = page.iter().map(|update| update.sequence).max();
+        updates.extend(page);
+        match page_max {
+            // Advance only while the cursor strictly moves forward, so a
+            // misbehaving server that keeps reporting `has_more` cannot wedge
+            // the client in an infinite pull loop.
+            Some(max) if response.has_more && max > after => after = max,
+            _ => break,
+        }
+    }
+    Ok(AccumulatedPull {
+        updates,
+        latest_sequence,
+        forced_snapshot,
+    })
 }
 
 fn queue_bootstrap_updates(
@@ -748,8 +778,59 @@ fn normalize_api_base(raw: &str) -> Result<String> {
     if trimmed.is_empty() {
         return Err(anyhow!("sync API URL is empty"));
     }
-    Ok(match trimmed {
+    let normalized = match trimmed {
         "http://127.0.0.1:7878" | "http://localhost:7878" => "http://127.0.0.1:8787".to_string(),
         _ => trimmed.to_string(),
-    })
+    };
+    // The bearer token and all workspace contents travel over this URL. Refuse
+    // plaintext HTTP to anything other than a loopback dev server so a misconfig
+    // (or tampered settings file) can't silently leak credentials in the clear.
+    if !is_secure_api_base(&normalized) {
+        return Err(anyhow!("sync API URL must use https:// (got {normalized})"));
+    }
+    Ok(normalized)
+}
+
+fn is_secure_api_base(url: &str) -> bool {
+    if let Some(host) = url.strip_prefix("https://") {
+        return !host.is_empty();
+    }
+    if let Some(rest) = url.strip_prefix("http://") {
+        let host = rest
+            .split(['/', ':'])
+            .next()
+            .unwrap_or("")
+            .to_ascii_lowercase();
+        return matches!(host.as_str(), "127.0.0.1" | "localhost" | "[::1]" | "::1");
+    }
+    false
+}
+
+#[cfg(test)]
+mod tests {
+    use super::normalize_api_base;
+
+    #[test]
+    fn https_urls_are_accepted_and_trimmed() {
+        assert_eq!(
+            normalize_api_base("https://sync.example.com/").unwrap(),
+            "https://sync.example.com"
+        );
+    }
+
+    #[test]
+    fn loopback_http_is_allowed_for_dev() {
+        assert_eq!(
+            normalize_api_base("http://localhost:7878").unwrap(),
+            "http://127.0.0.1:8787"
+        );
+        assert!(normalize_api_base("http://127.0.0.1:8787").is_ok());
+    }
+
+    #[test]
+    fn plaintext_http_to_remote_hosts_is_rejected() {
+        assert!(normalize_api_base("http://sync.example.com").is_err());
+        assert!(normalize_api_base("ftp://sync.example.com").is_err());
+        assert!(normalize_api_base("").is_err());
+    }
 }

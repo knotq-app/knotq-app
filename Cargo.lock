@@ -3024,6 +3024,7 @@ dependencies = [
  "futures",
  "gpui",
  "gpui-component",
+ "knotq-auto-update",
  "knotq-commands",
  "knotq-date-util",
  "knotq-editor",
@@ -3043,6 +3044,18 @@ dependencies = [
  "ureq",
  "urlencoding",
  "uuid",
+]
+
+[[package]]
+name = "knotq-auto-update"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "chrono",
+ "semver",
+ "serde",
+ "serde_json",
+ "ureq",
 ]
 
 [[package]]
@@ -3202,6 +3215,7 @@ name = "knotq-sync"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "base64",
  "chrono",
  "knotq-model",
  "serde",

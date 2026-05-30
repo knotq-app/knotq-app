@@ -1,5 +1,6 @@
 [workspace]
 members = [
+    "desktop/auto-update",
     "desktop/app",
     "desktop/commands",
     "desktop/date-util",
@@ -28,6 +29,7 @@ rand = "0.8"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sha2 = "0.10"
+semver = "1"
 thiserror = "1"
 ureq = { version = "2", features = ["json"] }
 urlencoding = "2"
@@ -35,6 +37,7 @@ uuid = { version = "1", features = ["v4", "serde"] }
 yrs = "0.26"
 
 knotq-commands = { path = "desktop/commands" }
+knotq-auto-update = { path = "desktop/auto-update" }
 knotq-date-util = { path = "desktop/date-util" }
 knotq-editor = { path = "desktop/editor" }
 knotq-history = { path = "desktop/history" }

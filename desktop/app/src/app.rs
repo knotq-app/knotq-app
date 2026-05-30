@@ -14,6 +14,7 @@
 //! - `node_rename`   – inline rename and new-node prompt
 //! - `calendar_state`– calendar toggle state and event completion
 
+pub(crate) mod auto_update;
 mod bootstrap;
 mod calendar_state;
 mod commands;
@@ -58,6 +59,7 @@ use knotq_storage_json::{
     workspace_path, AppSettings, WorkspaceLoadOptions,
 };
 
+use auto_update::{spawn_auto_update_task, AutoUpdateSignal, AutoUpdateUiStatus};
 use bootstrap::load_or_seed;
 use services::{spawn_notification_task, spawn_save_task, spawn_timeline_task, AppServiceBus};
 use sync_service::spawn_sync_task;
@@ -454,6 +456,8 @@ pub struct KnotQApp {
     pub(crate) workspace_save_blocked_reason: Option<String>,
     pub workspace_history_error: Option<String>,
     pub notification_error: Option<String>,
+    pub auto_update_status: AutoUpdateUiStatus,
+    pub(crate) auto_update_tx: async_channel::Sender<AutoUpdateSignal>,
     pub cal_drag: Option<CalendarDragState>,
     pub cal_move: Option<CalendarMoveState>,
     pub cal_resize: Option<CalendarResizeState>,
@@ -462,6 +466,7 @@ pub struct KnotQApp {
     pub _state_task: Task<()>,
     pub _sync_task: Task<()>,
     pub _google_calendar_sync_task: Task<()>,
+    pub _auto_update_task: Task<()>,
     pub _editor_subscription: Option<Subscription>,
     pub _search_subscription: Option<Subscription>,
     pub _appearance_subscription: Option<Subscription>,
@@ -501,12 +506,14 @@ impl KnotQApp {
         let today = Local::now().date_naive();
 
         let (service_bus, service_receivers) = AppServiceBus::new();
+        let (auto_update_tx, auto_update_rx) = async_channel::bounded(4);
         let save_task = spawn_save_task(service_receivers.save_rx, cx);
         let notification_task =
             spawn_notification_task(service_bus.clone(), service_receivers.notification_rx, cx);
         let state_task = spawn_timeline_task(service_receivers.timeline_rx, cx);
         let sync_task = spawn_sync_task(service_receivers.sync_rx, cx);
         let google_calendar_sync_task = Self::spawn_google_calendar_sync_task(cx);
+        let auto_update_task = spawn_auto_update_task(auto_update_rx, cx);
         let quit_subscription = cx.on_app_quit(|app, _cx| {
             app.flush_for_shutdown("app quit");
             async {}
@@ -559,6 +566,8 @@ impl KnotQApp {
             workspace_save_blocked_reason,
             workspace_history_error: None,
             notification_error: None,
+            auto_update_status: AutoUpdateUiStatus::initial(),
+            auto_update_tx,
             cal_drag: None,
             cal_move: None,
             cal_resize: None,
@@ -567,6 +576,7 @@ impl KnotQApp {
             _state_task: state_task,
             _sync_task: sync_task,
             _google_calendar_sync_task: google_calendar_sync_task,
+            _auto_update_task: auto_update_task,
             _editor_subscription: None,
             _search_subscription: None,
             _appearance_subscription: None,

@@ -68,5 +68,6 @@ mod tests {
                 .assignment_offset_secs,
             2 * 60 * 60
         );
+        assert!(AppSettings::default().auto_update);
     }
 }

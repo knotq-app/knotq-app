@@ -121,6 +121,7 @@ impl KnotQApp {
             theme_mode: self.theme_mode,
             time_format: self.time_format,
             notification_defaults: self.notification_defaults,
+            auto_update: self.settings.auto_update,
             scheduled_notification_ids: self.scheduled_notification_ids.clone(),
             window_size: self.window_size,
             window_position: self.window_position,

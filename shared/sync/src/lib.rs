@@ -1,6 +1,7 @@
 use std::collections::{HashMap, VecDeque};
 
 mod crdt;
+mod fractional;
 
 use chrono::{DateTime, Utc};
 use knotq_model::{DocumentId, OperationId, ReplicaId, ShareId, SyncDocumentKind, WorkspaceId};
@@ -11,6 +12,26 @@ pub use crdt::{
     validate_crdt_update_sequence, WorkspaceCrdtApplyOutcome, WorkspaceCrdtChangeSet,
     WorkspaceCrdtDocuments, WorkspaceCrdtSyncOutcome, YrsSchemeDocument,
 };
+
+/// Serde codec that represents CRDT update bytes as a base64 string rather than
+/// a JSON array of integers. The array form inflates each byte to up to four
+/// JSON characters (`"255,"`); base64 keeps the wire/at-rest payload ~1.33x the
+/// raw size instead of ~4-8x.
+mod base64_bytes {
+    use base64::{engine::general_purpose::STANDARD, Engine};
+    use serde::{Deserialize, Deserializer, Serializer};
+
+    pub fn serialize<S: Serializer>(bytes: &[u8], serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(&STANDARD.encode(bytes))
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Vec<u8>, D::Error> {
+        let encoded = String::deserialize(deserializer)?;
+        STANDARD
+            .decode(encoded.as_bytes())
+            .map_err(serde::de::Error::custom)
+    }
+}
 
 pub const SYNC_API_VERSION: &str = "2026-05-29-crdt-sync-beta";
 pub const LOCAL_SYNC_STATE_FILE: &str = "sync-state.json";
@@ -225,6 +246,7 @@ pub struct ShareDocumentResponse {
 pub struct CrdtDocumentUpdate {
     pub document: DocumentId,
     pub kind: SyncDocumentKind,
+    #[serde(with = "base64_bytes")]
     pub update_v1: Vec<u8>,
 }
 
@@ -237,6 +259,7 @@ pub struct PendingCrdtEdit {
     pub created_at: DateTime<Utc>,
     pub document: DocumentId,
     pub kind: SyncDocumentKind,
+    #[serde(with = "base64_bytes")]
     pub update_v1: Vec<u8>,
 }
 
@@ -456,6 +479,10 @@ pub struct PullUpdatesResponse {
     pub updates: Vec<StoredCrdtUpdate>,
     pub latest_sequence: u64,
     pub notification_schedule_revision: u64,
+    /// Set by the server when more updates remain beyond this page; the client
+    /// should keep pulling (advancing `after`) until this is false.
+    #[serde(default)]
+    pub has_more: bool,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -465,6 +492,7 @@ pub struct StoredCrdtSnapshot {
     pub kind: SyncDocumentKind,
     pub sequence: u64,
     pub compacted_at: DateTime<Utc>,
+    #[serde(with = "base64_bytes")]
     pub update_v1: Vec<u8>,
 }
 
@@ -476,6 +504,7 @@ pub struct StoredCrdtUpdate {
     pub replica_id: ReplicaId,
     pub sequence: u64,
     pub received_at: DateTime<Utc>,
+    #[serde(with = "base64_bytes")]
     pub update_v1: Vec<u8>,
 }
 
@@ -678,6 +707,20 @@ mod tests {
         assert_eq!(request.replica_id, replica_id);
         assert_eq!(request.updates.len(), 1);
         assert_eq!(request.updates[0].document, document);
+    }
+
+    #[test]
+    fn crdt_update_bytes_serialize_as_base64_string() {
+        let update = CrdtDocumentUpdate {
+            document: DocumentId::new(),
+            kind: SyncDocumentKind::Scheme,
+            update_v1: vec![0, 1, 2, 255],
+        };
+        let json = serde_json::to_value(&update).unwrap();
+        // base64 of [0,1,2,255] is "AAEC/w==" — a string, not a JSON array.
+        assert_eq!(json["update_v1"], serde_json::json!("AAEC/w=="));
+        let round_tripped: CrdtDocumentUpdate = serde_json::from_value(json).unwrap();
+        assert_eq!(round_tripped.update_v1, vec![0, 1, 2, 255]);
     }
 
     #[test]
