@@ -8,12 +8,15 @@ use knotq_model::{
 };
 use serde::{Deserialize, Serialize};
 use yrs::updates::{decoder::Decode, encoder::Encode};
-use yrs::{Doc, In, Map, MapPrelim, MapRef, ReadTxn, StateVector, Transact, TransactionMut, Update};
+use yrs::{
+    Doc, GetString, In, Map, MapPrelim, MapRef, OffsetKind, Options, Out, ReadTxn, StateVector,
+    Text, TextPrelim, TextRef, Transact, TransactionMut, Update,
+};
 
 use crate::{CrdtDocumentUpdate, StoredCrdtUpdate};
 
-const SCHEME_SCHEMA_V2: &str = "knotq.scheme_file.v2";
-const WORKSPACE_SCHEMA_V2: &str = "knotq.workspace.v2";
+const SCHEME_SCHEMA_V1: &str = "knotq.scheme_file.v1";
+const WORKSPACE_SCHEMA_V1: &str = "knotq.workspace.v1";
 
 const NODE_KIND_FOLDER: &str = "folder";
 const NODE_KIND_SCHEME: &str = "scheme";
@@ -375,7 +378,7 @@ fn validate_workspace_document(doc: &Doc) -> anyhow::Result<()> {
         .get_as::<_, Option<String>>(&txn, "schema")
         .context("read workspace schema")?
         .ok_or_else(|| anyhow!("workspace schema missing"))?;
-    if schema != WORKSPACE_SCHEMA_V2 {
+    if schema != WORKSPACE_SCHEMA_V1 {
         return Err(anyhow!("workspace schema invalid"));
     }
     let id = meta
@@ -441,7 +444,7 @@ fn validate_scheme_document(doc: &Doc) -> anyhow::Result<()> {
         .get_as::<_, Option<String>>(&txn, "schema")
         .context("read scheme schema")?
         .ok_or_else(|| anyhow!("scheme schema missing"))?;
-    if schema != SCHEME_SCHEMA_V2 {
+    if schema != SCHEME_SCHEMA_V1 {
         return Err(anyhow!("scheme schema invalid"));
     }
     let scheme_id = metadata
@@ -460,11 +463,11 @@ fn validate_scheme_document(doc: &Doc) -> anyhow::Result<()> {
         let parsed_item_id = item_id
             .parse::<ItemId>()
             .with_context(|| format!("item id invalid: {item_id}"))?;
-        let item = items_by_id
-            .get_as::<_, Option<YrsSchemeItemSnapshot>>(&txn, &item_id)
-            .with_context(|| format!("read item {item_id}"))?
-            .ok_or_else(|| anyhow!("item entry missing: {item_id}"))?;
-        validate_scheme_item(&item_id, parsed_item_id, item)?;
+        let item_map = match items_by_id.get(&txn, &item_id) {
+            Some(Out::YMap(map)) => map,
+            _ => return Err(anyhow!("item entry missing or not a map: {item_id}")),
+        };
+        validate_scheme_item(&item_id, parsed_item_id, &item_map, &txn)?;
     }
 
     Ok(())
@@ -473,48 +476,68 @@ fn validate_scheme_document(doc: &Doc) -> anyhow::Result<()> {
 fn validate_scheme_item(
     item_id: &str,
     parsed_item_id: ItemId,
-    item: YrsSchemeItemSnapshot,
+    item_map: &MapRef,
+    txn: &impl ReadTxn,
 ) -> anyhow::Result<()> {
-    if item.schema != "knotq.item.v2" {
+    let str_field = |key: &str| item_map.get_as::<_, Option<String>>(txn, key).ok().flatten();
+    let require_str = |key: &str| {
+        str_field(key).ok_or_else(|| anyhow!("item {key} missing: {item_id}"))
+    };
+
+    if require_str("schema")? != "knotq.item.v1" {
         return Err(anyhow!("item schema invalid: {item_id}"));
     }
-    if item.id != item_id {
+    let id = require_str("id")?;
+    if id != item_id {
         return Err(anyhow!("item id mismatch: {item_id}"));
     }
-    item.id.parse::<ItemId>().context("item id invalid")?;
-    if item.position.is_empty() {
+    if require_str("position")?.is_empty() {
         return Err(anyhow!("item position missing: {item_id}"));
     }
     if !matches!(
-        item.marker.as_str(),
+        require_str("marker")?.as_str(),
         "blank" | "bullet" | "numbered" | "checkbox"
     ) {
         return Err(anyhow!("item marker invalid: {item_id}"));
     }
-    if !(0..=i64::from(u8::MAX)).contains(&item.indent) {
+    let indent = item_map
+        .get_as::<_, Option<i64>>(txn, "indent")
+        .ok()
+        .flatten()
+        .ok_or_else(|| anyhow!("item indent missing: {item_id}"))?;
+    if !(0..=i64::from(u8::MAX)).contains(&indent) {
         return Err(anyhow!("item indent invalid: {item_id}"));
     }
-    parse_optional_rfc3339(&item.start)
+    parse_optional_rfc3339(&require_str("start")?)
         .with_context(|| format!("item start invalid: {item_id}"))?;
-    parse_optional_rfc3339(&item.end).with_context(|| format!("item end invalid: {item_id}"))?;
-    parse_optional_rfc3339(&item.available)
+    parse_optional_rfc3339(&require_str("end")?)
+        .with_context(|| format!("item end invalid: {item_id}"))?;
+    parse_optional_rfc3339(&require_str("available")?)
         .with_context(|| format!("item available invalid: {item_id}"))?;
-    parse_json_value(&item.media_json).with_context(|| format!("item media invalid: {item_id}"))?;
-    parse_json_value(&item.repeats_json)
+    parse_json_value(&require_str("media_json")?)
+        .with_context(|| format!("item media invalid: {item_id}"))?;
+    parse_json_value(&require_str("repeats_json")?)
         .with_context(|| format!("item repeats invalid: {item_id}"))?;
-    parse_json_value(&item.state_json).with_context(|| format!("item state invalid: {item_id}"))?;
-    parse_json_value(&item.priority_json)
+    parse_json_value(&require_str("state_json")?)
+        .with_context(|| format!("item state invalid: {item_id}"))?;
+    parse_json_value(&require_str("priority_json")?)
         .with_context(|| format!("item priority invalid: {item_id}"))?;
-    parse_json_value(&item.external_json)
+    parse_json_value(&require_str("external_json")?)
         .with_context(|| format!("item external invalid: {item_id}"))?;
 
-    let snapshot: Item = serde_json::from_str(&item.snapshot_json)
+    // Text is a collaborative sequence CRDT (yrs Text), not a plain string, so
+    // concurrent character edits merge. Its presence (and that it reads as text)
+    // is the structural requirement; any content is valid line text.
+    if item_text_ref(item_map, txn).is_none() {
+        return Err(anyhow!("item text missing or not a text type: {item_id}"));
+    }
+
+    // snapshot_json carries every non-text field for materialization; text lives
+    // in the Text CRDT and is intentionally absent here.
+    let snapshot: Item = serde_json::from_str(&require_str("snapshot_json")?)
         .with_context(|| format!("item snapshot invalid: {item_id}"))?;
     if snapshot.id != parsed_item_id {
         return Err(anyhow!("item snapshot id mismatch: {item_id}"));
-    }
-    if snapshot.text != item.text {
-        return Err(anyhow!("item snapshot text mismatch: {item_id}"));
     }
 
     Ok(())
@@ -551,7 +574,13 @@ pub struct YrsSchemeDocument {
 
 impl YrsSchemeDocument {
     pub fn new(id: DocumentId) -> Self {
-        let doc = Doc::new();
+        // UTF-16 offsets match Yjs (JS) semantics, so the text-diff index math
+        // here lines up with any future JavaScript collaboration client and never
+        // splits a multi-byte character.
+        let doc = Doc::with_options(Options {
+            offset_kind: OffsetKind::Utf16,
+            ..Options::default()
+        });
         doc.get_or_insert_map("scheme_file");
         doc.get_or_insert_map("items_by_id");
         Self { id, doc }
@@ -587,9 +616,9 @@ impl YrsSchemeDocument {
             .ok()
             .flatten()
             .as_deref()
-            != Some(SCHEME_SCHEMA_V2)
+            != Some(SCHEME_SCHEMA_V1)
         {
-            metadata.insert(&mut txn, "schema", SCHEME_SCHEMA_V2);
+            metadata.insert(&mut txn, "schema", SCHEME_SCHEMA_V1);
         }
         let scheme_id = scheme.id.to_string();
         if metadata
@@ -608,14 +637,10 @@ impl YrsSchemeDocument {
             .keys(&txn)
             .map(str::to_string)
             .collect::<Vec<_>>();
-        let mut stored: HashMap<String, YrsSchemeItemSnapshot> = HashMap::new();
+        let mut stored: HashMap<String, StoredItem> = HashMap::new();
         for key in stored_keys {
-            if let Some(entry) = items_by_id
-                .get_as::<_, Option<YrsSchemeItemSnapshot>>(&txn, &key)
-                .ok()
-                .flatten()
-            {
-                stored.insert(key, entry);
+            if let Some(item_map) = item_map_ref(&items_by_id, &txn, &key) {
+                stored.insert(key, read_stored_item(&item_map, &txn));
             }
         }
 
@@ -663,16 +688,45 @@ impl YrsSchemeDocument {
             items_by_id.remove(&mut txn, &key);
         }
 
-        // Re-insert an entry only when its content or its position changed, so a
-        // single edit produces a single map-entry delta.
+        // For each item, merge text as a sequence CRDT and treat the rest as
+        // last-writer-wins metadata:
+        //   - new item        -> insert the full entry (text seeded into a Text type)
+        //   - text changed     -> apply a minimal insert/delete diff to the Text so
+        //                         concurrent character edits converge
+        //   - metadata changed -> rewrite the scalar fields + snapshot blob only
+        // so a text edit never recreates (and clobbers) the collaborative Text.
         for (item, position) in scheme.items.iter().zip(&positions) {
             let item_id = item.id.to_string();
-            let next_snapshot = serde_json::to_string(item)?;
-            let unchanged = stored.get(&item_id).is_some_and(|existing| {
-                existing.snapshot_json == next_snapshot && existing.position == *position
-            });
-            if !unchanged {
-                items_by_id.insert(&mut txn, item_id, item_prelim(item, position)?);
+            let next_snapshot = item_snapshot_json(item)?;
+            let prev = stored.get(&item_id);
+            match item_map_ref(&items_by_id, &txn, &item_id) {
+                None => {
+                    items_by_id.insert(&mut txn, item_id, item_prelim(item, position)?);
+                }
+                Some(item_map) => {
+                    match item_text_ref(&item_map, &txn) {
+                        Some(text_ref) => {
+                            let current = match prev {
+                                Some(stored) => stored.text.clone(),
+                                None => text_ref.get_string(&txn),
+                            };
+                            if current != item.text {
+                                apply_text_diff(&text_ref, &mut txn, &current, &item.text);
+                            }
+                        }
+                        // No Text present (corrupt/legacy entry) — rebuild it whole.
+                        None => {
+                            items_by_id.insert(&mut txn, item_id, item_prelim(item, position)?);
+                            continue;
+                        }
+                    }
+                    let metadata_changed = prev.is_none_or(|stored| {
+                        stored.snapshot_json != next_snapshot || stored.position != *position
+                    });
+                    if metadata_changed {
+                        write_item_metadata(&item_map, &mut txn, item, position, &next_snapshot)?;
+                    }
+                }
             }
         }
         Ok(())
@@ -705,7 +759,7 @@ impl YrsSchemeDocument {
     /// All stored item entries sorted by `(position, item_id)`. The id breaks
     /// ties so replicas that independently generated the same fractional key
     /// still converge to one deterministic order.
-    fn sorted_entries(&self) -> anyhow::Result<Vec<(String, YrsSchemeItemSnapshot)>> {
+    fn sorted_entries(&self) -> anyhow::Result<Vec<(String, StoredItem)>> {
         let items_by_id = self.doc.get_or_insert_map("items_by_id");
         let txn = self.doc.transact();
         let keys = items_by_id
@@ -714,10 +768,9 @@ impl YrsSchemeDocument {
             .collect::<Vec<_>>();
         let mut entries = Vec::with_capacity(keys.len());
         for key in keys {
-            let entry = items_by_id
-                .get_as::<_, Option<YrsSchemeItemSnapshot>>(&txn, &key)?
-                .ok_or_else(|| anyhow!("missing item snapshot {key}"))?;
-            entries.push((key, entry));
+            let item_map = item_map_ref(&items_by_id, &txn, &key)
+                .ok_or_else(|| anyhow!("missing item {key}"))?;
+            entries.push((key, read_stored_item(&item_map, &txn)));
         }
         entries.sort_by(|(left_id, left), (right_id, right)| {
             left.position
@@ -739,19 +792,143 @@ impl YrsSchemeDocument {
         self.sorted_entries()?
             .into_iter()
             .map(|(id, entry)| {
-                serde_json::from_str::<Item>(&entry.snapshot_json)
-                    .with_context(|| format!("parse item snapshot {id}"))
+                // snapshot_json holds every field except text; text comes from the
+                // Text CRDT, which is the source of truth for line content.
+                let mut item: Item = serde_json::from_str(&entry.snapshot_json)
+                    .with_context(|| format!("parse item snapshot {id}"))?;
+                item.text = entry.text;
+                Ok(item)
             })
             .collect()
     }
 }
 
+/// What we need from a stored item entry without deserializing the whole nested
+/// map (its `text` is a Text type, not a scalar serde can read).
+struct StoredItem {
+    position: String,
+    snapshot_json: String,
+    text: String,
+}
+
+fn item_map_ref(items_by_id: &MapRef, txn: &impl ReadTxn, key: &str) -> Option<MapRef> {
+    match items_by_id.get(txn, key) {
+        Some(Out::YMap(map)) => Some(map),
+        _ => None,
+    }
+}
+
+fn item_text_ref(item_map: &MapRef, txn: &impl ReadTxn) -> Option<TextRef> {
+    match item_map.get(txn, "text") {
+        Some(Out::YText(text)) => Some(text),
+        _ => None,
+    }
+}
+
+fn read_stored_item(item_map: &MapRef, txn: &impl ReadTxn) -> StoredItem {
+    let str_field = |key: &str| {
+        item_map
+            .get_as::<_, Option<String>>(txn, key)
+            .ok()
+            .flatten()
+            .unwrap_or_default()
+    };
+    StoredItem {
+        position: str_field("position"),
+        snapshot_json: str_field("snapshot_json"),
+        text: item_text_ref(item_map, txn)
+            .map(|text| text.get_string(txn))
+            .unwrap_or_default(),
+    }
+}
+
+/// Serialize every item field except text. Text is owned by the Text CRDT, so
+/// keeping it out of the snapshot blob means a text edit never rewrites the blob
+/// and the two representations cannot disagree.
+fn item_snapshot_json(item: &Item) -> anyhow::Result<String> {
+    let mut snapshot = item.clone();
+    snapshot.text = String::new();
+    Ok(serde_json::to_string(&snapshot)?)
+}
+
+/// Rewrite an existing item's last-writer-wins metadata fields in place, leaving
+/// its collaborative Text untouched.
+fn write_item_metadata(
+    item_map: &MapRef,
+    txn: &mut TransactionMut,
+    item: &Item,
+    position: &str,
+    snapshot_json: &str,
+) -> anyhow::Result<()> {
+    item_map.insert(txn, "schema", "knotq.item.v1");
+    item_map.insert(txn, "id", item.id.to_string());
+    item_map.insert(txn, "position", position.to_string());
+    item_map.insert(txn, "marker", serde_json_string_value(&item.marker)?);
+    item_map.insert(txn, "indent", i64::from(item.indent));
+    item_map.insert(
+        txn,
+        "start",
+        item.start.map(|dt| dt.to_rfc3339()).unwrap_or_default(),
+    );
+    item_map.insert(
+        txn,
+        "end",
+        item.end.map(|dt| dt.to_rfc3339()).unwrap_or_default(),
+    );
+    item_map.insert(
+        txn,
+        "available",
+        item.available.map(|dt| dt.to_rfc3339()).unwrap_or_default(),
+    );
+    item_map.insert(txn, "media_json", serde_json::to_string(&item.media)?);
+    item_map.insert(txn, "repeats_json", serde_json::to_string(&item.repeats)?);
+    item_map.insert(txn, "state_json", serde_json::to_string(&item.state)?);
+    item_map.insert(txn, "priority_json", serde_json::to_string(&item.priority)?);
+    item_map.insert(txn, "external_json", serde_json::to_string(&item.external)?);
+    item_map.insert(txn, "snapshot_json", snapshot_json.to_string());
+    Ok(())
+}
+
+/// Apply the change from `old` to `new` as a single contiguous splice on the Text
+/// (the common prefix and suffix are left untouched), so a typical edit becomes a
+/// minimal insert/delete that merges character-for-character under concurrency.
+/// Offsets are UTF-16 code units to match the doc's OffsetKind and Yjs.
+fn apply_text_diff(text: &TextRef, txn: &mut TransactionMut, old: &str, new: &str) {
+    if old == new {
+        return;
+    }
+    let old_chars: Vec<char> = old.chars().collect();
+    let new_chars: Vec<char> = new.chars().collect();
+    let min_len = old_chars.len().min(new_chars.len());
+    let mut prefix = 0;
+    while prefix < min_len && old_chars[prefix] == new_chars[prefix] {
+        prefix += 1;
+    }
+    let mut suffix = 0;
+    while suffix < (min_len - prefix)
+        && old_chars[old_chars.len() - 1 - suffix] == new_chars[new_chars.len() - 1 - suffix]
+    {
+        suffix += 1;
+    }
+    let utf16_len = |chars: &[char]| chars.iter().map(|c| c.len_utf16() as u32).sum::<u32>();
+    let at = utf16_len(&old_chars[..prefix]);
+    let removed = utf16_len(&old_chars[prefix..old_chars.len() - suffix]);
+    let inserted: String = new_chars[prefix..new_chars.len() - suffix].iter().collect();
+    if removed > 0 {
+        text.remove_range(txn, at, removed);
+    }
+    if !inserted.is_empty() {
+        text.insert(txn, at, &inserted);
+    }
+}
+
 fn item_prelim(item: &Item, position: &str) -> anyhow::Result<MapPrelim> {
     Ok(MapPrelim::from([
-        ("schema", In::from("knotq.item.v2")),
+        ("schema", In::from("knotq.item.v1")),
         ("id", In::from(item.id.to_string())),
         ("position", In::from(position.to_string())),
-        ("text", In::from(item.text.clone())),
+        // Collaborative line text as a sequence CRDT (merges character edits).
+        ("text", In::from(TextPrelim::new(item.text.clone()))),
         ("marker", In::from(serde_json_string_value(&item.marker)?)),
         ("indent", In::from(i64::from(item.indent))),
         (
@@ -780,7 +957,7 @@ fn item_prelim(item: &Item, position: &str) -> anyhow::Result<MapPrelim> {
             "external_json",
             In::from(serde_json::to_string(&item.external)?),
         ),
-        ("snapshot_json", In::from(serde_json::to_string(item)?)),
+        ("snapshot_json", In::from(item_snapshot_json(item)?)),
     ]))
 }
 
@@ -945,7 +1122,7 @@ impl YrsJsonDocument {
             &meta,
             &mut txn,
             &[
-                ("schema".to_string(), WORKSPACE_SCHEMA_V2.to_string()),
+                ("schema".to_string(), WORKSPACE_SCHEMA_V1.to_string()),
                 ("id".to_string(), snapshot.id.to_string()),
                 ("root".to_string(), snapshot.root.to_string()),
                 ("sync".to_string(), serde_json::to_string(&snapshot.sync)?),
@@ -1161,7 +1338,7 @@ impl YrsJsonDocument {
         folder_sync.sort_by_key(|entry| entry.folder.to_string());
 
         Ok(WorkspaceDocumentSnapshot {
-            schema: WORKSPACE_SCHEMA_V2.to_string(),
+            schema: WORKSPACE_SCHEMA_V1.to_string(),
             id,
             sync,
             root,
@@ -1304,26 +1481,6 @@ fn assign_fractional_positions(
     }
 }
 
-#[derive(Deserialize)]
-struct YrsSchemeItemSnapshot {
-    schema: String,
-    id: String,
-    #[serde(default)]
-    position: String,
-    text: String,
-    marker: String,
-    indent: i64,
-    start: String,
-    end: String,
-    available: String,
-    media_json: String,
-    repeats_json: String,
-    state_json: String,
-    priority_json: String,
-    external_json: String,
-    snapshot_json: String,
-}
-
 #[derive(Deserialize, Serialize)]
 struct WorkspaceDocumentSnapshot {
     schema: String,
@@ -1429,7 +1586,7 @@ fn workspace_document_snapshot(workspace: &Workspace) -> WorkspaceDocumentSnapsh
     folder_sync.sort_by_key(|entry| entry.folder.to_string());
 
     WorkspaceDocumentSnapshot {
-        schema: WORKSPACE_SCHEMA_V2.to_string(),
+        schema: WORKSPACE_SCHEMA_V1.to_string(),
         id: workspace.id,
         sync: workspace.sync.clone(),
         root: workspace.root,
@@ -1515,6 +1672,39 @@ mod tests {
             merged.item_texts().unwrap(),
             vec!["First edited", "Second edited"]
         );
+    }
+
+    #[test]
+    fn concurrent_edits_to_same_item_text_merge_character_wise() {
+        let document = DocumentId::new();
+        let mut base = Scheme::new("Plan", 0);
+        base.items.push(Item::new("hello"));
+
+        // Two replicas start from the same single-line base.
+        let left = YrsSchemeDocument::from_scheme(document, &base).unwrap();
+        let base_update = left.encode_update_v1(&[]).unwrap();
+        let right = YrsSchemeDocument::new(document);
+        right.apply_update_v1(&base_update).unwrap();
+
+        // Both edit the *same* line concurrently: left appends, right prepends.
+        let mut scheme_left = base.clone();
+        scheme_left.items[0].text = "hello!".to_string();
+        let delta_left = left.sync_scheme(&scheme_left).unwrap().unwrap().update_v1;
+
+        let mut scheme_right = base.clone();
+        scheme_right.items[0].text = "Xhello".to_string();
+        let delta_right = right.sync_scheme(&scheme_right).unwrap().unwrap().update_v1;
+
+        // Merge both concurrent edits into a third replica.
+        let merged = YrsSchemeDocument::new(document);
+        merged.apply_update_v1(&base_update).unwrap();
+        merged.apply_update_v1(&delta_left).unwrap();
+        merged.apply_update_v1(&delta_right).unwrap();
+
+        merged.validate().unwrap();
+        // Because text is a sequence CRDT, both insertions survive instead of one
+        // last-writer-wins clobbering the other. Order is deterministic.
+        assert_eq!(merged.item_texts().unwrap(), vec!["Xhello!".to_string()]);
     }
 
     #[test]
@@ -1618,7 +1808,7 @@ mod tests {
         let items_by_id = doc.get_or_insert_map("items_by_id");
         let item = Item::new("First");
         let mut txn = doc.transact_mut();
-        metadata.insert(&mut txn, "schema", SCHEME_SCHEMA_V2);
+        metadata.insert(&mut txn, "schema", SCHEME_SCHEMA_V1);
         metadata.insert(&mut txn, "id", SchemeId::new().to_string());
         items_by_id.insert(
             &mut txn,
@@ -1641,7 +1831,7 @@ mod tests {
         let items_by_id = doc.get_or_insert_map("items_by_id");
         let item = Item::new("First");
         let mut txn = doc.transact_mut();
-        metadata.insert(&mut txn, "schema", SCHEME_SCHEMA_V2);
+        metadata.insert(&mut txn, "schema", SCHEME_SCHEMA_V1);
         metadata.insert(&mut txn, "id", SchemeId::new().to_string());
         // Store the item under a different (still valid) key than its own id.
         items_by_id.insert(
@@ -1953,7 +2143,7 @@ mod tests {
         let item = Item::new("First");
         let item_id = item.id.to_string();
         let mut txn = doc.transact_mut();
-        metadata.insert(&mut txn, "schema", SCHEME_SCHEMA_V2);
+        metadata.insert(&mut txn, "schema", SCHEME_SCHEMA_V1);
         metadata.insert(&mut txn, "id", scheme.id.to_string());
         items_by_id.insert(&mut txn, item_id, item_prelim(&item, "V").unwrap());
         drop(txn);
