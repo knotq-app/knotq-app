@@ -1,65 +1,28 @@
 use gpui::Context;
 use knotq_model::{FolderId, NodeRef, SchemeId};
 
-use super::{DeleteConfirmation, KnotQApp};
+use super::KnotQApp;
 
 impl KnotQApp {
     pub fn request_delete_folder(&mut self, folder_id: FolderId, cx: &mut Context<Self>) {
         if folder_id == self.workspace.root {
             return;
         }
-        let Some(folder) = self.workspace.folder(folder_id) else {
+        if self.workspace.folder(folder_id).is_none() {
             return;
-        };
-        let scheme_count = folder
-            .children
-            .iter()
-            .filter(|child| matches!(child, NodeRef::Scheme(_)))
-            .count();
-        let message = match scheme_count {
-            0 => format!("Delete empty folder \"{}\" from the workspace?", folder.name),
-            1 => format!(
-                "Move the scheme in \"{}\" to Archive and remove the folder? The scheme's tasks and calendar items can be restored later",
-                folder.name
-            ),
-            count => format!(
-                "Move the {count} schemes in \"{}\" to Archive and remove the folder? Their tasks and calendar items can be restored later",
-                folder.name
-            ),
-        };
-        self.pending_delete = Some(DeleteConfirmation {
-            target: NodeRef::Folder(folder_id),
-            title: if scheme_count == 0 {
-                "Delete folder".to_string()
-            } else {
-                "Move folder contents to Archive".to_string()
-            },
-            message,
-            confirm_label: if scheme_count == 0 {
-                "Delete".to_string()
-            } else {
-                "Move to Archive".to_string()
-            },
-        });
+        }
+        self.delete_folder(folder_id, cx);
         cx.notify();
     }
 
     pub fn request_delete_scheme(&mut self, scheme_id: SchemeId, cx: &mut Context<Self>) {
-        let Some(scheme) = self.workspace.scheme(scheme_id) else {
+        if self.workspace.scheme(scheme_id).is_none() {
             return;
-        };
+        }
         if self.workspace.is_daily_queue_scheme(scheme_id) {
             return;
         }
-        self.pending_delete = Some(DeleteConfirmation {
-            target: NodeRef::Scheme(scheme_id),
-            title: "Move item to Archive".to_string(),
-            message: format!(
-                "Move \"{}\" to Archive? Its tasks and calendar items can be restored later",
-                scheme.name
-            ),
-            confirm_label: "Move to Archive".to_string(),
-        });
+        self.delete_scheme(scheme_id, cx);
         cx.notify();
     }
 

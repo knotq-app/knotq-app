@@ -36,9 +36,15 @@ impl KnotQApp {
 
             match child {
                 NodeRef::Folder(fid) => {
-                    if let Some((row, expanded)) =
-                        self.render_folder_row(fid, position, depth, t, context_menu_open, cx)
-                    {
+                    if let Some((row, expanded)) = self.render_folder_row(
+                        fid,
+                        folder_id,
+                        position,
+                        depth,
+                        t,
+                        context_menu_open,
+                        cx,
+                    ) {
                         items.push(row);
                         if expanded {
                             items.push(

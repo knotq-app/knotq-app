@@ -4,7 +4,6 @@ impl KnotQApp {
     pub(super) fn render_trash_section(&mut self, cx: &mut Context<Self>) -> gpui::AnyElement {
         let t = self.theme();
         let context_menu_open = self.sidebar_context_menu.is_some();
-        let root = self.workspace.root;
         let deleted = self
             .workspace
             .iter_deleted_schemes()
@@ -30,7 +29,6 @@ impl KnotQApp {
                     rows.push(trash_scheme_row(
                         idx,
                         scheme_id,
-                        root,
                         name,
                         color_index,
                         t,
@@ -138,7 +136,6 @@ fn trash_header_row(
 fn trash_scheme_row(
     idx: usize,
     scheme_id: SchemeId,
-    root: FolderId,
     name: String,
     color_index: u8,
     t: Theme,
@@ -150,7 +147,6 @@ fn trash_scheme_row(
         node: NodeRef::Scheme(scheme_id),
         kind: NavigatorNodeKind::Scheme,
         source: NavigatorDragSource::Archive,
-        root,
         label: name.clone(),
         color_index: Some(color_index),
         theme: t,

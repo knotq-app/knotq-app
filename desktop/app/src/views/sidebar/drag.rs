@@ -104,9 +104,7 @@ impl KnotQApp {
 
                 match drag.node {
                     NodeRef::Folder(id) => {
-                        id != self.workspace.root
-                            && self.workspace.folder(id).is_some()
-                            && new_parent == self.workspace.root
+                        id != self.workspace.root && self.workspace.folder(id).is_some()
                     }
                     NodeRef::Scheme(id) => {
                         self.workspace.scheme(id).is_some()
@@ -204,11 +202,7 @@ impl KnotQApp {
     }
 
     fn is_valid_scheme_drop_folder(&self, folder_id: FolderId) -> bool {
-        folder_id == self.workspace.root
-            || self
-                .workspace
-                .folder(folder_id)
-                .is_some_and(|folder| folder.parent == Some(self.workspace.root))
+        self.workspace.folder(folder_id).is_some()
     }
 }
 
@@ -331,9 +325,6 @@ pub(super) fn navigator_drop_target_accepts(
     position: usize,
 ) -> bool {
     if matches!(drag.node, NodeRef::Folder(id) if id == new_parent) {
-        return false;
-    }
-    if drag.kind == NavigatorNodeKind::Folder && new_parent != drag.root {
         return false;
     }
     if let NavigatorDragSource::Active {

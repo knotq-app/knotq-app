@@ -16,7 +16,7 @@ pub enum CommandError {
     DeleteRoot,
     #[error("cannot move a folder into itself or a descendant")]
     CycleMove,
-    #[error("folders can only be created at the workspace root")]
+    #[error("invalid folder depth")]
     BadFolderDepth,
     #[error("position {0} out of bounds")]
     BadPosition(usize),
@@ -54,11 +54,7 @@ pub fn is_descendant(workspace: &Workspace, candidate: FolderId, ancestor: Folde
 }
 
 pub fn is_valid_scheme_parent(workspace: &Workspace, folder_id: FolderId) -> bool {
-    folder_id == workspace.root
-        || workspace
-            .folders
-            .get(&folder_id)
-            .is_some_and(|folder| folder.parent == Some(workspace.root))
+    workspace.folders.contains_key(&folder_id)
 }
 
 pub fn validate_depth_for_node(
@@ -67,9 +63,11 @@ pub fn validate_depth_for_node(
     new_parent: FolderId,
 ) -> Result<(), CommandError> {
     match node {
-        NodeRef::Folder(_) if new_parent != workspace.root => Err(CommandError::BadFolderDepth),
+        NodeRef::Folder(_) if !workspace.folders.contains_key(&new_parent) => {
+            Err(CommandError::FolderMissing(new_parent))
+        }
         NodeRef::Scheme(_) if !is_valid_scheme_parent(workspace, new_parent) => {
-            Err(CommandError::BadFolderDepth)
+            Err(CommandError::FolderMissing(new_parent))
         }
         _ => Ok(()),
     }

@@ -4,6 +4,7 @@ impl KnotQApp {
     pub(super) fn render_folder_row(
         &mut self,
         fid: FolderId,
+        parent_folder_id: FolderId,
         position: usize,
         depth: usize,
         t: Theme,
@@ -30,10 +31,9 @@ impl KnotQApp {
             node: NodeRef::Folder(folder.id),
             kind: NavigatorNodeKind::Folder,
             source: NavigatorDragSource::Active {
-                parent: self.workspace.root,
+                parent: parent_folder_id,
                 position,
             },
-            root: self.workspace.root,
             label: folder.name.clone(),
             color_index: None,
             theme: t,
@@ -170,7 +170,6 @@ impl KnotQApp {
                 parent: folder_id,
                 position,
             },
-            root: self.workspace.root,
             label: self.scheme_display_name(&scheme),
             color_index: Some(scheme.color_index),
             theme: t,

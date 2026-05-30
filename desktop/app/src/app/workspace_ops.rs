@@ -404,10 +404,6 @@ impl KnotQApp {
     }
 
     fn is_valid_scheme_restore_folder(&self, folder_id: FolderId) -> bool {
-        folder_id == self.workspace.root
-            || self
-                .workspace
-                .folder(folder_id)
-                .is_some_and(|folder| folder.parent == Some(self.workspace.root))
+        self.workspace.folder(folder_id).is_some()
     }
 }

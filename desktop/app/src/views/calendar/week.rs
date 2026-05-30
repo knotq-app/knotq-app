@@ -260,7 +260,8 @@ impl KnotQApp {
             };
 
             for h in 0..=24u32 {
-                let y = TIME_Y_OFFSET + h as f32 * HOUR_H;
+                let raw_y = TIME_Y_OFFSET + h as f32 * HOUR_H;
+                let y = if h == 24 { raw_y - 1.0 } else { raw_y };
                 els.push(
                     div()
                         .absolute()

@@ -181,66 +181,27 @@ impl Workspace {
     }
 
     pub fn normalize_one_level_folders(&mut self) -> bool {
-        let Some(root_folder) = self.folders.get(&self.root) else {
+        if !self.folders.contains_key(&self.root) {
             return false;
-        };
-        let root_children = root_folder.children.clone();
+        }
         let mut changed = false;
-        let mut new_root_children = Vec::with_capacity(root_children.len());
-        let mut folders_to_remove = Vec::new();
+        let mut visited_folders = HashSet::new();
+        let mut referenced_schemes = HashSet::new();
+        self.normalize_folder_tree(
+            self.root,
+            None,
+            &mut visited_folders,
+            &mut referenced_schemes,
+            &mut changed,
+        );
 
-        for child in root_children {
-            match child {
-                NodeRef::Scheme(id) => {
-                    if self.schemes.contains_key(&id) {
-                        new_root_children.push(NodeRef::Scheme(id));
-                    } else {
-                        changed = true;
-                    }
-                }
-                NodeRef::Folder(id) => {
-                    if id == self.root || !self.folders.contains_key(&id) {
-                        changed = true;
-                        continue;
-                    }
-
-                    let mut direct_children = Vec::new();
-                    self.collect_schemes_for_one_level_folder(
-                        id,
-                        &mut direct_children,
-                        &mut folders_to_remove,
-                        &mut changed,
-                    );
-
-                    if let Some(folder) = self.folders.get_mut(&id) {
-                        if folder.parent != Some(self.root) {
-                            folder.parent = Some(self.root);
-                            changed = true;
-                        }
-                        if folder.children != direct_children {
-                            folder.children = direct_children;
-                            changed = true;
-                        }
-                    }
-                    new_root_children.push(NodeRef::Folder(id));
-                }
-            }
+        let before_folders = self.folders.len();
+        self.folders
+            .retain(|id, _| *id == self.root || visited_folders.contains(id));
+        if self.folders.len() != before_folders {
+            changed = true;
         }
 
-        if let Some(root_folder) = self.folders.get_mut(&self.root) {
-            if root_folder.children != new_root_children {
-                root_folder.children = new_root_children;
-                changed = true;
-            }
-        }
-
-        for id in folders_to_remove {
-            if id != self.root && self.folders.remove(&id).is_some() {
-                changed = true;
-            }
-        }
-
-        let referenced_schemes = self.referenced_scheme_ids();
         let daily_queue_ids: HashSet<SchemeId> = self.daily_queue.values().copied().collect();
         let deleted_before = self.recently_deleted.len();
         self.recently_deleted.retain(|id| {
@@ -271,6 +232,74 @@ impl Workspace {
         }
 
         changed
+    }
+
+    fn normalize_folder_tree(
+        &mut self,
+        folder_id: FolderId,
+        expected_parent: Option<FolderId>,
+        visited_folders: &mut HashSet<FolderId>,
+        referenced_schemes: &mut HashSet<SchemeId>,
+        changed: &mut bool,
+    ) {
+        if !visited_folders.insert(folder_id) {
+            *changed = true;
+            return;
+        }
+
+        let Some(folder) = self.folders.get(&folder_id) else {
+            *changed = true;
+            return;
+        };
+        let old_parent = folder.parent;
+        let old_children = folder.children.clone();
+        if old_parent != expected_parent {
+            if let Some(folder) = self.folders.get_mut(&folder_id) {
+                folder.parent = expected_parent;
+                *changed = true;
+            }
+        }
+
+        let mut new_children = Vec::with_capacity(old_children.len());
+        for child in old_children {
+            match child {
+                NodeRef::Scheme(id) => {
+                    if self.schemes.contains_key(&id) && referenced_schemes.insert(id) {
+                        new_children.push(NodeRef::Scheme(id));
+                    } else {
+                        *changed = true;
+                    }
+                }
+                NodeRef::Folder(id) => {
+                    if id == self.root
+                        || !self.folders.contains_key(&id)
+                        || visited_folders.contains(&id)
+                    {
+                        *changed = true;
+                        continue;
+                    }
+                    self.normalize_folder_tree(
+                        id,
+                        Some(folder_id),
+                        visited_folders,
+                        referenced_schemes,
+                        changed,
+                    );
+                    new_children.push(NodeRef::Folder(id));
+                }
+            }
+        }
+
+        if self
+            .folders
+            .get(&folder_id)
+            .is_some_and(|folder| folder.children != new_children)
+        {
+            if let Some(folder) = self.folders.get_mut(&folder_id) {
+                folder.children = new_children;
+                *changed = true;
+            }
+        }
     }
 
     pub fn ensure_sync_metadata(&mut self) -> bool {
@@ -338,48 +367,6 @@ impl Workspace {
         }
         changed
     }
-
-    fn collect_schemes_for_one_level_folder(
-        &self,
-        folder_id: FolderId,
-        out: &mut Vec<NodeRef>,
-        folders_to_remove: &mut Vec<FolderId>,
-        changed: &mut bool,
-    ) {
-        let Some(folder) = self.folders.get(&folder_id) else {
-            *changed = true;
-            return;
-        };
-
-        for child in folder.children.clone() {
-            match child {
-                NodeRef::Scheme(id) => {
-                    if self.schemes.contains_key(&id) {
-                        out.push(NodeRef::Scheme(id));
-                    } else {
-                        *changed = true;
-                    }
-                }
-                NodeRef::Folder(id) => {
-                    *changed = true;
-                    folders_to_remove.push(id);
-                    self.collect_schemes_for_one_level_folder(id, out, folders_to_remove, changed);
-                }
-            }
-        }
-    }
-
-    fn referenced_scheme_ids(&self) -> HashSet<SchemeId> {
-        let mut ids = HashSet::new();
-        for folder in self.folders.values() {
-            for child in &folder.children {
-                if let NodeRef::Scheme(id) = child {
-                    ids.insert(*id);
-                }
-            }
-        }
-        ids
-    }
 }
 
 impl Default for Workspace {
@@ -438,5 +425,50 @@ mod tests {
         assert!(!workspace.normalize_one_level_folders());
         assert!(workspace.schemes.contains_key(&deleted_id));
         assert!(workspace.is_scheme_deleted(deleted_id));
+    }
+
+    #[test]
+    fn normalize_preserves_nested_folders() {
+        let mut workspace = Workspace::new();
+        let child = FolderId::new();
+        let grandchild = FolderId::new();
+        let scheme = Scheme::new("Nested", 0);
+        let scheme_id = scheme.id;
+
+        workspace.folders.insert(
+            child,
+            Folder {
+                id: child,
+                name: "Child".into(),
+                parent: Some(workspace.root),
+                children: vec![NodeRef::Folder(grandchild)],
+                expanded: true,
+            },
+        );
+        workspace.folders.insert(
+            grandchild,
+            Folder {
+                id: grandchild,
+                name: "Grandchild".into(),
+                parent: Some(child),
+                children: vec![NodeRef::Scheme(scheme_id)],
+                expanded: true,
+            },
+        );
+        workspace.schemes.insert(scheme_id, scheme);
+        workspace
+            .folders
+            .get_mut(&workspace.root)
+            .unwrap()
+            .children
+            .push(NodeRef::Folder(child));
+
+        assert!(!workspace.normalize_one_level_folders());
+        assert_eq!(
+            workspace.folder(child).unwrap().children,
+            vec![NodeRef::Folder(grandchild)]
+        );
+        assert_eq!(workspace.folder(grandchild).unwrap().parent, Some(child));
+        assert!(workspace.schemes.contains_key(&scheme_id));
     }
 }

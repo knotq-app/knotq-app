@@ -1,4 +1,4 @@
-use knotq_model::{Folder, FolderId, NodeRef, Workspace};
+use knotq_model::{Folder, FolderId, NodeRef, Scheme, Workspace};
 
 use crate::invariants::{
     ensure_folder_name_available, validate_folder_name, validate_position, CommandError,
@@ -33,9 +33,6 @@ fn create_folder(
     name: String,
     position: Option<usize>,
 ) -> Result<CommandReceipt, CommandError> {
-    if parent != workspace.root {
-        return Err(CommandError::BadFolderDepth);
-    }
     validate_folder_name(&name)?;
     ensure_folder_name_available(workspace, parent, &name, None)?;
     let parent_folder = workspace
@@ -71,9 +68,6 @@ fn restore_folder(
     position: usize,
     folder: Folder,
 ) -> Result<CommandReceipt, CommandError> {
-    if parent != workspace.root {
-        return Err(CommandError::BadFolderDepth);
-    }
     validate_folder_name(&folder.name)?;
     ensure_folder_name_available(workspace, parent, &folder.name, Some(folder.id))?;
     let parent_len = workspace
@@ -89,7 +83,7 @@ fn restore_folder(
             NodeRef::Folder(id) if !workspace.folders.contains_key(id) => {
                 return Err(CommandError::FolderMissing(*id));
             }
-            NodeRef::Folder(_) => return Err(CommandError::BadFolderDepth),
+            NodeRef::Folder(_) => {}
             NodeRef::Scheme(id) if !workspace.schemes.contains_key(id) => {
                 return Err(CommandError::SchemeMissing(*id));
             }
@@ -102,6 +96,8 @@ fn restore_folder(
         .unwrap()
         .children
         .insert(position, NodeRef::Folder(id));
+    let mut folder = folder;
+    folder.parent = Some(parent);
     workspace.folders.insert(id, folder);
     Ok(CommandReceipt {
         inverse: Command::DeleteFolder { id },
@@ -170,29 +166,17 @@ fn delete_folder(workspace: &mut Workspace, id: FolderId) -> Result<CommandRecei
         .position(|child| *child == NodeRef::Folder(id))
         .ok_or(CommandError::FolderMissing(id))?;
     parent_folder.children.remove(pos);
-    let removed = workspace.folders.remove(&id).unwrap();
-    let mut removed_schemes = Vec::new();
-    for (position, child) in removed.children.iter().enumerate() {
-        if let NodeRef::Scheme(scheme_id) = child {
-            if let Some(scheme) = workspace.schemes.get(scheme_id).cloned() {
-                workspace.mark_scheme_deleted_from(*scheme_id, id, position);
-                removed_schemes.push((position, scheme));
-            }
-        }
-    }
-    let mut folder_shell = removed;
-    folder_shell
-        .children
-        .retain(|child| !matches!(child, NodeRef::Scheme(_)));
+    let removed_schemes = archive_schemes_in_folder_subtree(workspace, id);
+    let folder_shell = workspace.folders.remove(&id).unwrap();
     let mut inverse = Vec::with_capacity(1 + removed_schemes.len());
     inverse.push(Command::RestoreFolder {
         parent,
         position: pos,
         folder: folder_shell,
     });
-    for (position, scheme) in &removed_schemes {
+    for (folder, position, scheme) in &removed_schemes {
         inverse.push(Command::RestoreScheme {
-            folder: id,
+            folder: *folder,
             position: *position,
             scheme: scheme.clone(),
         });
@@ -201,7 +185,38 @@ fn delete_folder(workspace: &mut Workspace, id: FolderId) -> Result<CommandRecei
         inverse: Command::Batch(inverse),
         touched: removed_schemes.iter().fold(
             ChangeSet::default().touched_folder(parent),
-            |changes, (_, scheme)| changes.touched_scheme(scheme.id),
+            |changes, (_, _, scheme)| changes.touched_scheme(scheme.id),
         ),
     })
+}
+
+fn archive_schemes_in_folder_subtree(
+    workspace: &mut Workspace,
+    folder_id: FolderId,
+) -> Vec<(FolderId, usize, Scheme)> {
+    let children = workspace
+        .folders
+        .get(&folder_id)
+        .map(|folder| folder.children.clone())
+        .unwrap_or_default();
+    let mut removed = Vec::new();
+    for (position, child) in children.iter().copied().enumerate() {
+        match child {
+            NodeRef::Scheme(scheme_id) => {
+                if let Some(scheme) = workspace.schemes.get(&scheme_id).cloned() {
+                    workspace.mark_scheme_deleted_from(scheme_id, folder_id, position);
+                    removed.push((folder_id, position, scheme));
+                }
+            }
+            NodeRef::Folder(child_folder) => {
+                removed.extend(archive_schemes_in_folder_subtree(workspace, child_folder));
+            }
+        }
+    }
+    if let Some(folder) = workspace.folders.get_mut(&folder_id) {
+        folder
+            .children
+            .retain(|child| !matches!(child, NodeRef::Scheme(_)));
+    }
+    removed
 }

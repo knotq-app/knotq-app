@@ -6,6 +6,7 @@ use knotq_commands::Command;
 use knotq_model::SchemeId;
 use knotq_storage_json::CalendarViewMode;
 
+use crate::app::auto_update::AutoUpdateUiStatus;
 use crate::app::{daily_queue_marker_color, KnotQApp, SyncAuthStatus, SyncRunStatus, View};
 use crate::theme_gpui::{
     palette_hsla, scheme_color, token_hsla, token_rgba, Theme, FONT_SIZE_HEADLINE,
@@ -157,6 +158,7 @@ impl KnotQApp {
 
         let search_control = self.render_title_bar_search(window, t, cx);
         let sync_control = self.render_title_bar_sync_control(t, cx);
+        let update_control = self.render_title_bar_update_control(t, cx);
 
         base.child(
             div()
@@ -217,7 +219,7 @@ impl KnotQApp {
                 .flex()
                 .items_center()
                 .gap(px(8.0))
-                .child(sync_control)
+                .when_some(sync_control, |s, sync_control| s.child(sync_control))
                 .child(
                     div()
                         .flex_1()
@@ -255,6 +257,7 @@ impl KnotQApp {
                             .children(calendar_mode_controls),
                     )
                 })
+                .when_some(update_control, |s, update_control| s.child(update_control))
                 .child(search_control)
                 .child(
                     div()
@@ -289,54 +292,125 @@ impl KnotQApp {
         .into_any_element()
     }
 
-    fn render_title_bar_sync_control(&self, t: Theme, cx: &mut Context<Self>) -> gpui::AnyElement {
+    fn render_title_bar_update_control(
+        &self,
+        t: Theme,
+        cx: &mut Context<Self>,
+    ) -> Option<gpui::AnyElement> {
+        let AutoUpdateUiStatus::Ready { update } = &self.auto_update_status else {
+            return None;
+        };
+
+        let label = match update.install_strategy {
+            knotq_auto_update::InstallStrategy::InstalledOnRestart => "Restart to update",
+            knotq_auto_update::InstallStrategy::RunInstallerAndQuit => "Install update",
+        };
+        let tooltip = match update.install_strategy {
+            knotq_auto_update::InstallStrategy::InstalledOnRestart => {
+                format!("Restart KnotQ to finish updating to {}.", update.version)
+            }
+            knotq_auto_update::InstallStrategy::RunInstallerAndQuit => {
+                format!("Run the KnotQ {} installer.", update.version)
+            }
+        };
+
+        Some(
+            div()
+                .id("title-auto-update")
+                .h(px(26.0))
+                .px(px(9.0))
+                .rounded(px(7.0))
+                .border_1()
+                .border_color(token_rgba(t.border_soft))
+                .bg(token_rgba(if t.is_dark { 0x3f7cff24 } else { 0x2f67cf18 }))
+                .flex()
+                .items_center()
+                .justify_center()
+                .gap(px(6.0))
+                .cursor_pointer()
+                .hover({
+                    let c = t.button_hover;
+                    move |s| s.bg(token_rgba(c))
+                })
+                .on_click(cx.listener(|this, _: &ClickEvent, _window, cx| {
+                    this.install_ready_update(cx);
+                }))
+                .tooltip(move |window, cx| Tooltip::new(tooltip.clone()).build(window, cx))
+                .child(
+                    Icon::new(IconName::Redo2)
+                        .xsmall()
+                        .text_color(token_hsla(t.text_highlight)),
+                )
+                .child(
+                    div()
+                        .text_size(px(12.0))
+                        .font_weight(gpui::FontWeight::SEMIBOLD)
+                        .text_color(token_hsla(t.text_primary))
+                        .child(label),
+                )
+                .into_any_element(),
+        )
+    }
+
+    fn render_title_bar_sync_control(
+        &self,
+        t: Theme,
+        cx: &mut Context<Self>,
+    ) -> Option<gpui::AnyElement> {
+        if self.settings.sync_account.is_none()
+            && !matches!(self.sync_auth_status, SyncAuthStatus::InProgress)
+        {
+            return None;
+        }
         let status = self.title_sync_status(t);
         let tooltip = status.tooltip.clone();
 
-        div()
-            .id("title-sync-account")
-            .h(px(26.0))
-            .w(px(118.0))
-            .px(px(8.0))
-            .rounded(px(7.0))
-            .border_1()
-            .border_color(token_rgba(t.border_soft))
-            .bg(token_rgba(t.button_bg))
-            .flex()
-            .items_center()
-            .justify_center()
-            .gap(px(6.0))
-            .cursor_pointer()
-            .hover({
-                let c = t.button_hover;
-                move |s| s.bg(token_rgba(c))
-            })
-            .on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
-                this.open_sync_sign_in(window, cx);
-            }))
-            .tooltip(move |window, cx| Tooltip::new(tooltip.clone()).build(window, cx))
-            .child(
-                Icon::new(status.icon)
-                    .xsmall()
-                    .text_color(token_hsla(status.text_color)),
-            )
-            .child(
-                div()
-                    .w(px(6.0))
-                    .h(px(6.0))
-                    .rounded(px(3.0))
-                    .bg(token_rgba(status.dot_color)),
-            )
-            .child(
-                div()
-                    .min_w_0()
-                    .truncate()
-                    .text_size(px(12.0))
-                    .font_weight(gpui::FontWeight::NORMAL)
-                    .text_color(token_hsla(status.text_color))
-                    .child(status.label),
-            )
-            .into_any_element()
+        Some(
+            div()
+                .id("title-sync-account")
+                .h(px(26.0))
+                .w(px(118.0))
+                .px(px(8.0))
+                .rounded(px(7.0))
+                .border_1()
+                .border_color(token_rgba(t.border_soft))
+                .bg(token_rgba(t.button_bg))
+                .flex()
+                .items_center()
+                .justify_center()
+                .gap(px(6.0))
+                .cursor_pointer()
+                .hover({
+                    let c = t.button_hover;
+                    move |s| s.bg(token_rgba(c))
+                })
+                .on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
+                    this.open_sync_sign_in(window, cx);
+                }))
+                .tooltip(move |window, cx| Tooltip::new(tooltip.clone()).build(window, cx))
+                .child(
+                    Icon::new(status.icon)
+                        .xsmall()
+                        .text_color(token_hsla(status.text_color)),
+                )
+                .child(
+                    div()
+                        .w(px(6.0))
+                        .h(px(6.0))
+                        .rounded(px(3.0))
+                        .bg(token_rgba(status.dot_color)),
+                )
+                .child(
+                    div()
+                        .min_w_0()
+                        .truncate()
+                        .text_size(px(12.0))
+                        .font_weight(gpui::FontWeight::NORMAL)
+                        .text_color(token_hsla(status.text_color))
+                        .child(status.label),
+                )
+                .into_any_element(),
+        )
     }
 
     fn title_sync_status(&self, t: Theme) -> TitleSyncStatus {

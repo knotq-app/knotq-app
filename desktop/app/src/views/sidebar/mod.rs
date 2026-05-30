@@ -41,7 +41,6 @@ pub(super) struct NavigatorDragInfo {
     node: NodeRef,
     kind: NavigatorNodeKind,
     source: NavigatorDragSource,
-    root: FolderId,
     label: String,
     color_index: Option<u8>,
     theme: Theme,

@@ -37,9 +37,23 @@ impl KnotQApp {
 
         match kind {
             NewNodeKind::Folder => {
+                if parent != self.workspace.root
+                    && self
+                        .workspace
+                        .folder(parent)
+                        .is_some_and(|folder| !folder.expanded)
+                {
+                    self.apply(
+                        Command::SetFolderExpanded {
+                            id: parent,
+                            expanded: true,
+                        },
+                        cx,
+                    );
+                }
                 let receipt = self.apply(
                     Command::CreateFolder {
-                        parent: self.workspace.root,
+                        parent,
                         name,
                         position: None,
                     },

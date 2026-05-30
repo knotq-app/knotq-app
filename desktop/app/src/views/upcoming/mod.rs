@@ -17,6 +17,7 @@ pub(super) struct UpRow {
     scheme_id: SchemeId,
     item_id: ItemId,
     occurrence: OccurrenceId,
+    occurrence_index: usize,
     scheme_name: String,
     color_index: u8,
     is_daily: bool,
@@ -26,6 +27,8 @@ pub(super) struct UpRow {
     when_label: String,
     date_color: Hsla,
     sort_key: chrono::DateTime<chrono::Utc>,
+    start: Option<chrono::DateTime<chrono::Utc>>,
+    end: Option<chrono::DateTime<chrono::Utc>>,
 }
 
 mod formatting;

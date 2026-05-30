@@ -65,7 +65,7 @@ impl KnotQApp {
                     t,
                     cx.listener(move |this, _: &ClickEvent, window, cx| {
                         this.close_sidebar_context_menu(cx);
-                        this.open_new_node_prompt(root, NewNodeKind::Folder, window, cx);
+                        this.open_new_node_prompt(parent, NewNodeKind::Folder, window, cx);
                     }),
                 ));
                 items.push(sidebar_context_separator(t));
@@ -100,6 +100,15 @@ impl KnotQApp {
                         this.open_new_node_prompt(folder_id, NewNodeKind::Scheme, window, cx);
                     }),
                 ));
+                items.push(sidebar_context_item(
+                    "sidebar-menu-new-folder",
+                    "New Folder",
+                    t,
+                    cx.listener(move |this, _: &ClickEvent, window, cx| {
+                        this.close_sidebar_context_menu(cx);
+                        this.open_new_node_prompt(folder_id, NewNodeKind::Folder, window, cx);
+                    }),
+                ));
                 items.push(sidebar_context_separator(t));
                 items.push(sidebar_context_item(
                     "sidebar-menu-rename-folder",
@@ -112,7 +121,7 @@ impl KnotQApp {
                 ));
                 items.push(sidebar_context_item(
                     "sidebar-menu-delete-folder",
-                    "Delete",
+                    "Archive",
                     t,
                     cx.listener(move |this, _: &ClickEvent, _window, cx| {
                         this.close_sidebar_context_menu(cx);

@@ -53,6 +53,7 @@ impl KnotQApp {
                         scheme_id: scheme.id,
                         item_id: item.id,
                         occurrence: occ.id,
+                        occurrence_index: occ.occurrence_index,
                         scheme_name: scheme_name.clone(),
                         color_index: scheme.color_index,
                         is_daily,
@@ -62,6 +63,8 @@ impl KnotQApp {
                         when_label,
                         date_color,
                         sort_key: when,
+                        start: occ.start,
+                        end: occ.end,
                     };
                     match occ.kind {
                         ItemKind::Assignment => assignments.push(row),
@@ -99,6 +102,7 @@ impl KnotQApp {
                         scheme_id: scheme.id,
                         item_id: item.id,
                         occurrence: OccurrenceId::Single,
+                        occurrence_index: 0,
                         scheme_name: scheme_name.clone(),
                         color_index: scheme.color_index,
                         is_daily,
@@ -108,6 +112,8 @@ impl KnotQApp {
                         when_label: when_label(self.time_format, kind, item.start, item.end),
                         date_color,
                         sort_key: when,
+                        start: item.start,
+                        end: item.end,
                     };
                     match kind {
                         ItemKind::Assignment => assignments.push(row),
@@ -179,6 +185,10 @@ impl KnotQApp {
                 let scheme_id = row.scheme_id;
                 let item_id = row.item_id;
                 let occurrence = row.occurrence.clone();
+                let occurrence_for_popup = row.occurrence.clone();
+                let occurrence_index = row.occurrence_index;
+                let start = row.start;
+                let end = row.end;
                 let color = if row.is_daily {
                     token_hsla(daily_queue_marker_color(t.is_dark))
                 } else {
@@ -212,17 +222,36 @@ impl KnotQApp {
                                 .bg(bg)
                                 .opacity(opacity)
                                 .when(editable, |s| s.cursor_pointer())
-                                .on_click(cx.listener(move |this, _: &ClickEvent, _w, cx| {
-                                    if !editable {
-                                        return;
-                                    }
-                                    this.toggle_calendar_item(
-                                        scheme_id,
-                                        item_id,
-                                        occurrence.clone(),
-                                        cx,
-                                    );
-                                }))
+                                .on_click(cx.listener(
+                                    move |this, event: &ClickEvent, window, cx| {
+                                        if !editable {
+                                            return;
+                                        }
+                                        if event.is_right_click() {
+                                            this.open_event_popup(
+                                                scheme_id,
+                                                item_id,
+                                                occurrence_for_popup.clone(),
+                                                occurrence_index,
+                                                start,
+                                                end,
+                                                event.position(),
+                                                false,
+                                                false,
+                                                window,
+                                                cx,
+                                            );
+                                            cx.stop_propagation();
+                                            return;
+                                        }
+                                        this.toggle_calendar_item(
+                                            scheme_id,
+                                            item_id,
+                                            occurrence.clone(),
+                                            cx,
+                                        );
+                                    },
+                                ))
                                 .child(
                                     div()
                                         .w(px(1.5))

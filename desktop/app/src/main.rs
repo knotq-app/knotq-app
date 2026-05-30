@@ -190,8 +190,8 @@ impl Render for KnotQApp {
                         this.close_search(window, cx);
                     }
                     this.sidebar_context_menu = None;
-                    let root = this.workspace.root;
-                    this.open_new_node_prompt(root, app::NewNodeKind::Folder, window, cx);
+                    let parent = this.new_item_parent_folder();
+                    this.open_new_node_prompt(parent, app::NewNodeKind::Folder, window, cx);
                 }))
                 .on_action(cx.listener(|this, _: &NavWeekPrev, _window, cx| {
                     this.shift_calendar_period(-1);
