@@ -83,17 +83,12 @@ impl KnotQApp {
 
                 let color_index =
                     (self.workspace.schemes.len() as u8) % crate::theme_gpui::PALETTE.len() as u8;
-                let position = self
-                    .workspace
-                    .folder(parent)
-                    .map(|folder| folder.children.len())
-                    .unwrap_or(0);
                 let mut scheme = Scheme::new(name, color_index);
                 scheme.items.push(Item::new(""));
                 let receipt = self.apply(
                     Command::RestoreScheme {
                         folder: parent,
-                        position,
+                        position: 0,
                         scheme,
                     },
                     cx,

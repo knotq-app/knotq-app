@@ -56,11 +56,15 @@ impl SchemeEditor {
 
         if focused && self.selection.is_empty() && self.cursor_blink_state {
             let pos = self.visual_point_for_location(self.selection.head);
-            let caret_height =
-                (self.line_map.row_line_height(self.selection.head.row) - px(4.0)).max(px(12.0));
+            let row_height = self.line_map.row_line_height(self.selection.head.row);
+            let caret_height = (px(TEXT_LINE_HEIGHT) - px(4.0)).max(px(12.0));
+            let caret_top_offset = ((row_height - caret_height) / 2.0).max(px(0.0));
             window.paint_quad(fill(
                 Bounds::new(
-                    point(text_origin.x + pos.x, text_origin.y + pos.y + px(2.0)),
+                    point(
+                        text_origin.x + pos.x,
+                        text_origin.y + pos.y + caret_top_offset,
+                    ),
                     size(px(1.5), caret_height),
                 ),
                 token_hsla(theme.caret_color),
