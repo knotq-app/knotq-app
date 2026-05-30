@@ -4,15 +4,19 @@ use anyhow::{anyhow, Context};
 use chrono::{DateTime, NaiveDate};
 use knotq_model::{
     DeletedSchemeOrigin, DocumentId, Folder, FolderId, Item, ItemId, Scheme, SchemeId,
-    SchemeSource, SyncDocumentKind, SyncDocumentMeta, Workspace,
+    NodeRef, SchemeSource, SyncDocumentKind, SyncDocumentMeta, Workspace,
 };
-use serde::{de::DeserializeOwned, Deserialize, Serialize};
+use serde::{Deserialize, Serialize};
 use yrs::updates::{decoder::Decode, encoder::Encode};
-use yrs::{Doc, In, Map, MapPrelim, ReadTxn, StateVector, Transact, Update};
+use yrs::{Doc, In, Map, MapPrelim, MapRef, ReadTxn, StateVector, Transact, TransactionMut, Update};
 
 use crate::{CrdtDocumentUpdate, StoredCrdtUpdate};
 
 const SCHEME_SCHEMA_V2: &str = "knotq.scheme_file.v2";
+const WORKSPACE_SCHEMA_V2: &str = "knotq.workspace.v2";
+
+const NODE_KIND_FOLDER: &str = "folder";
+const NODE_KIND_SCHEME: &str = "scheme";
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct WorkspaceCrdtChangeSet {
@@ -292,16 +296,6 @@ impl WorkspaceCrdtDocuments {
             }
         }
 
-        for update in updates
-            .iter()
-            .filter(|update| update.kind == SyncDocumentKind::Folder)
-        {
-            outcome.push_error(
-                format!("folder update {}", update.sequence),
-                anyhow!("folder CRDT documents are not supported"),
-            );
-        }
-
         outcome
     }
 
@@ -373,28 +367,68 @@ impl WorkspaceCrdtDocuments {
 }
 
 fn validate_workspace_document(doc: &Doc) -> anyhow::Result<()> {
-    let document = doc.get_or_insert_map("document");
+    let meta = doc.get_or_insert_map("meta");
+    let nodes = doc.get_or_insert_map("nodes");
     let txn = doc.transact();
-    let snapshot = document
-        .get_as::<_, Option<String>>(&txn, "snapshot")
-        .context("read workspace snapshot")?
-        .ok_or_else(|| anyhow!("workspace snapshot missing"))?;
-    let snapshot: serde_json::Value =
-        serde_json::from_str(&snapshot).context("workspace snapshot is not JSON")?;
-    let object = snapshot
-        .as_object()
-        .ok_or_else(|| anyhow!("workspace snapshot is not an object"))?;
-    require_json_string(object, "schema", "knotq.workspace.v1")?;
-    parse_json_uuid(object, "id")?;
-    parse_json_uuid(object, "root")?;
-    require_json_object(object, "sync")?;
-    require_json_array(object, "folders")?;
-    require_json_array(object, "schemes")?;
-    require_json_array(object, "daily_queue")?;
-    require_json_array(object, "recently_deleted")?;
-    require_json_array(object, "deleted_scheme_origins")?;
-    require_json_array(object, "scheme_sync")?;
-    require_json_array(object, "folder_sync")?;
+
+    let schema = meta
+        .get_as::<_, Option<String>>(&txn, "schema")
+        .context("read workspace schema")?
+        .ok_or_else(|| anyhow!("workspace schema missing"))?;
+    if schema != WORKSPACE_SCHEMA_V2 {
+        return Err(anyhow!("workspace schema invalid"));
+    }
+    let id = meta
+        .get_as::<_, Option<String>>(&txn, "id")
+        .context("read workspace id")?
+        .ok_or_else(|| anyhow!("workspace id missing"))?;
+    id.parse::<uuid::Uuid>().context("workspace id invalid")?;
+    let root = meta
+        .get_as::<_, Option<String>>(&txn, "root")
+        .context("read workspace root")?
+        .ok_or_else(|| anyhow!("workspace root missing"))?;
+    root.parse::<uuid::Uuid>().context("workspace root invalid")?;
+    let sync = meta
+        .get_as::<_, Option<String>>(&txn, "sync")
+        .context("read workspace sync")?
+        .ok_or_else(|| anyhow!("workspace sync missing"))?;
+    let sync: serde_json::Value =
+        serde_json::from_str(&sync).context("workspace sync is not JSON")?;
+    if !sync.is_object() {
+        return Err(anyhow!("workspace sync is not an object"));
+    }
+
+    // Folders and schemes are stored as individual, id-keyed entries so that
+    // concurrent additions on different replicas merge instead of resolving as a
+    // single whole-document last-writer-wins.
+    for key in nodes.keys(&txn).map(str::to_string).collect::<Vec<_>>() {
+        let json = nodes
+            .get_as::<_, Option<String>>(&txn, &key)
+            .with_context(|| format!("read node {key}"))?
+            .ok_or_else(|| anyhow!("node entry missing: {key}"))?;
+        let entry: WorkspaceNodeEntry =
+            serde_json::from_str(&json).with_context(|| format!("node invalid: {key}"))?;
+        if entry.id != key {
+            return Err(anyhow!("node id mismatch: {key}"));
+        }
+        key.parse::<uuid::Uuid>()
+            .with_context(|| format!("node id invalid: {key}"))?;
+        if entry.kind != NODE_KIND_FOLDER && entry.kind != NODE_KIND_SCHEME {
+            return Err(anyhow!("node kind invalid: {key}"));
+        }
+        if entry.position.is_empty() {
+            return Err(anyhow!("node position missing: {key}"));
+        }
+        if !entry.parent.is_empty() {
+            entry
+                .parent
+                .parse::<uuid::Uuid>()
+                .with_context(|| format!("node parent invalid: {key}"))?;
+        }
+        serde_json::from_str::<serde_json::Value>(&entry.payload)
+            .with_context(|| format!("node payload invalid: {key}"))?;
+    }
+
     Ok(())
 }
 
@@ -495,53 +529,6 @@ fn parse_optional_rfc3339(value: &str) -> anyhow::Result<()> {
 
 fn parse_json_value(value: &str) -> anyhow::Result<serde_json::Value> {
     Ok(serde_json::from_str(value)?)
-}
-
-fn require_json_string(
-    object: &serde_json::Map<String, serde_json::Value>,
-    key: &str,
-    expected: &str,
-) -> anyhow::Result<()> {
-    match object.get(key).and_then(serde_json::Value::as_str) {
-        Some(actual) if actual == expected => Ok(()),
-        Some(_) => Err(anyhow!("{key} invalid")),
-        None => Err(anyhow!("{key} missing")),
-    }
-}
-
-fn require_json_object(
-    object: &serde_json::Map<String, serde_json::Value>,
-    key: &str,
-) -> anyhow::Result<()> {
-    object
-        .get(key)
-        .and_then(serde_json::Value::as_object)
-        .ok_or_else(|| anyhow!("{key} must be an object"))?;
-    Ok(())
-}
-
-fn require_json_array(
-    object: &serde_json::Map<String, serde_json::Value>,
-    key: &str,
-) -> anyhow::Result<()> {
-    object
-        .get(key)
-        .and_then(serde_json::Value::as_array)
-        .ok_or_else(|| anyhow!("{key} must be an array"))?;
-    Ok(())
-}
-
-fn parse_json_uuid(
-    object: &serde_json::Map<String, serde_json::Value>,
-    key: &str,
-) -> anyhow::Result<()> {
-    object
-        .get(key)
-        .and_then(serde_json::Value::as_str)
-        .ok_or_else(|| anyhow!("{key} missing"))?
-        .parse::<uuid::Uuid>()
-        .with_context(|| format!("{key} invalid"))?;
-    Ok(())
 }
 
 fn documents_missing(docs: &WorkspaceCrdtDocuments, workspace: &Workspace) -> bool {
@@ -811,13 +798,22 @@ struct YrsJsonDocument {
 impl YrsJsonDocument {
     fn new(id: DocumentId, kind: SyncDocumentKind) -> Self {
         let doc = Doc::new();
-        doc.get_or_insert_map("document");
+        // The workspace document is decomposed into independent, id-keyed maps so
+        // that concurrent edits to distinct entities (e.g. two replicas each adding
+        // a folder) merge additively instead of resolving as whole-document LWW.
+        doc.get_or_insert_map("meta");
+        doc.get_or_insert_map("nodes");
+        doc.get_or_insert_map("scheme_sync");
+        doc.get_or_insert_map("folder_sync");
+        doc.get_or_insert_map("daily_queue");
+        doc.get_or_insert_map("recently_deleted");
+        doc.get_or_insert_map("deleted_scheme_origins");
         Self { id, kind, doc }
     }
 
     fn sync_snapshot(
         &self,
-        snapshot: &impl Serialize,
+        snapshot: &WorkspaceDocumentSnapshot,
     ) -> anyhow::Result<Option<CrdtDocumentUpdate>> {
         let before = self.doc.transact().state_vector().encode_v1();
         if !self.replace_snapshot(snapshot)? {
@@ -835,16 +831,133 @@ impl YrsJsonDocument {
         }))
     }
 
-    fn replace_snapshot(&self, snapshot: &impl Serialize) -> anyhow::Result<bool> {
-        let json = serde_json::to_string(snapshot)?;
-        let document = self.doc.get_or_insert_map("document");
+    fn replace_snapshot(&self, snapshot: &WorkspaceDocumentSnapshot) -> anyhow::Result<bool> {
+        let meta = self.doc.get_or_insert_map("meta");
+        let nodes = self.doc.get_or_insert_map("nodes");
+        let scheme_sync = self.doc.get_or_insert_map("scheme_sync");
+        let folder_sync = self.doc.get_or_insert_map("folder_sync");
+        let daily_queue = self.doc.get_or_insert_map("daily_queue");
+        let recently_deleted = self.doc.get_or_insert_map("recently_deleted");
+        let deleted_origins = self.doc.get_or_insert_map("deleted_scheme_origins");
         let mut txn = self.doc.transact_mut();
-        let existing = document.get_as::<_, Option<String>>(&txn, "snapshot")?;
-        if existing.as_deref() == Some(json.as_str()) {
-            return Ok(false);
+
+        // Reuse positions already stored so an unchanged tree re-serializes to
+        // byte-identical entries, producing no update.
+        let stored_node_positions = node_positions(&nodes, &txn);
+        let stored_deleted_positions = string_map_entries(&recently_deleted, &txn)
+            .into_iter()
+            .collect::<HashMap<_, _>>();
+
+        // Derive each node's parent and sibling order from the authoritative
+        // folder.children lists, then assign fractional positions per parent group
+        // so concurrent inserts/reorders merge without a duplicate-id wedge.
+        let mut membership_parent: HashMap<String, String> = HashMap::new();
+        let mut children_by_parent: HashMap<String, Vec<String>> = HashMap::new();
+        for folder in &snapshot.folders {
+            let parent = folder.id.to_string();
+            for child in &folder.children {
+                let child_id = node_ref_id(child);
+                membership_parent.insert(child_id.clone(), parent.clone());
+                children_by_parent
+                    .entry(parent.clone())
+                    .or_default()
+                    .push(child_id);
+            }
         }
-        document.insert(&mut txn, "snapshot", json);
-        Ok(true)
+        let mut positions: HashMap<String, String> = HashMap::new();
+        for ordered in children_by_parent.values() {
+            assign_fractional_positions(ordered, &stored_node_positions, &mut positions);
+        }
+        // The root folder (and any orphan) is nobody's child; give it a stable
+        // standalone key so every node carries a non-empty position.
+        let ensure_position = |id: &str, positions: &mut HashMap<String, String>| {
+            if !positions.contains_key(id) {
+                let position = stored_node_positions
+                    .get(id)
+                    .filter(|value| !value.is_empty())
+                    .cloned()
+                    .unwrap_or_else(|| crate::fractional::between(None, None));
+                positions.insert(id.to_string(), position);
+            }
+        };
+
+        let mut node_entries: Vec<(String, String)> = Vec::new();
+        for folder in &snapshot.folders {
+            let id = folder.id.to_string();
+            ensure_position(&id, &mut positions);
+            let payload = serde_json::to_string(&FolderPayload {
+                name: folder.name.clone(),
+                expanded: folder.expanded,
+                parent: folder.parent,
+            })?;
+            node_entries.push((
+                id.clone(),
+                node_entry_json(&id, NODE_KIND_FOLDER, &membership_parent, &positions, payload)?,
+            ));
+        }
+        for scheme in &snapshot.schemes {
+            let id = scheme.id.to_string();
+            ensure_position(&id, &mut positions);
+            let payload = serde_json::to_string(scheme)?;
+            node_entries.push((
+                id.clone(),
+                node_entry_json(&id, NODE_KIND_SCHEME, &membership_parent, &positions, payload)?,
+            ));
+        }
+
+        // recently_deleted is order-bearing, so position it the same way.
+        let deleted_ids = snapshot
+            .recently_deleted
+            .iter()
+            .map(|id| id.to_string())
+            .collect::<Vec<_>>();
+        let mut deleted_positions: HashMap<String, String> = HashMap::new();
+        assign_fractional_positions(
+            &deleted_ids,
+            &stored_deleted_positions,
+            &mut deleted_positions,
+        );
+        let recently_deleted_entries = deleted_ids
+            .iter()
+            .map(|id| (id.clone(), deleted_positions.get(id).cloned().unwrap_or_default()))
+            .collect::<Vec<_>>();
+
+        let mut scheme_sync_entries = Vec::with_capacity(snapshot.scheme_sync.len());
+        for entry in &snapshot.scheme_sync {
+            scheme_sync_entries.push((entry.scheme.to_string(), serde_json::to_string(&entry.sync)?));
+        }
+        let mut folder_sync_entries = Vec::with_capacity(snapshot.folder_sync.len());
+        for entry in &snapshot.folder_sync {
+            folder_sync_entries.push((entry.folder.to_string(), serde_json::to_string(&entry.sync)?));
+        }
+        let mut daily_queue_entries = Vec::with_capacity(snapshot.daily_queue.len());
+        for entry in &snapshot.daily_queue {
+            daily_queue_entries.push((entry.date.to_string(), entry.scheme.to_string()));
+        }
+        let mut deleted_origin_entries = Vec::with_capacity(snapshot.deleted_scheme_origins.len());
+        for entry in &snapshot.deleted_scheme_origins {
+            deleted_origin_entries
+                .push((entry.scheme.to_string(), serde_json::to_string(&entry.origin)?));
+        }
+
+        let mut changed = false;
+        changed |= sync_string_map(
+            &meta,
+            &mut txn,
+            &[
+                ("schema".to_string(), WORKSPACE_SCHEMA_V2.to_string()),
+                ("id".to_string(), snapshot.id.to_string()),
+                ("root".to_string(), snapshot.root.to_string()),
+                ("sync".to_string(), serde_json::to_string(&snapshot.sync)?),
+            ],
+        );
+        changed |= sync_string_map(&nodes, &mut txn, &node_entries);
+        changed |= sync_string_map(&scheme_sync, &mut txn, &scheme_sync_entries);
+        changed |= sync_string_map(&folder_sync, &mut txn, &folder_sync_entries);
+        changed |= sync_string_map(&daily_queue, &mut txn, &daily_queue_entries);
+        changed |= sync_string_map(&recently_deleted, &mut txn, &recently_deleted_entries);
+        changed |= sync_string_map(&deleted_origins, &mut txn, &deleted_origin_entries);
+        Ok(changed)
     }
 
     fn apply_update_v1(&self, update: &[u8]) -> anyhow::Result<()> {
@@ -862,13 +975,332 @@ impl YrsJsonDocument {
         }
     }
 
-    fn snapshot<T: DeserializeOwned>(&self) -> anyhow::Result<T> {
-        let document = self.doc.get_or_insert_map("document");
+    fn snapshot(&self) -> anyhow::Result<WorkspaceDocumentSnapshot> {
+        let meta = self.doc.get_or_insert_map("meta");
+        let nodes = self.doc.get_or_insert_map("nodes");
+        let scheme_sync_map = self.doc.get_or_insert_map("scheme_sync");
+        let folder_sync_map = self.doc.get_or_insert_map("folder_sync");
+        let daily_queue_map = self.doc.get_or_insert_map("daily_queue");
+        let recently_deleted_map = self.doc.get_or_insert_map("recently_deleted");
+        let deleted_origins_map = self.doc.get_or_insert_map("deleted_scheme_origins");
         let txn = self.doc.transact();
-        let json = document
-            .get_as::<_, Option<String>>(&txn, "snapshot")?
-            .ok_or_else(|| anyhow!("workspace snapshot missing"))?;
-        Ok(serde_json::from_str(&json)?)
+
+        let read_meta = |key: &str| -> anyhow::Result<String> {
+            meta.get_as::<_, Option<String>>(&txn, key)
+                .with_context(|| format!("read workspace {key}"))?
+                .ok_or_else(|| anyhow!("workspace {key} missing"))
+        };
+        let id = read_meta("id")?.parse().context("workspace id invalid")?;
+        let root: FolderId = read_meta("root")?.parse().context("workspace root invalid")?;
+        let sync: SyncDocumentMeta =
+            serde_json::from_str(&read_meta("sync")?).context("workspace sync invalid")?;
+
+        struct ParsedNode {
+            kind: String,
+            parent: String,
+            position: String,
+            payload: String,
+        }
+        let mut parsed: HashMap<String, ParsedNode> = HashMap::new();
+        let mut folder_ids: HashSet<String> = HashSet::new();
+        for (key, value) in string_map_entries(&nodes, &txn) {
+            let entry: WorkspaceNodeEntry =
+                serde_json::from_str(&value).with_context(|| format!("node invalid: {key}"))?;
+            if entry.kind == NODE_KIND_FOLDER {
+                folder_ids.insert(key.clone());
+            }
+            parsed.insert(
+                key,
+                ParsedNode {
+                    kind: entry.kind,
+                    parent: entry.parent,
+                    position: entry.position,
+                    payload: entry.payload,
+                },
+            );
+        }
+
+        let root_key = root.to_string();
+        // Each node's effective parent is an existing folder, else the root —
+        // orphans re-home under root rather than vanishing.
+        let mut children_by_parent: HashMap<String, Vec<(String, String)>> = HashMap::new();
+        for (id_str, node) in &parsed {
+            if *id_str == root_key {
+                continue;
+            }
+            let parent = if !node.parent.is_empty() && folder_ids.contains(&node.parent) {
+                node.parent.clone()
+            } else {
+                root_key.clone()
+            };
+            children_by_parent
+                .entry(parent)
+                .or_default()
+                .push((node.position.clone(), id_str.clone()));
+        }
+        for children in children_by_parent.values_mut() {
+            children.sort_by(|(lp, lid), (rp, rid)| lp.cmp(rp).then_with(|| lid.cmp(rid)));
+        }
+
+        let node_ref_for = |id_str: &str| -> anyhow::Result<NodeRef> {
+            if folder_ids.contains(id_str) {
+                Ok(NodeRef::Folder(
+                    id_str
+                        .parse()
+                        .with_context(|| format!("folder id invalid: {id_str}"))?,
+                ))
+            } else {
+                Ok(NodeRef::Scheme(
+                    id_str
+                        .parse()
+                        .with_context(|| format!("scheme id invalid: {id_str}"))?,
+                ))
+            }
+        };
+
+        let mut folders = Vec::new();
+        let mut schemes = Vec::new();
+        for (id_str, node) in &parsed {
+            if node.kind == NODE_KIND_FOLDER {
+                let payload: FolderPayload = serde_json::from_str(&node.payload)
+                    .with_context(|| format!("folder payload invalid: {id_str}"))?;
+                let children = children_by_parent
+                    .get(id_str)
+                    .map(|kids| {
+                        kids.iter()
+                            .map(|(_, child_id)| node_ref_for(child_id))
+                            .collect::<anyhow::Result<Vec<_>>>()
+                    })
+                    .transpose()?
+                    .unwrap_or_default();
+                folders.push(Folder {
+                    id: id_str
+                        .parse()
+                        .with_context(|| format!("folder id invalid: {id_str}"))?,
+                    name: payload.name,
+                    parent: payload.parent,
+                    children,
+                    expanded: payload.expanded,
+                });
+            } else {
+                let entry: SchemeWorkspaceEntry = serde_json::from_str(&node.payload)
+                    .with_context(|| format!("scheme payload invalid: {id_str}"))?;
+                schemes.push(entry);
+            }
+        }
+        folders.sort_by_key(|folder| folder.id.to_string());
+        schemes.sort_by_key(|scheme| scheme.id.to_string());
+
+        let mut deleted = string_map_entries(&recently_deleted_map, &txn)
+            .into_iter()
+            .map(|(id, position)| {
+                let scheme = id
+                    .parse::<SchemeId>()
+                    .with_context(|| format!("recently deleted id invalid: {id}"))?;
+                Ok::<_, anyhow::Error>((position, id, scheme))
+            })
+            .collect::<anyhow::Result<Vec<_>>>()?;
+        deleted.sort_by(|(lp, lid, _), (rp, rid, _)| lp.cmp(rp).then_with(|| lid.cmp(rid)));
+        let recently_deleted = deleted.into_iter().map(|(_, _, scheme)| scheme).collect();
+
+        let mut daily_queue = string_map_entries(&daily_queue_map, &txn)
+            .into_iter()
+            .map(|(date, scheme)| {
+                Ok::<_, anyhow::Error>(DailyQueueEntry {
+                    date: date
+                        .parse()
+                        .with_context(|| format!("daily queue date invalid: {date}"))?,
+                    scheme: scheme
+                        .parse()
+                        .with_context(|| format!("daily queue scheme invalid: {scheme}"))?,
+                })
+            })
+            .collect::<anyhow::Result<Vec<_>>>()?;
+        daily_queue.sort_by_key(|entry| entry.date);
+
+        let mut deleted_scheme_origins = string_map_entries(&deleted_origins_map, &txn)
+            .into_iter()
+            .map(|(scheme, origin)| {
+                Ok::<_, anyhow::Error>(DeletedSchemeOriginEntry {
+                    scheme: scheme
+                        .parse()
+                        .with_context(|| format!("deleted origin scheme invalid: {scheme}"))?,
+                    origin: serde_json::from_str(&origin)
+                        .with_context(|| format!("deleted origin invalid: {scheme}"))?,
+                })
+            })
+            .collect::<anyhow::Result<Vec<_>>>()?;
+        deleted_scheme_origins.sort_by_key(|entry| entry.scheme.to_string());
+
+        let mut scheme_sync = string_map_entries(&scheme_sync_map, &txn)
+            .into_iter()
+            .map(|(scheme, sync)| {
+                Ok::<_, anyhow::Error>(SchemeSyncEntry {
+                    scheme: scheme
+                        .parse()
+                        .with_context(|| format!("scheme sync id invalid: {scheme}"))?,
+                    sync: serde_json::from_str(&sync)
+                        .with_context(|| format!("scheme sync invalid: {scheme}"))?,
+                })
+            })
+            .collect::<anyhow::Result<Vec<_>>>()?;
+        scheme_sync.sort_by_key(|entry| entry.scheme.to_string());
+
+        let mut folder_sync = string_map_entries(&folder_sync_map, &txn)
+            .into_iter()
+            .map(|(folder, sync)| {
+                Ok::<_, anyhow::Error>(FolderSyncEntry {
+                    folder: folder
+                        .parse()
+                        .with_context(|| format!("folder sync id invalid: {folder}"))?,
+                    sync: serde_json::from_str(&sync)
+                        .with_context(|| format!("folder sync invalid: {folder}"))?,
+                })
+            })
+            .collect::<anyhow::Result<Vec<_>>>()?;
+        folder_sync.sort_by_key(|entry| entry.folder.to_string());
+
+        Ok(WorkspaceDocumentSnapshot {
+            schema: WORKSPACE_SCHEMA_V2.to_string(),
+            id,
+            sync,
+            root,
+            folders,
+            schemes,
+            daily_queue,
+            recently_deleted,
+            deleted_scheme_origins,
+            scheme_sync,
+            folder_sync,
+        })
+    }
+}
+
+/// One folder or scheme stored as an individual, id-keyed entry in the workspace
+/// document's `nodes` map. `parent`/`position` carry the tree structure so that
+/// it can be reconstructed (and merged) without a shared, wedge-prone array.
+#[derive(Serialize, Deserialize)]
+struct WorkspaceNodeEntry {
+    id: String,
+    kind: String,
+    #[serde(default)]
+    parent: String,
+    #[serde(default)]
+    position: String,
+    payload: String,
+}
+
+#[derive(Serialize, Deserialize)]
+struct FolderPayload {
+    name: String,
+    expanded: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    parent: Option<FolderId>,
+}
+
+fn node_ref_id(node: &NodeRef) -> String {
+    match node {
+        NodeRef::Folder(id) => id.to_string(),
+        NodeRef::Scheme(id) => id.to_string(),
+    }
+}
+
+fn node_entry_json(
+    id: &str,
+    kind: &str,
+    membership_parent: &HashMap<String, String>,
+    positions: &HashMap<String, String>,
+    payload: String,
+) -> anyhow::Result<String> {
+    let entry = WorkspaceNodeEntry {
+        id: id.to_string(),
+        kind: kind.to_string(),
+        parent: membership_parent.get(id).cloned().unwrap_or_default(),
+        position: positions.get(id).cloned().unwrap_or_default(),
+        payload,
+    };
+    Ok(serde_json::to_string(&entry)?)
+}
+
+/// Positions currently stored per node id, used to keep keys stable across syncs.
+fn node_positions(map: &MapRef, txn: &impl ReadTxn) -> HashMap<String, String> {
+    let mut out = HashMap::new();
+    for (key, value) in string_map_entries(map, txn) {
+        if let Ok(entry) = serde_json::from_str::<WorkspaceNodeEntry>(&value) {
+            out.insert(key, entry.position);
+        }
+    }
+    out
+}
+
+fn string_map_entries(map: &MapRef, txn: &impl ReadTxn) -> Vec<(String, String)> {
+    let keys = map.keys(txn).map(str::to_string).collect::<Vec<_>>();
+    let mut out = Vec::with_capacity(keys.len());
+    for key in keys {
+        if let Ok(Some(value)) = map.get_as::<_, Option<String>>(txn, &key) {
+            out.push((key, value));
+        }
+    }
+    out
+}
+
+/// Reconcile a string→string map to `desired`: remove keys no longer present and
+/// (re)insert only entries whose value changed, so a single edit yields a single
+/// map-entry delta. Returns whether anything changed.
+fn sync_string_map(map: &MapRef, txn: &mut TransactionMut, desired: &[(String, String)]) -> bool {
+    let mut changed = false;
+    let desired_keys: HashSet<&str> = desired.iter().map(|(key, _)| key.as_str()).collect();
+    let stale = map
+        .keys(&*txn)
+        .filter(|key| !desired_keys.contains(*key))
+        .map(str::to_string)
+        .collect::<Vec<_>>();
+    for key in stale {
+        map.remove(&mut *txn, &key);
+        changed = true;
+    }
+    for (key, value) in desired {
+        let existing = map.get_as::<_, Option<String>>(&*txn, key).ok().flatten();
+        if existing.as_deref() != Some(value.as_str()) {
+            map.insert(&mut *txn, key.clone(), value.clone());
+            changed = true;
+        }
+    }
+    changed
+}
+
+/// Assign each id in `ordered` a fractional key, keeping an existing key whenever
+/// it still sorts after the previous one; otherwise mint a fresh key between
+/// neighbors. Identical concurrent keys are harmless: callers break ties on id.
+fn assign_fractional_positions(
+    ordered: &[String],
+    stored: &HashMap<String, String>,
+    out: &mut HashMap<String, String>,
+) {
+    let mut prev: Option<String> = None;
+    for (idx, id) in ordered.iter().enumerate() {
+        let existing = stored.get(id).filter(|value| !value.is_empty()).cloned();
+        let keep = match (&existing, &prev) {
+            (Some(existing), Some(prev)) => existing.as_str() > prev.as_str(),
+            (Some(_), None) => true,
+            (None, _) => false,
+        };
+        let position = if keep {
+            existing.unwrap()
+        } else {
+            let upper = ordered[idx + 1..].iter().find_map(|next| {
+                stored
+                    .get(next)
+                    .filter(|candidate| {
+                        !candidate.is_empty()
+                            && prev.as_deref().is_none_or(|prev| candidate.as_str() > prev)
+                    })
+                    .cloned()
+            });
+            crate::fractional::between(prev.as_deref(), upper.as_deref())
+        };
+        prev = Some(position.clone());
+        out.insert(id.clone(), position);
     }
 }
 
@@ -997,7 +1429,7 @@ fn workspace_document_snapshot(workspace: &Workspace) -> WorkspaceDocumentSnapsh
     folder_sync.sort_by_key(|entry| entry.folder.to_string());
 
     WorkspaceDocumentSnapshot {
-        schema: "knotq.workspace.v1".to_string(),
+        schema: WORKSPACE_SCHEMA_V2.to_string(),
         id: workspace.id,
         sync: workspace.sync.clone(),
         root: workspace.root,
@@ -1151,26 +1583,12 @@ mod tests {
     #[test]
     fn crdt_schema_validation_rejects_bad_workspace_schema() {
         let doc = Doc::new();
-        let document = doc.get_or_insert_map("document");
+        let meta = doc.get_or_insert_map("meta");
         let mut txn = doc.transact_mut();
-        document.insert(
-            &mut txn,
-            "snapshot",
-            serde_json::json!({
-                "schema": "bad.workspace",
-                "id": Workspace::new().id,
-                "sync": {},
-                "root": FolderId::new(),
-                "folders": [],
-                "schemes": [],
-                "daily_queue": [],
-                "recently_deleted": [],
-                "deleted_scheme_origins": [],
-                "scheme_sync": [],
-                "folder_sync": []
-            })
-            .to_string(),
-        );
+        meta.insert(&mut txn, "schema", "bad.workspace");
+        meta.insert(&mut txn, "id", Workspace::new().id.to_string());
+        meta.insert(&mut txn, "root", FolderId::new().to_string());
+        meta.insert(&mut txn, "sync", "{}");
         drop(txn);
 
         assert!(validate_crdt_update_sequence(
@@ -1412,6 +1830,119 @@ mod tests {
         assert!(!updates
             .iter()
             .any(|update| update.kind == SyncDocumentKind::Folder));
+    }
+
+    #[test]
+    fn concurrent_folder_additions_on_two_replicas_merge_without_loss() {
+        // A shared base workspace that both replicas start from.
+        let base = Workspace::new();
+
+        // Each replica adds a different folder under the root and pushes its full
+        // document state, exactly as a first-time/bootstrap sync does.
+        let mut workspace_a = base.clone();
+        let folder_x = add_root_folder(&mut workspace_a, "X");
+        let a_updates = WorkspaceCrdtDocuments::snapshot_updates(&workspace_a).updates;
+
+        let mut workspace_b = base.clone();
+        let folder_y = add_root_folder(&mut workspace_b, "Y");
+        let b_updates = WorkspaceCrdtDocuments::snapshot_updates(&workspace_b).updates;
+
+        // The server holds the base and merges both replicas' deltas.
+        let mut server = WorkspaceCrdtDocuments::try_new(&base).unwrap();
+        let outcome_a = server.apply_remote_updates(&base, &stored_updates(base.id, a_updates));
+        assert!(outcome_a.is_ok(), "{:?}", outcome_a.errors);
+        let outcome_b =
+            server.apply_remote_updates(&outcome_a.workspace, &stored_updates(base.id, b_updates));
+        assert!(outcome_b.is_ok(), "{:?}", outcome_b.errors);
+
+        // Both concurrently-added folders survive — neither clobbers the other the
+        // way a single whole-document last-writer-wins blob would.
+        let merged = outcome_b.workspace;
+        assert!(merged.folders.contains_key(&folder_x), "folder X lost");
+        assert!(merged.folders.contains_key(&folder_y), "folder Y lost");
+        let root_children = &merged.folders[&merged.root].children;
+        assert!(root_children.contains(&NodeRef::Folder(folder_x)));
+        assert!(root_children.contains(&NodeRef::Folder(folder_y)));
+    }
+
+    #[test]
+    fn concurrent_scheme_additions_under_root_merge_without_loss() {
+        let base = Workspace::new();
+
+        let mut workspace_a = base.clone();
+        let scheme_a = add_root_scheme(&mut workspace_a, "A");
+        let a_updates = WorkspaceCrdtDocuments::snapshot_updates(&workspace_a).updates;
+
+        let mut workspace_b = base.clone();
+        let scheme_b = add_root_scheme(&mut workspace_b, "B");
+        let b_updates = WorkspaceCrdtDocuments::snapshot_updates(&workspace_b).updates;
+
+        let mut server = WorkspaceCrdtDocuments::try_new(&base).unwrap();
+        let outcome_a = server.apply_remote_updates(&base, &stored_updates(base.id, a_updates));
+        assert!(outcome_a.is_ok(), "{:?}", outcome_a.errors);
+        let outcome_b =
+            server.apply_remote_updates(&outcome_a.workspace, &stored_updates(base.id, b_updates));
+        assert!(outcome_b.is_ok(), "{:?}", outcome_b.errors);
+
+        let merged = outcome_b.workspace;
+        assert!(merged.schemes.contains_key(&scheme_a), "scheme A lost");
+        assert!(merged.schemes.contains_key(&scheme_b), "scheme B lost");
+        let root_children = &merged.folders[&merged.root].children;
+        assert!(root_children.contains(&NodeRef::Scheme(scheme_a)));
+        assert!(root_children.contains(&NodeRef::Scheme(scheme_b)));
+    }
+
+    fn add_root_folder(workspace: &mut Workspace, name: &str) -> FolderId {
+        let folder = Folder {
+            id: FolderId::new(),
+            name: name.to_string(),
+            parent: Some(workspace.root),
+            children: Vec::new(),
+            expanded: true,
+        };
+        let id = folder.id;
+        workspace
+            .folders
+            .get_mut(&workspace.root)
+            .unwrap()
+            .children
+            .push(NodeRef::Folder(id));
+        workspace.folders.insert(id, folder);
+        workspace.ensure_sync_metadata();
+        id
+    }
+
+    fn add_root_scheme(workspace: &mut Workspace, name: &str) -> SchemeId {
+        let scheme = Scheme::new(name, 0);
+        let id = scheme.id;
+        workspace
+            .folders
+            .get_mut(&workspace.root)
+            .unwrap()
+            .children
+            .push(NodeRef::Scheme(id));
+        workspace.schemes.insert(id, scheme);
+        workspace.ensure_sync_metadata();
+        id
+    }
+
+    fn stored_updates(
+        workspace_id: knotq_model::WorkspaceId,
+        updates: Vec<CrdtDocumentUpdate>,
+    ) -> Vec<StoredCrdtUpdate> {
+        updates
+            .into_iter()
+            .enumerate()
+            .map(|(index, update)| StoredCrdtUpdate {
+                workspace_id,
+                document: update.document,
+                kind: update.kind,
+                replica_id: knotq_model::ReplicaId::new(),
+                sequence: (index + 1) as u64,
+                received_at: chrono::Utc::now(),
+                update_v1: update.update_v1,
+            })
+            .collect()
     }
 
     fn valid_single_item_scheme_doc() -> Doc {

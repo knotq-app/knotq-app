@@ -33,7 +33,7 @@ mod base64_bytes {
     }
 }
 
-pub const SYNC_API_VERSION: &str = "2026-05-29-crdt-sync-beta";
+pub const SYNC_API_VERSION: &str = "2026-05-30-crdt-sync-beta";
 pub const LOCAL_SYNC_STATE_FILE: &str = "sync-state.json";
 pub const MAX_SYNC_MEDIA_BYTES: usize = 3 * 1024 * 1024;
 
