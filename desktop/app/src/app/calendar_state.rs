@@ -557,7 +557,7 @@ impl KnotQApp {
 
         let delta_minutes = (hour_delta * 60.0).round() as i64;
         // Snap to 15-minute increments.
-        let snapped_minutes = (delta_minutes / 15) * 15;
+        let snapped_minutes = ((delta_minutes as f64 / 15.0).round() as i64) * 15;
         if snapped_minutes == 0 && day_delta == 0 {
             return;
         }

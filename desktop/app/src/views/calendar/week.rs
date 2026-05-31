@@ -12,16 +12,8 @@ pub(super) fn window_y_to_hour(window_y: f32, scroll_handle: &ScrollHandle) -> f
     ((content_y - TIME_Y_OFFSET) / HOUR_H).clamp(0.0, 24.0)
 }
 
-fn snap_hour_to_quarter(hour: f32) -> f32 {
-    let total_minutes = (hour * 60.0).round() as i64;
-    let snapped = ((total_minutes + 7) / 15 * 15).clamp(0, 24 * 60);
-    snapped as f32 / 60.0
-}
-
-fn snap_hour_delta_to_quarter(delta: f32) -> f32 {
-    let delta_minutes = (delta * 60.0).round() as i64;
-    let snapped = (delta_minutes / 15) * 15;
-    snapped as f32 / 60.0
+fn move_preview_hour(hour: f32) -> f32 {
+    hour.clamp(0.0, 24.0)
 }
 
 impl KnotQApp {
@@ -403,11 +395,15 @@ impl KnotQApp {
             // Ghost preview for dragging an existing item to reschedule.
             if let Some(mv) = &self.cal_move {
                 if mv.date == date {
-                    let hour_delta = snap_hour_delta_to_quarter(mv.current_hour - mv.grab_hour);
+                    let hour_delta = mv.current_hour - mv.grab_hour;
                     let day_delta = mv.date.signed_duration_since(mv.original_date).num_days();
                     if hour_delta != 0.0 || day_delta != 0 {
-                        let move_start = mv.original_start_hour.map(|h| h + hour_delta);
-                        let move_end = mv.original_end_hour.map(|h| h + hour_delta);
+                        let move_start = mv
+                            .original_start_hour
+                            .map(|h| move_preview_hour(h + hour_delta));
+                        let move_end = mv
+                            .original_end_hour
+                            .map(|h| move_preview_hour(h + hour_delta));
                         let lo = move_start.unwrap_or_else(|| move_end.unwrap());
                         let hi = move_end.unwrap_or_else(|| move_start.unwrap());
                         let lo_y = TIME_Y_OFFSET + lo * HOUR_H;
@@ -432,9 +428,12 @@ impl KnotQApp {
             // Ghost preview for dragging the bottom edge of an event.
             if let Some(resize) = &self.cal_resize {
                 if resize.date == date {
-                    let snapped_current = snap_hour_to_quarter(resize.current_hour);
-                    let lo = resize.original_start_hour.min(snapped_current);
-                    let hi = resize.original_start_hour.max(snapped_current);
+                    let lo = resize
+                        .original_start_hour
+                        .min(move_preview_hour(resize.current_hour));
+                    let hi = resize
+                        .original_start_hour
+                        .max(move_preview_hour(resize.current_hour));
                     let lo_y = TIME_Y_OFFSET + lo * HOUR_H;
                     let hi_y = TIME_Y_OFFSET + hi * HOUR_H;
                     let ghost_h = (hi_y - lo_y).max(4.0);
@@ -456,10 +455,10 @@ impl KnotQApp {
             // Ghost preview block while dragging to create.
             if let Some(drag) = &self.cal_drag {
                 if drag.date == date && drag.is_dragging {
-                    let snapped_start = snap_hour_to_quarter(drag.start_hour);
-                    let snapped_current = snap_hour_to_quarter(drag.current_hour);
-                    let lo_y = TIME_Y_OFFSET + snapped_start.min(snapped_current) * HOUR_H;
-                    let hi_y = TIME_Y_OFFSET + snapped_start.max(snapped_current) * HOUR_H;
+                    let lo_y = TIME_Y_OFFSET
+                        + move_preview_hour(drag.start_hour.min(drag.current_hour)) * HOUR_H;
+                    let hi_y = TIME_Y_OFFSET
+                        + move_preview_hour(drag.start_hour.max(drag.current_hour)) * HOUR_H;
                     let drag_h = (hi_y - lo_y).max(4.0);
                     els.push(
                         div()

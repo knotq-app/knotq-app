@@ -3,6 +3,7 @@ target
 data
 build
 .svelte-kit
+node_modules/
 
 /local/.env
 /local/*.env

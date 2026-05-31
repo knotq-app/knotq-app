@@ -5,7 +5,7 @@ use gpui::{
     SharedString, Window,
 };
 use gpui_component::{Icon, Sizable};
-use knotq_commands::{Command, DateKind};
+use knotq_commands::{event_popup_delete_command, Command, DateKind, EventDeleteScope};
 use knotq_model::{
     CalendarRecurrence, FolderId, Item, ItemId, ItemKind, NodeRef, OccurrenceId, Recurrence,
     RepeatEnd, RepeatWeekday, SchemeId, SimpleRecurrence,

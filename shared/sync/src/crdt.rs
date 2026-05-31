@@ -390,7 +390,8 @@ fn validate_workspace_document(doc: &Doc) -> anyhow::Result<()> {
         .get_as::<_, Option<String>>(&txn, "root")
         .context("read workspace root")?
         .ok_or_else(|| anyhow!("workspace root missing"))?;
-    root.parse::<uuid::Uuid>().context("workspace root invalid")?;
+    root.parse::<uuid::Uuid>()
+        .context("workspace root invalid")?;
     let sync = meta
         .get_as::<_, Option<String>>(&txn, "sync")
         .context("read workspace sync")?
@@ -479,10 +480,14 @@ fn validate_scheme_item(
     item_map: &MapRef,
     txn: &impl ReadTxn,
 ) -> anyhow::Result<()> {
-    let str_field = |key: &str| item_map.get_as::<_, Option<String>>(txn, key).ok().flatten();
-    let require_str = |key: &str| {
-        str_field(key).ok_or_else(|| anyhow!("item {key} missing: {item_id}"))
+    let str_field = |key: &str| {
+        item_map
+            .get_as::<_, Option<String>>(txn, key)
+            .ok()
+            .flatten()
     };
+    let require_str =
+        |key: &str| str_field(key).ok_or_else(|| anyhow!("item {key} missing: {item_id}"));
 
     if require_str("schema")? != "knotq.item.v1" {
         return Err(anyhow!("item schema invalid: {item_id}"));
@@ -1069,7 +1074,13 @@ impl YrsJsonDocument {
             })?;
             node_entries.push((
                 id.clone(),
-                node_entry_json(&id, NODE_KIND_FOLDER, &membership_parent, &positions, payload)?,
+                node_entry_json(
+                    &id,
+                    NODE_KIND_FOLDER,
+                    &membership_parent,
+                    &positions,
+                    payload,
+                )?,
             ));
         }
         for scheme in &snapshot.schemes {
@@ -1078,7 +1089,13 @@ impl YrsJsonDocument {
             let payload = serde_json::to_string(scheme)?;
             node_entries.push((
                 id.clone(),
-                node_entry_json(&id, NODE_KIND_SCHEME, &membership_parent, &positions, payload)?,
+                node_entry_json(
+                    &id,
+                    NODE_KIND_SCHEME,
+                    &membership_parent,
+                    &positions,
+                    payload,
+                )?,
             ));
         }
 
@@ -1096,16 +1113,27 @@ impl YrsJsonDocument {
         );
         let recently_deleted_entries = deleted_ids
             .iter()
-            .map(|id| (id.clone(), deleted_positions.get(id).cloned().unwrap_or_default()))
+            .map(|id| {
+                (
+                    id.clone(),
+                    deleted_positions.get(id).cloned().unwrap_or_default(),
+                )
+            })
             .collect::<Vec<_>>();
 
         let mut scheme_sync_entries = Vec::with_capacity(snapshot.scheme_sync.len());
         for entry in &snapshot.scheme_sync {
-            scheme_sync_entries.push((entry.scheme.to_string(), serde_json::to_string(&entry.sync)?));
+            scheme_sync_entries.push((
+                entry.scheme.to_string(),
+                serde_json::to_string(&entry.sync)?,
+            ));
         }
         let mut folder_sync_entries = Vec::with_capacity(snapshot.folder_sync.len());
         for entry in &snapshot.folder_sync {
-            folder_sync_entries.push((entry.folder.to_string(), serde_json::to_string(&entry.sync)?));
+            folder_sync_entries.push((
+                entry.folder.to_string(),
+                serde_json::to_string(&entry.sync)?,
+            ));
         }
         let mut daily_queue_entries = Vec::with_capacity(snapshot.daily_queue.len());
         for entry in &snapshot.daily_queue {
@@ -1113,8 +1141,10 @@ impl YrsJsonDocument {
         }
         let mut deleted_origin_entries = Vec::with_capacity(snapshot.deleted_scheme_origins.len());
         for entry in &snapshot.deleted_scheme_origins {
-            deleted_origin_entries
-                .push((entry.scheme.to_string(), serde_json::to_string(&entry.origin)?));
+            deleted_origin_entries.push((
+                entry.scheme.to_string(),
+                serde_json::to_string(&entry.origin)?,
+            ));
         }
 
         let mut changed = false;
@@ -1168,7 +1198,9 @@ impl YrsJsonDocument {
                 .ok_or_else(|| anyhow!("workspace {key} missing"))
         };
         let id = read_meta("id")?.parse().context("workspace id invalid")?;
-        let root: FolderId = read_meta("root")?.parse().context("workspace root invalid")?;
+        let root: FolderId = read_meta("root")?
+            .parse()
+            .context("workspace root invalid")?;
         let sync: SyncDocumentMeta =
             serde_json::from_str(&read_meta("sync")?).context("workspace sync invalid")?;
 

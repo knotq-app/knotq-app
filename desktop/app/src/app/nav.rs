@@ -168,9 +168,7 @@ fn calendar_week_start_for(
     range: CalendarWeekRange,
 ) -> NaiveDate {
     match range {
-        CalendarWeekRange::NextSevenDays => {
-            today - Duration::days(1) + Duration::weeks(week_offset as i64)
-        }
+        CalendarWeekRange::NextSevenDays => today + Duration::weeks(week_offset as i64),
         CalendarWeekRange::CalendarWeek => {
             let dow = today.weekday().num_days_from_sunday() as i64;
             today - Duration::days(dow) + Duration::weeks(week_offset as i64)
@@ -183,19 +181,19 @@ mod tests {
     use super::*;
 
     #[test]
-    fn rolling_week_starts_yesterday() {
+    fn rolling_week_starts_today() {
         let wednesday = NaiveDate::from_ymd_opt(2026, 5, 20).unwrap();
         assert_eq!(
             calendar_week_start_for(wednesday, 0, CalendarWeekRange::NextSevenDays),
-            NaiveDate::from_ymd_opt(2026, 5, 19).unwrap()
+            NaiveDate::from_ymd_opt(2026, 5, 20).unwrap()
         );
         assert_eq!(
             calendar_week_start_for(wednesday, -1, CalendarWeekRange::NextSevenDays),
-            NaiveDate::from_ymd_opt(2026, 5, 12).unwrap()
+            NaiveDate::from_ymd_opt(2026, 5, 13).unwrap()
         );
         assert_eq!(
             calendar_week_start_for(wednesday, 1, CalendarWeekRange::NextSevenDays),
-            NaiveDate::from_ymd_opt(2026, 5, 26).unwrap()
+            NaiveDate::from_ymd_opt(2026, 5, 27).unwrap()
         );
     }
 

@@ -90,14 +90,13 @@ impl KnotQApp {
             px(REPEAT_MENU_HEIGHT),
             viewport_height,
         );
-        let scheme_underline_color = token_hsla(t.text_primary);
         let scheme_menu_left = clamped_popup_left(
-            card_left + px(14.0),
+            card_left + px(14.0 + 16.0 + EVENT_POPUP_HEADER_GAP),
             px(SCHEME_PICKER_WIDTH),
             viewport_width,
         );
         let scheme_menu_top =
-            popover_top_biased_below(card_top + px(48.0), px(260.0), viewport_height);
+            popover_top_biased_below(card_top + px(55.0), px(260.0), viewport_height);
         let scheme_menu = (popup.scheme_menu_open && editable).then(|| {
             self.render_event_scheme_picker(scheme_id, scheme_menu_left, scheme_menu_top, t, cx)
         });
@@ -164,134 +163,66 @@ impl KnotQApp {
                     .pb(px(8.0))
                     .bg(token_rgba(if t.is_dark { 0xffffff0d } else { 0x00000008 }))
                     .child(
-                        div()
-                            .flex()
-                            .flex_col()
-                            .gap(px(2.0))
-                            .child(
-                                div()
-                                    .flex()
-                                    .items_center()
-                                    .gap(px(EVENT_POPUP_HEADER_GAP))
-                                    .child(
+                        div().flex().flex_col().gap(px(2.0)).child(
+                            div()
+                                .flex()
+                                .items_start()
+                                .gap(px(EVENT_POPUP_HEADER_GAP))
+                                .child(
+                                    div()
+                                        .id("popup-done-checkbox")
+                                        .flex_shrink_0()
+                                        .mt(px(3.0))
+                                        .opacity(if can_toggle_done { 1.0 } else { 0.35 })
+                                        .child(task_checkbox(is_done, t))
+                                        .when(can_toggle_done, |s| s.cursor_pointer())
+                                        .on_click(cx.listener(
+                                            move |this, _: &ClickEvent, _w, cx| {
+                                                if !can_toggle_done {
+                                                    return;
+                                                }
+                                                if let Some(popup) = this.event_popup.as_mut() {
+                                                    popup.close_all_menus();
+                                                    popup.draft_done = !popup.draft_done;
+                                                    popup.done_dirty = true;
+                                                }
+                                                cx.stop_propagation();
+                                                cx.notify();
+                                            },
+                                        )),
+                                )
+                                .child(
+                                    div()
+                                        .flex_1()
+                                        .min_w_0()
+                                        .flex()
+                                        .flex_col()
+                                        .gap(px(2.0))
+                                        .child(event_title_input(title_input, title, t))
+                                        .child(event_scheme_chip(
+                                            scheme_label,
+                                            accent,
+                                            scheme_id,
+                                            item_id,
+                                            editable,
+                                            t,
+                                            cx,
+                                        )),
+                                )
+                                .when(editable, |row| {
+                                    row.child(div().flex_shrink_0().mt(px(3.0)).child(
+                                        delete_event_icon_button(has_repeating_occurrence, t, cx),
+                                    ))
+                                })
+                                .when(!editable, |row| {
+                                    row.child(
                                         div()
-                                            .id("popup-done-checkbox")
                                             .flex_shrink_0()
-                                            .opacity(if can_toggle_done { 1.0 } else { 0.35 })
-                                            .child(task_checkbox(is_done, t))
-                                            .when(can_toggle_done, |s| s.cursor_pointer())
-                                            .on_click(cx.listener(
-                                                move |this, _: &ClickEvent, _w, cx| {
-                                                    if !can_toggle_done {
-                                                        return;
-                                                    }
-                                                    if let Some(popup) = this.event_popup.as_mut() {
-                                                        popup.close_all_menus();
-                                                        popup.draft_done = !popup.draft_done;
-                                                        popup.done_dirty = true;
-                                                    }
-                                                    cx.stop_propagation();
-                                                    cx.notify();
-                                                },
-                                            )),
+                                            .mt(px(1.0))
+                                            .child(read_only_event_badge(t)),
                                     )
-                                    .child(event_title_input(title_input, title, t))
-                                    .when(editable, |row| {
-                                        row.child(div().flex_shrink_0().child(
-                                            delete_event_icon_button(
-                                                has_repeating_occurrence,
-                                                t,
-                                                cx,
-                                            ),
-                                        ))
-                                    })
-                                    .when(!editable, |row| {
-                                        row.child(
-                                            div().flex_shrink_0().child(read_only_event_badge(t)),
-                                        )
-                                    }),
-                            )
-                            .child(
-                                div()
-                                    .id("popup-scheme-row")
-                                    .flex()
-                                    .items_center()
-                                    .gap(px(2.0))
-                                    .font_family(FONT_UI)
-                                    .child(
-                                        div()
-                                            .id("popup-scheme-label")
-                                            .min_w_0()
-                                            .max_w(px(EVENT_POPUP_WIDTH - 56.0))
-                                            .overflow_hidden()
-                                            .whitespace_nowrap()
-                                            .text_ellipsis()
-                                            .text_size(px(12.0))
-                                            .line_height(px(15.0))
-                                            .text_color(token_hsla(t.text_soft))
-                                            .cursor_pointer()
-                                            .border_b_1()
-                                            .border_color(token_rgba(0x00000000))
-                                            .hover(move |s| {
-                                                s.text_color(token_hsla(t.text_primary))
-                                                    .border_color(scheme_underline_color)
-                                            })
-                                            .on_click(cx.listener(
-                                                move |this, _: &ClickEvent, window, cx| {
-                                                    this.open_scheme(scheme_id, Some(item_id));
-                                                    this.focus_current_editor(window, cx);
-                                                    this.close_event_popup(cx);
-                                                    cx.stop_propagation();
-                                                    cx.notify();
-                                                },
-                                            ))
-                                            .child(scheme_label),
-                                    )
-                                    .when(editable, |row| {
-                                        row.child(
-                                            div()
-                                                .id("popup-scheme-picker-toggle")
-                                                .w(px(19.0))
-                                                .h(px(18.0))
-                                                .rounded(px(4.0))
-                                                .flex()
-                                                .items_center()
-                                                .justify_center()
-                                                .text_size(px(12.0))
-                                                .font_family(FONT_UI)
-                                                .text_color(token_hsla(t.text_soft))
-                                                .bg(token_rgba(0x00000000))
-                                                .cursor_pointer()
-                                                .hover({
-                                                    let hover = t.button_hover;
-                                                    move |s| {
-                                                        s.bg(token_rgba(hover))
-                                                            .text_color(token_hsla(t.text_primary))
-                                                    }
-                                                })
-                                                .on_click(cx.listener(
-                                                    move |this, _: &ClickEvent, _window, cx| {
-                                                        if let Some(popup) =
-                                                            this.event_popup.as_mut()
-                                                        {
-                                                            let toggle = !popup.scheme_menu_open;
-                                                            popup.close_all_menus();
-                                                            popup.scheme_menu_open = toggle;
-                                                        }
-                                                        cx.stop_propagation();
-                                                        cx.notify();
-                                                    },
-                                                ))
-                                                .child(
-                                                    Icon::empty()
-                                                        .path(SCHEME_PICKER_MOVE_ICON)
-                                                        .with_size(px(14.0))
-                                                        .text_color(token_hsla(t.text_soft))
-                                                        .into_any_element(),
-                                                ),
-                                        )
-                                    }),
-                            ),
+                                }),
+                        ),
                     ),
             )
             .child(
@@ -544,7 +475,7 @@ fn event_title_input(
 ) -> gpui::AnyElement {
     let base = div()
         .id("popup-title-input")
-        .flex_1()
+        .w_full()
         .min_w_0()
         .h(px(22.0))
         .overflow_hidden()
@@ -559,6 +490,90 @@ fn event_title_input(
         base.whitespace_nowrap()
             .text_ellipsis()
             .child(fallback)
+            .into_any_element()
+    }
+}
+
+fn event_scheme_chip(
+    label: String,
+    accent: gpui::Hsla,
+    scheme_id: SchemeId,
+    item_id: ItemId,
+    editable: bool,
+    t: Theme,
+    cx: &mut Context<KnotQApp>,
+) -> gpui::AnyElement {
+    let bg = with_alpha(accent, if t.is_dark { 0.14 } else { 0.1 });
+    let hover_bg = with_alpha(accent, if t.is_dark { 0.21 } else { 0.16 });
+    let border = with_alpha(accent, if t.is_dark { 0.28 } else { 0.32 });
+
+    let chip = div()
+        .id("popup-scheme-row")
+        .max_w_full()
+        .h(px(20.0))
+        .px(px(6.0))
+        .rounded(px(5.0))
+        .border_1()
+        .border_color(border)
+        .bg(bg)
+        .flex()
+        .items_center()
+        .gap(px(5.0))
+        .font_family(FONT_UI)
+        .text_size(px(12.0))
+        .line_height(px(15.0))
+        .text_color(token_hsla(t.text_primary))
+        .when(editable, |s| s.cursor_pointer())
+        .hover(move |s| s.bg(hover_bg))
+        .child(
+            div()
+                .w(px(8.0))
+                .h(px(8.0))
+                .rounded(px(2.0))
+                .flex_shrink_0()
+                .bg(accent),
+        )
+        .child(
+            div()
+                .id("popup-scheme-label")
+                .flex_1()
+                .min_w_0()
+                .overflow_hidden()
+                .whitespace_nowrap()
+                .text_ellipsis()
+                .child(label),
+        )
+        .when(editable, |chip| {
+            chip.child(
+                Icon::empty()
+                    .path(SCHEME_PICKER_MOVE_ICON)
+                    .with_size(px(13.0))
+                    .text_color(token_hsla(t.text_soft))
+                    .into_any_element(),
+            )
+        });
+
+    if editable {
+        chip.id("popup-scheme-picker-toggle")
+            .on_click(cx.listener(move |this, _: &ClickEvent, _window, cx| {
+                if let Some(popup) = this.event_popup.as_mut() {
+                    let toggle = !popup.scheme_menu_open;
+                    popup.close_all_menus();
+                    popup.scheme_menu_open = toggle;
+                }
+                cx.stop_propagation();
+                cx.notify();
+            }))
+            .into_any_element()
+    } else {
+        chip.cursor_pointer()
+            .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
+                this.open_scheme(scheme_id, Some(item_id));
+                this.focus_current_editor(window, cx);
+                this.close_event_popup(cx);
+                cx.stop_propagation();
+                cx.notify();
+            }))
             .into_any_element()
     }
 }
@@ -589,24 +604,24 @@ fn event_scheme_picker_daily_row(
     t: Theme,
     cx: &mut Context<KnotQApp>,
 ) -> gpui::AnyElement {
+    let row_color = token_hsla(daily_queue_marker_color(t.is_dark));
+    let row_bg = scheme_picker_row_bg(row_color, selected, t);
+    let row_hover = scheme_picker_row_hover(row_color, selected, t);
+    let row_border = scheme_picker_row_border(row_color, selected, t);
+
     div()
         .id("popup-scheme-pick-daily")
         .h(px(25.0))
         .px(px(6.0))
         .rounded(px(5.0))
+        .border_1()
+        .border_color(row_border)
         .flex()
         .items_center()
         .gap(px(7.0))
         .cursor_pointer()
-        .bg(token_rgba(if selected {
-            t.row_selected
-        } else {
-            0x00000000
-        }))
-        .hover({
-            let hover = t.row_hover;
-            move |s| s.bg(token_rgba(hover))
-        })
+        .bg(row_bg)
+        .hover(move |s| s.bg(row_hover))
         .on_click(cx.listener(move |this, _: &ClickEvent, _window, cx| {
             let target_id = this.ensure_daily_queue_scheme(this.daily_queue_today, cx);
             if let Some(popup) = this.event_popup.as_ref() {
@@ -699,6 +714,10 @@ fn event_scheme_picker_scheme_row(
     cx: &mut Context<KnotQApp>,
 ) -> gpui::AnyElement {
     let item_color = calendar_item_color(false, color_index, t.is_dark);
+    let row_bg = scheme_picker_row_bg(item_color, selected, t);
+    let row_hover = scheme_picker_row_hover(item_color, selected, t);
+    let row_border = scheme_picker_row_border(item_color, selected, t);
+
     div()
         .id(SharedString::from(format!(
             "popup-scheme-pick-{}",
@@ -708,19 +727,14 @@ fn event_scheme_picker_scheme_row(
         .pl(px(6.0 + depth as f32 * 11.0))
         .pr(px(6.0))
         .rounded(px(5.0))
+        .border_1()
+        .border_color(row_border)
         .flex()
         .items_center()
         .gap(px(7.0))
         .cursor_pointer()
-        .bg(token_rgba(if selected {
-            t.row_selected
-        } else {
-            0x00000000
-        }))
-        .hover({
-            let hover = t.row_hover;
-            move |s| s.bg(token_rgba(hover))
-        })
+        .bg(row_bg)
+        .hover(move |s| s.bg(row_hover))
         .on_click(cx.listener(move |this, _: &ClickEvent, _window, cx| {
             if let Some(popup) = this.event_popup.as_ref() {
                 if popup.scheme_id != target_id {
@@ -755,4 +769,56 @@ fn event_scheme_picker_scheme_row(
                 .child(name),
         )
         .into_any_element()
+}
+
+fn scheme_picker_row_bg(color: gpui::Hsla, selected: bool, t: Theme) -> gpui::Hsla {
+    with_alpha(
+        color,
+        if selected {
+            if t.is_dark {
+                0.2
+            } else {
+                0.14
+            }
+        } else {
+            0.0
+        },
+    )
+}
+
+fn scheme_picker_row_hover(color: gpui::Hsla, selected: bool, t: Theme) -> gpui::Hsla {
+    with_alpha(
+        color,
+        if selected {
+            if t.is_dark {
+                0.26
+            } else {
+                0.18
+            }
+        } else if t.is_dark {
+            0.12
+        } else {
+            0.09
+        },
+    )
+}
+
+fn scheme_picker_row_border(color: gpui::Hsla, selected: bool, t: Theme) -> gpui::Hsla {
+    with_alpha(
+        color,
+        if selected {
+            if t.is_dark {
+                0.44
+            } else {
+                0.34
+            }
+        } else {
+            0.0
+        },
+    )
+}
+
+fn with_alpha(mut color: gpui::Hsla, alpha: f32) -> gpui::Hsla {
+    color.a = alpha;
+    color
 }

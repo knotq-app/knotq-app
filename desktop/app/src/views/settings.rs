@@ -63,7 +63,7 @@ impl KnotQApp {
         calendar_rows.push(settings_subheading("Week Range", t));
         calendar_rows.extend(
             [
-                ("Yesterday + 6 days", CalendarWeekRange::NextSevenDays),
+                ("Next 7 days", CalendarWeekRange::NextSevenDays),
                 ("Calendar week", CalendarWeekRange::CalendarWeek),
             ]
             .into_iter()

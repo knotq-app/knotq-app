@@ -1,10 +1,20 @@
 use crate::{Command, DateKind};
-use chrono::{DateTime, Utc};
-use knotq_model::{CalendarRecurrence, Item, ItemId, OccurrenceId, SchemeId};
+use chrono::{DateTime, Duration, Local, NaiveDate, NaiveDateTime, TimeZone, Utc};
+use knotq_model::{
+    CalendarRecurrence, Item, ItemId, OccurrenceId, Recurrence, RepeatEnd, RepeatWeekday, SchemeId,
+    SimpleRecurrence,
+};
 use knotq_rrule::{scoped_date_edit_recurrence, RecurrenceEditScope};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum DateEditScope {
+    ThisEvent,
+    AllFuture,
+    AllEvents,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum EventDeleteScope {
     ThisEvent,
     AllFuture,
     AllEvents,
@@ -140,4 +150,283 @@ fn push_date_command(
         kind,
         date,
     });
+}
+
+pub fn event_popup_delete_command(
+    item: &Item,
+    scheme: SchemeId,
+    item_id: ItemId,
+    occurrence: OccurrenceId,
+    occurrence_index: usize,
+    scope: EventDeleteScope,
+) -> Option<Command> {
+    match scope {
+        EventDeleteScope::ThisEvent if !occurrence.is_single() && item.repeats.is_some() => {
+            let repeats = item.repeats.as_ref()?;
+            let next_repeats = recurrence_without_occurrence(repeats, &occurrence)?;
+            Some(Command::SetItemRecurrence {
+                scheme,
+                item: item_id,
+                repeats: Some(next_repeats),
+            })
+        }
+        EventDeleteScope::AllFuture if !occurrence.is_single() && item.repeats.is_some() => {
+            let repeats = item.repeats.as_ref()?;
+            match recurrence_without_this_and_future(repeats, &occurrence, occurrence_index)? {
+                Some(next_repeats) => Some(Command::SetItemRecurrence {
+                    scheme,
+                    item: item_id,
+                    repeats: Some(next_repeats),
+                }),
+                None => Some(Command::DeleteItem {
+                    scheme,
+                    item: item_id,
+                }),
+            }
+        }
+        EventDeleteScope::ThisEvent | EventDeleteScope::AllFuture | EventDeleteScope::AllEvents => {
+            Some(Command::DeleteItem {
+                scheme,
+                item: item_id,
+            })
+        }
+    }
+}
+
+pub fn recurrence_can_delete_future(repeat: &Recurrence) -> bool {
+    editable_simple_recurrence(repeat).is_some()
+}
+
+pub fn recurrence_without_this_and_future(
+    repeat: &Recurrence,
+    occurrence: &OccurrenceId,
+    occurrence_index: usize,
+) -> Option<Option<Recurrence>> {
+    if occurrence_index == 0 {
+        return Some(None);
+    }
+    let OccurrenceId::Recurring { original_start } = occurrence else {
+        return None;
+    };
+    let until = RepeatEnd::Until(original_start.as_utc_lossy() - Duration::seconds(1));
+    let simple = match editable_simple_recurrence(repeat)? {
+        SimpleRecurrence::Daily { interval, .. } => SimpleRecurrence::Daily {
+            interval,
+            end: until.clone(),
+        },
+        SimpleRecurrence::Weekly {
+            interval, weekdays, ..
+        } => SimpleRecurrence::Weekly {
+            interval,
+            weekdays,
+            end: until.clone(),
+        },
+        SimpleRecurrence::Monthly { interval, .. } => SimpleRecurrence::Monthly {
+            interval,
+            end: until.clone(),
+        },
+        SimpleRecurrence::Yearly { interval, .. } => SimpleRecurrence::Yearly {
+            interval,
+            end: until,
+        },
+    };
+    Some(Some(recurrence_with_simple(Some(repeat), simple)))
+}
+
+pub fn recurrence_without_occurrence(
+    repeat: &Recurrence,
+    occurrence: &OccurrenceId,
+) -> Option<Recurrence> {
+    let OccurrenceId::Recurring { original_start } = occurrence else {
+        return None;
+    };
+    let mut complex = repeat.clone();
+    let deleted_anchor = original_start.as_utc_lossy();
+    if !complex
+        .exdates
+        .iter()
+        .any(|date| date.as_utc_lossy() == deleted_anchor)
+    {
+        complex.exdates.push(original_start.clone());
+    }
+    Some(complex)
+}
+
+fn editable_simple_recurrence(repeat: &Recurrence) -> Option<SimpleRecurrence> {
+    if !repeat.rdates.is_empty() || repeat.rrules.len() != 1 {
+        return None;
+    }
+    parse_simple_rrule(&repeat.rrules[0])
+}
+
+fn recurrence_with_simple(previous: Option<&Recurrence>, simple: SimpleRecurrence) -> Recurrence {
+    if let Some(previous) = previous {
+        if editable_simple_recurrence(previous).is_some() {
+            let mut next = previous.clone();
+            next.rrules = vec![simple_recurrence_rrule(&simple)];
+            next.raw_import = None;
+            return next;
+        }
+    }
+    CalendarRecurrence {
+        rrules: vec![simple_recurrence_rrule(&simple)],
+        ..Default::default()
+    }
+}
+
+fn parse_simple_rrule(raw_rule: &str) -> Option<SimpleRecurrence> {
+    let fields = parse_rrule_fields(raw_rule);
+    let interval = fields
+        .get("INTERVAL")
+        .and_then(|value| value.parse::<usize>().ok())
+        .unwrap_or(1)
+        .max(1);
+    let end = fields
+        .get("COUNT")
+        .and_then(|value| value.parse::<usize>().ok())
+        .map(RepeatEnd::Count)
+        .or_else(|| {
+            fields
+                .get("UNTIL")
+                .and_then(|value| parse_rrule_until(value))
+                .map(RepeatEnd::Until)
+        })
+        .unwrap_or(RepeatEnd::Never);
+    let freq = fields.get("FREQ").map(String::as_str)?;
+    let weekdays = fields
+        .get("BYDAY")
+        .map(|value| parse_rrule_weekdays(value))
+        .unwrap_or_default();
+
+    for key in fields.keys() {
+        if !matches!(
+            key.as_str(),
+            "FREQ" | "INTERVAL" | "COUNT" | "UNTIL" | "BYDAY" | "WKST"
+        ) {
+            return None;
+        }
+    }
+
+    match freq {
+        "DAILY" if weekdays.is_empty() => Some(SimpleRecurrence::Daily { interval, end }),
+        "WEEKLY" => Some(SimpleRecurrence::Weekly {
+            interval,
+            weekdays,
+            end,
+        }),
+        "MONTHLY" if weekdays.is_empty() => Some(SimpleRecurrence::Monthly { interval, end }),
+        "YEARLY" if weekdays.is_empty() => Some(SimpleRecurrence::Yearly { interval, end }),
+        _ => None,
+    }
+}
+
+fn parse_rrule_fields(raw_rule: &str) -> std::collections::BTreeMap<String, String> {
+    raw_rule
+        .trim()
+        .trim_start_matches("RRULE:")
+        .split(';')
+        .filter_map(|part| {
+            let (key, value) = part.split_once('=')?;
+            Some((
+                key.trim().to_ascii_uppercase(),
+                value.trim().to_ascii_uppercase(),
+            ))
+        })
+        .collect()
+}
+
+fn parse_rrule_weekdays(value: &str) -> Vec<RepeatWeekday> {
+    value
+        .split(',')
+        .filter_map(|part| {
+            let day = part
+                .trim()
+                .trim_start_matches(|ch: char| ch == '+' || ch == '-' || ch.is_ascii_digit());
+            match day {
+                "MO" => Some(RepeatWeekday::Mon),
+                "TU" => Some(RepeatWeekday::Tue),
+                "WE" => Some(RepeatWeekday::Wed),
+                "TH" => Some(RepeatWeekday::Thu),
+                "FR" => Some(RepeatWeekday::Fri),
+                "SA" => Some(RepeatWeekday::Sat),
+                "SU" => Some(RepeatWeekday::Sun),
+                _ => None,
+            }
+        })
+        .collect()
+}
+
+fn parse_rrule_until(value: &str) -> Option<DateTime<Utc>> {
+    DateTime::parse_from_rfc3339(value)
+        .map(|dt| dt.with_timezone(&Utc))
+        .ok()
+        .or_else(|| {
+            NaiveDateTime::parse_from_str(value, "%Y%m%dT%H%M%SZ")
+                .ok()
+                .map(|dt| DateTime::from_naive_utc_and_offset(dt, Utc))
+        })
+        .or_else(|| {
+            NaiveDate::parse_from_str(value, "%Y%m%d")
+                .ok()
+                .and_then(local_repeat_until_for_date)
+        })
+}
+
+fn local_repeat_until_for_date(date: NaiveDate) -> Option<DateTime<Utc>> {
+    let local_end = date.and_hms_opt(23, 59, 59)?;
+    Local
+        .from_local_datetime(&local_end)
+        .latest()
+        .map(|dt| dt.with_timezone(&Utc))
+}
+
+fn simple_recurrence_rrule(simple: &SimpleRecurrence) -> String {
+    let mut parts = match simple {
+        SimpleRecurrence::Daily { interval, .. } => {
+            vec![
+                "FREQ=DAILY".to_string(),
+                format!("INTERVAL={}", (*interval).max(1)),
+            ]
+        }
+        SimpleRecurrence::Weekly {
+            interval, weekdays, ..
+        } => {
+            let mut parts = vec![
+                "FREQ=WEEKLY".to_string(),
+                format!("INTERVAL={}", (*interval).max(1)),
+            ];
+            if !weekdays.is_empty() {
+                parts.push(format!(
+                    "BYDAY={}",
+                    weekdays
+                        .iter()
+                        .map(|day| knotq_rrule::weekday_util::repeat_weekday_rrule_code(*day))
+                        .collect::<Vec<_>>()
+                        .join(",")
+                ));
+            }
+            parts
+        }
+        SimpleRecurrence::Monthly { interval, .. } => {
+            vec![
+                "FREQ=MONTHLY".to_string(),
+                format!("INTERVAL={}", (*interval).max(1)),
+            ]
+        }
+        SimpleRecurrence::Yearly { interval, .. } => {
+            vec![
+                "FREQ=YEARLY".to_string(),
+                format!("INTERVAL={}", (*interval).max(1)),
+            ]
+        }
+    };
+
+    match simple.repeat_end() {
+        RepeatEnd::Never => {}
+        RepeatEnd::Count(count) => parts.push(format!("COUNT={count}")),
+        RepeatEnd::Until(until) => {
+            parts.push(format!("UNTIL={}", until.format("%Y%m%dT%H%M%SZ")));
+        }
+    }
+    parts.join(";")
 }

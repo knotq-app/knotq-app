@@ -203,51 +203,31 @@ impl KnotQApp {
             return;
         };
 
-        let command = match scope {
-            RepeatScope::ThisEvent if !popup.occurrence.is_single() && item.repeats.is_some() => {
-                let Some(repeats) = popup.draft_repeats.as_ref().or(item.repeats.as_ref()) else {
-                    return;
-                };
-                let Some(next_repeats) = recurrence_without_occurrence(repeats, &popup.occurrence)
-                else {
-                    return;
-                };
-                Command::SetItemRecurrence {
-                    scheme: popup.scheme_id,
-                    item: popup.item_id,
-                    repeats: Some(next_repeats),
-                }
-            }
-            RepeatScope::AllFuture if !popup.occurrence.is_single() && item.repeats.is_some() => {
-                let Some(repeats) = popup.draft_repeats.as_ref().or(item.repeats.as_ref()) else {
-                    return;
-                };
-                match recurrence_without_this_and_future(
-                    repeats,
-                    &popup.occurrence,
-                    popup.occurrence_index,
-                ) {
-                    Some(Some(next_repeats)) => Command::SetItemRecurrence {
-                        scheme: popup.scheme_id,
-                        item: popup.item_id,
-                        repeats: Some(next_repeats),
-                    },
-                    Some(None) => Command::DeleteItem {
-                        scheme: popup.scheme_id,
-                        item: popup.item_id,
-                    },
-                    None => return,
-                }
-            }
-            RepeatScope::ThisEvent | RepeatScope::AllFuture | RepeatScope::AllEvents => {
-                Command::DeleteItem {
-                    scheme: popup.scheme_id,
-                    item: popup.item_id,
-                }
-            }
+        let mut delete_item = item.clone();
+        if popup.draft_repeats.is_some() {
+            delete_item.repeats = popup.draft_repeats.clone();
+        }
+
+        let Some(command) = event_popup_delete_command(
+            &delete_item,
+            popup.scheme_id,
+            popup.item_id,
+            popup.occurrence,
+            popup.occurrence_index,
+            event_delete_scope(scope),
+        ) else {
+            return;
         };
 
         self.apply(command, cx);
         cx.notify();
+    }
+}
+
+fn event_delete_scope(scope: RepeatScope) -> EventDeleteScope {
+    match scope {
+        RepeatScope::ThisEvent => EventDeleteScope::ThisEvent,
+        RepeatScope::AllFuture => EventDeleteScope::AllFuture,
+        RepeatScope::AllEvents => EventDeleteScope::AllEvents,
     }
 }
