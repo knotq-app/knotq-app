@@ -91,17 +91,11 @@ impl KnotQApp {
 
         match drag.source {
             NavigatorDragSource::Active { .. } => {
-                let Some((source_parent, source_position)) =
+                let Some((_source_parent, _source_position)) =
                     self.navigator_node_position(drag.node)
                 else {
                     return false;
                 };
-                if source_parent == new_parent
-                    && (position == source_position || position == source_position + 1)
-                {
-                    return false;
-                }
-
                 match drag.node {
                     NodeRef::Folder(id) => {
                         id != self.workspace.root && self.workspace.folder(id).is_some()
@@ -322,20 +316,10 @@ pub(super) fn render_scheme_drop_indicator(
 pub(super) fn navigator_drop_target_accepts(
     drag: &NavigatorDragInfo,
     new_parent: FolderId,
-    position: usize,
+    _position: usize,
 ) -> bool {
     if matches!(drag.node, NodeRef::Folder(id) if id == new_parent) {
         return false;
-    }
-    if let NavigatorDragSource::Active {
-        parent,
-        position: source_position,
-    } = drag.source
-    {
-        if parent == new_parent && (position == source_position || position == source_position + 1)
-        {
-            return false;
-        }
     }
     true
 }

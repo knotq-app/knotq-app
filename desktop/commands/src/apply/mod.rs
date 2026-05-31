@@ -99,11 +99,7 @@ pub fn move_node(
         .children
         .remove(old_pos);
 
-    let adjusted_pos = if old_parent == new_parent && old_pos < position {
-        position - 1
-    } else {
-        position
-    };
+    let adjusted_pos = position;
 
     let new_parent_obj = workspace
         .folders

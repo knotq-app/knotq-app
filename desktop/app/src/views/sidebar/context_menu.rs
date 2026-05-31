@@ -139,21 +139,6 @@ impl KnotQApp {
                         this.start_renaming_node(NodeRef::Scheme(scheme_id), window, cx);
                     }),
                 ));
-                items.push(sidebar_context_item(
-                    "sidebar-menu-reveal-scheme",
-                    "Reveal in Finder",
-                    t,
-                    cx.listener(move |this, _: &ClickEvent, _window, cx| {
-                        this.close_sidebar_context_menu(cx);
-                        if let Ok(Some(path)) = knotq_storage_json::scheme_path_for_workspace(
-                            &knotq_storage_json::workspace_dir(),
-                            &this.workspace,
-                            scheme_id,
-                        ) {
-                            cx.reveal_path(&path);
-                        }
-                    }),
-                ));
                 items.push(sidebar_context_separator(t));
                 items.push(sidebar_context_item(
                     "sidebar-menu-delete-scheme",
