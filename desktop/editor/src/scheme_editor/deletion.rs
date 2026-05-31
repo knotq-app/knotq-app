@@ -38,7 +38,9 @@ impl SchemeEditor {
             return false;
         }
 
-        let clean_item = item_without_line_attributes(&item);
+        // Stripping the marker keeps the line's indentation.
+        let mut clean_item = item_without_line_attributes(&item);
+        clean_item.indent = item.indent;
         if let Some(row) = self.rows.get_mut(row) {
             row.item = clean_item.clone();
         }
@@ -87,7 +89,9 @@ impl SchemeEditor {
             return false;
         }
 
-        let clean_item = item_without_line_attributes(&item);
+        // Stripping the marker keeps the line's indentation.
+        let mut clean_item = item_without_line_attributes(&item);
+        clean_item.indent = item.indent;
         if let Some(row) = self.rows.get_mut(row) {
             row.item = clean_item.clone();
         }
