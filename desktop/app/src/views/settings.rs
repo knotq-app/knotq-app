@@ -17,9 +17,9 @@ impl KnotQApp {
         let themes = all_themes();
 
         let theme_rows = [
-            ("System", ThemeMode::System, self.theme()),
             ("Dark", ThemeMode::Dark, themes[0]),
             ("Light", ThemeMode::Light, themes[1]),
+            ("System", ThemeMode::System, self.theme()),
         ]
         .into_iter()
         .enumerate()

@@ -452,10 +452,10 @@ fn version_history_restores_saved_workspace_files() {
 }
 
 #[test]
-fn app_settings_default_to_system_theme() {
+fn app_settings_default_to_dark_theme() {
     assert_eq!(
         knotq_model::AppSettings::default().theme_mode,
-        ThemeMode::System
+        ThemeMode::Dark
     );
     assert_eq!(
         knotq_model::AppSettings::default().calendar_week_range,

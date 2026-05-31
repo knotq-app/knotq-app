@@ -22,8 +22,8 @@ pub enum CalendarWeekRange {
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum ThemeMode {
-    #[default]
     System,
+    #[default]
     Dark,
     Light,
 }
