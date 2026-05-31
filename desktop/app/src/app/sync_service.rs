@@ -22,11 +22,15 @@ use knotq_sync::{
 };
 use sha2::{Digest, Sha256};
 
-use super::{KnotQApp, NoticeModal, SyncRunStatus};
+use super::sync_auth::{refresh_sync_backend, RefreshError};
+use super::{KnotQApp, NoticeModal, SyncAuthStatus, SyncRunStatus};
 
 const SYNC_DEBOUNCE: StdDuration = StdDuration::from_secs(2);
 const SYNC_POLL_INTERVAL: StdDuration = StdDuration::from_secs(30);
 const SYNC_BATCH_LIMIT: usize = 50;
+// Refresh the access token this many seconds before it expires, so a sync run
+// never starts with a token that could lapse mid-flight.
+const ACCESS_REFRESH_SKEW_SECS: i64 = 120;
 
 #[derive(Clone)]
 struct SyncSnapshot {
@@ -115,6 +119,13 @@ impl KnotQApp {
 }
 
 async fn run_sync_once(weak: &gpui::WeakEntity<KnotQApp>, cx: &mut gpui::AsyncApp) {
+    // Refresh the (short-lived) access token before syncing if it's near expiry,
+    // persisting the rotated credentials immediately so a rotated refresh token is
+    // never lost to a later sync failure. Aborts this tick if the session is gone.
+    if ensure_fresh_token(weak, cx).await.is_err() {
+        return;
+    }
+
     let snapshot = weak
         .update(cx, |app, _cx| {
             if app.workspace_save_blocked_reason.is_some() {
@@ -195,6 +206,74 @@ async fn run_sync_once(weak: &gpui::WeakEntity<KnotQApp>, cx: &mut gpui::AsyncAp
                 };
                 cx.notify();
             });
+        }
+    }
+}
+
+// Returns Err(()) only when the session is gone (refresh token dead) and the
+// caller should abort the sync tick; the user has been signed out. Otherwise
+// Ok(()), having either refreshed-and-persisted new tokens or left the current
+// (still-valid-enough) ones in place.
+async fn ensure_fresh_token(
+    weak: &gpui::WeakEntity<KnotQApp>,
+    cx: &mut gpui::AsyncApp,
+) -> Result<(), ()> {
+    let account = weak
+        .update(cx, |app, _cx| app.settings.sync_account.clone())
+        .ok()
+        .flatten();
+    let Some(account) = account else {
+        return Ok(());
+    };
+    if !account.supports_sync {
+        return Ok(());
+    }
+    // Only refresh when the access token is at/near expiry.
+    if account.expires_at > Utc::now() + chrono::Duration::seconds(ACCESS_REFRESH_SKEW_SECS) {
+        return Ok(());
+    }
+    let Some(refresh_token) = account.refresh_token.clone() else {
+        // Legacy session with no refresh token: nothing to refresh. Let the sync
+        // proceed; if the access token has lapsed the run fails and retries later.
+        return Ok(());
+    };
+    let api_base = account.api_base.clone();
+    let outcome = cx
+        .background_executor()
+        .spawn(async move { refresh_sync_backend(&api_base, &refresh_token) })
+        .await;
+    match outcome {
+        Ok(tokens) => {
+            let _ = weak.update(cx, |app, cx| {
+                if let Some(acct) = app.settings.sync_account.as_mut() {
+                    acct.bearer_token = tokens.bearer_token;
+                    acct.expires_at = tokens.expires_at;
+                    acct.refresh_token = Some(tokens.refresh_token);
+                    acct.refresh_expires_at = tokens.refresh_expires_at;
+                    acct.supports_sync = tokens.supports_sync;
+                }
+                app.save_app_settings();
+                cx.notify();
+            });
+            Ok(())
+        }
+        Err(RefreshError::Unauthorized) => {
+            // Refresh token revoked/expired/replayed: the session is gone.
+            let _ = weak.update(cx, |app, cx| {
+                app.settings.sync_account = None;
+                app.sync_auth_status = SyncAuthStatus::Error(
+                    "Your sync session expired. Please sign in again.".to_string(),
+                );
+                app.sync_run_status = SyncRunStatus::Idle;
+                app.save_app_settings();
+                cx.notify();
+            });
+            Err(())
+        }
+        Err(RefreshError::Transient(error)) => {
+            // Network/parse hiccup: keep the current token and retry next tick.
+            eprintln!("sync token refresh deferred: {error:#}");
+            Ok(())
         }
     }
 }

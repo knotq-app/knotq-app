@@ -109,8 +109,16 @@ pub struct SyncAccountSettings {
     pub email: String,
     #[serde(default = "default_true")]
     pub supports_sync: bool,
+    /// Short-lived access token; `expires_at` is its expiry.
     pub bearer_token: String,
     pub expires_at: DateTime<Utc>,
+    /// Long-lived refresh credential and its (sliding) expiry. Optional so older
+    /// persisted settings (a single long-lived bearer token) still deserialize; a
+    /// missing refresh token simply forces a one-time re-login.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub refresh_token: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub refresh_expires_at: Option<DateTime<Utc>>,
 }
 
 fn default_true() -> bool {

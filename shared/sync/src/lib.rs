@@ -116,8 +116,15 @@ pub struct AuthSession {
     pub email: String,
     #[serde(default = "default_supports_sync")]
     pub supports_sync: bool,
+    /// Short-lived access token; `expires_at` is its expiry.
     pub bearer_token: String,
     pub expires_at: DateTime<Utc>,
+    /// Long-lived, single-use, rotated-on-refresh credential presented to
+    /// `POST /v1/auth/refresh`; `refresh_expires_at` is its (sliding) expiry.
+    #[serde(default)]
+    pub refresh_token: String,
+    #[serde(default)]
+    pub refresh_expires_at: Option<DateTime<Utc>>,
 }
 
 pub fn default_supports_sync() -> bool {

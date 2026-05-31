@@ -30,6 +30,27 @@ struct LoginResponse {
     supports_sync: bool,
     bearer_token: String,
     expires_at: DateTime<Utc>,
+    #[serde(default)]
+    refresh_token: String,
+    #[serde(default)]
+    refresh_expires_at: Option<DateTime<Utc>>,
+}
+
+/// Fresh credentials returned by `POST /v1/auth/refresh`.
+pub(crate) struct RefreshedTokens {
+    pub bearer_token: String,
+    pub expires_at: DateTime<Utc>,
+    pub refresh_token: String,
+    pub refresh_expires_at: Option<DateTime<Utc>>,
+    pub supports_sync: bool,
+}
+
+/// Why a refresh attempt failed. `Unauthorized` means the refresh token is dead
+/// (revoked/expired/replayed) and the user must sign in again; `Transient` is a
+/// network/parse hiccup worth retrying on the next sync tick.
+pub(crate) enum RefreshError {
+    Unauthorized,
+    Transient(anyhow::Error),
 }
 
 #[derive(Deserialize)]
@@ -227,6 +248,54 @@ fn login_to_sync_backend(
         supports_sync: session.supports_sync,
         bearer_token: session.bearer_token,
         expires_at: session.expires_at,
+        refresh_token: non_empty(session.refresh_token),
+        refresh_expires_at: session.refresh_expires_at,
+    })
+}
+
+fn non_empty(value: String) -> Option<String> {
+    if value.is_empty() {
+        None
+    } else {
+        Some(value)
+    }
+}
+
+/// Exchange a refresh token for a fresh access token (and a rotated refresh
+/// token). Runs on a background thread (blocking `ureq`).
+pub(crate) fn refresh_sync_backend(
+    api_base: &str,
+    refresh_token: &str,
+) -> Result<RefreshedTokens, RefreshError> {
+    let base = normalize_api_base(api_base).map_err(RefreshError::Transient)?;
+    let url = format!("{base}/v1/auth/refresh");
+    let response = match ureq::post(&url)
+        .timeout(StdDuration::from_secs(10))
+        .send_json(serde_json::json!({ "refresh_token": refresh_token }))
+    {
+        Ok(response) => response,
+        Err(ureq::Error::Status(401, _)) => return Err(RefreshError::Unauthorized),
+        Err(error) => {
+            return Err(RefreshError::Transient(anyhow!(
+                "could not refresh sync session: {error}"
+            )))
+        }
+    };
+    let session: LoginResponse = response
+        .into_json()
+        .context("parse sync refresh response")
+        .map_err(RefreshError::Transient)?;
+    if session.refresh_token.is_empty() {
+        return Err(RefreshError::Transient(anyhow!(
+            "sync refresh response missing refresh token"
+        )));
+    }
+    Ok(RefreshedTokens {
+        bearer_token: session.bearer_token,
+        expires_at: session.expires_at,
+        refresh_token: session.refresh_token,
+        refresh_expires_at: session.refresh_expires_at,
+        supports_sync: session.supports_sync,
     })
 }
 
