@@ -3,8 +3,9 @@ use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashMap, HashSet};
 
 use crate::{
-    default_folder_sync, default_scheme_sync, default_workspace_sync, CrdtBackend, FolderId,
-    Scheme, SchemeId, SyncDocumentKind, SyncDocumentMeta, WorkspaceId,
+    daily_queue_scheme_id, daily_queue_sync_metadata, default_folder_sync, default_scheme_sync,
+    default_workspace_sync, CrdtBackend, FolderId, Scheme, SchemeId, SyncDocumentKind,
+    SyncDocumentMeta, WorkspaceId,
 };
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq, Serialize, Deserialize)]
@@ -313,6 +314,11 @@ impl Workspace {
             changed = true;
         }
 
+        let daily_queue_dates_by_id: HashMap<SchemeId, NaiveDate> = self
+            .daily_queue
+            .iter()
+            .map(|(date, id)| (*id, *date))
+            .collect();
         let scheme_ids: HashSet<SchemeId> = self.schemes.keys().copied().collect();
         let scheme_sync_before = self.scheme_sync.len();
         self.scheme_sync.retain(|id, _| scheme_ids.contains(id));
@@ -320,10 +326,23 @@ impl Workspace {
             changed = true;
         }
         for id in scheme_ids {
+            let stable_daily_sync = daily_queue_dates_by_id
+                .get(&id)
+                .copied()
+                .filter(|date| daily_queue_scheme_id(*date) == id)
+                .map(daily_queue_sync_metadata);
             let entry = self.scheme_sync.entry(id).or_insert_with(|| {
                 changed = true;
-                default_scheme_sync()
+                stable_daily_sync
+                    .clone()
+                    .unwrap_or_else(default_scheme_sync)
             });
+            if let Some(stable_daily_sync) = stable_daily_sync {
+                if entry.id != stable_daily_sync.id {
+                    entry.id = stable_daily_sync.id;
+                    changed = true;
+                }
+            }
             if entry.kind != SyncDocumentKind::Scheme {
                 entry.kind = SyncDocumentKind::Scheme;
                 changed = true;

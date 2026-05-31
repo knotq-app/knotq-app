@@ -117,19 +117,28 @@ pub fn make_default_workspace_for_date(today: NaiveDate) -> Workspace {
         daily_queue_scheme_name(yesterday),
         knotq_model::DAILY_QUEUE_COLOR_INDEX,
     );
+    past_daily.id = knotq_model::daily_queue_scheme_id(yesterday);
     past_daily.items = vec![Item::new("Past days show up here")];
     let past_daily_id = past_daily.id;
     workspace.daily_queue.insert(yesterday, past_daily_id);
     workspace.schemes.insert(past_daily_id, past_daily);
+    workspace.scheme_sync.insert(
+        past_daily_id,
+        knotq_model::daily_queue_sync_metadata(yesterday),
+    );
 
     let mut daily = Scheme::new(
         daily_queue_scheme_name(today),
         knotq_model::DAILY_QUEUE_COLOR_INDEX,
     );
+    daily.id = knotq_model::daily_queue_scheme_id(today);
     daily.items = make_daily_seed_items();
     let daily_id = daily.id;
     workspace.daily_queue.insert(today, daily_id);
     workspace.schemes.insert(daily_id, daily);
+    workspace
+        .scheme_sync
+        .insert(daily_id, knotq_model::daily_queue_sync_metadata(today));
     workspace
 }
 

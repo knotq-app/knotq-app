@@ -53,11 +53,15 @@ impl KnotQApp {
             self.state.mark_compat_workspace_dirty();
         }
 
+        let id = knotq_model::daily_queue_scheme_id(date);
         let mut scheme = Scheme::new(daily_queue_scheme_name(date), DAILY_QUEUE_COLOR_INDEX);
+        scheme.id = id;
         scheme.items.push(Item::new(""));
-        let id = scheme.id;
         self.workspace.daily_queue.insert(date, id);
         self.workspace.schemes.insert(id, scheme);
+        self.workspace
+            .scheme_sync
+            .insert(id, knotq_model::daily_queue_sync_metadata(date));
         self.state.mark_scheme_dirty(id);
         self.service_bus.signal_save();
         if should_notify {
