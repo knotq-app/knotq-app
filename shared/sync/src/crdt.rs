@@ -3,8 +3,8 @@ use std::collections::{HashMap, HashSet};
 use anyhow::{anyhow, Context};
 use chrono::{DateTime, NaiveDate};
 use knotq_model::{
-    DeletedSchemeOrigin, DocumentId, Folder, FolderId, Item, ItemId, Scheme, SchemeId,
-    NodeRef, SchemeSource, SyncDocumentKind, SyncDocumentMeta, Workspace,
+    DeletedSchemeOrigin, DocumentId, Folder, FolderId, Item, ItemId, NodeRef, Scheme, SchemeId,
+    SchemeSource, SyncDocumentKind, SyncDocumentMeta, Workspace,
 };
 use serde::{Deserialize, Serialize};
 use yrs::updates::{decoder::Decode, encoder::Encode};
@@ -358,7 +358,7 @@ impl WorkspaceCrdtDocuments {
                     name: entry.name,
                     color_index: entry.color_index,
                     gsync: entry.gsync,
-                    source: entry.source,
+                    source: preserve_local_calendar_sync_token(current, entry.id, entry.source),
                     items,
                 },
             );
@@ -1541,7 +1541,7 @@ fn workspace_document_snapshot(workspace: &Workspace) -> WorkspaceDocumentSnapsh
             name: scheme.name.clone(),
             color_index: scheme.color_index,
             gsync: scheme.gsync,
-            source: scheme.source.clone(),
+            source: crdt_scheme_source(&scheme.source),
         })
         .collect::<Vec<_>>();
     schemes.sort_by_key(|scheme| scheme.id.to_string());
@@ -1600,6 +1600,39 @@ fn workspace_document_snapshot(workspace: &Workspace) -> WorkspaceDocumentSnapsh
     }
 }
 
+fn crdt_scheme_source(source: &SchemeSource) -> SchemeSource {
+    let mut source = source.clone();
+    if let SchemeSource::ImportedCalendar(imported) = &mut source {
+        imported.sync_token = None;
+    }
+    source
+}
+
+fn preserve_local_calendar_sync_token(
+    current: &Workspace,
+    scheme_id: SchemeId,
+    mut remote_source: SchemeSource,
+) -> SchemeSource {
+    let SchemeSource::ImportedCalendar(remote) = &mut remote_source else {
+        return remote_source;
+    };
+    if remote.sync_token.is_some() {
+        return remote_source;
+    }
+    let Some(SchemeSource::ImportedCalendar(local)) =
+        current.schemes.get(&scheme_id).map(|scheme| &scheme.source)
+    else {
+        return remote_source;
+    };
+    if local.provider == remote.provider
+        && local.account_id == remote.account_id
+        && local.calendar_id == remote.calendar_id
+    {
+        remote.sync_token = local.sync_token.clone();
+    }
+    remote_source
+}
+
 fn scheme_meta(workspace: &Workspace, id: SchemeId) -> anyhow::Result<&SyncDocumentMeta> {
     workspace
         .scheme_sync
@@ -1619,7 +1652,7 @@ fn scheme_documents_by_id(workspace: &Workspace) -> HashMap<knotq_model::Documen
 #[cfg(test)]
 mod tests {
     use super::*;
-    use knotq_model::{Item, NodeRef};
+    use knotq_model::{CalendarProvider, ImportedCalendarSource, Item, NodeRef};
 
     #[test]
     fn scheme_document_update_can_be_applied_to_empty_replica() {
@@ -1725,6 +1758,62 @@ mod tests {
 
         validate_crdt_update_sequence(SyncDocumentKind::PersonalWorkspace, workspace_updates)
             .unwrap();
+    }
+
+    #[test]
+    fn workspace_crdt_snapshot_omits_google_calendar_sync_token() {
+        let mut workspace = Workspace::new();
+        let mut scheme = Scheme::new("Imported", 0);
+        scheme.source = SchemeSource::ImportedCalendar(ImportedCalendarSource {
+            provider: CalendarProvider::Google,
+            account_id: "account".to_string(),
+            calendar_id: "calendar".to_string(),
+            sync_token: Some("local-google-sync-token".to_string()),
+            read_only: true,
+            last_synced_at: None,
+        });
+        workspace.schemes.insert(scheme.id, scheme);
+        workspace.ensure_sync_metadata();
+
+        let snapshot = workspace_document_snapshot(&workspace);
+        let SchemeSource::ImportedCalendar(source) = &snapshot.schemes[0].source else {
+            panic!("expected imported calendar source");
+        };
+        assert_eq!(source.provider, CalendarProvider::Google);
+        assert_eq!(source.sync_token, None);
+        assert!(source.read_only);
+    }
+
+    #[test]
+    fn remote_workspace_materialization_preserves_local_google_calendar_sync_token() {
+        let mut workspace = Workspace::new();
+        let mut scheme = Scheme::new("Imported", 0);
+        let scheme_id = scheme.id;
+        scheme.source = SchemeSource::ImportedCalendar(ImportedCalendarSource {
+            provider: CalendarProvider::Google,
+            account_id: "account".to_string(),
+            calendar_id: "calendar".to_string(),
+            sync_token: Some("local-token".to_string()),
+            read_only: true,
+            last_synced_at: None,
+        });
+        workspace.schemes.insert(scheme_id, scheme);
+
+        let remote_source = SchemeSource::ImportedCalendar(ImportedCalendarSource {
+            provider: CalendarProvider::Google,
+            account_id: "account".to_string(),
+            calendar_id: "calendar".to_string(),
+            sync_token: None,
+            read_only: true,
+            last_synced_at: None,
+        });
+
+        let SchemeSource::ImportedCalendar(merged) =
+            preserve_local_calendar_sync_token(&workspace, scheme_id, remote_source)
+        else {
+            panic!("expected imported calendar source");
+        };
+        assert_eq!(merged.sync_token.as_deref(), Some("local-token"));
     }
 
     #[test]
