@@ -493,10 +493,10 @@ impl KnotQApp {
                 if drag.date == date && drag.is_dragging {
                     let snapped_start = snap_preview_hour(drag.start_hour);
                     let snapped_current = snap_preview_hour(drag.current_hour);
-                    let lo_y =
-                        TIME_Y_OFFSET + move_preview_hour(snapped_start.min(snapped_current)) * HOUR_H;
-                    let hi_y =
-                        TIME_Y_OFFSET + move_preview_hour(snapped_start.max(snapped_current)) * HOUR_H;
+                    let lo_y = TIME_Y_OFFSET
+                        + move_preview_hour(snapped_start.min(snapped_current)) * HOUR_H;
+                    let hi_y = TIME_Y_OFFSET
+                        + move_preview_hour(snapped_start.max(snapped_current)) * HOUR_H;
                     let drag_h = (hi_y - lo_y).max(4.0);
                     els.push(
                         div()
@@ -647,8 +647,14 @@ impl KnotQApp {
         // handlers stop firing once the cursor is over another block; the overlay
         // guarantees the ghost tracks the cursor and that the gesture always ends
         // (committing or opening the popup) regardless of what is underneath.
-        let drag_overlay = self
-            .calendar_gesture_overlay(visible_start, visible_days, day_col_w, TIME_W, total_h, cx);
+        let drag_overlay = self.calendar_gesture_overlay(
+            visible_start,
+            visible_days,
+            day_col_w,
+            TIME_W,
+            total_h,
+            cx,
+        );
 
         div()
             .flex_1()

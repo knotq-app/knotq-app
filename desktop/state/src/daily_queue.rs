@@ -72,7 +72,7 @@ pub fn daily_queue_carryover_command(
     }
 
     let mut position = today.items.len();
-    if daily_queue_scheme_is_blank(today) {
+    if daily_queue_scheme_is_blank(today) && !today.items.is_empty() {
         let mut first = carried_items.remove(0);
         first.id = today.items[0].id;
         commands.push(Command::ReplaceItem {
@@ -95,6 +95,9 @@ pub fn daily_queue_carryover_command(
 }
 
 pub fn daily_queue_scheme_is_blank(scheme: &Scheme) -> bool {
+    if scheme.items.is_empty() {
+        return true;
+    }
     scheme
         .items
         .first()

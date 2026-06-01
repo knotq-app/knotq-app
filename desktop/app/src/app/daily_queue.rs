@@ -56,7 +56,6 @@ impl KnotQApp {
         let id = knotq_model::daily_queue_scheme_id(date);
         let mut scheme = Scheme::new(daily_queue_scheme_name(date), DAILY_QUEUE_COLOR_INDEX);
         scheme.id = id;
-        scheme.items.push(Item::new(""));
         self.workspace.daily_queue.insert(date, id);
         self.workspace.schemes.insert(id, scheme);
         self.workspace

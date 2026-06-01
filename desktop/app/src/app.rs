@@ -370,7 +370,9 @@ impl CalendarMoveState {
 
     /// Whole-day offset from where the drag began.
     pub fn day_delta(&self) -> i64 {
-        self.date.signed_duration_since(self.original_date).num_days()
+        self.date
+            .signed_duration_since(self.original_date)
+            .num_days()
     }
 
     /// A move with no day change and no snapped time change — treated as a click.

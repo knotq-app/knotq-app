@@ -5,9 +5,11 @@ use knotq_state::{daily_queue_carryover_command, daily_queue_scheme_is_blank, Da
 
 #[test]
 fn blank_daily_queue_scheme_is_detected() {
+    let scheme = Scheme::new("Daily", 0);
+    assert!(daily_queue_scheme_is_blank(&scheme));
+
     let mut scheme = Scheme::new("Daily", 0);
     scheme.items.push(Item::new(""));
-
     assert!(daily_queue_scheme_is_blank(&scheme));
 }
 
@@ -21,6 +23,23 @@ fn carryover_moves_incomplete_items_to_today() {
     let command = daily_queue_carryover_command(previous.id, &previous, today.id, &today);
 
     assert!(matches!(command, Some(Command::Batch(_))));
+}
+
+#[test]
+fn carryover_inserts_into_empty_today() {
+    let mut previous = Scheme::new("Yesterday", 0);
+    previous.items.push(Item::new("Finish draft"));
+    let today = Scheme::new("Today", 0);
+
+    let command = daily_queue_carryover_command(previous.id, &previous, today.id, &today);
+
+    let Some(Command::Batch(commands)) = command else {
+        panic!("expected carryover batch");
+    };
+    assert!(matches!(
+        commands.as_slice(),
+        [Command::InsertItem { position: 0, .. }]
+    ));
 }
 
 #[test]
