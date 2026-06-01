@@ -137,8 +137,6 @@ pub(super) fn render_event_chunk<'a>(
         .when(block_editable, |s| s.cursor_grab())
         .when(!block_editable, |s| s.cursor_pointer())
         .on_mouse_down(MouseButton::Left, {
-            let start_hour_frac = min_start.hour() as f32 + min_start.minute() as f32 / 60.0;
-            let end_hour_frac = max_end.hour() as f32 + max_end.minute() as f32 / 60.0;
             let item_date = day;
             let scroll_handle = scroll_handle.clone();
             cx.listener(move |this, event: &MouseDownEvent, _window, cx| {
@@ -157,9 +155,8 @@ pub(super) fn render_event_chunk<'a>(
                     original_date: item_date,
                     occurrence_start: move_target.start,
                     occurrence_end: move_target.end,
-                    original_start_hour: Some(start_hour_frac),
-                    original_end_hour: Some(end_hour_frac),
                     grab_hour,
+                    grab_x: f32::from(event.position.x),
                     current_hour: grab_hour,
                     anchor: event.position,
                 });
@@ -558,12 +555,6 @@ pub(super) fn render_pill_chunk<'a>(
     }
 
     let id_key = if is_reminder { "rem" } else { "asgn" };
-    let trigger_time = if is_reminder {
-        head.start.unwrap()
-    } else {
-        head.end.unwrap()
-    };
-    let trigger_hour = trigger_time.hour() as f32 + trigger_time.minute() as f32 / 60.0;
     let block_target = CalendarPopupTarget::from_task(head);
     let move_target = block_target.clone();
     let click_target = block_target.clone();
@@ -599,17 +590,8 @@ pub(super) fn render_pill_chunk<'a>(
                     original_date: date,
                     occurrence_start: move_target.start,
                     occurrence_end: move_target.end,
-                    original_start_hour: if is_reminder {
-                        Some(trigger_hour)
-                    } else {
-                        None
-                    },
-                    original_end_hour: if !is_reminder {
-                        Some(trigger_hour)
-                    } else {
-                        None
-                    },
                     grab_hour,
+                    grab_x: f32::from(event.position.x),
                     current_hour: grab_hour,
                     anchor: event.position,
                 });

@@ -539,6 +539,35 @@ impl KnotQApp {
         }
     }
 
+    /// Resolve the end of a drag-to-move gesture. A negligible drag (no day
+    /// change and no snapped time change) is treated as a plain click and opens
+    /// the event popup — mirroring the old per-block `on_click`, which the
+    /// gesture overlay now intercepts. Anything larger commits the move.
+    pub(crate) fn finish_calendar_move(
+        &mut self,
+        mv: super::CalendarMoveState,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if mv.is_negligible() {
+            self.open_event_popup(
+                mv.scheme_id,
+                mv.item_id,
+                mv.occurrence,
+                mv.occurrence_index,
+                mv.occurrence_start,
+                mv.occurrence_end,
+                mv.anchor,
+                false,
+                false,
+                window,
+                cx,
+            );
+            return;
+        }
+        self.commit_calendar_move(mv, cx);
+    }
+
     /// Commit a drag-to-move operation, applying time offset to the item's dates.
     pub(crate) fn commit_calendar_move(
         &mut self,
@@ -548,20 +577,10 @@ impl KnotQApp {
         if self.workspace.is_scheme_read_only(mv.scheme_id) {
             return;
         }
-        let hour_delta = mv.current_hour - mv.grab_hour;
-        let day_delta = mv.date.signed_duration_since(mv.original_date).num_days();
-        if hour_delta.abs() < 0.05 && day_delta == 0 {
+        if mv.is_negligible() {
             // Negligible move — treat as a click (the title on_click will handle popup).
             return;
         }
-
-        let delta_minutes = (hour_delta * 60.0).round() as i64;
-        // Snap to 15-minute increments.
-        let snapped_minutes = ((delta_minutes as f64 / 15.0).round() as i64) * 15;
-        if snapped_minutes == 0 && day_delta == 0 {
-            return;
-        }
-        let delta = chrono::Duration::days(day_delta) + chrono::Duration::minutes(snapped_minutes);
 
         let Some(item) = self
             .workspace
@@ -572,8 +591,9 @@ impl KnotQApp {
             return;
         };
 
-        let draft_start = mv.occurrence_start.map(|start| start + delta);
-        let draft_end = mv.occurrence_end.map(|end| end + delta);
+        // Same source of truth as the drag ghost — what was previewed is exactly
+        // what we commit.
+        let (draft_start, draft_end) = mv.draft_dates();
         let start_dirty = draft_start != mv.occurrence_start;
         let end_dirty = draft_end != mv.occurrence_end;
         if !start_dirty && !end_dirty {

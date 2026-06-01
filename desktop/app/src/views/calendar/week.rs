@@ -12,8 +12,36 @@ pub(super) fn window_y_to_hour(window_y: f32, scroll_handle: &ScrollHandle) -> f
     ((content_y - TIME_Y_OFFSET) / HOUR_H).clamp(0.0, 24.0)
 }
 
+/// Resolve the target day for a move gesture from the cursor's horizontal
+/// displacement relative to where the drag began. Using `round()` on the
+/// displacement gives a half-column deadzone, so a mostly-vertical drag with a
+/// little sideways wobble keeps the original day instead of randomly jumping to
+/// an adjacent one. The result is clamped to the visible week.
+pub(super) fn move_day_for_x(
+    grab_x: f32,
+    original_date: chrono::NaiveDate,
+    window_x: f32,
+    day_col_w: f32,
+    visible_start: chrono::NaiveDate,
+    visible_days: usize,
+) -> chrono::NaiveDate {
+    let day_delta = ((window_x - grab_x) / day_col_w.max(1.0)).round() as i64;
+    let date = original_date + Duration::days(day_delta);
+    let last = visible_start + Duration::days(visible_days as i64 - 1);
+    date.clamp(visible_start, last)
+}
+
 fn move_preview_hour(hour: f32) -> f32 {
     hour.clamp(0.0, 24.0)
+}
+
+/// Snap an absolute hour to the same 15-minute grid `snapped_calendar_datetime`
+/// uses, so resize/create ghosts preview exactly where the edge will land. Keep
+/// in sync with `knotq_date_util::snapped_calendar_datetime`.
+pub(super) fn snap_preview_hour(hour: f32) -> f32 {
+    let minutes = (hour * 60.0).round() as i64;
+    let snapped = ((minutes + 7) / 15 * 15).clamp(0, 24 * 60);
+    snapped as f32 / 60.0
 }
 
 impl KnotQApp {
@@ -392,22 +420,33 @@ impl KnotQApp {
                 );
             }
 
-            // Ghost preview for dragging an existing item to reschedule.
+            // Ghost preview for dragging an existing item to reschedule. The
+            // preview is anchored to the *exact* dates the move will commit
+            // (`draft_dates`), so what the user sees while dragging is precisely
+            // where the item lands — same day, same time, no separate math.
             if let Some(mv) = &self.cal_move {
-                if mv.date == date {
-                    let hour_delta = mv.current_hour - mv.grab_hour;
-                    let day_delta = mv.date.signed_duration_since(mv.original_date).num_days();
-                    if hour_delta != 0.0 || day_delta != 0 {
-                        let move_start = mv
-                            .original_start_hour
-                            .map(|h| move_preview_hour(h + hour_delta));
-                        let move_end = mv
-                            .original_end_hour
-                            .map(|h| move_preview_hour(h + hour_delta));
-                        let lo = move_start.unwrap_or_else(|| move_end.unwrap());
-                        let hi = move_end.unwrap_or_else(|| move_start.unwrap());
-                        let lo_y = TIME_Y_OFFSET + lo * HOUR_H;
-                        let hi_y = TIME_Y_OFFSET + hi * HOUR_H;
+                if !mv.is_negligible() {
+                    let (draft_start, draft_end) = mv.draft_dates();
+                    let start_local = draft_start.map(|d| d.with_timezone(&Local));
+                    let end_local = draft_end.map(|d| d.with_timezone(&Local));
+                    // The block lives on its start's day (or end's, for an
+                    // assignment); only draw it in that column.
+                    let anchor_local = start_local.or(end_local);
+                    if anchor_local.map(|d| d.date_naive()) == Some(date) {
+                        let hour_of = |dt: chrono::DateTime<Local>| {
+                            dt.hour() as f32 + dt.minute() as f32 / 60.0
+                        };
+                        let start_h = start_local.map(hour_of);
+                        let end_h = end_local.map(|e| match start_local {
+                            // End rolled past midnight relative to start — clamp
+                            // the visible bottom to the end of this day.
+                            Some(s) if s.date_naive() != e.date_naive() => 24.0,
+                            _ => hour_of(e),
+                        });
+                        let lo = move_preview_hour(start_h.or(end_h).unwrap());
+                        let hi = move_preview_hour(end_h.or(start_h).unwrap());
+                        let lo_y = TIME_Y_OFFSET + lo.min(hi) * HOUR_H;
+                        let hi_y = TIME_Y_OFFSET + lo.max(hi) * HOUR_H;
                         let ghost_h = (hi_y - lo_y).max(8.0);
                         els.push(
                             div()
@@ -428,12 +467,9 @@ impl KnotQApp {
             // Ghost preview for dragging the bottom edge of an event.
             if let Some(resize) = &self.cal_resize {
                 if resize.date == date {
-                    let lo = resize
-                        .original_start_hour
-                        .min(move_preview_hour(resize.current_hour));
-                    let hi = resize
-                        .original_start_hour
-                        .max(move_preview_hour(resize.current_hour));
+                    let snapped_edge = move_preview_hour(snap_preview_hour(resize.current_hour));
+                    let lo = resize.original_start_hour.min(snapped_edge);
+                    let hi = resize.original_start_hour.max(snapped_edge);
                     let lo_y = TIME_Y_OFFSET + lo * HOUR_H;
                     let hi_y = TIME_Y_OFFSET + hi * HOUR_H;
                     let ghost_h = (hi_y - lo_y).max(4.0);
@@ -455,10 +491,12 @@ impl KnotQApp {
             // Ghost preview block while dragging to create.
             if let Some(drag) = &self.cal_drag {
                 if drag.date == date && drag.is_dragging {
-                    let lo_y = TIME_Y_OFFSET
-                        + move_preview_hour(drag.start_hour.min(drag.current_hour)) * HOUR_H;
-                    let hi_y = TIME_Y_OFFSET
-                        + move_preview_hour(drag.start_hour.max(drag.current_hour)) * HOUR_H;
+                    let snapped_start = snap_preview_hour(drag.start_hour);
+                    let snapped_current = snap_preview_hour(drag.current_hour);
+                    let lo_y =
+                        TIME_Y_OFFSET + move_preview_hour(snapped_start.min(snapped_current)) * HOUR_H;
+                    let hi_y =
+                        TIME_Y_OFFSET + move_preview_hour(snapped_start.max(snapped_current)) * HOUR_H;
                     let drag_h = (hi_y - lo_y).max(4.0);
                     els.push(
                         div()
@@ -526,7 +564,14 @@ impl KnotQApp {
                                 }
                             }
                             if let Some(mv) = this.cal_move.as_mut() {
-                                mv.date = date;
+                                mv.date = move_day_for_x(
+                                    mv.grab_x,
+                                    mv.original_date,
+                                    f32::from(event.position.x),
+                                    day_col_w,
+                                    visible_start,
+                                    visible_days,
+                                );
                                 mv.current_hour = hour;
                                 mv.anchor = event.position;
                                 cx.notify();
@@ -550,7 +595,14 @@ impl KnotQApp {
                                 return;
                             }
                             if let Some(mut mv) = this.cal_move.take() {
-                                mv.date = date;
+                                mv.date = move_day_for_x(
+                                    mv.grab_x,
+                                    mv.original_date,
+                                    f32::from(event.position.x),
+                                    day_col_w,
+                                    visible_start,
+                                    visible_days,
+                                );
                                 mv.anchor = event.position;
                                 this.commit_calendar_move(mv, cx);
                                 cx.notify();
@@ -589,6 +641,15 @@ impl KnotQApp {
             )
             .children(day_cols);
 
+        // While a calendar gesture is in flight, a single transparent overlay
+        // covering the whole grid captures every pointer move/release. GPUI only
+        // delivers mouse events to the topmost hitbox, so the per-column/per-block
+        // handlers stop firing once the cursor is over another block; the overlay
+        // guarantees the ghost tracks the cursor and that the gesture always ends
+        // (committing or opening the popup) regardless of what is underneath.
+        let drag_overlay = self
+            .calendar_gesture_overlay(visible_start, visible_days, day_col_w, TIME_W, total_h, cx);
+
         div()
             .flex_1()
             .flex()
@@ -604,8 +665,166 @@ impl KnotQApp {
                     .flex_1()
                     .min_h_0()
                     .overflow_y_scroll()
-                    .child(div().flex().w_full().child(grid_body)),
+                    .child(
+                        div()
+                            .relative()
+                            .flex()
+                            .w_full()
+                            .child(grid_body)
+                            .children(drag_overlay),
+                    ),
             )
             .into_any_element()
+    }
+
+    /// Build the full-grid capture overlay used while a move/resize/create
+    /// gesture is active. Returns `None` when no gesture is in flight.
+    #[allow(clippy::too_many_arguments)]
+    fn calendar_gesture_overlay(
+        &self,
+        visible_start: chrono::NaiveDate,
+        visible_days: usize,
+        day_col_w: f32,
+        time_w: f32,
+        total_h: f32,
+        cx: &mut Context<Self>,
+    ) -> Option<gpui::AnyElement> {
+        let moving = self.cal_move.is_some();
+        let resizing = self.cal_resize.is_some();
+        let creating = self.cal_drag.is_some();
+        if !(moving || resizing || creating) {
+            return None;
+        }
+        let scroll_handle = self.cal_scroll_handle.clone();
+
+        let overlay = div()
+            .id("cal-drag-overlay")
+            .absolute()
+            .top_0()
+            .left(px(time_w))
+            .right_0()
+            .h(px(total_h))
+            .when(moving, |s| s.cursor_grab())
+            .when(resizing, |s| s.cursor(CursorStyle::ResizeUpDown))
+            .when(creating, |s| s.cursor_crosshair())
+            .on_mouse_move({
+                let scroll_handle = scroll_handle.clone();
+                cx.listener(move |this, event: &MouseMoveEvent, _window, cx| {
+                    if !event.dragging() {
+                        this.clear_calendar_pointer_state(cx);
+                        return;
+                    }
+                    let hour = window_y_to_hour(f32::from(event.position.y), &scroll_handle);
+                    if let Some(mv) = this.cal_move.as_mut() {
+                        mv.date = move_day_for_x(
+                            mv.grab_x,
+                            mv.original_date,
+                            f32::from(event.position.x),
+                            day_col_w,
+                            visible_start,
+                            visible_days,
+                        );
+                        mv.current_hour = hour;
+                        mv.anchor = event.position;
+                        cx.notify();
+                    } else if let Some(resize) = this.cal_resize.as_mut() {
+                        // Resizing only adjusts the bottom edge within the event's
+                        // own day; keep its column fixed and track vertically.
+                        resize.current_hour = hour;
+                        resize.anchor = event.position;
+                        cx.notify();
+                    } else if let Some(drag) = this.cal_drag.as_mut() {
+                        // Create-drag stays in the column it began in.
+                        drag.current_hour = hour;
+                        drag.is_dragging =
+                            drag.is_dragging || (hour - drag.start_hour).abs() > 0.125;
+                        cx.notify();
+                    }
+                })
+            })
+            .on_mouse_up(MouseButton::Left, {
+                cx.listener(move |this, event: &MouseUpEvent, window, cx| {
+                    let pos = event.position;
+                    // Commit exactly the state the ghost previewed (set by the
+                    // move handler above). Re-deriving the day/hour from the
+                    // up-event position can flip the result at column
+                    // boundaries, making the item land somewhere other than
+                    // where the ghost was shown.
+                    if let Some(mut resize) = this.cal_resize.take() {
+                        resize.anchor = pos;
+                        this.commit_calendar_resize(resize, cx);
+                        cx.notify();
+                        return;
+                    }
+                    if let Some(mut mv) = this.cal_move.take() {
+                        mv.anchor = pos;
+                        this.finish_calendar_move(mv, window, cx);
+                        cx.notify();
+                        return;
+                    }
+                    if let Some(drag) = this.cal_drag.take() {
+                        this.create_calendar_item_from_drag(
+                            drag.date,
+                            drag.start_hour,
+                            drag.current_hour,
+                            drag.shift,
+                            pos,
+                            window,
+                            cx,
+                        );
+                        cx.notify();
+                    }
+                })
+            })
+            .into_any_element();
+        Some(overlay)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use chrono::NaiveDate;
+
+    const COL_W: f32 = 100.0;
+
+    fn day_for(grab_x: f32, window_x: f32) -> NaiveDate {
+        let start = NaiveDate::from_ymd_opt(2026, 5, 25).unwrap(); // Mon
+        let original = NaiveDate::from_ymd_opt(2026, 5, 27).unwrap(); // Wed
+        move_day_for_x(grab_x, original, window_x, COL_W, start, 7)
+    }
+
+    #[test]
+    fn small_horizontal_wobble_keeps_the_original_day() {
+        let original = NaiveDate::from_ymd_opt(2026, 5, 27).unwrap();
+        // Anywhere within half a column of the grab point stays put.
+        assert_eq!(day_for(350.0, 350.0), original);
+        assert_eq!(day_for(350.0, 390.0), original); // +0.4 col
+        assert_eq!(day_for(350.0, 310.0), original); // -0.4 col
+    }
+
+    #[test]
+    fn moving_past_half_a_column_changes_the_day() {
+        assert_eq!(
+            day_for(350.0, 460.0), // +1.1 col → next day
+            NaiveDate::from_ymd_opt(2026, 5, 28).unwrap()
+        );
+        assert_eq!(
+            day_for(350.0, 240.0), // -1.1 col → previous day
+            NaiveDate::from_ymd_opt(2026, 5, 26).unwrap()
+        );
+    }
+
+    #[test]
+    fn target_day_is_clamped_to_the_visible_week() {
+        // Drag far left/right cannot escape the visible range.
+        assert_eq!(
+            day_for(350.0, -10_000.0),
+            NaiveDate::from_ymd_opt(2026, 5, 25).unwrap()
+        );
+        assert_eq!(
+            day_for(350.0, 10_000.0),
+            NaiveDate::from_ymd_opt(2026, 5, 31).unwrap()
+        );
     }
 }

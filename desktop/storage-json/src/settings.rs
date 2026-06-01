@@ -60,7 +60,7 @@ mod tests {
             AppSettings::default()
                 .notification_defaults
                 .event_offset_secs,
-            0
+            10 * 60
         );
         assert_eq!(
             AppSettings::default()

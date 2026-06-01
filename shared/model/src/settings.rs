@@ -163,7 +163,7 @@ pub struct NotificationLeadTimes {
 }
 
 fn default_event_notification_offset_secs() -> i64 {
-    0
+    10 * 60
 }
 
 fn default_assignment_notification_offset_secs() -> i64 {

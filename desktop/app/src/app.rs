@@ -347,16 +347,48 @@ pub struct CalendarMoveState {
     /// Materialized start/end for this rendered occurrence.
     pub occurrence_start: Option<DateTime<Utc>>,
     pub occurrence_end: Option<DateTime<Utc>>,
-    /// Original start hour (if the item has a start).
-    pub original_start_hour: Option<f32>,
-    /// Original end hour (if the item has a end).
-    pub original_end_hour: Option<f32>,
     /// Hour where the drag began.
     pub grab_hour: f32,
+    /// Window X (px) where the drag began. The target day is derived from the
+    /// horizontal displacement from this point, so small sideways wobble during
+    /// a mostly-vertical drag does not flip the day.
+    pub grab_x: f32,
     /// Current hour offset from grab point.
     pub current_hour: f32,
     /// Last pointer position, used to anchor recurrence-scope confirmation.
     pub anchor: Point<Pixels>,
+}
+
+impl CalendarMoveState {
+    /// Vertical drag snapped to the 15-minute grid, as a minute offset. This is
+    /// the single source of truth used by both the drag ghost and the commit so
+    /// they can never disagree.
+    pub fn snapped_minute_delta(&self) -> i64 {
+        let minutes = ((self.current_hour - self.grab_hour) * 60.0).round() as i64;
+        ((minutes as f64 / 15.0).round() as i64) * 15
+    }
+
+    /// Whole-day offset from where the drag began.
+    pub fn day_delta(&self) -> i64 {
+        self.date.signed_duration_since(self.original_date).num_days()
+    }
+
+    /// A move with no day change and no snapped time change — treated as a click.
+    pub fn is_negligible(&self) -> bool {
+        self.day_delta() == 0 && self.snapped_minute_delta() == 0
+    }
+
+    /// The start/end this move resolves to. The ghost and the commit both derive
+    /// their position from this, so what you see while dragging is exactly where
+    /// the item lands on release.
+    pub fn draft_dates(&self) -> (Option<DateTime<Utc>>, Option<DateTime<Utc>>) {
+        let delta =
+            Duration::days(self.day_delta()) + Duration::minutes(self.snapped_minute_delta());
+        (
+            self.occurrence_start.map(|start| start + delta),
+            self.occurrence_end.map(|end| end + delta),
+        )
+    }
 }
 
 /// Tracks dragging the bottom edge of an event to resize its end time.

@@ -33,7 +33,7 @@ impl Default for NotificationLeadTimes {
     fn default() -> Self {
         Self {
             reminder_offset_secs: 0,
-            event_offset_secs: 0,
+            event_offset_secs: 10 * 60,
             assignment_offset_secs: 2 * 60 * 60,
         }
     }
