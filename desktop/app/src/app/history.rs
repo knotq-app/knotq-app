@@ -81,6 +81,8 @@ impl KnotQApp {
         self.pending_delete = None;
         self.sidebar_context_menu = None;
         self.editor_context_menu = None;
+        self.google_calendar_picker = None;
+        self.google_calendar_picker_task = None;
         self.scheme_editor = None;
         self._editor_subscription = None;
         self.daily_queue_editors.clear();

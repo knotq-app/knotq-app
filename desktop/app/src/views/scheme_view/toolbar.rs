@@ -2,6 +2,8 @@ use super::*;
 use crate::app::GoogleOAuthStatus;
 use knotq_model::{CalendarProvider, ItemMarker, Scheme, SchemeId, SchemeSource};
 
+const CLOUD_OFF_ICON: &str = "icons/cloud-off.svg";
+
 impl KnotQApp {
     pub(crate) fn render_scheme_toolbar(
         &mut self,
@@ -15,16 +17,20 @@ impl KnotQApp {
             let account_label = self
                 .imported_calendar_account_label(scheme)
                 .unwrap_or_else(|| "Imported calendar".to_string());
-            let google_scheme_id = match &scheme.source {
+            let google_state = match &scheme.source {
                 SchemeSource::ImportedCalendar(source)
                     if source.provider == CalendarProvider::Google =>
                 {
-                    Some(scheme.id)
+                    Some(if self.google_calendar_has_local_credentials(scheme) {
+                        ReadOnlyGoogleState::Connected(scheme.id)
+                    } else {
+                        ReadOnlyGoogleState::Offline(scheme.id)
+                    })
                 }
                 _ => None,
             };
             let syncing = matches!(self.google_oauth_status, GoogleOAuthStatus::InProgress);
-            return read_only_toolbar(account_label, google_scheme_id, syncing, c, cx);
+            return read_only_toolbar(account_label, google_state, syncing, c, cx);
         }
 
         let state = editor.read(cx).toolbar_state();
@@ -214,7 +220,7 @@ impl KnotQApp {
 
 fn read_only_toolbar(
     account_label: String,
-    google_scheme_id: Option<SchemeId>,
+    google_state: Option<ReadOnlyGoogleState>,
     syncing: bool,
     c: Theme,
     cx: &mut Context<KnotQApp>,
@@ -262,19 +268,34 @@ fn read_only_toolbar(
                         .text_color(read_only_text)
                         .child(account_label),
                 )
-                .when_some(google_scheme_id, |palette, scheme_id| {
+                .when_some(google_state, |palette, state| {
                     palette
                         .child(toolbar_separator(c.toolbar_chip_separator))
-                        .child(read_only_refresh_button(
-                            scheme_id,
-                            syncing,
-                            read_only_text,
-                            muted_text,
-                            cx,
-                        ))
+                        .child(match state {
+                            ReadOnlyGoogleState::Connected(scheme_id) => read_only_refresh_button(
+                                scheme_id,
+                                syncing,
+                                read_only_text,
+                                muted_text,
+                                cx,
+                            ),
+                            ReadOnlyGoogleState::Offline(scheme_id) => read_only_reconnect_button(
+                                scheme_id,
+                                syncing,
+                                read_only_text,
+                                muted_text,
+                                cx,
+                            ),
+                        })
                 }),
         )
         .into_any_element()
+}
+
+#[derive(Clone, Copy)]
+enum ReadOnlyGoogleState {
+    Connected(SchemeId),
+    Offline(SchemeId),
 }
 
 fn read_only_refresh_button(
@@ -318,6 +339,56 @@ fn read_only_refresh_button(
             })
             .with_size(px(13.0))
             .text_color(if syncing { muted_text } else { text_color }),
+        )
+        .into_any_element()
+}
+
+fn read_only_reconnect_button(
+    scheme_id: SchemeId,
+    syncing: bool,
+    text_color: gpui::Hsla,
+    muted_text: gpui::Hsla,
+    cx: &mut Context<KnotQApp>,
+) -> gpui::AnyElement {
+    div()
+        .id("scheme-toolbar-google-reconnect")
+        .h(px(23.0))
+        .flex()
+        .items_center()
+        .gap(px(5.0))
+        .px(px(6.0))
+        .rounded(px(5.0))
+        .opacity(if syncing { 0.55 } else { 1.0 })
+        .when(!syncing, |button| {
+            button
+                .cursor_pointer()
+                .hover(|s| s.bg(token_rgba(0x00000016)))
+                .on_click(cx.listener(move |this, _: &ClickEvent, _window, cx| {
+                    this.start_google_calendar_scheme_reconnect(scheme_id, cx);
+                    cx.stop_propagation();
+                }))
+        })
+        .tooltip(move |window, cx| {
+            Tooltip::new(if syncing {
+                "connecting Google Calendar"
+            } else {
+                "sign in locally for this Google Calendar"
+            })
+            .build(window, cx)
+        })
+        .child(
+            Icon::empty()
+                .path(CLOUD_OFF_ICON)
+                .with_size(px(13.0))
+                .text_color(if syncing { muted_text } else { text_color })
+                .into_any_element(),
+        )
+        .child(
+            div()
+                .text_size(px(11.0))
+                .font_weight(gpui::FontWeight::SEMIBOLD)
+                .text_color(if syncing { muted_text } else { text_color })
+                .child(if syncing { "Connecting" } else { "Sign in" }),
         )
         .into_any_element()
 }

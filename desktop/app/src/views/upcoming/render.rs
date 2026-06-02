@@ -221,27 +221,30 @@ impl KnotQApp {
                                 .rounded(px(3.0))
                                 .bg(bg)
                                 .opacity(opacity)
-                                .when(editable, |s| s.cursor_pointer())
+                                .cursor_pointer()
+                                .on_mouse_down(MouseButton::Right, {
+                                    let occurrence_for_popup = occurrence_for_popup.clone();
+                                    cx.listener(move |this, event: &MouseDownEvent, window, cx| {
+                                        this.focus_app_root(window);
+                                        this.open_event_popup(
+                                            scheme_id,
+                                            item_id,
+                                            occurrence_for_popup.clone(),
+                                            occurrence_index,
+                                            start,
+                                            end,
+                                            event.position,
+                                            false,
+                                            false,
+                                            window,
+                                            cx,
+                                        );
+                                        cx.stop_propagation();
+                                    })
+                                })
                                 .on_click(cx.listener(
-                                    move |this, event: &ClickEvent, window, cx| {
+                                    move |this, _event: &ClickEvent, _window, cx| {
                                         if !editable {
-                                            return;
-                                        }
-                                        if event.is_right_click() {
-                                            this.open_event_popup(
-                                                scheme_id,
-                                                item_id,
-                                                occurrence_for_popup.clone(),
-                                                occurrence_index,
-                                                start,
-                                                end,
-                                                event.position(),
-                                                false,
-                                                false,
-                                                window,
-                                                cx,
-                                            );
-                                            cx.stop_propagation();
                                             return;
                                         }
                                         this.toggle_calendar_item(

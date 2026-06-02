@@ -1,6 +1,6 @@
 use chrono::{Duration, Local, TimeZone, Utc};
 use gpui::prelude::*;
-use gpui::{div, px, ClickEvent, Context, Hsla, IntoElement};
+use gpui::{div, px, ClickEvent, Context, Hsla, IntoElement, MouseButton, MouseDownEvent};
 use gpui_component::scroll::ScrollableElement as _;
 use knotq_model::{ItemId, ItemKind, OccurrenceId, SchemeId};
 use knotq_rrule::ItemOccurrenceExt;

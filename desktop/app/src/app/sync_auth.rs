@@ -8,7 +8,7 @@ use gpui_component::input::InputState;
 use knotq_model::{SyncAccountSettings, WorkspaceId};
 use serde::{Deserialize, Serialize};
 
-use super::{KnotQApp, SyncAuthStatus, SyncRunStatus, SyncSignInState};
+use super::{KnotQApp, PendingLoginChallenge, SyncAuthStatus, SyncRunStatus, SyncSignInState};
 
 const DEFAULT_SYNC_API_BASE: &str = "http://127.0.0.1:8787";
 
@@ -16,6 +16,20 @@ const DEFAULT_SYNC_API_BASE: &str = "http://127.0.0.1:8787";
 struct LoginRequest {
     email: String,
     password: String,
+}
+
+/// Pending two-factor login returned by `POST /v1/auth/login`: the password was
+/// accepted and a code emailed, but no session is minted until the code is verified.
+#[derive(Deserialize)]
+struct LoginChallengeResponse {
+    challenge_id: String,
+}
+
+/// The challenge plus the context the verify step needs (normalized base + email).
+pub(crate) struct LoginChallenge {
+    pub api_base: String,
+    pub email: String,
+    pub challenge_id: String,
 }
 
 #[derive(Deserialize)]
@@ -95,12 +109,15 @@ impl KnotQApp {
                 .placeholder("Password")
                 .masked(true)
         });
+        let code_input = cx.new(|cx| InputState::new(window, cx).placeholder("6-digit code"));
 
         email_input.update(cx, |input, cx| input.focus(window, cx));
         self.sync_sign_in = Some(SyncSignInState {
             api_input,
             email_input,
             password_input,
+            code_input,
+            challenge: None,
         });
         self.sync_auth_status = SyncAuthStatus::Idle;
         cx.notify();
@@ -132,6 +149,40 @@ impl KnotQApp {
         let Some(state) = &self.sync_sign_in else {
             return;
         };
+
+        // Second step: a challenge is pending, so the submit verifies the emailed code.
+        if let Some(challenge) = &state.challenge {
+            let code = state.code_input.read(cx).value().to_string();
+            if code.trim().is_empty() {
+                self.sync_auth_status =
+                    SyncAuthStatus::Error("Enter the code we emailed you.".to_string());
+                cx.notify();
+                return;
+            }
+            let api_base = challenge.api_base.clone();
+            let challenge_id = challenge.challenge_id.clone();
+            let code = code.trim().to_string();
+            self.sync_auth_status = SyncAuthStatus::InProgress;
+            let task = cx.spawn(
+                async move |weak: gpui::WeakEntity<Self>, cx: &mut gpui::AsyncApp| {
+                    let (tx, rx) = mpsc::channel();
+                    std::thread::spawn(move || {
+                        let result = verify_login_to_sync_backend(&api_base, &challenge_id, &code)
+                            .map_err(|err| format!("{err:#}"));
+                        let _ = tx.send(result);
+                    });
+                    Self::pump_sync_auth_worker(weak, cx, rx, |app, result, cx| {
+                        app.finish_sync_sign_in(result, cx);
+                    })
+                    .await;
+                },
+            );
+            self.sync_auth_task = Some(task);
+            cx.notify();
+            return;
+        }
+
+        // First step: email + password earns a 2FA challenge (a code is emailed).
         let api_base = state.api_input.read(cx).value().to_string();
         let email = state.email_input.read(cx).value().to_string();
         let password = state.password_input.read(cx).value().to_string();
@@ -159,34 +210,68 @@ impl KnotQApp {
                         .map_err(|err| format!("{err:#}"));
                     let _ = tx.send(result);
                 });
-
-                loop {
-                    match rx.try_recv() {
-                        Ok(result) => {
-                            let _ = weak.update(cx, |app, cx| {
-                                app.finish_sync_sign_in(result, cx);
-                            });
-                            break;
-                        }
-                        Err(mpsc::TryRecvError::Empty) => {
-                            cx.background_executor()
-                                .timer(StdDuration::from_millis(100))
-                                .await;
-                        }
-                        Err(mpsc::TryRecvError::Disconnected) => {
-                            let _ = weak.update(cx, |app, cx| {
-                                app.finish_sync_sign_in(
-                                    Err("Sync sign-in worker stopped".to_string()),
-                                    cx,
-                                );
-                            });
-                            break;
-                        }
-                    }
-                }
+                Self::pump_sync_auth_worker(weak, cx, rx, |app, result, cx| {
+                    app.finish_sync_login(result, cx);
+                })
+                .await;
             },
         );
         self.sync_auth_task = Some(task);
+        cx.notify();
+    }
+
+    /// Poll a background auth worker's channel from the UI executor and hand the
+    /// result to `finish` on the app entity. Shared by the password and code steps.
+    async fn pump_sync_auth_worker<T: Send + 'static>(
+        weak: gpui::WeakEntity<Self>,
+        cx: &mut gpui::AsyncApp,
+        rx: mpsc::Receiver<Result<T, String>>,
+        finish: impl Fn(&mut Self, Result<T, String>, &mut Context<Self>) + Copy + 'static,
+    ) {
+        loop {
+            match rx.try_recv() {
+                Ok(result) => {
+                    let _ = weak.update(cx, |app, cx| finish(app, result, cx));
+                    break;
+                }
+                Err(mpsc::TryRecvError::Empty) => {
+                    cx.background_executor()
+                        .timer(StdDuration::from_millis(100))
+                        .await;
+                }
+                Err(mpsc::TryRecvError::Disconnected) => {
+                    let _ = weak.update(cx, |app, cx| {
+                        finish(app, Err("Sync sign-in worker stopped".to_string()), cx);
+                    });
+                    break;
+                }
+            }
+        }
+    }
+
+    /// Completion for the password step: store the pending challenge so the modal
+    /// switches to its code-entry phase (or surface the error).
+    fn finish_sync_login(
+        &mut self,
+        result: Result<LoginChallenge, String>,
+        cx: &mut Context<Self>,
+    ) {
+        self.sync_auth_task = None;
+        match result {
+            Ok(challenge) => {
+                if let Some(state) = self.sync_sign_in.as_mut() {
+                    state.challenge = Some(PendingLoginChallenge {
+                        api_base: challenge.api_base,
+                        email: challenge.email,
+                        challenge_id: challenge.challenge_id,
+                    });
+                }
+                self.sync_auth_status = SyncAuthStatus::Idle;
+            }
+            Err(message) => {
+                self.sync_auth_status = SyncAuthStatus::Error(message);
+            }
+        }
         cx.notify();
     }
 
@@ -212,14 +297,14 @@ impl KnotQApp {
     }
 }
 
-fn login_to_sync_backend(
-    api_base: &str,
-    email: &str,
-    password: &str,
-) -> Result<SyncAccountSettings> {
-    let url = format!("{}/v1/auth/login", normalize_api_base(api_base)?);
+/// First login step: submit email + password. On success the backend emails a
+/// 2FA code and returns a challenge to be completed via `verify_login_to_sync_backend`.
+fn login_to_sync_backend(api_base: &str, email: &str, password: &str) -> Result<LoginChallenge> {
+    let base = normalize_api_base(api_base)?;
+    let email = email.trim().to_string();
+    let url = format!("{base}/v1/auth/login");
     let request = LoginRequest {
-        email: email.trim().to_string(),
+        email: email.clone(),
         password: password.to_string(),
     };
     let response = match ureq::post(&url)
@@ -236,11 +321,44 @@ fn login_to_sync_backend(
         }
         Err(error) => return Err(anyhow!("Could not reach the local sync Worker: {error}")),
     };
+    let challenge: LoginChallengeResponse = response
+        .into_json()
+        .context("parse sync login challenge from local backend")?;
+    Ok(LoginChallenge {
+        api_base: base,
+        email,
+        challenge_id: challenge.challenge_id,
+    })
+}
+
+/// Second login step: submit the emailed code for a challenge and, on success,
+/// receive the session. Runs on a background thread (blocking `ureq`).
+fn verify_login_to_sync_backend(
+    api_base: &str,
+    challenge_id: &str,
+    code: &str,
+) -> Result<SyncAccountSettings> {
+    let base = normalize_api_base(api_base)?;
+    let url = format!("{base}/v1/auth/login/verify");
+    let response = match ureq::post(&url)
+        .timeout(StdDuration::from_secs(10))
+        .send_json(serde_json::json!({ "challenge_id": challenge_id, "code": code.trim() }))
+    {
+        Ok(response) => response,
+        Err(ureq::Error::Status(_, response)) => {
+            let code = response
+                .into_json::<LoginError>()
+                .map(|error| error.code)
+                .unwrap_or_else(|_| "unauthorized".to_string());
+            return Err(anyhow!(login_error_message(&code)));
+        }
+        Err(error) => return Err(anyhow!("Could not reach the local sync Worker: {error}")),
+    };
     let session: LoginResponse = response
         .into_json()
-        .context("parse sync login response from local backend")?;
+        .context("parse sync login verify response from local backend")?;
     Ok(SyncAccountSettings {
-        api_base: normalize_api_base(api_base)?,
+        api_base: base,
         user_id: session.user_id,
         session_id: session.session_id,
         workspace_id: session.workspace_id,
@@ -333,6 +451,11 @@ fn login_error_message(code: &str) -> &'static str {
     match code {
         "invalid_email" | "unauthorized" => "Email or password is incorrect.",
         "password_too_long" => "Password is too long.",
+        "invalid_code" => "That code is incorrect.",
+        "code_expired" | "invalid_or_expired_code" => {
+            "That code has expired. Sign in again to get a new one."
+        }
+        "too_many_attempts" => "Too many incorrect codes. Sign in again to get a new one.",
         _ => "Sign in failed.",
     }
 }

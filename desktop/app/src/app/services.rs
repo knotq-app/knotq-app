@@ -644,6 +644,7 @@ mod tests {
         scheme.source = SchemeSource::ImportedCalendar(ImportedCalendarSource {
             provider: CalendarProvider::Google,
             account_id: "acct".into(),
+            account_email: None,
             calendar_id: "cal".into(),
             sync_token: None,
             read_only: true,

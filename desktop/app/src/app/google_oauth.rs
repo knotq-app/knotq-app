@@ -19,7 +19,14 @@ use serde::de::DeserializeOwned;
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
 
-use super::{GoogleOAuthStatus, KnotQApp};
+use super::workspace_ops::{
+    emails_match, google_account_matches_calendar_source, google_calendar_source_target_label,
+};
+use super::{
+    GoogleCalendarPickerAccount, GoogleCalendarPickerCalendar, GoogleCalendarPickerState,
+    GoogleCalendarPickerStatus, GoogleOAuthStatus, KnotQApp, NoticeModal, SidebarContextMenu,
+    SidebarContextTarget,
+};
 
 const GOOGLE_AUTH_URL: &str = "https://accounts.google.com/o/oauth2/v2/auth";
 const GOOGLE_TOKEN_URL: &str = "https://oauth2.googleapis.com/token";
@@ -44,6 +51,7 @@ struct GoogleOAuthConfig {
 #[derive(Clone)]
 struct ExistingGoogleCalendarSource {
     account_id: String,
+    account_email: Option<String>,
     calendar_id: String,
     sync_token: Option<String>,
 }
@@ -54,8 +62,14 @@ struct GoogleCalendarImportResult {
     failures: Vec<String>,
 }
 
+struct GoogleCalendarPickerLoadResult {
+    accounts: Vec<GoogleOAuthAccount>,
+    picker_accounts: Vec<GoogleCalendarPickerAccount>,
+}
+
 struct ImportedGoogleCalendar {
     account_id: String,
+    account_email: Option<String>,
     calendar_id: String,
     name: String,
     color_index: u8,
@@ -165,6 +179,88 @@ impl std::fmt::Display for GoogleApiError {
 impl std::error::Error for GoogleApiError {}
 
 impl KnotQApp {
+    pub(crate) fn open_google_calendar_picker(
+        &mut self,
+        parent: FolderId,
+        position: gpui::Point<gpui::Pixels>,
+        cx: &mut Context<Self>,
+    ) {
+        self.sidebar_context_menu = Some(SidebarContextMenu {
+            target: SidebarContextTarget::GoogleCalendarPicker { parent },
+            position,
+        });
+        self.google_calendar_picker = Some(GoogleCalendarPickerState {
+            parent,
+            status: GoogleCalendarPickerStatus::Loading,
+        });
+
+        let accounts = self.settings.google_accounts.clone();
+        let sources = google_calendar_sources(&self.workspace);
+        if accounts.is_empty() {
+            self.google_calendar_picker = Some(GoogleCalendarPickerState {
+                parent,
+                status: GoogleCalendarPickerStatus::Loaded {
+                    accounts: Vec::new(),
+                },
+            });
+            self.google_calendar_picker_task = None;
+            cx.notify();
+            return;
+        }
+
+        let config = match google_oauth_config_for_existing_accounts(&accounts) {
+            Ok(config) => config,
+            Err(err) => {
+                self.google_calendar_picker = Some(GoogleCalendarPickerState {
+                    parent,
+                    status: GoogleCalendarPickerStatus::Error(format!("{err:#}")),
+                });
+                self.google_calendar_picker_task = None;
+                cx.notify();
+                return;
+            }
+        };
+
+        let task = cx.spawn(
+            async move |weak: gpui::WeakEntity<Self>, cx: &mut gpui::AsyncApp| {
+                let (tx, rx) = mpsc::channel();
+                std::thread::spawn(move || {
+                    let result = run_google_calendar_picker_load(config, accounts, sources)
+                        .map_err(|err| format!("{err:#}"));
+                    let _ = tx.send(result);
+                });
+
+                loop {
+                    match rx.try_recv() {
+                        Ok(result) => {
+                            let _ = weak.update(cx, |app, cx| {
+                                app.finish_google_calendar_picker_load(parent, result, cx);
+                            });
+                            break;
+                        }
+                        Err(mpsc::TryRecvError::Empty) => {
+                            cx.background_executor()
+                                .timer(StdDuration::from_millis(100))
+                                .await;
+                        }
+                        Err(mpsc::TryRecvError::Disconnected) => {
+                            let _ = weak.update(cx, |app, cx| {
+                                app.finish_google_calendar_picker_load(
+                                    parent,
+                                    Err("Google Calendar selector worker stopped".to_string()),
+                                    cx,
+                                );
+                            });
+                            break;
+                        }
+                    }
+                }
+            },
+        );
+        self.google_calendar_picker_task = Some(task);
+        cx.notify();
+    }
+
     pub(crate) fn spawn_google_calendar_sync_task(cx: &mut Context<Self>) -> gpui::Task<()> {
         cx.spawn(
             async move |weak: gpui::WeakEntity<Self>, cx: &mut gpui::AsyncApp| loop {
@@ -278,6 +374,92 @@ impl KnotQApp {
         cx.notify();
     }
 
+    pub(crate) fn start_google_calendar_import_calendar(
+        &mut self,
+        parent: FolderId,
+        account_id: String,
+        calendar_id: String,
+        cx: &mut Context<Self>,
+    ) {
+        if matches!(self.google_oauth_status, GoogleOAuthStatus::InProgress) {
+            return;
+        }
+
+        let Some(account) = self
+            .settings
+            .google_accounts
+            .iter()
+            .find(|account| account.account_id == account_id)
+            .cloned()
+        else {
+            self.show_google_calendar_error(
+                "Google Calendar import",
+                "That Google account is not connected locally anymore.".to_string(),
+            );
+            self.google_oauth_status = GoogleOAuthStatus::Error;
+            cx.notify();
+            return;
+        };
+
+        let config = match google_oauth_config_for_existing_accounts(std::slice::from_ref(&account))
+        {
+            Ok(config) => config,
+            Err(err) => {
+                eprintln!("Google Calendar import failed: {err:#}");
+                self.show_google_calendar_error("Google Calendar import", format!("{err:#}"));
+                self.google_oauth_status = GoogleOAuthStatus::Error;
+                cx.notify();
+                return;
+            }
+        };
+        let sources = google_calendar_sources(&self.workspace);
+
+        self.google_oauth_status = GoogleOAuthStatus::InProgress;
+        let task = cx.spawn(
+            async move |weak: gpui::WeakEntity<Self>, cx: &mut gpui::AsyncApp| {
+                let (tx, rx) = mpsc::channel();
+                std::thread::spawn(move || {
+                    let result = run_google_calendar_import_existing_account_calendar(
+                        config,
+                        account,
+                        sources,
+                        calendar_id,
+                    )
+                    .map_err(|err| format!("{err:#}"));
+                    let _ = tx.send(result);
+                });
+
+                loop {
+                    match rx.try_recv() {
+                        Ok(result) => {
+                            let _ = weak.update(cx, |app, cx| {
+                                app.finish_google_calendar_import(parent, result, cx);
+                            });
+                            break;
+                        }
+                        Err(mpsc::TryRecvError::Empty) => {
+                            cx.background_executor()
+                                .timer(StdDuration::from_millis(100))
+                                .await;
+                        }
+                        Err(mpsc::TryRecvError::Disconnected) => {
+                            let _ = weak.update(cx, |app, cx| {
+                                app.finish_google_calendar_import(
+                                    parent,
+                                    Err("Google Calendar import worker stopped".to_string()),
+                                    cx,
+                                );
+                            });
+                            break;
+                        }
+                    }
+                }
+            },
+        );
+        self.google_oauth_task = Some(task);
+        cx.notify();
+    }
+
     pub(crate) fn start_google_calendar_scheme_refresh(
         &mut self,
         scheme_id: knotq_model::SchemeId,
@@ -300,7 +482,7 @@ impl KnotQApp {
             .settings
             .google_accounts
             .iter()
-            .filter(|account| account.account_id == source.account_id)
+            .filter(|account| google_account_matches_calendar_source(account, &source))
             .cloned()
             .collect::<Vec<_>>();
         if accounts.is_empty() {
@@ -321,6 +503,7 @@ impl KnotQApp {
         };
         let sources = vec![ExistingGoogleCalendarSource {
             account_id: source.account_id,
+            account_email: source.account_email,
             calendar_id: source.calendar_id,
             sync_token: source.sync_token,
         }];
@@ -352,6 +535,75 @@ impl KnotQApp {
                             let _ = weak.update(cx, |app, cx| {
                                 app.finish_google_calendar_scheme_refresh(
                                     Err("Google Calendar refresh worker stopped".to_string()),
+                                    cx,
+                                );
+                            });
+                            break;
+                        }
+                    }
+                }
+            },
+        );
+        self.google_oauth_task = Some(task);
+        cx.notify();
+    }
+
+    pub(crate) fn start_google_calendar_scheme_reconnect(
+        &mut self,
+        scheme_id: knotq_model::SchemeId,
+        cx: &mut Context<Self>,
+    ) {
+        if matches!(self.google_oauth_status, GoogleOAuthStatus::InProgress) {
+            return;
+        }
+
+        let Some(source) = self.workspace.scheme(scheme_id).and_then(|scheme| {
+            let SchemeSource::ImportedCalendar(source) = &scheme.source else {
+                return None;
+            };
+            (source.provider == CalendarProvider::Google).then_some(source.clone())
+        }) else {
+            return;
+        };
+
+        let config = match google_oauth_config_from_env() {
+            Ok(config) => config,
+            Err(err) => {
+                eprintln!("Google Calendar reconnect failed: {err:#}");
+                self.show_google_calendar_error("Google Calendar reconnect", format!("{err:#}"));
+                self.google_oauth_status = GoogleOAuthStatus::Error;
+                cx.notify();
+                return;
+            }
+        };
+
+        self.google_oauth_status = GoogleOAuthStatus::InProgress;
+        let task = cx.spawn(
+            async move |weak: gpui::WeakEntity<Self>, cx: &mut gpui::AsyncApp| {
+                let (tx, rx) = mpsc::channel();
+                std::thread::spawn(move || {
+                    let result = run_google_calendar_scheme_reconnect(config, source)
+                        .map_err(|err| format!("{err:#}"));
+                    let _ = tx.send(result);
+                });
+
+                loop {
+                    match rx.try_recv() {
+                        Ok(result) => {
+                            let _ = weak.update(cx, |app, cx| {
+                                app.finish_google_calendar_scheme_refresh(result, cx);
+                            });
+                            break;
+                        }
+                        Err(mpsc::TryRecvError::Empty) => {
+                            cx.background_executor()
+                                .timer(StdDuration::from_millis(100))
+                                .await;
+                        }
+                        Err(mpsc::TryRecvError::Disconnected) => {
+                            let _ = weak.update(cx, |app, cx| {
+                                app.finish_google_calendar_scheme_refresh(
+                                    Err("Google Calendar reconnect worker stopped".to_string()),
                                     cx,
                                 );
                             });
@@ -397,6 +649,45 @@ impl KnotQApp {
     ) {
         self.google_oauth_task = None;
         self.finish_google_sync_result(result, parent, true, true, true, "import", cx);
+    }
+
+    fn finish_google_calendar_picker_load(
+        &mut self,
+        parent: FolderId,
+        result: std::result::Result<GoogleCalendarPickerLoadResult, String>,
+        cx: &mut Context<Self>,
+    ) {
+        if !self
+            .google_calendar_picker
+            .as_ref()
+            .is_some_and(|picker| picker.parent == parent)
+        {
+            return;
+        }
+
+        self.google_calendar_picker_task = None;
+        match result {
+            Ok(result) => {
+                let accounts_changed = self.upsert_google_accounts(result.accounts);
+                if accounts_changed {
+                    self.save_app_settings();
+                }
+                self.google_calendar_picker = Some(GoogleCalendarPickerState {
+                    parent,
+                    status: GoogleCalendarPickerStatus::Loaded {
+                        accounts: result.picker_accounts,
+                    },
+                });
+            }
+            Err(err) => {
+                eprintln!("Google Calendar selector failed: {err}");
+                self.google_calendar_picker = Some(GoogleCalendarPickerState {
+                    parent,
+                    status: GoogleCalendarPickerStatus::Error(err),
+                });
+            }
+        }
+        cx.notify();
     }
 
     fn finish_google_calendar_scheme_refresh(
@@ -455,10 +746,15 @@ impl KnotQApp {
                     self.save_app_settings();
                 }
                 if !result.failures.is_empty() {
-                    for failure in result.failures {
+                    let failures = result.failures;
+                    for failure in &failures {
                         eprintln!("Google Calendar {label} failed: {failure}");
                     }
                     if always_notify {
+                        self.show_google_calendar_error(
+                            format!("Google Calendar {label} failed"),
+                            failures.join("\n"),
+                        );
                         self.google_oauth_status = GoogleOAuthStatus::Error;
                     }
                 } else if always_notify {
@@ -474,11 +770,23 @@ impl KnotQApp {
             Err(err) => {
                 eprintln!("Google Calendar {label} failed: {err}");
                 if always_notify {
+                    self.show_google_calendar_error(
+                        format!("Google Calendar {label} failed"),
+                        err.clone(),
+                    );
                     self.google_oauth_status = GoogleOAuthStatus::Error;
                     cx.notify();
                 }
             }
         }
+    }
+
+    fn show_google_calendar_error(&mut self, title: impl Into<String>, message: impl Into<String>) {
+        self.notice_modal = Some(NoticeModal {
+            title: title.into(),
+            message: message.into(),
+            button_label: "OK".to_string(),
+        });
     }
 
     fn upsert_google_accounts(&mut self, accounts: Vec<GoogleOAuthAccount>) -> bool {
@@ -521,11 +829,7 @@ impl KnotQApp {
         let mut synced = 0usize;
         let mut content_changed = false;
         for calendar in calendars {
-            let existing_scheme_id = find_google_calendar_scheme(
-                &self.workspace,
-                &calendar.account_id,
-                &calendar.calendar_id,
-            );
+            let existing_scheme_id = find_google_calendar_scheme(&self.workspace, &calendar);
             let scheme_id = match existing_scheme_id {
                 Some(scheme_id) => scheme_id,
                 None if create_missing => {
@@ -612,6 +916,73 @@ fn google_oauth_config_for_existing_accounts(
     })
 }
 
+fn run_google_calendar_picker_load(
+    config: GoogleOAuthConfig,
+    accounts: Vec<GoogleOAuthAccount>,
+    existing_sources: Vec<ExistingGoogleCalendarSource>,
+) -> Result<GoogleCalendarPickerLoadResult> {
+    let mut updated_accounts = Vec::new();
+    let mut picker_accounts = Vec::new();
+
+    for mut account in accounts {
+        let label = account
+            .email
+            .clone()
+            .filter(|email| !email.trim().is_empty())
+            .unwrap_or_else(|| account.account_id.clone());
+
+        if let Err(err) = refresh_google_access_token_if_needed(&config, &mut account) {
+            picker_accounts.push(GoogleCalendarPickerAccount {
+                account_id: account.account_id.clone(),
+                label,
+                calendars: Vec::new(),
+                error: Some(format!("{err:#}")),
+            });
+            updated_accounts.push(account);
+            continue;
+        }
+
+        match list_google_calendars(&account.access_token) {
+            Ok(calendars) => {
+                let calendars = calendars
+                    .into_iter()
+                    .map(|calendar| {
+                        let already_added = existing_sources.iter().any(|source| {
+                            source.calendar_id == calendar.id
+                                && existing_source_matches_google_account(source, &account)
+                        });
+                        GoogleCalendarPickerCalendar {
+                            id: calendar.id.clone(),
+                            label: google_calendar_name(&calendar),
+                            already_added,
+                        }
+                    })
+                    .collect();
+                picker_accounts.push(GoogleCalendarPickerAccount {
+                    account_id: account.account_id.clone(),
+                    label,
+                    calendars,
+                    error: None,
+                });
+            }
+            Err(err) => {
+                picker_accounts.push(GoogleCalendarPickerAccount {
+                    account_id: account.account_id.clone(),
+                    label,
+                    calendars: Vec::new(),
+                    error: Some(format!("{err:#}")),
+                });
+            }
+        }
+        updated_accounts.push(account);
+    }
+
+    Ok(GoogleCalendarPickerLoadResult {
+        accounts: updated_accounts,
+        picker_accounts,
+    })
+}
+
 fn run_google_calendar_import(
     config: GoogleOAuthConfig,
     _existing_accounts: Vec<GoogleOAuthAccount>,
@@ -623,6 +994,51 @@ fn run_google_calendar_import(
         accounts,
         existing_sources,
         GoogleCalendarImportMode::MissingOnly,
+        None,
+    )
+}
+
+fn run_google_calendar_import_existing_account_calendar(
+    config: GoogleOAuthConfig,
+    account: GoogleOAuthAccount,
+    existing_sources: Vec<ExistingGoogleCalendarSource>,
+    calendar_id: String,
+) -> Result<GoogleCalendarImportResult> {
+    run_google_calendar_sync(
+        config,
+        vec![account],
+        existing_sources,
+        GoogleCalendarImportMode::MissingOnly,
+        Some(calendar_id),
+    )
+}
+
+fn run_google_calendar_scheme_reconnect(
+    config: GoogleOAuthConfig,
+    source: ImportedCalendarSource,
+) -> Result<GoogleCalendarImportResult> {
+    let account = run_google_oauth(config.clone())?;
+    if !google_account_matches_calendar_source(&account, &source) {
+        let signed_in = account
+            .email
+            .clone()
+            .unwrap_or_else(|| account.account_id.clone());
+        bail!(
+            "signed in as {signed_in}, but this calendar belongs to {}",
+            google_calendar_source_target_label(&source)
+        );
+    }
+    run_google_calendar_sync(
+        config,
+        vec![account],
+        vec![ExistingGoogleCalendarSource {
+            account_id: source.account_id,
+            account_email: source.account_email,
+            calendar_id: source.calendar_id,
+            sync_token: source.sync_token,
+        }],
+        GoogleCalendarImportMode::ExistingOnly,
+        None,
     )
 }
 
@@ -643,6 +1059,7 @@ fn run_google_calendar_background_sync(
         existing_accounts,
         existing_sources,
         GoogleCalendarImportMode::ExistingOnly,
+        None,
     )
 }
 
@@ -651,6 +1068,7 @@ fn run_google_calendar_sync(
     accounts: Vec<GoogleOAuthAccount>,
     existing_sources: Vec<ExistingGoogleCalendarSource>,
     mode: GoogleCalendarImportMode,
+    target_calendar_id: Option<String>,
 ) -> Result<GoogleCalendarImportResult> {
     let mut updated_accounts = Vec::new();
     let mut calendars = Vec::new();
@@ -665,7 +1083,12 @@ fn run_google_calendar_sync(
             continue;
         }
 
-        match import_google_account_calendars(&account, &existing_sources, mode) {
+        match import_google_account_calendars(
+            &account,
+            &existing_sources,
+            mode,
+            target_calendar_id.as_deref(),
+        ) {
             Ok((mut imported, mut account_failures)) => {
                 calendars.append(&mut imported);
                 failures.append(&mut account_failures);
@@ -886,6 +1309,7 @@ fn import_google_account_calendars(
     account: &GoogleOAuthAccount,
     existing_sources: &[ExistingGoogleCalendarSource],
     mode: GoogleCalendarImportMode,
+    target_calendar_id: Option<&str>,
 ) -> Result<(Vec<ImportedGoogleCalendar>, Vec<String>)> {
     let calendars = list_google_calendars(&account.access_token)?;
     let fallback_count = calendars.len().max(1);
@@ -893,8 +1317,12 @@ fn import_google_account_calendars(
     let mut failures = Vec::new();
 
     for (index, calendar) in calendars.into_iter().enumerate() {
+        if target_calendar_id.is_some_and(|target| target != calendar.id) {
+            continue;
+        }
         let existing = existing_sources.iter().find(|source| {
-            source.account_id == account.account_id && source.calendar_id == calendar.id
+            source.calendar_id == calendar.id
+                && existing_source_matches_google_account(source, account)
         });
         match mode {
             GoogleCalendarImportMode::ExistingOnly if existing.is_none() => continue,
@@ -926,6 +1354,7 @@ fn import_google_account_calendars(
 
         imported.push(ImportedGoogleCalendar {
             account_id: account.account_id.clone(),
+            account_email: account.email.clone(),
             calendar_id: calendar.id.clone(),
             name: IMPORTED_GOOGLE_CALENDAR_SCHEME_NAME.to_string(),
             color_index: google_calendar_color_index(
@@ -1092,6 +1521,7 @@ fn google_calendar_sources(workspace: &Workspace) -> Vec<ExistingGoogleCalendarS
             }
             Some(ExistingGoogleCalendarSource {
                 account_id: source.account_id.clone(),
+                account_email: source.account_email.clone(),
                 calendar_id: source.calendar_id.clone(),
                 sync_token: source.sync_token.clone(),
             })
@@ -1099,26 +1529,64 @@ fn google_calendar_sources(workspace: &Workspace) -> Vec<ExistingGoogleCalendarS
         .collect()
 }
 
+fn existing_source_matches_google_account(
+    source: &ExistingGoogleCalendarSource,
+    account: &GoogleOAuthAccount,
+) -> bool {
+    if source.account_id == account.account_id {
+        return true;
+    }
+    let Some(account_email) = account.email.as_deref() else {
+        return false;
+    };
+    let source_email = source.account_email.as_deref().or_else(|| {
+        source
+            .account_id
+            .contains('@')
+            .then_some(source.account_id.as_str())
+    });
+    source_email.is_some_and(|source_email| emails_match(account_email, source_email))
+}
+
 fn find_google_calendar_scheme(
     workspace: &Workspace,
-    account_id: &str,
-    calendar_id: &str,
+    calendar: &ImportedGoogleCalendar,
 ) -> Option<knotq_model::SchemeId> {
     workspace.schemes.values().find_map(|scheme| {
         let SchemeSource::ImportedCalendar(source) = &scheme.source else {
             return None;
         };
         (source.provider == CalendarProvider::Google
-            && source.account_id == account_id
-            && source.calendar_id == calendar_id)
-            .then_some(scheme.id)
+            && source.calendar_id == calendar.calendar_id
+            && google_import_matches_source(calendar, source))
+        .then_some(scheme.id)
     })
+}
+
+fn google_import_matches_source(
+    calendar: &ImportedGoogleCalendar,
+    source: &ImportedCalendarSource,
+) -> bool {
+    if source.account_id == calendar.account_id {
+        return true;
+    }
+    let Some(account_email) = calendar.account_email.as_deref() else {
+        return false;
+    };
+    let source_email = source.account_email.as_deref().or_else(|| {
+        source
+            .account_id
+            .contains('@')
+            .then_some(source.account_id.as_str())
+    });
+    source_email.is_some_and(|source_email| emails_match(account_email, source_email))
 }
 
 fn google_calendar_source(calendar: &ImportedGoogleCalendar) -> SchemeSource {
     SchemeSource::ImportedCalendar(ImportedCalendarSource {
         provider: CalendarProvider::Google,
         account_id: calendar.account_id.clone(),
+        account_email: calendar.account_email.clone(),
         calendar_id: calendar.calendar_id.clone(),
         sync_token: calendar.sync_token.clone(),
         read_only: true,
@@ -1131,11 +1599,13 @@ fn apply_google_calendar_metadata(
     calendar: &ImportedGoogleCalendar,
     should_update_name: bool,
 ) -> bool {
-    let metadata_changed = should_update_name && scheme.name != calendar.name;
+    let next_source = google_calendar_source(calendar);
+    let metadata_changed =
+        (should_update_name && scheme.name != calendar.name) || scheme.source != next_source;
     if should_update_name {
         scheme.name = calendar.name.clone();
     }
-    scheme.source = google_calendar_source(calendar);
+    scheme.source = next_source;
     metadata_changed
 }
 
@@ -1606,6 +2076,7 @@ mod tests {
             &mut scheme,
             &ImportedGoogleCalendar {
                 account_id: "acct".to_string(),
+                account_email: Some("user@example.com".to_string()),
                 calendar_id: "cal".to_string(),
                 name: "Google name".to_string(),
                 color_index: 1,
@@ -1617,13 +2088,14 @@ mod tests {
             false,
         );
 
-        assert!(!changed);
+        assert!(changed);
         assert_eq!(scheme.name, "Local name");
         assert_eq!(scheme.color_index, 4);
         let SchemeSource::ImportedCalendar(source) = &scheme.source else {
             panic!("expected imported calendar source");
         };
         assert_eq!(source.provider, CalendarProvider::Google);
+        assert_eq!(source.account_email.as_deref(), Some("user@example.com"));
         assert_eq!(source.sync_token.as_deref(), Some("next"));
     }
 
@@ -1644,6 +2116,7 @@ mod tests {
             &mut scheme,
             &ImportedGoogleCalendar {
                 account_id: "acct".to_string(),
+                account_email: Some("user@example.com".to_string()),
                 calendar_id: "cal".to_string(),
                 name: "Work".to_string(),
                 color_index: 0,
@@ -1679,6 +2152,7 @@ mod tests {
             &mut scheme,
             &ImportedGoogleCalendar {
                 account_id: "acct".to_string(),
+                account_email: Some("user@example.com".to_string()),
                 calendar_id: "cal".to_string(),
                 name: "Work".to_string(),
                 color_index: 0,
@@ -1711,6 +2185,7 @@ mod tests {
             &mut scheme,
             &ImportedGoogleCalendar {
                 account_id: "acct".to_string(),
+                account_email: Some("user@example.com".to_string()),
                 calendar_id: "cal".to_string(),
                 name: "Work".to_string(),
                 color_index: 0,
@@ -1741,6 +2216,7 @@ mod tests {
             &mut scheme,
             &ImportedGoogleCalendar {
                 account_id: "acct".to_string(),
+                account_email: Some("user@example.com".to_string()),
                 calendar_id: "cal".to_string(),
                 name: "Work".to_string(),
                 color_index: 0,
@@ -1774,6 +2250,7 @@ mod tests {
             &mut scheme,
             &ImportedGoogleCalendar {
                 account_id: "acct".to_string(),
+                account_email: Some("user@example.com".to_string()),
                 calendar_id: "cal".to_string(),
                 name: "Work".to_string(),
                 color_index: 0,

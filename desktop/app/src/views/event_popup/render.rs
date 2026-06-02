@@ -494,6 +494,9 @@ fn event_title_input(
     }
 }
 
+// The scheme row under the title: the name is a link that jumps to the scheme
+// line ("go to definition"), and the trailing arrow opens the scheme picker
+// popover (reassign the item's scheme). These are two separate hit targets.
 fn event_scheme_chip(
     label: String,
     accent: gpui::Hsla,
@@ -507,7 +510,7 @@ fn event_scheme_chip(
     let hover_bg = with_alpha(accent, if t.is_dark { 0.21 } else { 0.16 });
     let border = with_alpha(accent, if t.is_dark { 0.28 } else { 0.32 });
 
-    let chip = div()
+    div()
         .id("popup-scheme-row")
         .max_w_full()
         .h(px(20.0))
@@ -520,10 +523,6 @@ fn event_scheme_chip(
         .items_center()
         .gap(px(5.0))
         .font_family(FONT_UI)
-        .text_size(px(12.0))
-        .line_height(px(15.0))
-        .text_color(token_hsla(t.text_primary))
-        .when(editable, |s| s.cursor_pointer())
         .hover(move |s| s.bg(hover_bg))
         .child(
             div()
@@ -541,41 +540,61 @@ fn event_scheme_chip(
                 .overflow_hidden()
                 .whitespace_nowrap()
                 .text_ellipsis()
+                .text_size(px(12.0))
+                .line_height(px(15.0))
+                .text_color(token_hsla(t.text_primary))
+                .cursor_pointer()
+                .hover(move |s| s.text_color(token_hsla(t.text_highlight)))
+                .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
+                    this.open_scheme(scheme_id, Some(item_id));
+                    this.focus_current_editor(window, cx);
+                    this.close_event_popup(cx);
+                    cx.stop_propagation();
+                    cx.notify();
+                }))
                 .child(label),
         )
-        .when(editable, |chip| {
-            chip.child(
-                Icon::empty()
-                    .path(SCHEME_PICKER_MOVE_ICON)
-                    .with_size(px(13.0))
+        .when(editable, |row| {
+            row.child(
+                div()
+                    .id("popup-scheme-picker-toggle")
+                    .w(px(16.0))
+                    .h(px(18.0))
+                    .rounded(px(4.0))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .text_size(px(12.0))
+                    .font_family(FONT_UI)
                     .text_color(token_hsla(t.text_soft))
-                    .into_any_element(),
+                    .bg(token_rgba(0x00000000))
+                    .cursor_pointer()
+                    .hover({
+                        let hover = t.button_hover;
+                        move |s| {
+                            s.bg(token_rgba(hover))
+                                .text_color(token_hsla(t.text_primary))
+                        }
+                    })
+                    .on_click(cx.listener(move |this, _: &ClickEvent, _window, cx| {
+                        if let Some(popup) = this.event_popup.as_mut() {
+                            let toggle = !popup.scheme_menu_open;
+                            popup.close_all_menus();
+                            popup.scheme_menu_open = toggle;
+                        }
+                        cx.stop_propagation();
+                        cx.notify();
+                    }))
+                    .child(
+                        Icon::empty()
+                            .path(SCHEME_PICKER_MOVE_ICON)
+                            .with_size(px(14.0))
+                            .text_color(token_hsla(t.text_soft))
+                            .into_any_element(),
+                    ),
             )
-        });
-
-    if editable {
-        chip.id("popup-scheme-picker-toggle")
-            .on_click(cx.listener(move |this, _: &ClickEvent, _window, cx| {
-                if let Some(popup) = this.event_popup.as_mut() {
-                    let toggle = !popup.scheme_menu_open;
-                    popup.close_all_menus();
-                    popup.scheme_menu_open = toggle;
-                }
-                cx.stop_propagation();
-                cx.notify();
-            }))
-            .into_any_element()
-    } else {
-        chip.cursor_pointer()
-            .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
-                this.open_scheme(scheme_id, Some(item_id));
-                this.focus_current_editor(window, cx);
-                this.close_event_popup(cx);
-                cx.stop_propagation();
-                cx.notify();
-            }))
-            .into_any_element()
-    }
+        })
+        .into_any_element()
 }
 
 fn read_only_event_badge(t: Theme) -> gpui::AnyElement {

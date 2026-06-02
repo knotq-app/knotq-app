@@ -72,6 +72,8 @@ impl SchemeSource {
 pub struct ImportedCalendarSource {
     pub provider: CalendarProvider,
     pub account_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub account_email: Option<String>,
     pub calendar_id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sync_token: Option<String>,

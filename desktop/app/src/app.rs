@@ -167,10 +167,15 @@ impl EventPopup {
 
 #[derive(Clone, Debug)]
 pub struct DeleteConfirmation {
-    pub target: NodeRef,
+    pub target: ConfirmationTarget,
     pub title: String,
     pub message: String,
     pub confirm_label: String,
+}
+
+#[derive(Clone, Debug)]
+pub enum ConfirmationTarget {
+    GoogleAccount { account_id: String },
 }
 
 #[derive(Clone, Debug)]
@@ -184,10 +189,41 @@ pub struct NoticeModal {
 pub enum SidebarContextTarget {
     Background,
     NewMenu { parent: FolderId },
+    GoogleCalendarPicker { parent: FolderId },
     Archive,
     Folder(FolderId),
     Scheme { scheme_id: SchemeId },
     DeletedScheme { scheme_id: SchemeId },
+}
+
+#[derive(Clone, Debug)]
+pub struct GoogleCalendarPickerState {
+    pub parent: FolderId,
+    pub status: GoogleCalendarPickerStatus,
+}
+
+#[derive(Clone, Debug)]
+pub enum GoogleCalendarPickerStatus {
+    Loading,
+    Loaded {
+        accounts: Vec<GoogleCalendarPickerAccount>,
+    },
+    Error(String),
+}
+
+#[derive(Clone, Debug)]
+pub struct GoogleCalendarPickerAccount {
+    pub account_id: String,
+    pub label: String,
+    pub calendars: Vec<GoogleCalendarPickerCalendar>,
+    pub error: Option<String>,
+}
+
+#[derive(Clone, Debug)]
+pub struct GoogleCalendarPickerCalendar {
+    pub id: String,
+    pub label: String,
+    pub already_added: bool,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -226,6 +262,17 @@ pub struct SyncSignInState {
     pub api_input: Entity<InputState>,
     pub email_input: Entity<InputState>,
     pub password_input: Entity<InputState>,
+    pub code_input: Entity<InputState>,
+    // Set once the password step succeeds: the modal then collects the emailed
+    // 2FA code and the submit button verifies it instead of re-sending the password.
+    pub challenge: Option<PendingLoginChallenge>,
+}
+
+/// A pending two-factor login awaiting its emailed code.
+pub struct PendingLoginChallenge {
+    pub api_base: String,
+    pub email: String,
+    pub challenge_id: String,
 }
 
 #[derive(Clone, Debug)]
@@ -479,6 +526,8 @@ pub struct KnotQApp {
     pub notice_modal: Option<NoticeModal>,
     pub sidebar_context_menu: Option<SidebarContextMenu>,
     pub editor_context_menu: Option<EditorContextMenu>,
+    pub google_calendar_picker: Option<GoogleCalendarPickerState>,
+    pub google_calendar_picker_task: Option<Task<()>>,
     pub google_oauth_status: GoogleOAuthStatus,
     pub google_oauth_task: Option<Task<()>>,
     pub sync_sign_in: Option<SyncSignInState>,
@@ -589,6 +638,8 @@ impl KnotQApp {
             notice_modal: None,
             sidebar_context_menu: None,
             editor_context_menu: None,
+            google_calendar_picker: None,
+            google_calendar_picker_task: None,
             google_oauth_status: GoogleOAuthStatus::Idle,
             google_oauth_task: None,
             sync_sign_in: None,

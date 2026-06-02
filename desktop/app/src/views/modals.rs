@@ -304,10 +304,22 @@ impl KnotQApp {
         let state = self.sync_sign_in.as_ref()?;
         let t = self.theme();
         let signed_in = self.settings.sync_account.clone();
+        // Once the password is accepted the modal flips to its second step: collect
+        // the emailed 2FA code instead of the password.
+        let awaiting_code = state.challenge.is_some();
+        let challenge_email = state.challenge.as_ref().map(|c| c.email.clone());
         let in_progress = matches!(self.sync_auth_status, SyncAuthStatus::InProgress);
         let status = match &self.sync_auth_status {
             SyncAuthStatus::Idle => None,
-            SyncAuthStatus::InProgress => Some(("Signing in...".to_string(), false)),
+            SyncAuthStatus::InProgress => Some((
+                if awaiting_code {
+                    "Verifying..."
+                } else {
+                    "Signing in..."
+                }
+                .to_string(),
+                false,
+            )),
             SyncAuthStatus::Error(message) => Some((message.clone(), true)),
         };
 
@@ -383,7 +395,12 @@ impl KnotQApp {
                                 }))
                         })
                         .when(in_progress, |s| s.opacity(0.65))
-                        .child(if in_progress { "Signing in" } else { "Sign in" }),
+                        .child(match (awaiting_code, in_progress) {
+                            (true, true) => "Verifying",
+                            (true, false) => "Verify",
+                            (false, true) => "Signing in",
+                            (false, false) => "Sign in",
+                        }),
                 ),
         );
 
@@ -438,7 +455,29 @@ impl KnotQApp {
                         .when_some(current_account, |s, account| s.child(account))
                         .child(sign_in_field("Sync API", &state.api_input, false, t))
                         .child(sign_in_field("Email", &state.email_input, false, t))
-                        .child(sign_in_field("Password", &state.password_input, true, t))
+                        .when(!awaiting_code, |s| {
+                            s.child(sign_in_field("Password", &state.password_input, true, t))
+                        })
+                        .when(awaiting_code, |s| {
+                            s.child(
+                                div()
+                                    .text_size(px(12.0))
+                                    .line_height(px(17.0))
+                                    .text_color(token_hsla(t.text_soft))
+                                    .child(match &challenge_email {
+                                        Some(email) => {
+                                            format!("Enter the code we emailed to {email}.")
+                                        }
+                                        None => "Enter the code we emailed you.".to_string(),
+                                    }),
+                            )
+                            .child(sign_in_field(
+                                "Code",
+                                &state.code_input,
+                                false,
+                                t,
+                            ))
+                        })
                         .when_some(status, |s, (message, is_error)| {
                             s.child(
                                 div()

@@ -1,7 +1,7 @@
 use gpui::Context;
-use knotq_model::{FolderId, NodeRef, SchemeId};
+use knotq_model::{FolderId, SchemeId};
 
-use super::KnotQApp;
+use super::{ConfirmationTarget, KnotQApp};
 
 impl KnotQApp {
     pub fn request_delete_folder(&mut self, folder_id: FolderId, cx: &mut Context<Self>) {
@@ -32,13 +32,31 @@ impl KnotQApp {
         }
     }
 
+    pub(crate) fn request_forget_google_account(
+        &mut self,
+        account_id: String,
+        label: String,
+        cx: &mut Context<Self>,
+    ) {
+        self.pending_delete = Some(super::DeleteConfirmation {
+            target: ConfirmationTarget::GoogleAccount { account_id },
+            title: "Forget Google account?".to_string(),
+            message: format!(
+                "This removes local Google Calendar access for {label}. Synced Google calendar schemes remain, but they will show as offline until you sign in locally again."
+            ),
+            confirm_label: "Forget".to_string(),
+        });
+        cx.notify();
+    }
+
     pub fn confirm_pending_delete(&mut self, cx: &mut Context<Self>) {
         let Some(pending) = self.pending_delete.take() else {
             return;
         };
         match pending.target {
-            NodeRef::Folder(id) => self.delete_folder(id, cx),
-            NodeRef::Scheme(id) => self.delete_scheme(id, cx),
+            ConfirmationTarget::GoogleAccount { account_id } => {
+                self.forget_google_account(account_id, cx)
+            }
         }
         cx.notify();
     }

@@ -178,6 +178,12 @@ impl KnotQApp {
         let drop_position = position;
         let scheme_id = scheme.id;
         let scheme_name = self.scheme_display_name(&scheme);
+        let google_offline = matches!(
+            &scheme.source,
+            SchemeSource::ImportedCalendar(source)
+                if source.provider == CalendarProvider::Google
+                    && !self.google_calendar_has_local_credentials(&scheme)
+        );
 
         Some(
             div()
@@ -273,15 +279,26 @@ impl KnotQApp {
                                 div()
                                     .flex_1()
                                     .min_w_0()
-                                    .truncate()
-                                    .whitespace_nowrap()
-                                    .text_size(px(SIDEBAR_TEXT_SIZE))
-                                    .line_height(px(SIDEBAR_LINE_HEIGHT))
-                                    .font_family(FONT_UI)
-                                    .font_weight(gpui::FontWeight::NORMAL)
-                                    .text_color(token_hsla(t.text_primary))
-                                    .overflow_hidden()
-                                    .child(scheme_name),
+                                    .flex()
+                                    .items_center()
+                                    .gap(px(5.0))
+                                    .child(
+                                        div()
+                                            .flex_1()
+                                            .min_w_0()
+                                            .truncate()
+                                            .whitespace_nowrap()
+                                            .text_size(px(SIDEBAR_TEXT_SIZE))
+                                            .line_height(px(SIDEBAR_LINE_HEIGHT))
+                                            .font_family(FONT_UI)
+                                            .font_weight(gpui::FontWeight::NORMAL)
+                                            .text_color(token_hsla(t.text_primary))
+                                            .overflow_hidden()
+                                            .child(scheme_name),
+                                    )
+                                    .when(google_offline, |row| {
+                                        row.child(google_calendar_offline_marker(t))
+                                    }),
                             )
                             .into_any_element()
                     }
@@ -296,4 +313,27 @@ impl KnotQApp {
                 .into_any_element(),
         )
     }
+}
+
+fn google_calendar_offline_marker(t: Theme) -> gpui::AnyElement {
+    div()
+        .id("google-calendar-offline-marker")
+        .flex_shrink_0()
+        .w(px(14.0))
+        .h(px(14.0))
+        .flex()
+        .items_center()
+        .justify_center()
+        .opacity(0.78)
+        .tooltip(move |window, cx| {
+            Tooltip::new("Google Calendar is not connected on this device").build(window, cx)
+        })
+        .child(
+            Icon::empty()
+                .path(CLOUD_OFF_ICON)
+                .with_size(px(12.0))
+                .text_color(token_hsla(t.text_muted))
+                .into_any_element(),
+        )
+        .into_any_element()
 }

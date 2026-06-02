@@ -13,6 +13,8 @@ impl KnotQApp {
 
     fn close_sidebar_context_menu(&mut self, cx: &mut Context<Self>) {
         self.sidebar_context_menu = None;
+        self.google_calendar_picker = None;
+        self.google_calendar_picker_task = None;
         cx.notify();
     }
 
@@ -73,11 +75,13 @@ impl KnotQApp {
                     "sidebar-menu-new-google-calendar",
                     "Google Calendar",
                     t,
-                    cx.listener(move |this, _: &ClickEvent, _window, cx| {
-                        this.close_sidebar_context_menu(cx);
-                        this.start_google_calendar_import(parent, cx);
+                    cx.listener(move |this, event: &ClickEvent, _window, cx| {
+                        this.open_google_calendar_picker(parent, event.position(), cx);
                     }),
                 ));
+            }
+            SidebarContextTarget::GoogleCalendarPicker { parent } => {
+                items.extend(self.render_google_calendar_picker_items(parent, t, cx));
             }
             SidebarContextTarget::Archive => {
                 items.push(sidebar_context_item(
@@ -174,8 +178,11 @@ impl KnotQApp {
         }
         let viewport_width = px(f32::from(window.viewport_size().width));
         let viewport_height = px(f32::from(window.viewport_size().height));
-        let menu_width = px(154.0);
-        let menu_height = px(items.len() as f32 * 29.0 + 8.0);
+        let menu_width = px(match menu.target {
+            SidebarContextTarget::GoogleCalendarPicker { .. } => 260.0,
+            _ => 220.0,
+        });
+        let menu_height = px((items.len() as f32 * 29.0 + 8.0).min(360.0));
         let menu_left = clamped_popover_left(menu.position.x, menu_width, viewport_width);
         let menu_top = popover_top_biased_below(menu.position.y, menu_height, viewport_height);
 
@@ -205,7 +212,9 @@ impl KnotQApp {
                         .left(menu_left)
                         .top(menu_top)
                         .occlude()
-                        .min_w(px(154.0))
+                        .min_w(menu_width)
+                        .max_h(px(360.0))
+                        .overflow_y_scroll()
                         .p(px(4.0))
                         .rounded(px(7.0))
                         .bg(token_hsla(t.bg_sidebar))
@@ -221,6 +230,129 @@ impl KnotQApp {
                 .into_any_element(),
         )
     }
+
+    fn render_google_calendar_picker_items(
+        &mut self,
+        parent: FolderId,
+        t: Theme,
+        cx: &mut Context<Self>,
+    ) -> Vec<gpui::AnyElement> {
+        let status = self
+            .google_calendar_picker
+            .as_ref()
+            .filter(|picker| picker.parent == parent)
+            .map(|picker| picker.status.clone())
+            .unwrap_or(GoogleCalendarPickerStatus::Loading);
+        let mut items = Vec::new();
+
+        match status {
+            GoogleCalendarPickerStatus::Loading => {
+                items.push(sidebar_context_disabled_item(
+                    "sidebar-google-calendar-loading",
+                    "Loading calendars...",
+                    None::<SharedString>,
+                    t,
+                ));
+            }
+            GoogleCalendarPickerStatus::Error(message) => {
+                items.push(sidebar_context_disabled_item(
+                    "sidebar-google-calendar-error",
+                    message,
+                    None::<SharedString>,
+                    t,
+                ));
+                items.push(sidebar_context_separator(t));
+                items.push(add_google_account_item(parent, t, cx));
+            }
+            GoogleCalendarPickerStatus::Loaded { accounts } => {
+                if accounts.is_empty() {
+                    items.push(sidebar_context_disabled_item(
+                        "sidebar-google-calendar-empty",
+                        "No local Google accounts",
+                        None::<SharedString>,
+                        t,
+                    ));
+                } else {
+                    for (account_idx, account) in accounts.into_iter().enumerate() {
+                        if account_idx > 0 {
+                            items.push(sidebar_context_separator(t));
+                        }
+                        items.push(sidebar_context_subheading(
+                            format!("sidebar-google-calendar-account-{account_idx}"),
+                            account.label.clone(),
+                            t,
+                        ));
+                        if let Some(error) = account.error {
+                            items.push(sidebar_context_disabled_item(
+                                format!("sidebar-google-calendar-account-error-{account_idx}"),
+                                error,
+                                None::<SharedString>,
+                                t,
+                            ));
+                        } else if account.calendars.is_empty() {
+                            items.push(sidebar_context_disabled_item(
+                                format!("sidebar-google-calendar-account-empty-{account_idx}"),
+                                "No calendars available",
+                                None::<SharedString>,
+                                t,
+                            ));
+                        } else {
+                            for (calendar_idx, calendar) in
+                                account.calendars.into_iter().enumerate()
+                            {
+                                let id =
+                                    format!("sidebar-google-calendar-{account_idx}-{calendar_idx}");
+                                if calendar.already_added {
+                                    items.push(sidebar_context_disabled_item(
+                                        id,
+                                        calendar.label,
+                                        Some("Added"),
+                                        t,
+                                    ));
+                                } else {
+                                    let account_id = account.account_id.clone();
+                                    let calendar_id = calendar.id.clone();
+                                    items.push(sidebar_context_item(
+                                        id,
+                                        calendar.label,
+                                        t,
+                                        cx.listener(move |this, _: &ClickEvent, _window, cx| {
+                                            this.close_sidebar_context_menu(cx);
+                                            this.start_google_calendar_import_calendar(
+                                                parent,
+                                                account_id.clone(),
+                                                calendar_id.clone(),
+                                                cx,
+                                            );
+                                        }),
+                                    ));
+                                }
+                            }
+                        }
+                    }
+                }
+                items.push(sidebar_context_separator(t));
+                items.push(add_google_account_item(parent, t, cx));
+            }
+        }
+        items
+    }
+}
+
+fn add_google_account_item(
+    parent: FolderId,
+    t: Theme,
+    cx: &mut Context<KnotQApp>,
+) -> gpui::AnyElement {
+    sidebar_context_item(
+        "sidebar-google-calendar-add-account",
+        "Add Google Account...",
+        t,
+        cx.listener(move |this, _: &ClickEvent, _window, cx| {
+            this.close_sidebar_context_menu(cx);
+            this.start_google_calendar_import(parent, cx);
+        }),
+    )
 }
 
 fn sidebar_context_item(
@@ -272,6 +404,64 @@ fn sidebar_context_item_with_shortcut(
         );
     }
     row.into_any_element()
+}
+
+fn sidebar_context_disabled_item(
+    id: impl Into<SharedString>,
+    label: impl Into<SharedString>,
+    detail: Option<impl Into<SharedString>>,
+    t: Theme,
+) -> gpui::AnyElement {
+    let label = label.into();
+    let mut row = div()
+        .id(id.into())
+        .min_h(px(28.0))
+        .px(px(10.0))
+        .py(px(5.0))
+        .rounded(px(5.0))
+        .flex()
+        .items_center()
+        .text_size(px(12.0))
+        .line_height(px(16.0))
+        .font_family(FONT_UI)
+        .text_color(token_hsla(t.text_muted))
+        .child(
+            div()
+                .flex_1()
+                .min_w_0()
+                .truncate()
+                .whitespace_nowrap()
+                .child(label),
+        );
+    if let Some(detail) = detail {
+        row = row.child(
+            div()
+                .ml(px(12.0))
+                .text_size(px(11.0))
+                .text_color(token_hsla(t.text_dim))
+                .child(detail.into()),
+        );
+    }
+    row.into_any_element()
+}
+
+fn sidebar_context_subheading(
+    id: impl Into<SharedString>,
+    label: impl Into<SharedString>,
+    t: Theme,
+) -> gpui::AnyElement {
+    div()
+        .id(id.into())
+        .px(px(10.0))
+        .pt(px(6.0))
+        .pb(px(3.0))
+        .text_size(px(11.0))
+        .line_height(px(14.0))
+        .font_family(FONT_UI)
+        .font_weight(gpui::FontWeight::SEMIBOLD)
+        .text_color(token_hsla(t.text_dim))
+        .child(label.into())
+        .into_any_element()
 }
 
 fn sidebar_context_separator(t: Theme) -> gpui::AnyElement {

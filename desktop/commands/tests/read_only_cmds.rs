@@ -97,6 +97,7 @@ fn insert_imported_scheme(workspace: &mut Workspace, items: Vec<Item>) -> Scheme
     scheme.source = SchemeSource::ImportedCalendar(ImportedCalendarSource {
         provider: CalendarProvider::Google,
         account_id: "account".into(),
+        account_email: None,
         calendar_id: "calendar".into(),
         sync_token: None,
         read_only: true,

@@ -155,6 +155,7 @@ impl KnotQApp {
         let history_rows = self.version_history_rows(t, cx);
         let update_rows = self.auto_update_rows(t, cx);
         let sync_rows = self.sync_account_rows(t, cx);
+        let google_rows = self.google_calendar_account_rows(t, cx);
 
         div()
             .flex_1()
@@ -175,6 +176,7 @@ impl KnotQApp {
                         .child(settings_header(t))
                         .child(settings_section("Appearance", theme_rows, t))
                         .child(settings_section("Calendar", calendar_rows, t))
+                        .child(settings_section("Google Calendar", google_rows, t))
                         .child(settings_section("Time", time_rows, t))
                         .child(settings_section("Notifications", notification_rows, t))
                         .child(settings_section("Sync", sync_rows, t))
@@ -220,6 +222,42 @@ impl KnotQApp {
         };
 
         vec![sync_account_row(title, detail, action, t, cx)]
+    }
+
+    fn google_calendar_account_rows(
+        &mut self,
+        t: UiTheme,
+        cx: &mut Context<Self>,
+    ) -> Vec<gpui::AnyElement> {
+        if self.settings.google_accounts.is_empty() {
+            return vec![settings_message(
+                "No Google accounts connected locally.".to_string(),
+                false,
+                t,
+            )];
+        }
+
+        self.settings
+            .google_accounts
+            .clone()
+            .into_iter()
+            .enumerate()
+            .map(|(idx, account)| {
+                let account_id = account.account_id.clone();
+                let title = account
+                    .email
+                    .clone()
+                    .filter(|email| !email.trim().is_empty())
+                    .unwrap_or_else(|| account.account_id.clone());
+                let count = self.google_calendar_scheme_count_for_account(&account);
+                let detail = match count {
+                    0 => "No synced calendars use this local account.".to_string(),
+                    1 => "1 synced calendar uses this local account.".to_string(),
+                    count => format!("{count} synced calendars use this local account."),
+                };
+                google_account_row(idx, account_id, title, detail, t, cx)
+            })
+            .collect()
     }
 
     fn version_history_rows(
@@ -590,6 +628,78 @@ fn sync_account_row(
                     this.open_sync_sign_in(window, cx);
                 }))
                 .child(button_label),
+        )
+        .into_any_element()
+}
+
+fn google_account_row(
+    idx: usize,
+    account_id: String,
+    title: String,
+    detail: String,
+    t: UiTheme,
+    cx: &mut Context<KnotQApp>,
+) -> gpui::AnyElement {
+    let confirm_label = title.clone();
+
+    div()
+        .id(("google-account-setting", idx))
+        .px(px(8.0))
+        .py(px(5.0))
+        .min_h(px(38.0))
+        .flex()
+        .items_center()
+        .justify_between()
+        .gap(px(8.0))
+        .border_b_1()
+        .border_color(token_rgba(t.divider_tiny))
+        .child(
+            div()
+                .min_w_0()
+                .flex()
+                .flex_col()
+                .gap(px(2.0))
+                .child(
+                    div()
+                        .text_size(px(12.0))
+                        .font_weight(gpui::FontWeight::SEMIBOLD)
+                        .text_color(token_hsla(t.text_primary))
+                        .child(title),
+                )
+                .child(
+                    div()
+                        .text_size(px(11.0))
+                        .line_height(px(14.0))
+                        .text_color(token_hsla(t.text_soft))
+                        .child(detail),
+                ),
+        )
+        .child(
+            div()
+                .id(("google-account-forget", idx))
+                .flex_shrink_0()
+                .px(px(7.0))
+                .py(px(3.0))
+                .rounded(px(3.0))
+                .border_1()
+                .border_color(token_rgba(t.border_main))
+                .bg(token_rgba(t.button_bg))
+                .hover({
+                    let c = t.button_hover;
+                    move |h| h.bg(token_rgba(c))
+                })
+                .cursor_pointer()
+                .text_size(px(11.0))
+                .font_weight(gpui::FontWeight::SEMIBOLD)
+                .text_color(token_hsla(t.text_primary))
+                .on_click(cx.listener(move |this, _: &ClickEvent, _window, cx| {
+                    this.request_forget_google_account(
+                        account_id.clone(),
+                        confirm_label.clone(),
+                        cx,
+                    );
+                }))
+                .child("Forget"),
         )
         .into_any_element()
 }

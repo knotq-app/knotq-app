@@ -1799,6 +1799,7 @@ mod tests {
         scheme.source = SchemeSource::ImportedCalendar(ImportedCalendarSource {
             provider: CalendarProvider::Google,
             account_id: "account".to_string(),
+            account_email: Some("user@example.com".to_string()),
             calendar_id: "calendar".to_string(),
             sync_token: Some("local-google-sync-token".to_string()),
             read_only: true,
@@ -1812,6 +1813,7 @@ mod tests {
             panic!("expected imported calendar source");
         };
         assert_eq!(source.provider, CalendarProvider::Google);
+        assert_eq!(source.account_email.as_deref(), Some("user@example.com"));
         assert_eq!(source.sync_token, None);
         assert!(source.read_only);
     }
@@ -1824,6 +1826,7 @@ mod tests {
         scheme.source = SchemeSource::ImportedCalendar(ImportedCalendarSource {
             provider: CalendarProvider::Google,
             account_id: "account".to_string(),
+            account_email: Some("user@example.com".to_string()),
             calendar_id: "calendar".to_string(),
             sync_token: Some("local-token".to_string()),
             read_only: true,
@@ -1834,6 +1837,7 @@ mod tests {
         let remote_source = SchemeSource::ImportedCalendar(ImportedCalendarSource {
             provider: CalendarProvider::Google,
             account_id: "account".to_string(),
+            account_email: Some("user@example.com".to_string()),
             calendar_id: "calendar".to_string(),
             sync_token: None,
             read_only: true,

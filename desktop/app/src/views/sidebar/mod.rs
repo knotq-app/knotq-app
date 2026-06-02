@@ -3,13 +3,13 @@ use gpui::{
     div, px, ClickEvent, Context, Entity, IntoElement, MouseButton, MouseDownEvent, Pixels, Point,
     Render, SharedString, Window,
 };
-use gpui_component::{Icon, IconName, Sizable};
+use gpui_component::{tooltip::Tooltip, Icon, IconName, Sizable};
 use knotq_commands::Command;
-use knotq_model::{FolderId, NodeRef, SchemeId};
+use knotq_model::{CalendarProvider, FolderId, NodeRef, SchemeId, SchemeSource};
 
 use crate::app::{
-    daily_queue_marker_color, KnotQApp, NewNodeKind, SidebarContextMenu, SidebarContextTarget,
-    View, DAILY_QUEUE_TITLE,
+    daily_queue_marker_color, GoogleCalendarPickerStatus, KnotQApp, NewNodeKind,
+    SidebarContextMenu, SidebarContextTarget, View, DAILY_QUEUE_TITLE,
 };
 use crate::theme_gpui::{scheme_square_color, token_hsla, token_rgba, Theme, FONT_UI};
 use knotq_ui::single_line_editor::SingleLineEditor;
@@ -18,6 +18,7 @@ use knotq_ui::{clamped_popover_left, popover_top_biased_below};
 pub(super) const ZED_FOLDER_ICON: &str = "icons/zed-folder.svg";
 pub(super) const ZED_FOLDER_OPEN_ICON: &str = "icons/zed-folder-open.svg";
 pub(super) const DELETE_ICON: &str = "icons/delete.svg";
+pub(super) const CLOUD_OFF_ICON: &str = "icons/cloud-off.svg";
 pub(super) const NAV_ROW_INDENT_BASE: f32 = 4.0;
 pub(super) const NAV_ICON_SLOT: f32 = 12.0;
 pub(super) const NAV_ICON_GAP: f32 = 7.0;
