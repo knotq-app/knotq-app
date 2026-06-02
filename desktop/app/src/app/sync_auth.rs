@@ -15,6 +15,13 @@ use super::{
 
 const DEFAULT_SYNC_API_BASE: &str = "http://127.0.0.1:8787";
 
+/// Lemon Squeezy hosted checkout for the sync subscription (Lemon Squeezy is the
+/// merchant of record for web/desktop, so it handles tax). Replace the store and
+/// variant with your own from Lemon Squeezy → Products → "Share". The
+/// `checkout[custom][user_id]` value round-trips to the `/v1/billing/lemonsqueezy`
+/// webhook so it can grant sync to this exact account.
+const SUBSCRIPTION_CHECKOUT_URL: &str = "https://YOUR_STORE.lemonsqueezy.com/buy/YOUR_VARIANT_ID";
+
 #[derive(Serialize)]
 struct LoginRequest {
     email: String,
@@ -301,6 +308,97 @@ impl KnotQApp {
                 self.sync_run_status = SyncRunStatus::Idle;
                 self.save_app_settings();
                 self.close_sync_sign_in(cx);
+            }
+            Err(message) => {
+                self.sync_auth_status = SyncAuthStatus::Error(message);
+            }
+        }
+        cx.notify();
+    }
+
+    /// Open the hosted subscription checkout in the browser, passing this account's
+    /// id through so the billing webhook can grant sync once payment completes.
+    pub fn open_subscription_checkout(&mut self, cx: &mut Context<Self>) {
+        let Some(account) = self.settings.sync_account.as_ref() else {
+            return;
+        };
+        let url = subscription_checkout_url(&account.user_id, &account.email);
+        if let Err(err) = crate::app::google_oauth::open_browser(&url) {
+            self.sync_auth_status =
+                SyncAuthStatus::Error(format!("Could not open the checkout page: {err}"));
+            cx.notify();
+        }
+        // On success the browser takes over; the user returns and taps "I've
+        // subscribed" to re-check entitlement via refresh_subscription_status.
+    }
+
+    /// Re-check the sync entitlement after a checkout by refreshing the session
+    /// (the access token's entitlement is recomputed server-side on refresh).
+    pub fn refresh_subscription_status(&mut self, cx: &mut Context<Self>) {
+        if matches!(self.sync_auth_status, SyncAuthStatus::InProgress) {
+            return;
+        }
+        let Some(account) = self.settings.sync_account.clone() else {
+            return;
+        };
+        let Some(refresh_token) = account.refresh_token.clone() else {
+            self.sync_auth_status =
+                SyncAuthStatus::Error("Sign in again to refresh your subscription.".to_string());
+            cx.notify();
+            return;
+        };
+        let api_base = account.api_base.clone();
+        self.sync_auth_status = SyncAuthStatus::InProgress;
+        let task = cx.spawn(
+            async move |weak: gpui::WeakEntity<Self>, cx: &mut gpui::AsyncApp| {
+                let (tx, rx) = mpsc::channel();
+                std::thread::spawn(move || {
+                    let result = refresh_sync_backend(&api_base, &refresh_token).map_err(|err| {
+                        match err {
+                            RefreshError::Unauthorized => {
+                                "Your sync session expired. Please sign in again.".to_string()
+                            }
+                            RefreshError::Transient(e) => format!("{e:#}"),
+                        }
+                    });
+                    let _ = tx.send(result);
+                });
+                Self::pump_sync_auth_worker(weak, cx, rx, |app, result, cx| {
+                    app.finish_refresh_subscription_status(result, cx);
+                })
+                .await;
+            },
+        );
+        self.sync_auth_task = Some(task);
+        cx.notify();
+    }
+
+    fn finish_refresh_subscription_status(
+        &mut self,
+        result: Result<RefreshedTokens, String>,
+        cx: &mut Context<Self>,
+    ) {
+        self.sync_auth_task = None;
+        match result {
+            Ok(tokens) => {
+                let supports_sync = tokens.supports_sync;
+                if let Some(acct) = self.settings.sync_account.as_mut() {
+                    acct.bearer_token = tokens.bearer_token;
+                    acct.expires_at = tokens.expires_at;
+                    acct.refresh_token = Some(tokens.refresh_token);
+                    acct.refresh_expires_at = tokens.refresh_expires_at;
+                    acct.supports_sync = tokens.supports_sync;
+                }
+                self.save_app_settings();
+                if supports_sync {
+                    self.sync_auth_status = SyncAuthStatus::Idle;
+                    self.service_bus.signal_sync();
+                } else {
+                    self.sync_auth_status = SyncAuthStatus::Error(
+                        "No active subscription found yet. If you just paid, wait a moment and try again."
+                            .to_string(),
+                    );
+                }
             }
             Err(message) => {
                 self.sync_auth_status = SyncAuthStatus::Error(message);
@@ -717,6 +815,31 @@ fn account_action_error_message(code: &str) -> &'static str {
         "delete_confirmation_mismatch" => "Could not confirm the account. Please try again.",
         _ => "The request to the sync Worker failed.",
     }
+}
+
+/// Build the hosted checkout URL, threading the account id + email through so the
+/// billing webhook can map the resulting subscription back to this account.
+fn subscription_checkout_url(user_id: &str, email: &str) -> String {
+    format!(
+        "{SUBSCRIPTION_CHECKOUT_URL}?checkout[email]={}&checkout[custom][user_id]={}",
+        percent_encode(email),
+        percent_encode(user_id),
+    )
+}
+
+/// Percent-encode a query value, escaping everything outside the RFC 3986
+/// unreserved set (keeps the UUID/email safe inside the checkout URL).
+fn percent_encode(value: &str) -> String {
+    let mut out = String::with_capacity(value.len());
+    for byte in value.bytes() {
+        match byte {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                out.push(byte as char);
+            }
+            _ => out.push_str(&format!("%{byte:02X}")),
+        }
+    }
+    out
 }
 
 fn default_supports_sync() -> bool {

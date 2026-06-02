@@ -227,6 +227,57 @@ fn account_action_trigger(
         .into_any_element()
 }
 
+/// Primary CTA shown when an account has no sync entitlement: opens the hosted
+/// subscription checkout in the browser.
+fn subscribe_button(t: crate::theme_gpui::Theme, cx: &mut Context<KnotQApp>) -> gpui::AnyElement {
+    div()
+        .id("sync-subscribe")
+        .px(px(10.0))
+        .py(px(5.0))
+        .rounded(px(5.0))
+        .bg(token_rgba(t.text_highlight))
+        .text_size(px(12.0))
+        .font_weight(FontWeight::SEMIBOLD)
+        .text_color(token_hsla(0xffffffff))
+        .cursor_pointer()
+        .hover(|s| s.bg(token_rgba(0xe66f1fff)))
+        .on_click(cx.listener(|this, _: &ClickEvent, _window, cx| {
+            this.open_subscription_checkout(cx);
+        }))
+        .child("Subscribe to enable sync")
+        .into_any_element()
+}
+
+/// Secondary CTA next to Subscribe: re-checks entitlement after the user returns
+/// from the checkout (the subscription is granted by a server-side webhook).
+fn refresh_status_button(
+    in_progress: bool,
+    t: crate::theme_gpui::Theme,
+    cx: &mut Context<KnotQApp>,
+) -> gpui::AnyElement {
+    div()
+        .id("sync-refresh-status")
+        .px(px(10.0))
+        .py(px(5.0))
+        .rounded(px(5.0))
+        .bg(token_rgba(t.button_bg))
+        .text_size(px(12.0))
+        .text_color(token_hsla(t.text_primary))
+        .when(!in_progress, |s| {
+            s.cursor_pointer()
+                .hover({
+                    let c = t.button_hover;
+                    move |s| s.bg(token_rgba(c))
+                })
+                .on_click(cx.listener(|this, _: &ClickEvent, _window, cx| {
+                    this.refresh_subscription_status(cx);
+                }))
+        })
+        .when(in_progress, |s| s.opacity(0.65))
+        .child(if in_progress { "Checking…" } else { "I've subscribed" })
+        .into_any_element()
+}
+
 /// The "are you sure?" row shown once a destructive account action is armed:
 /// "Keep" backs out, the confirm button performs the call.
 fn account_confirm_actions(
@@ -639,27 +690,19 @@ impl KnotQApp {
                     )
                     .child(account_confirm_actions("Turn off sync", in_progress, t, cx))
                     .into_any_element(),
-                None => {
-                    let mut row = div().flex().items_center().gap(px(8.0));
-                    if supports_sync {
-                        row = row.child(account_action_trigger(
-                            "sync-cancel-subscription",
-                            "Cancel subscription",
-                            SyncAccountAction::CancelSubscription,
-                            false,
-                            t,
-                            cx,
-                        ));
-                    } else {
-                        row = row.child(
-                            div()
-                                .flex_1()
-                                .text_size(px(11.0))
-                                .text_color(token_hsla(t.text_soft))
-                                .child("Sync is turned off for this account."),
-                        );
-                    }
-                    row.child(account_action_trigger(
+                None if supports_sync => div()
+                    .flex()
+                    .items_center()
+                    .gap(px(8.0))
+                    .child(account_action_trigger(
+                        "sync-cancel-subscription",
+                        "Cancel subscription",
+                        SyncAccountAction::CancelSubscription,
+                        false,
+                        t,
+                        cx,
+                    ))
+                    .child(account_action_trigger(
                         "sync-delete-account",
                         "Delete account",
                         SyncAccountAction::DeleteAccount,
@@ -667,8 +710,42 @@ impl KnotQApp {
                         t,
                         cx,
                     ))
-                    .into_any_element()
-                }
+                    .into_any_element(),
+                // Signed in but no sync entitlement: offer the paywall (subscribe +
+                // re-check) above the destructive Delete action.
+                None => div()
+                    .flex()
+                    .flex_col()
+                    .gap(px(8.0))
+                    .child(
+                        div()
+                            .text_size(px(11.0))
+                            .line_height(px(15.0))
+                            .text_color(token_hsla(t.text_soft))
+                            .child("Sync is turned off for this account. Subscribe to enable it."),
+                    )
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap(px(8.0))
+                            .child(subscribe_button(t, cx))
+                            .child(refresh_status_button(in_progress, t, cx)),
+                    )
+                    .child(
+                        div()
+                            .flex()
+                            .justify_end()
+                            .child(account_action_trigger(
+                                "sync-delete-account",
+                                "Delete account",
+                                SyncAccountAction::DeleteAccount,
+                                true,
+                                t,
+                                cx,
+                            )),
+                    )
+                    .into_any_element(),
             };
             div()
                 .flex()

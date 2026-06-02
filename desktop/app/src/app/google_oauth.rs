@@ -2039,7 +2039,7 @@ fn write_http_response(stream: &mut TcpStream, body: &str) -> std::io::Result<()
     )
 }
 
-fn open_browser(url: &str) -> Result<()> {
+pub(crate) fn open_browser(url: &str) -> Result<()> {
     #[cfg(target_os = "macos")]
     let mut command = {
         let mut command = Command::new("open");
@@ -2061,7 +2061,7 @@ fn open_browser(url: &str) -> Result<()> {
         command
     };
 
-    command.spawn().context("open Google OAuth URL")?;
+    command.spawn().context("open URL in browser")?;
     Ok(())
 }
 
