@@ -90,7 +90,7 @@ impl KnotQApp {
                     t,
                     cx.listener(move |this, _: &ClickEvent, _window, cx| {
                         this.close_sidebar_context_menu(cx);
-                        this.empty_archive(cx);
+                        this.request_empty_archive_confirmation(cx);
                     }),
                 ));
             }

@@ -676,7 +676,7 @@ fn google_account_row(
         )
         .child(
             div()
-                .id(("google-account-forget", idx))
+                .id(("google-account-unlink", idx))
                 .flex_shrink_0()
                 .px(px(7.0))
                 .py(px(3.0))
@@ -693,13 +693,13 @@ fn google_account_row(
                 .font_weight(gpui::FontWeight::SEMIBOLD)
                 .text_color(token_hsla(t.text_primary))
                 .on_click(cx.listener(move |this, _: &ClickEvent, _window, cx| {
-                    this.request_forget_google_account(
+                    this.request_unlink_google_account(
                         account_id.clone(),
                         confirm_label.clone(),
                         cx,
                     );
                 }))
-                .child("Forget"),
+                .child("Unlink"),
         )
         .into_any_element()
 }

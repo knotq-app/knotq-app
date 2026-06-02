@@ -175,6 +175,7 @@ pub struct DeleteConfirmation {
 
 #[derive(Clone, Debug)]
 pub enum ConfirmationTarget {
+    EmptyArchive,
     GoogleAccount { account_id: String },
 }
 

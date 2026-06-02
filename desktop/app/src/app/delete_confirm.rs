@@ -32,7 +32,7 @@ impl KnotQApp {
         }
     }
 
-    pub(crate) fn request_forget_google_account(
+    pub(crate) fn request_unlink_google_account(
         &mut self,
         account_id: String,
         label: String,
@@ -40,11 +40,29 @@ impl KnotQApp {
     ) {
         self.pending_delete = Some(super::DeleteConfirmation {
             target: ConfirmationTarget::GoogleAccount { account_id },
-            title: "Forget Google account?".to_string(),
+            title: "Unlink Google account?".to_string(),
             message: format!(
-                "This removes local Google Calendar access for {label}. Synced Google calendar schemes remain, but they will show as offline until you sign in locally again."
+                "This unlinks local Google Calendar access for {label}. Synced Google calendar schemes remain, but they will show as offline until you sign in locally again."
             ),
-            confirm_label: "Forget".to_string(),
+            confirm_label: "Unlink".to_string(),
+        });
+        cx.notify();
+    }
+
+    pub(crate) fn request_empty_archive_confirmation(&mut self, cx: &mut Context<Self>) {
+        let count = self.workspace.recently_deleted.len();
+        if count == 0 {
+            return;
+        }
+
+        let item_label = if count == 1 { "scheme" } else { "schemes" };
+        self.pending_delete = Some(super::DeleteConfirmation {
+            target: ConfirmationTarget::EmptyArchive,
+            title: "Empty archive?".to_string(),
+            message: format!(
+                "This permanently deletes {count} archived {item_label}. This cannot be undone."
+            ),
+            confirm_label: "Empty Archive".to_string(),
         });
         cx.notify();
     }
@@ -54,8 +72,9 @@ impl KnotQApp {
             return;
         };
         match pending.target {
+            ConfirmationTarget::EmptyArchive => self.empty_archive(cx),
             ConfirmationTarget::GoogleAccount { account_id } => {
-                self.forget_google_account(account_id, cx)
+                self.unlink_google_account(account_id, cx)
             }
         }
         cx.notify();

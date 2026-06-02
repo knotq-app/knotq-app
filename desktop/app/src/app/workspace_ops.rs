@@ -77,7 +77,7 @@ impl KnotQApp {
             .count()
     }
 
-    pub(crate) fn forget_google_account(&mut self, account_id: String, cx: &mut Context<Self>) {
+    pub(crate) fn unlink_google_account(&mut self, account_id: String, cx: &mut Context<Self>) {
         let old_len = self.settings.google_accounts.len();
         self.settings
             .google_accounts

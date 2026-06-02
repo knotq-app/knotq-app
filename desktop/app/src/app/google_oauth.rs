@@ -195,7 +195,7 @@ impl KnotQApp {
         });
 
         let accounts = self.settings.google_accounts.clone();
-        let sources = google_calendar_sources(&self.workspace);
+        let sources = active_google_calendar_sources(&self.workspace);
         if accounts.is_empty() {
             self.google_calendar_picker = Some(GoogleCalendarPickerState {
                 parent,
@@ -331,7 +331,7 @@ impl KnotQApp {
             }
         };
         let accounts = self.settings.google_accounts.clone();
-        let sources = google_calendar_sources(&self.workspace);
+        let sources = active_google_calendar_sources(&self.workspace);
 
         self.google_oauth_status = GoogleOAuthStatus::InProgress;
         let task = cx.spawn(
@@ -401,6 +401,22 @@ impl KnotQApp {
             return;
         };
 
+        if let Some(scheme_id) =
+            find_google_calendar_scheme_for_account(&self.workspace, &account, &calendar_id)
+        {
+            self.open_scheme(scheme_id, None);
+            cx.notify();
+            return;
+        }
+        if let Some(scheme_id) = find_archived_google_calendar_scheme_for_account(
+            &self.workspace,
+            &account,
+            &calendar_id,
+        ) {
+            self.restore_deleted_scheme(scheme_id, cx);
+            return;
+        }
+
         let config = match google_oauth_config_for_existing_accounts(std::slice::from_ref(&account))
         {
             Ok(config) => config,
@@ -412,7 +428,7 @@ impl KnotQApp {
                 return;
             }
         };
-        let sources = google_calendar_sources(&self.workspace);
+        let sources = active_google_calendar_sources(&self.workspace);
 
         self.google_oauth_status = GoogleOAuthStatus::InProgress;
         let task = cx.spawn(
@@ -741,6 +757,7 @@ impl KnotQApp {
                     result.calendars,
                     create_missing,
                     open_first_imported,
+                    cx,
                 );
                 if accounts_changed || create_missing {
                     self.save_app_settings();
@@ -813,6 +830,7 @@ impl KnotQApp {
         calendars: Vec<ImportedGoogleCalendar>,
         create_missing: bool,
         open_first_imported: bool,
+        cx: &mut Context<Self>,
     ) -> GoogleCalendarApplyResult {
         let parent = if self.workspace.folder(parent).is_some() {
             parent
@@ -831,7 +849,13 @@ impl KnotQApp {
         for calendar in calendars {
             let existing_scheme_id = find_google_calendar_scheme(&self.workspace, &calendar);
             let scheme_id = match existing_scheme_id {
-                Some(scheme_id) => scheme_id,
+                Some(scheme_id) => {
+                    if create_missing && self.workspace.is_scheme_deleted(scheme_id) {
+                        self.restore_deleted_scheme(scheme_id, cx);
+                        content_changed = true;
+                    }
+                    scheme_id
+                }
                 None if create_missing => {
                     let color_index = calendar.color_index;
                     let mut scheme = Scheme::new(calendar.name.clone(), color_index);
@@ -1509,10 +1533,26 @@ fn google_api_error(err: ureq::Error) -> GoogleApiError {
 }
 
 fn google_calendar_sources(workspace: &Workspace) -> Vec<ExistingGoogleCalendarSource> {
+    google_calendar_sources_matching(workspace, |_| true)
+}
+
+fn active_google_calendar_sources(workspace: &Workspace) -> Vec<ExistingGoogleCalendarSource> {
+    google_calendar_sources_matching(workspace, |scheme_id| {
+        !workspace.is_scheme_deleted(scheme_id)
+    })
+}
+
+fn google_calendar_sources_matching(
+    workspace: &Workspace,
+    include_scheme: impl Fn(knotq_model::SchemeId) -> bool,
+) -> Vec<ExistingGoogleCalendarSource> {
     workspace
         .schemes
-        .values()
-        .filter_map(|scheme| {
+        .iter()
+        .filter_map(|(scheme_id, scheme)| {
+            if !include_scheme(*scheme_id) {
+                return None;
+            }
             let SchemeSource::ImportedCalendar(source) = &scheme.source else {
                 return None;
             };
@@ -1559,6 +1599,47 @@ fn find_google_calendar_scheme(
         (source.provider == CalendarProvider::Google
             && source.calendar_id == calendar.calendar_id
             && google_import_matches_source(calendar, source))
+        .then_some(scheme.id)
+    })
+}
+
+fn find_google_calendar_scheme_for_account(
+    workspace: &Workspace,
+    account: &GoogleOAuthAccount,
+    calendar_id: &str,
+) -> Option<knotq_model::SchemeId> {
+    find_google_calendar_scheme_for_account_matching(workspace, account, calendar_id, |deleted| {
+        !deleted
+    })
+}
+
+fn find_archived_google_calendar_scheme_for_account(
+    workspace: &Workspace,
+    account: &GoogleOAuthAccount,
+    calendar_id: &str,
+) -> Option<knotq_model::SchemeId> {
+    find_google_calendar_scheme_for_account_matching(workspace, account, calendar_id, |deleted| {
+        deleted
+    })
+}
+
+fn find_google_calendar_scheme_for_account_matching(
+    workspace: &Workspace,
+    account: &GoogleOAuthAccount,
+    calendar_id: &str,
+    include_deleted_state: impl Fn(bool) -> bool,
+) -> Option<knotq_model::SchemeId> {
+    workspace.schemes.values().find_map(|scheme| {
+        let deleted = workspace.is_scheme_deleted(scheme.id);
+        if !include_deleted_state(deleted) {
+            return None;
+        }
+        let SchemeSource::ImportedCalendar(source) = &scheme.source else {
+            return None;
+        };
+        (source.provider == CalendarProvider::Google
+            && source.calendar_id == calendar_id
+            && google_account_matches_calendar_source(account, source))
         .then_some(scheme.id)
     })
 }
@@ -2097,6 +2178,58 @@ mod tests {
         assert_eq!(source.provider, CalendarProvider::Google);
         assert_eq!(source.account_email.as_deref(), Some("user@example.com"));
         assert_eq!(source.sync_token.as_deref(), Some("next"));
+    }
+
+    #[test]
+    fn google_calendar_selected_existing_calendar_matches_locally_without_import_worker() {
+        let account = account();
+        let mut workspace = Workspace::new();
+        let mut scheme = Scheme::new("Existing calendar", 2);
+        let scheme_id = scheme.id;
+        scheme.source = SchemeSource::ImportedCalendar(ImportedCalendarSource {
+            provider: CalendarProvider::Google,
+            account_id: "user@example.com".to_string(),
+            account_email: None,
+            calendar_id: "cal".to_string(),
+            sync_token: Some("token".to_string()),
+            read_only: true,
+            last_synced_at: None,
+        });
+        workspace.schemes.insert(scheme_id, scheme);
+
+        assert_eq!(
+            find_google_calendar_scheme_for_account(&workspace, &account, "cal"),
+            Some(scheme_id)
+        );
+    }
+
+    #[test]
+    fn google_calendar_archived_calendar_does_not_count_as_added() {
+        let account = account();
+        let mut workspace = Workspace::new();
+        let mut scheme = Scheme::new("Archived calendar", 2);
+        let scheme_id = scheme.id;
+        scheme.source = SchemeSource::ImportedCalendar(ImportedCalendarSource {
+            provider: CalendarProvider::Google,
+            account_id: "user@example.com".to_string(),
+            account_email: None,
+            calendar_id: "cal".to_string(),
+            sync_token: Some("token".to_string()),
+            read_only: true,
+            last_synced_at: None,
+        });
+        workspace.schemes.insert(scheme_id, scheme);
+        workspace.mark_scheme_deleted(scheme_id);
+
+        assert!(active_google_calendar_sources(&workspace).is_empty());
+        assert_eq!(
+            find_google_calendar_scheme_for_account(&workspace, &account, "cal"),
+            None
+        );
+        assert_eq!(
+            find_archived_google_calendar_scheme_for_account(&workspace, &account, "cal"),
+            Some(scheme_id)
+        );
     }
 
     #[test]

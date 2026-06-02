@@ -494,57 +494,42 @@ fn event_title_input(
     }
 }
 
-// The scheme row under the title: the name is a link that jumps to the scheme
-// line ("go to definition"), and the trailing arrow opens the scheme picker
-// popover (reassign the item's scheme). These are two separate hit targets.
 fn event_scheme_chip(
     label: String,
-    accent: gpui::Hsla,
+    _accent: gpui::Hsla,
     scheme_id: SchemeId,
     item_id: ItemId,
     editable: bool,
     t: Theme,
     cx: &mut Context<KnotQApp>,
 ) -> gpui::AnyElement {
-    let bg = with_alpha(accent, if t.is_dark { 0.14 } else { 0.1 });
-    let hover_bg = with_alpha(accent, if t.is_dark { 0.21 } else { 0.16 });
-    let border = with_alpha(accent, if t.is_dark { 0.28 } else { 0.32 });
+    let underline = token_hsla(t.text_primary);
 
     div()
         .id("popup-scheme-row")
         .max_w_full()
-        .h(px(20.0))
-        .px(px(6.0))
-        .rounded(px(5.0))
-        .border_1()
-        .border_color(border)
-        .bg(bg)
         .flex()
         .items_center()
-        .gap(px(5.0))
+        .gap(px(2.0))
         .font_family(FONT_UI)
-        .hover(move |s| s.bg(hover_bg))
-        .child(
-            div()
-                .w(px(8.0))
-                .h(px(8.0))
-                .rounded(px(2.0))
-                .flex_shrink_0()
-                .bg(accent),
-        )
         .child(
             div()
                 .id("popup-scheme-label")
-                .flex_1()
                 .min_w_0()
+                .max_w(px(EVENT_POPUP_WIDTH - 56.0))
                 .overflow_hidden()
                 .whitespace_nowrap()
                 .text_ellipsis()
                 .text_size(px(12.0))
                 .line_height(px(15.0))
-                .text_color(token_hsla(t.text_primary))
+                .text_color(token_hsla(t.text_soft))
                 .cursor_pointer()
-                .hover(move |s| s.text_color(token_hsla(t.text_highlight)))
+                .border_b_1()
+                .border_color(token_rgba(0x00000000))
+                .hover(move |s| {
+                    s.text_color(token_hsla(t.text_primary))
+                        .border_color(underline)
+                })
                 .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
                     this.open_scheme(scheme_id, Some(item_id));
                     this.focus_current_editor(window, cx);
@@ -558,7 +543,7 @@ fn event_scheme_chip(
             row.child(
                 div()
                     .id("popup-scheme-picker-toggle")
-                    .w(px(16.0))
+                    .w(px(19.0))
                     .h(px(18.0))
                     .rounded(px(4.0))
                     .flex()
