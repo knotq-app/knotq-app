@@ -243,6 +243,28 @@ pub enum SyncAuthStatus {
     Error(String),
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum SyncAuthMode {
+    SignIn,
+    CreateAccount,
+}
+
+/// A destructive account action awaiting an explicit second confirmation in the
+/// sync modal (so a single misclick can't cancel sync or delete the account).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum SyncAccountAction {
+    /// Turn off the sync entitlement for the account (keeps the account + data).
+    CancelSubscription,
+    /// Schedule account deletion (14-day grace; signing back in undoes it).
+    DeleteAccount,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum OnboardingPhase {
+    AccountChoice,
+    Guide,
+}
+
 #[derive(Clone, Debug, Default)]
 pub enum SyncRunStatus {
     #[default]
@@ -264,6 +286,8 @@ pub struct SyncSignInState {
     pub email_input: Entity<InputState>,
     pub password_input: Entity<InputState>,
     pub code_input: Entity<InputState>,
+    pub mode: SyncAuthMode,
+    pub advance_onboarding_on_success: bool,
     // Set once the password step succeeds: the modal then collects the emailed
     // 2FA code and the submit button verifies it instead of re-sending the password.
     pub challenge: Option<PendingLoginChallenge>,
@@ -461,6 +485,11 @@ pub struct CalendarResizeState {
     pub anchor: Point<Pixels>,
 }
 
+#[derive(Clone, Copy, Debug, Default)]
+pub struct CalendarSwipeState {
+    pub offset_x: f32,
+}
+
 // ── Constants ─────────────────────────────────────────────────────────────
 
 pub const CALENDAR_WEEK_VIEW_DAYS: usize = 7;
@@ -535,6 +564,8 @@ pub struct KnotQApp {
     pub sync_auth_status: SyncAuthStatus,
     pub sync_run_status: SyncRunStatus,
     pub sync_auth_task: Option<Task<()>>,
+    /// Pending confirmation for a destructive account action in the sync modal.
+    pub sync_account_action: Option<SyncAccountAction>,
     pub(crate) scheme_sessions: HashMap<SchemeId, SchemeSessionState>,
     pub(crate) service_bus: AppServiceBus,
     pub(crate) workspace_save_blocked_reason: Option<String>,
@@ -545,6 +576,7 @@ pub struct KnotQApp {
     pub cal_drag: Option<CalendarDragState>,
     pub cal_move: Option<CalendarMoveState>,
     pub cal_resize: Option<CalendarResizeState>,
+    pub cal_swipe: CalendarSwipeState,
     pub _save_task: Task<()>,
     pub _notification_task: Task<()>,
     pub _state_task: Task<()>,
@@ -557,6 +589,7 @@ pub struct KnotQApp {
     pub _window_bounds_subscription: Option<Subscription>,
     pub _quit_subscription: Subscription,
     pub show_onboarding: bool,
+    pub onboarding_phase: OnboardingPhase,
     pub onboarding_page: usize,
 }
 
@@ -586,6 +619,11 @@ impl KnotQApp {
         let initial_dirty = true;
         let settings = load_or_default_settings();
         let needs_onboarding = !settings.onboarding_completed;
+        let onboarding_phase = if settings.sync_account.is_some() {
+            OnboardingPhase::Guide
+        } else {
+            OnboardingPhase::AccountChoice
+        };
         let editor_focus_handle = cx.focus_handle();
         let today = Local::now().date_naive();
 
@@ -645,6 +683,7 @@ impl KnotQApp {
             google_oauth_task: None,
             sync_sign_in: None,
             sync_auth_status: SyncAuthStatus::Idle,
+            sync_account_action: None,
             sync_run_status: SyncRunStatus::Idle,
             sync_auth_task: None,
             scheme_sessions: HashMap::new(),
@@ -657,6 +696,7 @@ impl KnotQApp {
             cal_drag: None,
             cal_move: None,
             cal_resize: None,
+            cal_swipe: CalendarSwipeState::default(),
             _save_task: save_task,
             _notification_task: notification_task,
             _state_task: state_task,
@@ -669,6 +709,7 @@ impl KnotQApp {
             _window_bounds_subscription: None,
             _quit_subscription: quit_subscription,
             show_onboarding: needs_onboarding,
+            onboarding_phase,
             onboarding_page: 0,
         }
     }

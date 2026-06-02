@@ -126,6 +126,7 @@ impl KnotQApp {
     }
 
     pub fn shift_calendar_period(&mut self, delta: i32) {
+        self.cal_swipe.offset_x = 0.0;
         match self.calendar_view {
             CalendarViewMode::Week => {
                 self.week_offset += delta;
@@ -137,6 +138,7 @@ impl KnotQApp {
     }
 
     pub fn reset_calendar_period(&mut self) {
+        self.cal_swipe.offset_x = 0.0;
         match self.calendar_view {
             CalendarViewMode::Week => self.week_offset = 0,
             CalendarViewMode::Month => self.month_offset = 0,

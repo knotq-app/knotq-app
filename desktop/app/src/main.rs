@@ -444,6 +444,7 @@ fn main() {
                     let _ = weak_app.update(cx, |app, _cx| {
                         app.flush_for_shutdown("window close");
                     });
+                    cx.quit();
                     true
                 });
                 app.update(cx, |app, _cx| app.focus_app_root(window));

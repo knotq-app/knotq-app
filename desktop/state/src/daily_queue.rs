@@ -111,9 +111,9 @@ pub fn make_default_workspace() -> Workspace {
 
 pub fn make_default_workspace_for_date(today: NaiveDate) -> Workspace {
     let mut workspace = Workspace::new();
-    insert_root_scheme(&mut workspace, make_homework_scheme(today));
-    insert_root_scheme(&mut workspace, make_classes_scheme(today));
-    insert_root_scheme(&mut workspace, make_life_scheme(today));
+    insert_root_scheme(&mut workspace, make_start_here_scheme());
+    insert_root_scheme(&mut workspace, make_scheduling_scheme(today));
+    insert_root_scheme(&mut workspace, make_projects_scheme(today));
 
     let yesterday = today - Duration::days(1);
     let mut past_daily = Scheme::new(
@@ -121,7 +121,10 @@ pub fn make_default_workspace_for_date(today: NaiveDate) -> Workspace {
         knotq_model::DAILY_QUEUE_COLOR_INDEX,
     );
     past_daily.id = knotq_model::daily_queue_scheme_id(yesterday);
-    past_daily.items = vec![Item::new("Past days show up here")];
+    past_daily.items = vec![
+        Item::new("Past daily pages stay available here"),
+        Item::new("Completed tasks stay behind as a record").done(),
+    ];
     let past_daily_id = past_daily.id;
     workspace.daily_queue.insert(yesterday, past_daily_id);
     workspace.schemes.insert(past_daily_id, past_daily);
@@ -153,55 +156,89 @@ fn insert_root_scheme(workspace: &mut Workspace, scheme: Scheme) {
     }
 }
 
-fn make_homework_scheme(today: NaiveDate) -> Scheme {
-    let mut scheme = Scheme::new("Homework", 5);
+fn make_start_here_scheme() -> Scheme {
+    let mut scheme = Scheme::new("Start Here", 0);
     scheme.items = vec![
-        Item::new("Finish problem set").with_end(local_dt(today + Duration::days(1), 23, 0)),
-        Item::new("Try using ctrl/cmd r to make assignments repeating")
+        Item::new("KnotQ combines an outline editor with a calendar"),
+        Item::new("Write normal notes, tasks, and project plans in schemes")
+            .with_marker(ItemMarker::Bullet),
+        Item::new("Add dates to a line when it needs to appear on the calendar")
+            .with_marker(ItemMarker::Bullet),
+        Item::new("Use Daily for the concrete list you want to work through today")
+            .with_marker(ItemMarker::Bullet),
+        Item::new("Search and Upcoming help you find what needs attention")
             .with_marker(ItemMarker::Bullet),
     ];
     scheme
 }
 
-fn make_classes_scheme(today: NaiveDate) -> Scheme {
-    let mut scheme = Scheme::new("Classes", 0);
+fn make_scheduling_scheme(today: NaiveDate) -> Scheme {
+    let mut scheme = Scheme::new("Scheduling", 5);
     scheme.items = vec![
-        Item::new("Calculus lecture")
-            .with_start(local_dt(today, 13, 0))
-            .with_end(local_dt(today, 14, 15))
-            .done(),
-        Item::new(""),
+        Item::new("Any line can become a calendar item"),
+        Item::new("Event: focus block")
+            .with_marker(ItemMarker::Checkbox)
+            .with_start(local_dt(today, 10, 0))
+            .with_end(local_dt(today, 11, 0)),
+        Item::new("Start + end makes a time block")
+            .with_marker(ItemMarker::Bullet)
+            .with_indent(1),
+        Item::new("Assignment: submit first draft")
+            .with_marker(ItemMarker::Checkbox)
+            .with_end(local_dt(today + Duration::days(1), 17, 0)),
+        Item::new("Only an end date makes a deadline")
+            .with_marker(ItemMarker::Bullet)
+            .with_indent(1),
+        Item::new("Reminder: message the team")
+            .with_marker(ItemMarker::Checkbox)
+            .with_start(local_dt(today, 16, 0)),
+        Item::new("Only a start date makes a reminder")
+            .with_marker(ItemMarker::Bullet)
+            .with_indent(1),
     ];
     scheme
 }
 
-fn make_life_scheme(today: NaiveDate) -> Scheme {
-    let mut scheme = Scheme::new("Life", 3);
+fn make_projects_scheme(today: NaiveDate) -> Scheme {
+    let mut scheme = Scheme::new("Projects", 3);
     scheme.items = vec![
-        Item::new("Laundry").with_start(local_dt(today + Duration::days(1), 18, 30)),
-        Item::new(""),
+        Item::new("Break large work into specific next actions"),
+        Item::new("Draft the outline")
+            .with_marker(ItemMarker::Checkbox)
+            .done(),
+        Item::new("Review open questions")
+            .with_marker(ItemMarker::Checkbox)
+            .with_end(local_dt(today + Duration::days(2), 12, 0)),
+        Item::new("Schedule a focused work session")
+            .with_marker(ItemMarker::Checkbox)
+            .with_start(local_dt(today + Duration::days(1), 14, 0))
+            .with_end(local_dt(today + Duration::days(1), 15, 30)),
+        Item::new("Nested lines become context for the parent task")
+            .with_marker(ItemMarker::Bullet)
+            .with_indent(1),
     ];
     scheme
 }
 
 fn make_daily_seed_items() -> Vec<Item> {
     vec![
-        Item::new("Daily is where you put quick notes, brainstorm, and list tasks you want to complete for the day e.g."),
-        Item::new("Edit paper").done(),
-        Item::new("Film video").with_marker(ItemMarker::Checkbox),
+        Item::new("Daily Queue"),
+        Item::new("Start each day with an optimistic list of concrete, small tasks"),
+        Item::new("Make coffee")
+            .with_marker(ItemMarker::Checkbox)
+            .done(),
+        Item::new("Review today's calendar").with_marker(ItemMarker::Checkbox),
+        Item::new("Write the next draft").with_marker(ItemMarker::Checkbox),
+        Item::new("Send one follow-up message").with_marker(ItemMarker::Checkbox),
         Item::new(""),
-        Item::new("You can put calendar items here or in the main items and they come in three types"),
-        Item::new("Reminders only have a start (try cmd/ctrl s)").with_marker(ItemMarker::Numbered),
-        Item::new("or click on calendar")
+        Item::new("The goal is to avoid deciding what to do next after every task"),
+        Item::new("Keep the list realistic, but long enough to last the day")
             .with_marker(ItemMarker::Bullet)
             .with_indent(1),
-        Item::new("Assignments only have an end (try cmd/ctrl e)").with_marker(ItemMarker::Numbered),
-        Item::new("or shift click on calendar")
+        Item::new("Use Daily for quick notes and loose ideas too")
             .with_marker(ItemMarker::Bullet)
             .with_indent(1),
-        Item::new("Events have both a start and end (try doing both)")
-            .with_marker(ItemMarker::Numbered),
-        Item::new("or drag on calendar")
+        Item::new("Add dates here when a daily task needs time or a deadline")
             .with_marker(ItemMarker::Bullet)
             .with_indent(1),
     ]

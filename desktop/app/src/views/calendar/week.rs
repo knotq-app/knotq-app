@@ -1,6 +1,10 @@
-use gpui::ScrollHandle;
+use gpui::{ScrollDelta, ScrollHandle, ScrollWheelEvent, TouchPhase};
 
 use super::*;
+
+const CALENDAR_SWIPE_DOMINANCE: f32 = 1.2;
+const CALENDAR_SWIPE_TRIGGER_RATIO: f32 = 0.35;
+const CALENDAR_SWIPE_MAX_RATIO: f32 = 0.9;
 
 /// Convert a window-relative Y coordinate to an hour fraction (0.0–24.0)
 /// using the calendar scroll container's bounds and offset.
@@ -35,6 +39,36 @@ fn move_preview_hour(hour: f32) -> f32 {
     hour.clamp(0.0, 24.0)
 }
 
+fn calendar_scroll_delta_px(event: &ScrollWheelEvent) -> (f32, f32) {
+    match event.delta {
+        ScrollDelta::Pixels(delta) => (f32::from(delta.x), f32::from(delta.y)),
+        ScrollDelta::Lines(delta) => (delta.x * HOUR_H, delta.y * HOUR_H),
+    }
+}
+
+fn horizontal_calendar_swipe_delta(event: &ScrollWheelEvent, active_offset_x: f32) -> Option<f32> {
+    let (dx, dy) = calendar_scroll_delta_px(event);
+    if active_offset_x.abs() > f32::EPSILON {
+        return Some(dx);
+    }
+    if dx.abs() > 2.0 && dx.abs() >= dy.abs() * CALENDAR_SWIPE_DOMINANCE {
+        Some(dx)
+    } else {
+        None
+    }
+}
+
+fn calendar_swipe_period_delta(offset_x: f32, day_col_w: f32) -> i32 {
+    let threshold = day_col_w * CALENDAR_SWIPE_TRIGGER_RATIO;
+    if offset_x <= -threshold {
+        1
+    } else if offset_x >= threshold {
+        -1
+    } else {
+        0
+    }
+}
+
 /// Snap an absolute hour to the same 15-minute grid `snapped_calendar_datetime`
 /// uses, so resize/create ghosts preview exactly where the edge will land. Keep
 /// in sync with `knotq_date_util::snapped_calendar_datetime`.
@@ -67,6 +101,10 @@ impl KnotQApp {
             visible_week_range(week_start, today, available_width, TIME_W);
         let day_col_w =
             ((available_width - TIME_W).max(MIN_WEEK_DAY_W) / visible_days as f32).max(1.0);
+        let swipe_x = self
+            .cal_swipe
+            .offset_x
+            .clamp(-day_col_w * CALENDAR_SWIPE_MAX_RATIO, day_col_w * CALENDAR_SWIPE_MAX_RATIO);
 
         // Materialize all occurrences for the week.
         let week_start_utc = Local
@@ -204,7 +242,21 @@ impl KnotQApp {
                             .child("›"),
                     ),
             )
-            .children(day_cells);
+            .child(
+                div()
+                    .flex_1()
+                    .h_full()
+                    .overflow_hidden()
+                    .child(
+                        div()
+                            .relative()
+                            .left(px(swipe_x))
+                            .flex()
+                            .h_full()
+                            .w_full()
+                            .children(day_cells),
+                    ),
+            );
 
         // Hour grid
         let mut time_labels: Vec<gpui::AnyElement> = Vec::new();
@@ -639,7 +691,19 @@ impl KnotQApp {
                     .relative()
                     .children(time_labels),
             )
-            .children(day_cols);
+            .child(
+                div()
+                    .flex_1()
+                    .overflow_hidden()
+                    .child(
+                        div()
+                            .relative()
+                            .left(px(swipe_x))
+                            .flex()
+                            .w_full()
+                            .children(day_cols),
+                    ),
+            );
 
         // While a calendar gesture is in flight, a single transparent overlay
         // covering the whole grid captures every pointer move/release. GPUI only
@@ -663,6 +727,11 @@ impl KnotQApp {
             .h_full()
             .bg(token_hsla(t.bg_app))
             .text_color(token_hsla(t.text_primary))
+            .on_scroll_wheel(cx.listener(
+                move |this, event: &ScrollWheelEvent, _window, cx| {
+                    this.handle_calendar_horizontal_swipe(event, day_col_w, cx);
+                },
+            ))
             .child(header)
             .child(
                 div()
@@ -785,6 +854,36 @@ impl KnotQApp {
             .into_any_element();
         Some(overlay)
     }
+
+    fn handle_calendar_horizontal_swipe(
+        &mut self,
+        event: &ScrollWheelEvent,
+        day_col_w: f32,
+        cx: &mut Context<Self>,
+    ) {
+        let active_offset = self.cal_swipe.offset_x;
+        let Some(delta_x) = horizontal_calendar_swipe_delta(event, active_offset) else {
+            return;
+        };
+
+        if matches!(event.touch_phase, TouchPhase::Started) {
+            self.cal_swipe.offset_x = 0.0;
+        }
+
+        let max_offset = day_col_w * CALENDAR_SWIPE_MAX_RATIO;
+        self.cal_swipe.offset_x = (self.cal_swipe.offset_x + delta_x).clamp(-max_offset, max_offset);
+
+        if !event.delta.precise() || matches!(event.touch_phase, TouchPhase::Ended) {
+            let period_delta = calendar_swipe_period_delta(self.cal_swipe.offset_x, day_col_w);
+            self.cal_swipe.offset_x = 0.0;
+            if period_delta != 0 {
+                self.shift_calendar_period(period_delta);
+            }
+        }
+
+        cx.stop_propagation();
+        cx.notify();
+    }
 }
 
 #[cfg(test)]
@@ -832,5 +931,12 @@ mod tests {
             day_for(350.0, 10_000.0),
             NaiveDate::from_ymd_opt(2026, 5, 31).unwrap()
         );
+    }
+
+    #[test]
+    fn horizontal_swipe_threshold_selects_calendar_period() {
+        assert_eq!(calendar_swipe_period_delta(-34.0, 100.0), 0);
+        assert_eq!(calendar_swipe_period_delta(-35.0, 100.0), 1);
+        assert_eq!(calendar_swipe_period_delta(35.0, 100.0), -1);
     }
 }

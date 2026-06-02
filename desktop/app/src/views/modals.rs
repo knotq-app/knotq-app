@@ -4,7 +4,9 @@ use gpui_component::input::{Input, InputState};
 use gpui_component::Sizable as _;
 use knotq_storage_json::CalendarViewMode;
 
-use crate::app::{KnotQApp, SyncAuthStatus, View};
+use crate::app::{
+    KnotQApp, OnboardingPhase, SyncAccountAction, SyncAuthMode, SyncAuthStatus, View,
+};
 use crate::theme_gpui::{token_hsla, token_rgba};
 
 // ── Onboarding spotlight steps ───────────────────────────────────────────
@@ -148,6 +150,189 @@ fn sign_in_field(
                 .small()
                 .w_full()
                 .when(masked, |input| input.mask_toggle()),
+        )
+        .into_any_element()
+}
+
+fn sync_auth_mode_button(
+    id: &'static str,
+    label: &'static str,
+    mode: SyncAuthMode,
+    active: bool,
+    t: crate::theme_gpui::Theme,
+    cx: &mut Context<KnotQApp>,
+) -> gpui::AnyElement {
+    div()
+        .id(id)
+        .flex_1()
+        .px(px(8.0))
+        .py(px(5.0))
+        .rounded(px(5.0))
+        .text_size(px(12.0))
+        .font_weight(if active {
+            FontWeight::SEMIBOLD
+        } else {
+            FontWeight::NORMAL
+        })
+        .text_color(token_hsla(if active {
+            t.text_primary
+        } else {
+            t.text_soft
+        }))
+        .when(active, |s| s.bg(token_rgba(t.button_hover)))
+        .when(!active, |s| {
+            s.cursor_pointer().hover({
+                let c = t.button_bg;
+                move |h| h.bg(token_rgba(c))
+            })
+        })
+        .on_click(cx.listener(move |this, _: &ClickEvent, _window, cx| {
+            this.set_sync_auth_mode(mode, cx);
+        }))
+        .child(label)
+        .into_any_element()
+}
+
+/// A button that arms (but does not yet perform) a destructive account action;
+/// the actual call only happens after the confirmation row's "confirm" button.
+fn account_action_trigger(
+    id: &'static str,
+    label: &'static str,
+    action: SyncAccountAction,
+    destructive: bool,
+    t: crate::theme_gpui::Theme,
+    cx: &mut Context<KnotQApp>,
+) -> gpui::AnyElement {
+    div()
+        .id(id)
+        .px(px(10.0))
+        .py(px(5.0))
+        .rounded(px(5.0))
+        .bg(token_rgba(t.button_bg))
+        .text_size(px(12.0))
+        .text_color(token_hsla(if destructive {
+            0xff5a53ff
+        } else {
+            t.text_primary
+        }))
+        .cursor_pointer()
+        .hover({
+            let c = t.button_hover;
+            move |s| s.bg(token_rgba(c))
+        })
+        .on_click(cx.listener(move |this, _: &ClickEvent, _window, cx| {
+            this.prompt_sync_account_action(action, cx);
+        }))
+        .child(label)
+        .into_any_element()
+}
+
+/// The "are you sure?" row shown once a destructive account action is armed:
+/// "Keep" backs out, the confirm button performs the call.
+fn account_confirm_actions(
+    confirm_label: &'static str,
+    in_progress: bool,
+    t: crate::theme_gpui::Theme,
+    cx: &mut Context<KnotQApp>,
+) -> gpui::AnyElement {
+    div()
+        .flex()
+        .items_center()
+        .justify_end()
+        .gap(px(8.0))
+        .child(
+            div()
+                .id("sync-account-action-keep")
+                .px(px(10.0))
+                .py(px(5.0))
+                .rounded(px(5.0))
+                .bg(token_rgba(t.button_bg))
+                .text_size(px(12.0))
+                .text_color(token_hsla(t.text_primary))
+                .cursor_pointer()
+                .hover({
+                    let c = t.button_hover;
+                    move |s| s.bg(token_rgba(c))
+                })
+                .on_click(cx.listener(|this, _: &ClickEvent, _window, cx| {
+                    this.dismiss_sync_account_action(cx);
+                }))
+                .child("Keep"),
+        )
+        .child(
+            div()
+                .id("sync-account-action-confirm")
+                .px(px(10.0))
+                .py(px(5.0))
+                .rounded(px(5.0))
+                .bg(token_rgba(0xff5a53ff))
+                .text_size(px(12.0))
+                .font_weight(FontWeight::SEMIBOLD)
+                .text_color(token_hsla(0xffffffff))
+                .when(!in_progress, |s| {
+                    s.cursor_pointer()
+                        .hover(|s| s.bg(token_rgba(0xd64840ff)))
+                        .on_click(cx.listener(|this, _: &ClickEvent, _window, cx| {
+                            this.confirm_sync_account_action(cx);
+                        }))
+                })
+                .when(in_progress, |s| s.opacity(0.65))
+                .child(if in_progress { "Working…" } else { confirm_label }),
+        )
+        .into_any_element()
+}
+
+fn onboarding_account_choice(
+    id: &'static str,
+    title: &'static str,
+    body: &'static str,
+    mode: Option<SyncAuthMode>,
+    primary: bool,
+    t: crate::theme_gpui::Theme,
+    cx: &mut Context<KnotQApp>,
+) -> gpui::AnyElement {
+    div()
+        .id(id)
+        .w_full()
+        .p(px(12.0))
+        .rounded(px(8.0))
+        .border_1()
+        .border_color(token_rgba(if primary { t.link } else { t.border_overlay }))
+        .bg(token_rgba(if primary {
+            t.button_hover
+        } else {
+            t.button_bg
+        }))
+        .cursor_pointer()
+        .hover({
+            let c = if primary { t.link } else { t.button_hover };
+            move |s| s.bg(token_rgba(c))
+        })
+        .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
+            if let Some(mode) = mode {
+                this.open_sync_sign_in_for_onboarding(mode, window, cx);
+            } else {
+                this.onboarding_phase = OnboardingPhase::Guide;
+                this.onboarding_page = 0;
+                cx.notify();
+            }
+        }))
+        .flex()
+        .flex_col()
+        .gap(px(5.0))
+        .child(
+            div()
+                .text_size(px(13.0))
+                .font_weight(FontWeight::SEMIBOLD)
+                .text_color(token_hsla(t.text_primary))
+                .child(title),
+        )
+        .child(
+            div()
+                .text_size(px(12.0))
+                .line_height(px(17.0))
+                .text_color(token_hsla(t.text_soft))
+                .child(body),
         )
         .into_any_element()
 }
@@ -308,11 +493,14 @@ impl KnotQApp {
         // the emailed 2FA code instead of the password.
         let awaiting_code = state.challenge.is_some();
         let challenge_email = state.challenge.as_ref().map(|c| c.email.clone());
+        let mode = state.mode;
         let in_progress = matches!(self.sync_auth_status, SyncAuthStatus::InProgress);
         let status = match &self.sync_auth_status {
             SyncAuthStatus::Idle => None,
             SyncAuthStatus::InProgress => Some((
-                if awaiting_code {
+                if mode == SyncAuthMode::CreateAccount {
+                    "Creating account..."
+                } else if awaiting_code {
                     "Verifying..."
                 } else {
                     "Signing in..."
@@ -395,16 +583,18 @@ impl KnotQApp {
                                 }))
                         })
                         .when(in_progress, |s| s.opacity(0.65))
-                        .child(match (awaiting_code, in_progress) {
-                            (true, true) => "Verifying",
-                            (true, false) => "Verify",
-                            (false, true) => "Signing in",
-                            (false, false) => "Sign in",
+                        .child(match (mode, awaiting_code, in_progress) {
+                            (SyncAuthMode::CreateAccount, _, true) => "Creating",
+                            (SyncAuthMode::CreateAccount, _, false) => "Create account",
+                            (SyncAuthMode::SignIn, true, true) => "Verifying",
+                            (SyncAuthMode::SignIn, true, false) => "Verify",
+                            (SyncAuthMode::SignIn, false, true) => "Signing in",
+                            (SyncAuthMode::SignIn, false, false) => "Sign in",
                         }),
                 ),
         );
 
-        let current_account = signed_in.map(|account| {
+        let current_account = signed_in.clone().map(|account| {
             div()
                 .text_size(px(12.0))
                 .line_height(px(17.0))
@@ -412,6 +602,95 @@ impl KnotQApp {
                 .child(format!("Signed in as {}", account.email))
         });
 
+        // When signed in, offer the destructive account actions (cancel sync,
+        // delete account), each gated behind an inline second confirmation.
+        let supports_sync = signed_in.as_ref().is_some_and(|account| account.supports_sync);
+        let account_management = signed_in.as_ref().map(|_| {
+            let body: gpui::AnyElement = match self.sync_account_action {
+                Some(SyncAccountAction::DeleteAccount) => div()
+                    .flex()
+                    .flex_col()
+                    .gap(px(8.0))
+                    .child(
+                        div()
+                            .text_size(px(12.0))
+                            .line_height(px(17.0))
+                            .text_color(token_hsla(0xff5a53ff))
+                            .child(
+                                "Delete your account and synced data? You have 14 days to undo \
+                                 this by signing back in before it is permanently erased.",
+                            ),
+                    )
+                    .child(account_confirm_actions("Delete account", in_progress, t, cx))
+                    .into_any_element(),
+                Some(SyncAccountAction::CancelSubscription) => div()
+                    .flex()
+                    .flex_col()
+                    .gap(px(8.0))
+                    .child(
+                        div()
+                            .text_size(px(12.0))
+                            .line_height(px(17.0))
+                            .text_color(token_hsla(t.text_soft))
+                            .child(
+                                "Turn off sync for this account? Your local workspace stays on \
+                                 this device, and you can sign in again later to re-enable sync.",
+                            ),
+                    )
+                    .child(account_confirm_actions("Turn off sync", in_progress, t, cx))
+                    .into_any_element(),
+                None => {
+                    let mut row = div().flex().items_center().gap(px(8.0));
+                    if supports_sync {
+                        row = row.child(account_action_trigger(
+                            "sync-cancel-subscription",
+                            "Cancel subscription",
+                            SyncAccountAction::CancelSubscription,
+                            false,
+                            t,
+                            cx,
+                        ));
+                    } else {
+                        row = row.child(
+                            div()
+                                .flex_1()
+                                .text_size(px(11.0))
+                                .text_color(token_hsla(t.text_soft))
+                                .child("Sync is turned off for this account."),
+                        );
+                    }
+                    row.child(account_action_trigger(
+                        "sync-delete-account",
+                        "Delete account",
+                        SyncAccountAction::DeleteAccount,
+                        true,
+                        t,
+                        cx,
+                    ))
+                    .into_any_element()
+                }
+            };
+            div()
+                .flex()
+                .flex_col()
+                .pt(px(10.0))
+                .border_t_1()
+                .border_color(token_rgba(t.border_overlay))
+                .child(body)
+                .into_any_element()
+        });
+        let show_mode_picker = signed_in.is_none() && !awaiting_code;
+        let title = match (signed_in.is_some(), mode) {
+            (true, _) => "Sync account",
+            (false, SyncAuthMode::CreateAccount) => "Create sync account",
+            (false, SyncAuthMode::SignIn) => "Sync sign in",
+        };
+        let detail = match mode {
+            SyncAuthMode::CreateAccount => {
+                "Create an account for optional workspace sync. Local work stays available either way."
+            }
+            SyncAuthMode::SignIn => "Connect this app to the local Cloudflare sync Worker.",
+        };
         Some(
             div()
                 .id("sync-sign-in-scrim")
@@ -443,20 +722,57 @@ impl KnotQApp {
                                 .text_size(px(14.0))
                                 .font_weight(gpui::FontWeight::SEMIBOLD)
                                 .text_color(token_hsla(t.text_primary))
-                                .child("Sync sign in"),
+                                .child(title),
                         )
                         .child(
                             div()
                                 .text_size(px(12.0))
                                 .line_height(px(18.0))
                                 .text_color(token_hsla(t.text_muted))
-                                .child("Connect this app to the local Cloudflare sync Worker."),
+                                .child(detail),
                         )
                         .when_some(current_account, |s, account| s.child(account))
+                        .when(show_mode_picker, |s| {
+                            s.child(
+                                div()
+                                    .flex()
+                                    .gap(px(3.0))
+                                    .p(px(2.0))
+                                    .rounded(px(7.0))
+                                    .bg(token_rgba(t.button_bg))
+                                    .border_1()
+                                    .border_color(token_rgba(t.border_overlay))
+                                    .child(sync_auth_mode_button(
+                                        "sync-auth-mode-sign-in",
+                                        "Sign in",
+                                        SyncAuthMode::SignIn,
+                                        mode == SyncAuthMode::SignIn,
+                                        t,
+                                        cx,
+                                    ))
+                                    .child(sync_auth_mode_button(
+                                        "sync-auth-mode-create-account",
+                                        "Create account",
+                                        SyncAuthMode::CreateAccount,
+                                        mode == SyncAuthMode::CreateAccount,
+                                        t,
+                                        cx,
+                                    )),
+                            )
+                        })
                         .child(sign_in_field("Sync API", &state.api_input, false, t))
                         .child(sign_in_field("Email", &state.email_input, false, t))
                         .when(!awaiting_code, |s| {
                             s.child(sign_in_field("Password", &state.password_input, true, t))
+                        })
+                        .when(mode == SyncAuthMode::CreateAccount && !awaiting_code, |s| {
+                            s.child(
+                                div()
+                                    .text_size(px(11.0))
+                                    .line_height(px(15.0))
+                                    .text_color(token_hsla(t.text_soft))
+                                    .child("Use at least 12 characters."),
+                            )
                         })
                         .when(awaiting_code, |s| {
                             s.child(
@@ -491,6 +807,7 @@ impl KnotQApp {
                                     .child(message),
                             )
                         })
+                        .when_some(account_management, |s, management| s.child(management))
                         .child(actions),
                 )
                 .into_any_element(),
@@ -572,13 +889,90 @@ impl KnotQApp {
         window: &Window,
         cx: &mut Context<Self>,
     ) -> Option<gpui::AnyElement> {
-        if !self.show_onboarding {
+        if !self.show_onboarding || self.sync_sign_in.is_some() {
             return None;
+        }
+        let t = self.theme();
+        if self.onboarding_phase == OnboardingPhase::AccountChoice {
+            return Some(
+                div()
+                    .id("onboarding-account-overlay")
+                    .absolute()
+                    .inset_0()
+                    .bg(token_rgba(SCRIM_COLOR))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .on_click(|_: &ClickEvent, _window, cx| cx.stop_propagation())
+                    .child(
+                        div()
+                            .w(px(420.0))
+                            .bg(token_hsla(t.bg_modal))
+                            .border_1()
+                            .border_color(token_rgba(t.border_overlay))
+                            .rounded(px(8.0))
+                            .shadow_lg()
+                            .p(px(16.0))
+                            .flex()
+                            .flex_col()
+                            .gap(px(12.0))
+                            .child(
+                                div()
+                                    .text_size(px(18.0))
+                                    .font_weight(FontWeight::SEMIBOLD)
+                                    .text_color(token_hsla(t.text_primary))
+                                    .child("KnotQ"),
+                            )
+                            .child(
+                                div()
+                                    .text_size(px(12.0))
+                                    .line_height(px(18.0))
+                                    .text_color(token_hsla(t.text_muted))
+                                    .child(
+                                        "Local-first planning with optional sync. Choose how this workspace should start.",
+                                    ),
+                            )
+                            .child(onboarding_account_choice(
+                                "onboarding-account-create",
+                                "Create Sync Account",
+                                "Create an account and sync this workspace across devices.",
+                                Some(SyncAuthMode::CreateAccount),
+                                true,
+                                t,
+                                cx,
+                            ))
+                            .child(onboarding_account_choice(
+                                "onboarding-account-sign-in",
+                                "Sign In",
+                                "Use an existing account for this workspace.",
+                                Some(SyncAuthMode::SignIn),
+                                false,
+                                t,
+                                cx,
+                            ))
+                            .child(onboarding_account_choice(
+                                "onboarding-account-local",
+                                "Local for Now",
+                                "Keep everything on this device and set up sync later from Settings.",
+                                None,
+                                false,
+                                t,
+                                cx,
+                            ))
+                            .child(
+                                div()
+                                    .text_size(px(11.0))
+                                    .line_height(px(15.0))
+                                    .text_color(token_hsla(t.text_soft))
+                                    .child("You can change sync settings at any time."),
+                            ),
+                    )
+                    .into_any_element(),
+            );
         }
         let step_index = self.onboarding_page.min(STEPS.len() - 1);
         let step = &STEPS[step_index];
         let is_last = step_index == STEPS.len() - 1;
-        let t = self.theme();
 
         let vw = f32::from(window.viewport_size().width);
         let vh = f32::from(window.viewport_size().height);
