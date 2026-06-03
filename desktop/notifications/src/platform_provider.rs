@@ -6,7 +6,76 @@ use std::sync::Mutex;
 
 pub const ACTION_SNOOZE_10_MINUTES: &str = "knotq.snooze.10m";
 pub const ACTION_SNOOZE_1_HOUR: &str = "knotq.snooze.1h";
+pub const ACTION_SNOOZE_1_MINUTE: &str = "knotq.snooze.1m";
+pub const ACTION_SNOOZE_5_MINUTES: &str = "knotq.snooze.5m";
+pub const ACTION_SNOOZE_15_MINUTES: &str = "knotq.snooze.15m";
+pub const ACTION_SNOOZE_30_MINUTES: &str = "knotq.snooze.30m";
+pub const ACTION_SNOOZE_2_HOURS: &str = "knotq.snooze.2h";
+pub const ACTION_SNOOZE_1_DAY: &str = "knotq.snooze.1d";
+pub const ACTION_SNOOZE_1_WEEK: &str = "knotq.snooze.1w";
 pub const ACTION_MARK_DONE: &str = "knotq.mark_done";
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct NotificationSnoozeAction {
+    pub action_id: &'static str,
+    pub label: &'static str,
+    pub delay_secs: i64,
+}
+
+pub const NOTIFICATION_SNOOZE_ACTIONS: &[NotificationSnoozeAction] = &[
+    NotificationSnoozeAction {
+        action_id: ACTION_SNOOZE_1_MINUTE,
+        label: "Snooze 1 min",
+        delay_secs: 60,
+    },
+    NotificationSnoozeAction {
+        action_id: ACTION_SNOOZE_5_MINUTES,
+        label: "Snooze 5 min",
+        delay_secs: 5 * 60,
+    },
+    NotificationSnoozeAction {
+        action_id: ACTION_SNOOZE_10_MINUTES,
+        label: "Snooze 10 min",
+        delay_secs: 10 * 60,
+    },
+    NotificationSnoozeAction {
+        action_id: ACTION_SNOOZE_15_MINUTES,
+        label: "Snooze 15 min",
+        delay_secs: 15 * 60,
+    },
+    NotificationSnoozeAction {
+        action_id: ACTION_SNOOZE_30_MINUTES,
+        label: "Snooze 30 min",
+        delay_secs: 30 * 60,
+    },
+    NotificationSnoozeAction {
+        action_id: ACTION_SNOOZE_1_HOUR,
+        label: "Snooze 1 hour",
+        delay_secs: 60 * 60,
+    },
+    NotificationSnoozeAction {
+        action_id: ACTION_SNOOZE_2_HOURS,
+        label: "Snooze 2 hours",
+        delay_secs: 2 * 60 * 60,
+    },
+    NotificationSnoozeAction {
+        action_id: ACTION_SNOOZE_1_DAY,
+        label: "Snooze 1 day",
+        delay_secs: 24 * 60 * 60,
+    },
+    NotificationSnoozeAction {
+        action_id: ACTION_SNOOZE_1_WEEK,
+        label: "Snooze 1 week",
+        delay_secs: 7 * 24 * 60 * 60,
+    },
+];
+
+pub fn notification_snooze_action(action_id: &str) -> Option<NotificationSnoozeAction> {
+    NOTIFICATION_SNOOZE_ACTIONS
+        .iter()
+        .copied()
+        .find(|action| action.action_id == action_id)
+}
 
 #[derive(Clone, Debug, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
 pub struct NotificationRequest {

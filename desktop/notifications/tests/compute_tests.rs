@@ -14,8 +14,12 @@ fn event_notifications_fire_at_start_time() {
     let end = Utc.with_ymd_and_hms(2026, 5, 10, 13, 0, 0).unwrap();
     let workspace = workspace_with_item(Item::new("Class").with_start(start).with_end(end));
 
-    let notes = compute_due_notifications(
+    let notes = compute_due_notifications_with_lead_times(
         &workspace,
+        NotificationLeadTimes {
+            event_offset_secs: 0,
+            ..NotificationLeadTimes::default()
+        },
         Utc.with_ymd_and_hms(2026, 5, 10, 11, 59, 0).unwrap(),
         Utc.with_ymd_and_hms(2026, 5, 10, 12, 1, 0).unwrap(),
     );

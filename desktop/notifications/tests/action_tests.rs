@@ -3,7 +3,7 @@ use knotq_commands::Command;
 use knotq_model::{ItemId, OccurrenceId, SchemeId};
 use knotq_notifications::{
     action_to_command_at, notification_action_target, NotificationAction, NotificationActionTarget,
-    NotificationResponse, ACTION_MARK_DONE,
+    NotificationResponse, ACTION_MARK_DONE, ACTION_SNOOZE_5_MINUTES,
 };
 use std::collections::BTreeMap;
 
@@ -29,7 +29,9 @@ fn mark_done_action_maps_to_toggle_command() {
 
 #[test]
 fn snooze_action_maps_to_notification_offset_command() {
-    let target = target(NotificationAction::SnoozeShort);
+    let target = target(NotificationAction::Snooze {
+        delay_secs: 10 * 60,
+    });
     let now = target.trigger_at - Duration::minutes(5);
 
     let command = action_to_command_at(&target, now).unwrap();
@@ -48,6 +50,31 @@ fn snooze_action_maps_to_notification_offset_command() {
         }
         other => panic!("expected offset command, got {other:?}"),
     }
+}
+
+#[test]
+fn notification_response_parses_expanded_snooze_action() {
+    let target = target(NotificationAction::Snooze { delay_secs: 5 * 60 });
+    let mut user_info = BTreeMap::new();
+    user_info.insert("scheme_id".to_string(), target.scheme_id.0.to_string());
+    user_info.insert("item_id".to_string(), target.item_id.0.to_string());
+    user_info.insert(
+        "occurrence_json".to_string(),
+        serde_json::to_string(&target.occurrence).unwrap(),
+    );
+    user_info.insert("trigger_at".to_string(), target.trigger_at.to_rfc3339());
+
+    let parsed = notification_action_target(NotificationResponse {
+        notification_id: "note".to_string(),
+        action_id: ACTION_SNOOZE_5_MINUTES.to_string(),
+        user_info,
+    })
+    .unwrap();
+
+    assert_eq!(
+        parsed.action,
+        NotificationAction::Snooze { delay_secs: 5 * 60 }
+    );
 }
 
 #[test]

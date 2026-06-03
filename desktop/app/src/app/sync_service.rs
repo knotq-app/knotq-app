@@ -9,8 +9,8 @@ use chrono::Utc;
 use futures::{pin_mut, select, FutureExt};
 use gpui::{Context, Task};
 use knotq_model::{
-    DocumentId, ImageAssetFormat, ItemMedia, ReplicaId, SyncAccountSettings, SyncDocumentKind,
-    Workspace, WorkspaceId,
+    DocumentId, ImageAssetFormat, ItemMedia, ReplicaId, SyncAccountSettings, SyncAccountStatus,
+    SyncDocumentKind, Workspace, WorkspaceId,
 };
 use knotq_storage_json::{
     image_asset_path, load_local_sync_state, save_local_sync_state, save_workspace, workspace_path,
@@ -184,6 +184,7 @@ async fn run_sync_once(weak: &gpui::WeakEntity<KnotQApp>, cx: &mut gpui::AsyncAp
                 app.sync_run_status = SyncRunStatus::Synced {
                     pending: remaining_pending,
                 };
+                app.last_synced_at = Some(Utc::now());
                 if remote_updates_applied > 0 {
                     app.state.replace_workspace_from_sync(workspace);
                     app.service_bus.signal_save();
@@ -251,6 +252,8 @@ async fn ensure_fresh_token(
                     acct.refresh_token = Some(tokens.refresh_token);
                     acct.refresh_expires_at = tokens.refresh_expires_at;
                     acct.supports_sync = tokens.supports_sync;
+                    acct.account_status =
+                        Some(SyncAccountStatus::from_supports_sync(tokens.supports_sync));
                 }
                 app.save_app_settings();
                 cx.notify();

@@ -1,6 +1,6 @@
 use crate::{
     dispatch_response, AuthorizationStatus, Error, NotificationRequest, NotificationResponse,
-    PlatformStatus, Result, ACTION_MARK_DONE, ACTION_SNOOZE_10_MINUTES, ACTION_SNOOZE_1_HOUR,
+    PlatformStatus, Result, ACTION_MARK_DONE, NOTIFICATION_SNOOZE_ACTIONS,
 };
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
@@ -484,14 +484,14 @@ fn notification_actions(request: &NotificationRequest) -> Vec<&'static str> {
         return Vec::new();
     }
 
-    vec![
-        ACTION_SNOOZE_10_MINUTES,
-        "Snooze 10 min",
-        ACTION_SNOOZE_1_HOUR,
-        "Snooze 1 hour",
-        ACTION_MARK_DONE,
-        "Mark done",
-    ]
+    let mut actions = Vec::with_capacity((NOTIFICATION_SNOOZE_ACTIONS.len() + 1) * 2);
+    for action in NOTIFICATION_SNOOZE_ACTIONS {
+        actions.push(action.action_id);
+        actions.push(action.label);
+    }
+    actions.push(ACTION_MARK_DONE);
+    actions.push("Mark done");
+    actions
 }
 
 fn notification_hints(

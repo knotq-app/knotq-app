@@ -9,5 +9,7 @@ pub mod scheme_view;
 pub mod search;
 pub mod settings;
 pub mod sidebar;
+pub mod sync_account;
+pub mod sync_popover;
 pub mod title_bar;
 pub mod upcoming;

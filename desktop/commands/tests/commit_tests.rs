@@ -9,6 +9,10 @@ fn dt(day: u32, hour: u32) -> DateTime<Utc> {
     Utc.with_ymd_and_hms(2026, 1, day, hour, 0, 0).unwrap()
 }
 
+fn future_dt(day: u32, hour: u32) -> DateTime<Utc> {
+    Utc.with_ymd_and_hms(2035, 1, day, hour, 0, 0).unwrap()
+}
+
 #[test]
 fn deleting_one_recurring_occurrence_adds_exdate() {
     let scheme_id = knotq_model::SchemeId::new();
@@ -132,4 +136,78 @@ fn clearing_recurrence_from_later_occurrence_keeps_selected_occurrence_dates() {
         Command::SetItemRecurrence { repeats, .. } => assert!(repeats.is_none()),
         other => panic!("expected recurrence clear, got {other:?}"),
     }
+}
+
+#[test]
+fn moving_future_event_clears_after_trigger_notification_override() {
+    let scheme_id = knotq_model::SchemeId::new();
+    let item_id = knotq_model::ItemId::new();
+    let mut item = Item::new("meeting")
+        .with_start(future_dt(5, 10))
+        .with_end(future_dt(5, 11));
+    item.id = item_id;
+    item.state[0].state.notification_offset_secs = Some(-30 * 60);
+
+    let draft = EventPopupDraft {
+        scheme_id,
+        item_id,
+        occurrence: OccurrenceId::Single,
+        occurrence_index: 0,
+        draft_start: Some(future_dt(6, 10)),
+        draft_end: Some(future_dt(6, 11)),
+        draft_repeats: None,
+        draft_notification_offset_secs: Some(-30 * 60),
+        draft_done: false,
+        start_dirty: true,
+        end_dirty: true,
+        repeats_dirty: false,
+        notification_dirty: false,
+        done_dirty: false,
+    };
+
+    let commands = event_popup_commit_commands(&item, &draft, DateEditScope::AllEvents);
+
+    assert!(commands.iter().any(|command| matches!(
+        command,
+        Command::SetOccurrenceNotificationOffset {
+            scheme,
+            item,
+            occurrence: OccurrenceId::Single,
+            offset_secs: None,
+        } if *scheme == scheme_id && *item == item_id
+    )));
+}
+
+#[test]
+fn moving_future_event_preserves_before_trigger_notification_override() {
+    let scheme_id = knotq_model::SchemeId::new();
+    let item_id = knotq_model::ItemId::new();
+    let mut item = Item::new("meeting")
+        .with_start(future_dt(5, 10))
+        .with_end(future_dt(5, 11));
+    item.id = item_id;
+    item.state[0].state.notification_offset_secs = Some(30 * 60);
+
+    let draft = EventPopupDraft {
+        scheme_id,
+        item_id,
+        occurrence: OccurrenceId::Single,
+        occurrence_index: 0,
+        draft_start: Some(future_dt(6, 10)),
+        draft_end: Some(future_dt(6, 11)),
+        draft_repeats: None,
+        draft_notification_offset_secs: Some(30 * 60),
+        draft_done: false,
+        start_dirty: true,
+        end_dirty: true,
+        repeats_dirty: false,
+        notification_dirty: false,
+        done_dirty: false,
+    };
+
+    let commands = event_popup_commit_commands(&item, &draft, DateEditScope::AllEvents);
+
+    assert!(!commands
+        .iter()
+        .any(|command| matches!(command, Command::SetOccurrenceNotificationOffset { .. })));
 }

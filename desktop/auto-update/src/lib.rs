@@ -1,5 +1,5 @@
 use std::fs::{self, File};
-use std::io;
+use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -8,6 +8,7 @@ use anyhow::{anyhow, bail, Context, Result};
 use chrono::{DateTime, Utc};
 use semver::Version;
 use serde::Deserialize;
+use sha2::{Digest, Sha256};
 
 const DEFAULT_REPOSITORY: &str = "knotq-app/knotq-app";
 const USER_AGENT: &str = concat!("KnotQ/", env!("CARGO_PKG_VERSION"));
@@ -59,6 +60,8 @@ pub struct ReleaseAsset {
     pub name: String,
     pub download_url: String,
     pub size: Option<u64>,
+    pub sha256: Option<String>,
+    pub sha256_url: Option<String>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -120,6 +123,10 @@ pub fn prepare_update(
     fs::create_dir_all(updates_dir)
         .with_context(|| format!("create updates directory {}", updates_dir.display()))?;
     let version_dir = updates_dir.join(update.version.to_string());
+    if version_dir.exists() {
+        fs::remove_dir_all(&version_dir)
+            .with_context(|| format!("clear old updates directory {}", version_dir.display()))?;
+    }
     fs::create_dir_all(&version_dir)
         .with_context(|| format!("create version updates directory {}", version_dir.display()))?;
 
@@ -199,6 +206,9 @@ fn download_asset(
         .with_context(|| format!("create temporary download {}", tmp_path.display()))?;
     let copied = io::copy(&mut response.into_reader(), &mut tmp_file)
         .with_context(|| format!("write temporary download {}", tmp_path.display()))?;
+    tmp_file
+        .flush()
+        .with_context(|| format!("flush temporary download {}", tmp_path.display()))?;
     if let Some(expected_size) = asset.size {
         if copied != expected_size {
             let _ = fs::remove_file(&tmp_path);
@@ -212,6 +222,7 @@ fn download_asset(
     }
     fs::rename(&tmp_path, destination)
         .with_context(|| format!("move download into {}", destination.display()))?;
+    verify_asset(config, asset, destination)?;
     Ok(())
 }
 
@@ -231,17 +242,20 @@ fn target_kind() -> Result<TargetKind> {
 
 fn select_asset(assets: &[GithubAsset]) -> Result<ReleaseAsset> {
     let profile = target_asset_profile()?;
-    assets
+    let asset = assets
         .iter()
         .filter(|asset| asset.state.as_deref().unwrap_or("uploaded") == "uploaded")
         .filter(|asset| profile.matches(&asset.name))
         .max_by_key(|asset| profile.score(&asset.name))
-        .map(|asset| ReleaseAsset {
-            name: asset.name.clone(),
-            download_url: asset.browser_download_url.clone(),
-            size: asset.size,
-        })
-        .ok_or_else(|| anyhow!("no update asset matched {}", profile.description))
+        .ok_or_else(|| anyhow!("no update asset matched {}", profile.description))?;
+    let checksum_asset = checksum_asset_for(assets, &asset.name);
+    Ok(ReleaseAsset {
+        name: asset.name.clone(),
+        download_url: asset.browser_download_url.clone(),
+        size: asset.size,
+        sha256: github_asset_sha256(asset),
+        sha256_url: checksum_asset.map(|asset| asset.browser_download_url.clone()),
+    })
 }
 
 fn target_asset_profile() -> Result<AssetProfile> {
@@ -272,6 +286,99 @@ fn target_asset_profile() -> Result<AssetProfile> {
         )),
         (os, arch) => bail!("auto updates are not supported on {os}/{arch}"),
     }
+}
+
+fn checksum_asset_for<'a>(assets: &'a [GithubAsset], asset_name: &str) -> Option<&'a GithubAsset> {
+    let candidates = [
+        format!("{asset_name}.sha256"),
+        format!("{asset_name}.sha256sum"),
+    ];
+    assets.iter().find(|asset| {
+        asset.state.as_deref().unwrap_or("uploaded") == "uploaded"
+            && candidates.iter().any(|candidate| asset.name == *candidate)
+    })
+}
+
+fn github_asset_sha256(asset: &GithubAsset) -> Option<String> {
+    asset
+        .digest
+        .as_deref()
+        .and_then(|digest| digest.strip_prefix("sha256:"))
+        .map(str::trim)
+        .filter(|digest| is_sha256_hex(digest))
+        .map(str::to_ascii_lowercase)
+}
+
+fn verify_asset(config: &AutoUpdateConfig, asset: &ReleaseAsset, destination: &Path) -> Result<()> {
+    let Some(expected) = expected_sha256(config, asset)? else {
+        return Ok(());
+    };
+    let actual = sha256_file(destination)?;
+    if actual != expected {
+        bail!(
+            "downloaded update checksum mismatch for {}: expected {}, got {}",
+            asset.name,
+            expected,
+            actual
+        );
+    }
+    Ok(())
+}
+
+fn expected_sha256(config: &AutoUpdateConfig, asset: &ReleaseAsset) -> Result<Option<String>> {
+    if let Some(sha256) = asset
+        .sha256
+        .as_deref()
+        .map(str::trim)
+        .filter(|sha256| is_sha256_hex(sha256))
+    {
+        return Ok(Some(sha256.to_ascii_lowercase()));
+    }
+
+    let Some(url) = &asset.sha256_url else {
+        return Ok(None);
+    };
+    let response = ureq::get(url)
+        .set("Accept", "text/plain")
+        .set("User-Agent", &config.user_agent)
+        .call()
+        .with_context(|| format!("download checksum for {}", asset.name))?;
+    let text = response
+        .into_string()
+        .with_context(|| format!("read checksum for {}", asset.name))?;
+    Ok(Some(parse_sha256_checksum(&text).with_context(|| {
+        format!("parse checksum for {}", asset.name)
+    })?))
+}
+
+fn parse_sha256_checksum(raw: &str) -> Result<String> {
+    for token in raw.split_whitespace() {
+        let token = token.trim().trim_start_matches("sha256:");
+        if is_sha256_hex(token) {
+            return Ok(token.to_ascii_lowercase());
+        }
+    }
+    bail!("checksum file did not contain a SHA-256 digest")
+}
+
+fn is_sha256_hex(value: &str) -> bool {
+    value.len() == 64 && value.bytes().all(|byte| byte.is_ascii_hexdigit())
+}
+
+fn sha256_file(path: &Path) -> Result<String> {
+    let mut file = File::open(path).with_context(|| format!("open {}", path.display()))?;
+    let mut hasher = Sha256::new();
+    let mut buffer = [0_u8; 64 * 1024];
+    loop {
+        let read = file
+            .read(&mut buffer)
+            .with_context(|| format!("read {}", path.display()))?;
+        if read == 0 {
+            break;
+        }
+        hasher.update(&buffer[..read]);
+    }
+    Ok(format!("{:x}", hasher.finalize()))
 }
 
 struct AssetProfile {
@@ -349,24 +456,7 @@ fn install_macos(downloaded_dmg: &Path, running_app_path: &Path, updates_dir: &P
     let result = mounted_app
         .ok_or_else(|| anyhow!("mounted update did not contain KnotQ.app"))
         .and_then(|mounted_app| {
-            let mut source = mounted_app.as_os_str().to_os_string();
-            source.push("/");
-            let output = Command::new("rsync")
-                .arg("-a")
-                .arg("--delete")
-                .arg("--exclude")
-                .arg("Icon?")
-                .arg(source)
-                .arg(running_app_path)
-                .output()
-                .context("copy app update")?;
-            if !output.status.success() {
-                bail!(
-                    "failed to copy app update: {}",
-                    String::from_utf8_lossy(&output.stderr)
-                );
-            }
-            Ok(())
+            sync_dir_filtered(&mounted_app, running_app_path, finder_icon_file)
         });
 
     let detach_output = Command::new("hdiutil")
@@ -408,6 +498,218 @@ fn find_child_app(root: &Path, app_name: &std::ffi::OsStr) -> Option<PathBuf> {
         }
     }
     None
+}
+
+#[cfg(target_os = "macos")]
+fn finder_icon_file(relative_path: &Path) -> bool {
+    relative_path.file_name().is_some_and(|name| {
+        let name = name.to_string_lossy();
+        name.starts_with("Icon") && name.chars().count() == 5
+    })
+}
+
+#[cfg(target_os = "macos")]
+fn sync_dir_filtered(
+    source: &Path,
+    destination: &Path,
+    should_skip: impl Fn(&Path) -> bool,
+) -> Result<()> {
+    if !source.is_dir() {
+        bail!("source directory does not exist: {}", source.display());
+    }
+    fs::create_dir_all(destination)
+        .with_context(|| format!("create destination {}", destination.display()))?;
+    delete_stale_entries(source, destination, destination, &should_skip)?;
+    copy_entries(source, source, destination, &should_skip)?;
+    copy_permissions(source, destination)?;
+    Ok(())
+}
+
+#[cfg(target_os = "macos")]
+fn delete_stale_entries(
+    source_root: &Path,
+    destination_root: &Path,
+    directory: &Path,
+    should_skip: &impl Fn(&Path) -> bool,
+) -> Result<()> {
+    for entry in fs::read_dir(directory).with_context(|| format!("read {}", directory.display()))? {
+        let entry = entry?;
+        let destination_path = entry.path();
+        let relative_path = destination_path
+            .strip_prefix(destination_root)
+            .with_context(|| format!("relativize {}", destination_path.display()))?;
+        if should_skip(relative_path) {
+            continue;
+        }
+
+        let source_path = source_root.join(relative_path);
+        match fs::symlink_metadata(&source_path) {
+            Ok(_) => {
+                let metadata = fs::symlink_metadata(&destination_path)
+                    .with_context(|| format!("inspect {}", destination_path.display()))?;
+                if metadata.is_dir() && !metadata.file_type().is_symlink() {
+                    delete_stale_entries(
+                        source_root,
+                        destination_root,
+                        &destination_path,
+                        should_skip,
+                    )?;
+                }
+            }
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                remove_path(&destination_path)
+                    .with_context(|| format!("remove stale {}", destination_path.display()))?;
+            }
+            Err(error) => {
+                return Err(error)
+                    .with_context(|| format!("inspect source {}", source_path.display()));
+            }
+        }
+    }
+    Ok(())
+}
+
+#[cfg(target_os = "macos")]
+fn copy_entries(
+    source_root: &Path,
+    directory: &Path,
+    destination_root: &Path,
+    should_skip: &impl Fn(&Path) -> bool,
+) -> Result<()> {
+    for entry in fs::read_dir(directory).with_context(|| format!("read {}", directory.display()))? {
+        let entry = entry?;
+        let source_path = entry.path();
+        let relative_path = source_path
+            .strip_prefix(source_root)
+            .with_context(|| format!("relativize {}", source_path.display()))?;
+        if should_skip(relative_path) {
+            continue;
+        }
+
+        let destination_path = destination_root.join(relative_path);
+        let file_type = entry.file_type()?;
+        if file_type.is_dir() {
+            prepare_destination_dir(&destination_path)?;
+            copy_entries(source_root, &source_path, destination_root, should_skip)?;
+            copy_permissions(&source_path, &destination_path)?;
+        } else if file_type.is_symlink() {
+            copy_symlink(&source_path, &destination_path)?;
+        } else if file_type.is_file() {
+            copy_file(&source_path, &destination_path)?;
+        } else {
+            bail!("unsupported update bundle entry {}", source_path.display());
+        }
+    }
+    Ok(())
+}
+
+#[cfg(target_os = "macos")]
+fn prepare_destination_dir(path: &Path) -> Result<()> {
+    if let Ok(metadata) = fs::symlink_metadata(path) {
+        if !metadata.is_dir() || metadata.file_type().is_symlink() {
+            remove_path(path)
+                .with_context(|| format!("replace {} with directory", path.display()))?;
+        }
+    }
+    fs::create_dir_all(path).with_context(|| format!("create {}", path.display()))
+}
+
+#[cfg(target_os = "macos")]
+fn copy_file(source: &Path, destination: &Path) -> Result<()> {
+    ensure_parent(destination)?;
+    if let Ok(metadata) = fs::symlink_metadata(destination) {
+        if !metadata.is_file() {
+            remove_path(destination)
+                .with_context(|| format!("replace {}", destination.display()))?;
+        }
+    }
+
+    let temp_path = temp_path_for(destination)?;
+    fs::copy(source, &temp_path).with_context(|| {
+        format!(
+            "copy update file {} to {}",
+            source.display(),
+            destination.display()
+        )
+    })?;
+    copy_permissions(source, &temp_path)?;
+    if let Err(error) = fs::rename(&temp_path, destination) {
+        let _ = fs::remove_file(&temp_path);
+        return Err(error).with_context(|| format!("move {} into place", destination.display()));
+    }
+    Ok(())
+}
+
+#[cfg(target_os = "macos")]
+fn copy_symlink(source: &Path, destination: &Path) -> Result<()> {
+    ensure_parent(destination)?;
+    if fs::symlink_metadata(destination).is_ok() {
+        remove_path(destination).with_context(|| format!("replace {}", destination.display()))?;
+    }
+    let target =
+        fs::read_link(source).with_context(|| format!("read symlink {}", source.display()))?;
+    std::os::unix::fs::symlink(&target, destination).with_context(|| {
+        format!(
+            "create symlink {} -> {}",
+            destination.display(),
+            target.display()
+        )
+    })
+}
+
+#[cfg(target_os = "macos")]
+fn copy_permissions(source: &Path, destination: &Path) -> Result<()> {
+    let permissions = fs::symlink_metadata(source)
+        .with_context(|| format!("inspect {}", source.display()))?
+        .permissions();
+    fs::set_permissions(destination, permissions)
+        .with_context(|| format!("set permissions on {}", destination.display()))
+}
+
+#[cfg(target_os = "macos")]
+fn remove_path(path: &Path) -> Result<()> {
+    let metadata =
+        fs::symlink_metadata(path).with_context(|| format!("inspect {}", path.display()))?;
+    let file_type = metadata.file_type();
+    if file_type.is_symlink() || file_type.is_file() {
+        fs::remove_file(path).with_context(|| format!("remove {}", path.display()))
+    } else if file_type.is_dir() {
+        fs::remove_dir_all(path).with_context(|| format!("remove {}", path.display()))
+    } else {
+        bail!("unsupported path type {}", path.display())
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn ensure_parent(path: &Path) -> Result<()> {
+    let parent = path
+        .parent()
+        .ok_or_else(|| anyhow!("path has no parent: {}", path.display()))?;
+    fs::create_dir_all(parent).with_context(|| format!("create {}", parent.display()))
+}
+
+#[cfg(target_os = "macos")]
+fn temp_path_for(destination: &Path) -> Result<PathBuf> {
+    let parent = destination
+        .parent()
+        .ok_or_else(|| anyhow!("path has no parent: {}", destination.display()))?;
+    let file_name = destination
+        .file_name()
+        .ok_or_else(|| anyhow!("path has no file name: {}", destination.display()))?
+        .to_string_lossy();
+    for attempt in 0..1000 {
+        let candidate = parent.join(format!(
+            ".{file_name}.knotq-update-{}-{attempt}.tmp",
+            std::process::id()
+        ));
+        if fs::symlink_metadata(&candidate).is_err() {
+            return Ok(candidate);
+        }
+    }
+    bail!(
+        "could not create temporary path next to {}",
+        destination.display()
+    )
 }
 
 #[cfg(target_os = "linux")]
@@ -534,6 +836,8 @@ struct GithubAsset {
     size: Option<u64>,
     #[serde(default)]
     state: Option<String>,
+    #[serde(default)]
+    digest: Option<String>,
 }
 
 #[cfg(test)]
@@ -574,5 +878,38 @@ mod tests {
         assert!(profile.matches("KnotQ-1.2.3-linux-x86_64.tar.gz"));
         assert!(!profile.matches("KnotQ-1.2.3-linux-x86_64.zip"));
         assert!(!profile.matches("KnotQ-1.2.3-macos-x86_64.dmg"));
+    }
+
+    #[test]
+    fn parses_checksum_sidecar_contents() {
+        let checksum = "A".repeat(64);
+        let parsed = parse_sha256_checksum(&format!("{checksum}  KnotQ.dmg\n")).unwrap();
+        assert_eq!(parsed, checksum.to_ascii_lowercase());
+    }
+
+    #[test]
+    fn selects_checksum_sidecar_for_asset() {
+        let assets = vec![
+            GithubAsset {
+                name: "KnotQ-1.2.3-macos-arm64.dmg".into(),
+                browser_download_url: "https://example.test/KnotQ.dmg".into(),
+                size: Some(10),
+                state: Some("uploaded".into()),
+                digest: None,
+            },
+            GithubAsset {
+                name: "KnotQ-1.2.3-macos-arm64.dmg.sha256".into(),
+                browser_download_url: "https://example.test/KnotQ.dmg.sha256".into(),
+                size: Some(80),
+                state: Some("uploaded".into()),
+                digest: None,
+            },
+        ];
+
+        let checksum = checksum_asset_for(&assets, "KnotQ-1.2.3-macos-arm64.dmg").unwrap();
+        assert_eq!(
+            checksum.browser_download_url,
+            "https://example.test/KnotQ.dmg.sha256"
+        );
     }
 }

@@ -83,6 +83,8 @@ impl KnotQApp {
             .google_accounts
             .retain(|account| account.account_id != account_id);
         if self.settings.google_accounts.len() != old_len {
+            // Drop the account's OAuth tokens from the OS keychain too.
+            let _ = knotq_storage_json::secrets::delete_google(&account_id);
             self.save_app_settings();
             cx.notify();
         }

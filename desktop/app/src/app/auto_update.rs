@@ -12,8 +12,8 @@ use knotq_storage_json::data_dir;
 
 use super::KnotQApp;
 
-const AUTO_UPDATE_STARTUP_DELAY: StdDuration = StdDuration::from_secs(30);
-const AUTO_UPDATE_POLL_INTERVAL: StdDuration = StdDuration::from_secs(60 * 60);
+const AUTO_UPDATE_STARTUP_DELAY: StdDuration = StdDuration::ZERO;
+const AUTO_UPDATE_POLL_INTERVAL: StdDuration = StdDuration::from_secs(30 * 60);
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum AutoUpdateUiStatus {
@@ -84,6 +84,7 @@ pub(crate) fn spawn_auto_update_task(
                 };
 
                 run_update_check(&weak, cx, kind).await;
+                while rx.try_recv().is_ok() {}
                 delay = AUTO_UPDATE_POLL_INTERVAL;
             }
         },
@@ -175,6 +176,14 @@ async fn run_update_check(
         .update(cx, |app, _cx| app.settings.auto_update)
         .unwrap_or(false);
     if kind == AutoUpdateCheckKind::Automatic && !enabled {
+        return;
+    }
+    let update_ready = weak
+        .update(cx, |app, _cx| {
+            matches!(app.auto_update_status, AutoUpdateUiStatus::Ready { .. })
+        })
+        .unwrap_or(false);
+    if kind == AutoUpdateCheckKind::Automatic && update_ready {
         return;
     }
 

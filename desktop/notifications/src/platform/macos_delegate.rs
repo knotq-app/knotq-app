@@ -1,6 +1,5 @@
 use crate::{
-    dispatch_response, NotificationResponse, ACTION_MARK_DONE, ACTION_SNOOZE_10_MINUTES,
-    ACTION_SNOOZE_1_HOUR,
+    dispatch_response, NotificationResponse, ACTION_MARK_DONE, NOTIFICATION_SNOOZE_ACTIONS,
 };
 use block::Block;
 use objc::declare::ClassDecl;
@@ -25,9 +24,13 @@ unsafe fn install_foreground_delegate(center: *mut Object) {
 
 unsafe fn install_notification_categories(center: *mut Object) {
     let identifier = nsstring("knotq-reminder");
-    let actions: *mut Object = msg_send![class!(NSMutableArray), arrayWithCapacity: 3usize];
-    add_notification_action(actions, ACTION_SNOOZE_10_MINUTES, "Snooze 10 min");
-    add_notification_action(actions, ACTION_SNOOZE_1_HOUR, "Snooze 1 hour");
+    let actions: *mut Object = msg_send![
+        class!(NSMutableArray),
+        arrayWithCapacity: NOTIFICATION_SNOOZE_ACTIONS.len() + 1
+    ];
+    for action in NOTIFICATION_SNOOZE_ACTIONS {
+        add_notification_action(actions, action.action_id, action.label);
+    }
     add_notification_action(actions, ACTION_MARK_DONE, "Mark done");
     let intents: *mut Object = msg_send![class!(NSArray), array];
     let options: u64 = 0;

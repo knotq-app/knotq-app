@@ -1,6 +1,9 @@
 use chrono::{DateTime, NaiveDate, Utc};
 use gpui::{AppContext, Context, Pixels, Point, Window};
-use knotq_commands::{event_popup_commit_commands, Command, DateEditScope, EventPopupDraft};
+use knotq_commands::{
+    event_popup_commit_commands, reset_after_trigger_notification_to_default_command, Command,
+    DateEditScope, EventPopupDraft,
+};
 use knotq_date_util::snapped_calendar_datetime;
 use knotq_model::{Item, ItemId, ItemMarker, OccurrenceId, SchemeId};
 use knotq_ui::single_line_editor::{SingleLineEditor, SingleLineEditorEvent};
@@ -608,7 +611,7 @@ impl KnotQApp {
                 mv.scheme_id,
                 mv.item_id,
                 &item,
-                mv.occurrence,
+                mv.occurrence.clone(),
                 &occurrence_state,
                 draft_start,
                 draft_end,
@@ -617,6 +620,20 @@ impl KnotQApp {
             );
             popup.start_dirty = start_dirty;
             popup.end_dirty = end_dirty;
+            if let Some(Command::SetOccurrenceNotificationOffset { offset_secs, .. }) =
+                reset_after_trigger_notification_to_default_command(
+                    &item,
+                    mv.scheme_id,
+                    mv.item_id,
+                    mv.occurrence.clone(),
+                    draft_start,
+                    draft_end,
+                    Utc::now(),
+                )
+            {
+                popup.draft_notification_offset_secs = offset_secs;
+                popup.notification_dirty = true;
+            }
             popup.scope_action = Some(EventScopeAction::ApplyChanges);
             popup.scope_dialog_only = true;
             self.event_popup = Some(popup);
@@ -640,6 +657,17 @@ impl KnotQApp {
                 kind: knotq_commands::DateKind::End,
                 date: draft_end,
             });
+        }
+        if let Some(command) = reset_after_trigger_notification_to_default_command(
+            &item,
+            mv.scheme_id,
+            mv.item_id,
+            mv.occurrence,
+            draft_start,
+            draft_end,
+            Utc::now(),
+        ) {
+            commands.push(command);
         }
 
         if let Some(cmd) = Command::from_vec(commands) {

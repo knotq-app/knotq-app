@@ -7,6 +7,7 @@ edition = "2021"
 anyhow = { workspace = true }
 async-trait = { workspace = true }
 chrono = { workspace = true }
+keyring = { workspace = true }
 knotq-commands = { workspace = true }
 knotq-history = { workspace = true }
 knotq-model = { workspace = true }

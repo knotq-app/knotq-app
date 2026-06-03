@@ -4,13 +4,12 @@ use knotq_model::{ItemId, OccurrenceId, SchemeId};
 use uuid::Uuid;
 
 use crate::platform_provider::{
-    NotificationResponse, ACTION_MARK_DONE, ACTION_SNOOZE_10_MINUTES, ACTION_SNOOZE_1_HOUR,
+    notification_snooze_action, NotificationResponse, ACTION_MARK_DONE,
 };
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum NotificationAction {
-    SnoozeShort,
-    SnoozeLong,
+    Snooze { delay_secs: i64 },
     MarkDone,
 }
 
@@ -38,8 +37,9 @@ pub fn action_to_command_at(
             item: target.item_id,
             occurrence: target.occurrence.clone(),
         }),
-        NotificationAction::SnoozeShort => snooze_command(target, now, Duration::minutes(10)),
-        NotificationAction::SnoozeLong => snooze_command(target, now, Duration::hours(1)),
+        NotificationAction::Snooze { delay_secs } => {
+            snooze_command(target, now, Duration::seconds(delay_secs))
+        }
     }
 }
 
@@ -74,9 +74,12 @@ pub fn notification_action_target(
 }
 
 pub fn notification_action(action_id: &str) -> Option<NotificationAction> {
+    if let Some(action) = notification_snooze_action(action_id) {
+        return Some(NotificationAction::Snooze {
+            delay_secs: action.delay_secs,
+        });
+    }
     match action_id {
-        ACTION_SNOOZE_10_MINUTES => Some(NotificationAction::SnoozeShort),
-        ACTION_SNOOZE_1_HOUR => Some(NotificationAction::SnoozeLong),
         ACTION_MARK_DONE => Some(NotificationAction::MarkDone),
         _ => None,
     }

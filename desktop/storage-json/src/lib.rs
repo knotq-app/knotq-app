@@ -5,6 +5,7 @@ mod paths;
 mod schema;
 mod scheme_file;
 mod scheme_markdown;
+pub mod secrets;
 mod settings;
 mod sync_state;
 

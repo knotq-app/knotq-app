@@ -268,6 +268,9 @@ impl Render for KnotQApp {
         if let Some(popover) = self.render_repeat_popover(window, cx) {
             root = root.child(popover);
         }
+        if let Some(popover) = self.render_sync_status_popover(window, cx) {
+            root = root.child(popover);
+        }
         if self.search_open {
             root = root.child(self.render_search(window, cx));
         }

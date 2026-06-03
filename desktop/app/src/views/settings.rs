@@ -63,7 +63,7 @@ impl KnotQApp {
         calendar_rows.push(settings_subheading("Week Range", t));
         calendar_rows.extend(
             [
-                ("Next 7 days", CalendarWeekRange::NextSevenDays),
+                ("Rolling week", CalendarWeekRange::NextSevenDays),
                 ("Calendar week", CalendarWeekRange::CalendarWeek),
             ]
             .into_iter()
@@ -174,12 +174,12 @@ impl KnotQApp {
                         .flex_col()
                         .gap(px(8.0))
                         .child(settings_header(t))
+                        .child(settings_section("Sync", sync_rows, t))
                         .child(settings_section("Appearance", theme_rows, t))
                         .child(settings_section("Calendar", calendar_rows, t))
                         .child(settings_section("Google Calendar", google_rows, t))
                         .child(settings_section("Time", time_rows, t))
                         .child(settings_section("Notifications", notification_rows, t))
-                        .child(settings_section("Sync", sync_rows, t))
                         .child(settings_section("Updates", update_rows, t))
                         .child(settings_section("Version History", history_rows, t)),
                 ),
@@ -204,24 +204,7 @@ impl KnotQApp {
     }
 
     fn sync_account_rows(&mut self, t: UiTheme, cx: &mut Context<Self>) -> Vec<gpui::AnyElement> {
-        let (title, detail, action) = match self.settings.sync_account.as_ref() {
-            Some(account) => (
-                format!("Signed in as {}", account.email),
-                if account.supports_sync {
-                    account.api_base.clone()
-                } else {
-                    format!("{} - sync not allowed", account.api_base)
-                },
-                "Manage",
-            ),
-            None => (
-                "Not signed in".to_string(),
-                "Connect to the local Cloudflare sync Worker.".to_string(),
-                "Sign in",
-            ),
-        };
-
-        vec![sync_account_row(title, detail, action, t, cx)]
+        vec![self.sync_account_management_section(t, cx)]
     }
 
     fn google_calendar_account_rows(
@@ -565,71 +548,6 @@ fn update_status_row(
             |this, cx| this.check_for_updates(cx),
         ),
     }
-}
-
-fn sync_account_row(
-    title: String,
-    detail: String,
-    button_label: &'static str,
-    t: UiTheme,
-    cx: &mut Context<KnotQApp>,
-) -> gpui::AnyElement {
-    div()
-        .id("sync-account-setting")
-        .px(px(8.0))
-        .py(px(5.0))
-        .min_h(px(38.0))
-        .flex()
-        .items_center()
-        .justify_between()
-        .gap(px(8.0))
-        .border_b_1()
-        .border_color(token_rgba(t.divider_tiny))
-        .child(
-            div()
-                .min_w_0()
-                .flex()
-                .flex_col()
-                .gap(px(2.0))
-                .child(
-                    div()
-                        .text_size(px(12.0))
-                        .font_weight(gpui::FontWeight::SEMIBOLD)
-                        .text_color(token_hsla(t.text_primary))
-                        .child(title),
-                )
-                .child(
-                    div()
-                        .text_size(px(11.0))
-                        .line_height(px(14.0))
-                        .text_color(token_hsla(t.text_soft))
-                        .child(detail),
-                ),
-        )
-        .child(
-            div()
-                .id(("sync-account-setting", 0_usize))
-                .flex_shrink_0()
-                .px(px(7.0))
-                .py(px(3.0))
-                .rounded(px(3.0))
-                .border_1()
-                .border_color(token_rgba(t.border_main))
-                .bg(token_rgba(t.button_bg))
-                .hover({
-                    let c = t.button_hover;
-                    move |h| h.bg(token_rgba(c))
-                })
-                .cursor_pointer()
-                .text_size(px(11.0))
-                .font_weight(gpui::FontWeight::SEMIBOLD)
-                .text_color(token_hsla(t.text_primary))
-                .on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
-                    this.open_sync_sign_in(window, cx);
-                }))
-                .child(button_label),
-        )
-        .into_any_element()
 }
 
 fn google_account_row(

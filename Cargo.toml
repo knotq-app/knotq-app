@@ -25,6 +25,7 @@ anyhow = "1"
 async-trait = "0.1"
 base64 = "0.22"
 chrono = { version = "0.4", features = ["serde"] }
+keyring = { version = "3", features = ["apple-native", "windows-native", "sync-secret-service", "crypto-rust"] }
 rand = "0.8"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

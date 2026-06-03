@@ -1,8 +1,8 @@
 use crate::{Command, DateKind};
 use chrono::{DateTime, Duration, Local, NaiveDate, NaiveDateTime, TimeZone, Utc};
 use knotq_model::{
-    CalendarRecurrence, Item, ItemId, OccurrenceId, Recurrence, RepeatEnd, RepeatWeekday, SchemeId,
-    SimpleRecurrence,
+    CalendarRecurrence, Item, ItemId, ItemKind, ItemMarker, OccurrenceId, Recurrence, RepeatEnd,
+    RepeatWeekday, SchemeId, SimpleRecurrence,
 };
 use knotq_rrule::{scoped_date_edit_recurrence, RecurrenceEditScope};
 
@@ -123,6 +123,18 @@ pub fn event_popup_commit_commands(
             occurrence: occurrence.clone(),
             offset_secs: draft.draft_notification_offset_secs,
         });
+    } else if start_changed || end_changed {
+        if let Some(command) = reset_after_trigger_notification_to_default_command(
+            item,
+            scheme,
+            item_id,
+            occurrence.clone(),
+            draft.draft_start,
+            draft.draft_end,
+            Utc::now(),
+        ) {
+            commands.push(command);
+        }
     }
     if draft.done_dirty {
         let state = item.state_for_occurrence(&occurrence);
@@ -135,6 +147,61 @@ pub fn event_popup_commit_commands(
         }
     }
     commands
+}
+
+pub fn reset_after_trigger_notification_to_default_command(
+    item: &Item,
+    scheme: SchemeId,
+    item_id: ItemId,
+    occurrence: OccurrenceId,
+    draft_start: Option<DateTime<Utc>>,
+    draft_end: Option<DateTime<Utc>>,
+    now: DateTime<Utc>,
+) -> Option<Command> {
+    let offset_secs = item
+        .state_for_occurrence(&occurrence)
+        .notification_offset_secs?;
+    if offset_secs >= 0 {
+        return None;
+    }
+    let trigger_at = notification_trigger_at(item.marker, draft_start, draft_end)?;
+    if trigger_at <= now {
+        return None;
+    }
+    Some(Command::SetOccurrenceNotificationOffset {
+        scheme,
+        item: item_id,
+        occurrence,
+        offset_secs: None,
+    })
+}
+
+fn notification_trigger_at(
+    marker: ItemMarker,
+    start: Option<DateTime<Utc>>,
+    end: Option<DateTime<Utc>>,
+) -> Option<DateTime<Utc>> {
+    match item_kind_for_dates(marker, start, end) {
+        ItemKind::Reminder | ItemKind::Event => start,
+        ItemKind::Assignment => end,
+        ItemKind::Procedure => None,
+    }
+}
+
+fn item_kind_for_dates(
+    marker: ItemMarker,
+    start: Option<DateTime<Utc>>,
+    end: Option<DateTime<Utc>>,
+) -> ItemKind {
+    if marker != ItemMarker::Checkbox {
+        return ItemKind::Procedure;
+    }
+    match (start.is_some(), end.is_some()) {
+        (true, true) => ItemKind::Event,
+        (true, false) => ItemKind::Reminder,
+        (false, true) => ItemKind::Assignment,
+        (false, false) => ItemKind::Procedure,
+    }
 }
 
 fn push_date_command(

@@ -2,6 +2,7 @@ use chrono::{DateTime, Duration, Utc};
 use gpui::Context;
 use knotq_commands::Command;
 use knotq_model::{Item, ItemId, ItemKind, OccurrenceId, Scheme, SchemeId, Workspace};
+use knotq_notifications::notification_snooze_action;
 use knotq_notifications::{
     compute_due_notifications_with_lead_times, delivered_backlog_exceeds, delivered_cleanup_ids,
     expired_event_notification_keys, notification_keys_for_item, DurableNotificationSchedule,
@@ -11,8 +12,7 @@ use knotq_notifications::{
 };
 use knotq_notifications::{
     take_notification_responses, AuthorizationStatus, NotificationRequest, NotificationResponse,
-    NotificationScheduler, PlatformStatus, ACTION_MARK_DONE, ACTION_SNOOZE_10_MINUTES,
-    ACTION_SNOOZE_1_HOUR,
+    NotificationScheduler, PlatformStatus, ACTION_MARK_DONE,
 };
 use knotq_rrule::ItemOccurrenceExt;
 use knotq_storage_json::data_dir;
@@ -714,17 +714,10 @@ impl KnotQApp {
     ) {
         for target in targets {
             clear_delivered_notification(&target.notification_id);
-            match target.action_id.as_str() {
-                ACTION_SNOOZE_10_MINUTES => {
-                    self.snooze_notification_target(target, Duration::minutes(10), cx);
-                }
-                ACTION_SNOOZE_1_HOUR => {
-                    self.snooze_notification_target(target, Duration::hours(1), cx);
-                }
-                ACTION_MARK_DONE => {
-                    self.mark_notification_target_done(target, cx);
-                }
-                _ => {}
+            if let Some(action) = notification_snooze_action(&target.action_id) {
+                self.snooze_notification_target(target, Duration::seconds(action.delay_secs), cx);
+            } else if target.action_id == ACTION_MARK_DONE {
+                self.mark_notification_target_done(target, cx);
             }
         }
     }

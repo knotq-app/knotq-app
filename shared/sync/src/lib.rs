@@ -108,6 +108,31 @@ pub struct AccountResponse {
     pub supports_sync: bool,
 }
 
+/// Response from `GET /v1/auth/account/status`.
+///
+/// `level` is intentionally a string rather than an enum so the backend can add
+/// tiers such as "pro", "team", or "beta" without requiring an app update.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct AccountStatusResponse {
+    pub user_id: UserId,
+    pub workspace_id: WorkspaceId,
+    pub email: String,
+    #[serde(default = "default_account_level")]
+    pub level: String,
+    #[serde(default)]
+    pub subscribed: bool,
+    #[serde(default = "default_supports_sync")]
+    pub supports_sync: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub subscription_status: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub subscription_provider: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub current_period_end: Option<DateTime<Utc>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub checked_at: Option<DateTime<Utc>>,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct AuthSession {
     pub session_id: String,
@@ -129,6 +154,10 @@ pub struct AuthSession {
 
 pub fn default_supports_sync() -> bool {
     true
+}
+
+pub fn default_account_level() -> String {
+    "free".to_string()
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]

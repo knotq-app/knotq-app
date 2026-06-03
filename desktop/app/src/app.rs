@@ -288,6 +288,9 @@ pub struct SyncSignInState {
     pub code_input: Entity<InputState>,
     pub mode: SyncAuthMode,
     pub advance_onboarding_on_success: bool,
+    // Reveals the Sync API URL field; hidden by default so normal users never
+    // see the dev/self-host endpoint and just enter email + password.
+    pub show_advanced: bool,
     // Set once the password step succeeds: the modal then collects the emailed
     // 2FA code and the submit button verifies it instead of re-sending the password.
     pub challenge: Option<PendingLoginChallenge>,
@@ -564,8 +567,12 @@ pub struct KnotQApp {
     pub sync_auth_status: SyncAuthStatus,
     pub sync_run_status: SyncRunStatus,
     pub sync_auth_task: Option<Task<()>>,
-    /// Pending confirmation for a destructive account action in the sync modal.
+    /// Pending confirmation for a destructive account action shown in Settings.
     pub sync_account_action: Option<SyncAccountAction>,
+    /// Anchor for the title-bar sync status popover; `Some` while it is open.
+    pub sync_status_popover: Option<Point<Pixels>>,
+    /// When the last sync completed successfully, for the "Last synced …" line.
+    pub last_synced_at: Option<DateTime<Utc>>,
     pub(crate) scheme_sessions: HashMap<SchemeId, SchemeSessionState>,
     pub(crate) service_bus: AppServiceBus,
     pub(crate) workspace_save_blocked_reason: Option<String>,
@@ -686,6 +693,8 @@ impl KnotQApp {
             sync_account_action: None,
             sync_run_status: SyncRunStatus::Idle,
             sync_auth_task: None,
+            sync_status_popover: None,
+            last_synced_at: None,
             scheme_sessions: HashMap::new(),
             service_bus,
             workspace_save_blocked_reason,

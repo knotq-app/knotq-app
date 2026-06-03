@@ -280,6 +280,17 @@ jobs:
       - name: Add Linux install script
         run: cp bundling/install.sh dist/install.sh
 
+      - name: Generate checksums
+        shell: bash
+        run: |
+          for file in dist/*; do
+            [ -f "$file" ] || continue
+            case "$file" in
+              *.sha256) continue ;;
+            esac
+            sha256sum "$file" > "$file.sha256"
+          done
+
       - uses: softprops/action-gh-release@v2
         with:
           name: KnotQ ${{ github.ref_name }}

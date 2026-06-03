@@ -119,10 +119,50 @@ pub struct SyncAccountSettings {
     pub refresh_token: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub refresh_expires_at: Option<DateTime<Utc>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub account_status: Option<SyncAccountStatus>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct SyncAccountStatus {
+    #[serde(default = "default_account_level")]
+    pub level: String,
+    #[serde(default)]
+    pub subscribed: bool,
+    #[serde(default = "default_true")]
+    pub supports_sync: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub subscription_status: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub subscription_provider: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub current_period_end: Option<DateTime<Utc>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub checked_at: Option<DateTime<Utc>>,
+}
+
+impl SyncAccountStatus {
+    pub fn from_supports_sync(supports_sync: bool) -> Self {
+        Self {
+            level: if supports_sync { "sync" } else { "free" }.to_string(),
+            subscribed: supports_sync,
+            supports_sync,
+            subscription_status: Some(
+                if supports_sync { "active" } else { "inactive" }.to_string(),
+            ),
+            subscription_provider: None,
+            current_period_end: None,
+            checked_at: None,
+        }
+    }
 }
 
 fn default_true() -> bool {
     true
+}
+
+fn default_account_level() -> String {
+    "free".to_string()
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]

@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::env;
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
@@ -12,7 +12,7 @@ use chrono::{DateTime, Duration, Local, NaiveDate, TimeZone, Utc};
 use gpui::Context;
 use knotq_model::{
     CalendarDateTime, CalendarProvider, ExternalItemSource, FolderId, GoogleOAuthAccount,
-    ImportedCalendarSource, Item, ItemMarker, NodeRef, Scheme, SchemeSource, Workspace,
+    ImportedCalendarSource, Item, ItemMarker, NodeRef, Scheme, SchemeId, SchemeSource, Workspace,
 };
 use rand::distributions::{Alphanumeric, DistString};
 use serde::de::DeserializeOwned;
@@ -847,7 +847,17 @@ impl KnotQApp {
         let mut synced = 0usize;
         let mut content_changed = false;
         for calendar in calendars {
-            let existing_scheme_id = find_google_calendar_scheme(&self.workspace, &calendar);
+            let existing_scheme_ids = active_google_calendar_scheme_ids(&self.workspace, &calendar);
+            let existing_scheme_id = existing_scheme_ids
+                .first()
+                .copied()
+                .or_else(|| find_google_calendar_scheme(&self.workspace, &calendar));
+            if self.delete_duplicate_google_calendar_schemes(
+                existing_scheme_ids.get(1..).unwrap_or(&[]),
+                cx,
+            ) {
+                content_changed = true;
+            }
             let scheme_id = match existing_scheme_id {
                 Some(scheme_id) => {
                     if create_missing && self.workspace.is_scheme_deleted(scheme_id) {
@@ -905,6 +915,72 @@ impl KnotQApp {
             }
         }
         GoogleCalendarApplyResult { content_changed }
+    }
+
+    fn delete_duplicate_google_calendar_schemes(
+        &mut self,
+        scheme_ids: &[SchemeId],
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let mut changed = false;
+        for scheme_id in scheme_ids.iter().copied() {
+            if self.workspace.is_scheme_deleted(scheme_id)
+                || !self.workspace.schemes.contains_key(&scheme_id)
+            {
+                continue;
+            }
+
+            let was_selected = self.selection.scheme_id == Some(scheme_id);
+            let fallback = was_selected
+                .then(|| self.first_visible_scheme_id_except(scheme_id))
+                .flatten();
+
+            let mut origin = None;
+            for (folder_id, folder) in self.workspace.folders.iter_mut() {
+                let mut index = 0usize;
+                while index < folder.children.len() {
+                    if folder.children[index] == NodeRef::Scheme(scheme_id) {
+                        if origin.is_none() {
+                            origin = Some((*folder_id, index));
+                        }
+                        folder.children.remove(index);
+                    } else {
+                        index += 1;
+                    }
+                }
+            }
+
+            if let Some((folder_id, position)) = origin {
+                self.workspace
+                    .mark_scheme_deleted_from(scheme_id, folder_id, position);
+            } else {
+                self.workspace.mark_scheme_deleted(scheme_id);
+            }
+            self.trash_expanded = true;
+            self.state.mark_index_dirty();
+            if self
+                .scheme_editor
+                .as_ref()
+                .is_some_and(|(id, _)| *id == scheme_id)
+            {
+                self.scheme_editor = None;
+                self._editor_subscription = None;
+            }
+            self.close_popovers_for_scheme(scheme_id);
+            self.scheme_sessions.remove(&scheme_id);
+            if was_selected {
+                if let Some(next_id) = fallback {
+                    self.open_scheme(next_id, None);
+                } else {
+                    self.open_union();
+                    self.selection.scheme_id = None;
+                    self.selection.focused_item_id = None;
+                }
+                cx.notify();
+            }
+            changed = true;
+        }
+        changed
     }
 }
 
@@ -1603,6 +1679,87 @@ fn find_google_calendar_scheme(
     })
 }
 
+fn active_google_calendar_scheme_ids(
+    workspace: &Workspace,
+    calendar: &ImportedGoogleCalendar,
+) -> Vec<SchemeId> {
+    let mut ids = Vec::new();
+    let mut seen_folders = HashSet::new();
+    let mut seen_schemes = HashSet::new();
+    collect_google_calendar_scheme_ids(
+        workspace,
+        workspace.root,
+        calendar,
+        &mut seen_folders,
+        &mut seen_schemes,
+        &mut ids,
+    );
+
+    let mut unreferenced = workspace
+        .schemes
+        .keys()
+        .copied()
+        .filter(|id| !seen_schemes.contains(id))
+        .filter(|id| google_calendar_scheme_matches(workspace, *id, calendar))
+        .collect::<Vec<_>>();
+    unreferenced.sort_by_key(|id| id.to_string());
+    ids.extend(unreferenced);
+    ids
+}
+
+fn collect_google_calendar_scheme_ids(
+    workspace: &Workspace,
+    folder_id: FolderId,
+    calendar: &ImportedGoogleCalendar,
+    seen_folders: &mut HashSet<FolderId>,
+    seen_schemes: &mut HashSet<SchemeId>,
+    out: &mut Vec<SchemeId>,
+) {
+    if !seen_folders.insert(folder_id) {
+        return;
+    }
+    let Some(folder) = workspace.folders.get(&folder_id) else {
+        return;
+    };
+    for child in &folder.children {
+        match *child {
+            NodeRef::Scheme(id) => {
+                seen_schemes.insert(id);
+                if google_calendar_scheme_matches(workspace, id, calendar) {
+                    out.push(id);
+                }
+            }
+            NodeRef::Folder(id) => collect_google_calendar_scheme_ids(
+                workspace,
+                id,
+                calendar,
+                seen_folders,
+                seen_schemes,
+                out,
+            ),
+        }
+    }
+}
+
+fn google_calendar_scheme_matches(
+    workspace: &Workspace,
+    scheme_id: SchemeId,
+    calendar: &ImportedGoogleCalendar,
+) -> bool {
+    if workspace.is_scheme_deleted(scheme_id) {
+        return false;
+    }
+    let Some(scheme) = workspace.schemes.get(&scheme_id) else {
+        return false;
+    };
+    let SchemeSource::ImportedCalendar(source) = &scheme.source else {
+        return false;
+    };
+    source.provider == CalendarProvider::Google
+        && source.calendar_id == calendar.calendar_id
+        && google_import_matches_source(calendar, source)
+}
+
 fn find_google_calendar_scheme_for_account(
     workspace: &Workspace,
     account: &GoogleOAuthAccount,
@@ -2115,6 +2272,34 @@ mod tests {
         }
     }
 
+    fn imported_calendar() -> ImportedGoogleCalendar {
+        ImportedGoogleCalendar {
+            account_id: "acct".to_string(),
+            account_email: Some("user@example.com".to_string()),
+            calendar_id: "cal".to_string(),
+            name: "Calendar".to_string(),
+            color_index: 0,
+            sync_token: None,
+            full_sync: true,
+            items: Vec::new(),
+            deleted: Vec::new(),
+        }
+    }
+
+    fn imported_google_scheme(name: &str) -> Scheme {
+        let mut scheme = Scheme::new(name, 0);
+        scheme.source = SchemeSource::ImportedCalendar(ImportedCalendarSource {
+            provider: CalendarProvider::Google,
+            account_id: "acct".to_string(),
+            account_email: Some("user@example.com".to_string()),
+            calendar_id: "cal".to_string(),
+            sync_token: None,
+            read_only: true,
+            last_synced_at: None,
+        });
+        scheme
+    }
+
     #[test]
     fn google_event_to_item_preserves_calendar_identity_and_rrule() {
         let event = GoogleEvent {
@@ -2229,6 +2414,32 @@ mod tests {
         assert_eq!(
             find_archived_google_calendar_scheme_for_account(&workspace, &account, "cal"),
             Some(scheme_id)
+        );
+    }
+
+    #[test]
+    fn active_google_calendar_scheme_ids_use_sidebar_order_and_skip_archived() {
+        let mut workspace = Workspace::new();
+        let root = workspace.root;
+        let first = imported_google_scheme("First");
+        let first_id = first.id;
+        let second = imported_google_scheme("Second");
+        let second_id = second.id;
+        let archived = imported_google_scheme("Archived");
+        let archived_id = archived.id;
+        workspace.schemes.insert(first_id, first);
+        workspace.schemes.insert(second_id, second);
+        workspace.schemes.insert(archived_id, archived);
+        workspace.folders.get_mut(&root).unwrap().children.extend([
+            NodeRef::Scheme(second_id),
+            NodeRef::Scheme(first_id),
+            NodeRef::Scheme(archived_id),
+        ]);
+        workspace.mark_scheme_deleted(archived_id);
+
+        assert_eq!(
+            active_google_calendar_scheme_ids(&workspace, &imported_calendar()),
+            vec![second_id, first_id]
         );
     }
 

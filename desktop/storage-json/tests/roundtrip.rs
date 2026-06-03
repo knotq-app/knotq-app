@@ -26,6 +26,9 @@ fn load_app_settings_rejects_raw_settings_payload() {
 
 #[test]
 fn app_settings_roundtrip_preserves_google_accounts() {
+    // Keep this hermetic: exercise the plaintext-in-file path rather than the
+    // real OS keychain (which would prompt/persist and fail on headless CI).
+    std::env::set_var("KNOTQ_DISABLE_KEYCHAIN", "1");
     let dir = unique_temp_dir("knotq-settings-google-account");
     let settings_file = dir.join("settings.json");
     let mut settings = AppSettings::default();
@@ -49,8 +52,11 @@ fn app_settings_roundtrip_preserves_google_accounts() {
         loaded.google_accounts[0].email.as_deref(),
         Some("user@example.com")
     );
+    assert_eq!(loaded.google_accounts[0].access_token, "access");
+    assert_eq!(loaded.google_accounts[0].refresh_token, "refresh");
     assert_eq!(loaded.calendar_week_range, CalendarWeekRange::CalendarWeek);
 
+    std::env::remove_var("KNOTQ_DISABLE_KEYCHAIN");
     let _ = fs::remove_dir_all(dir);
 }
 

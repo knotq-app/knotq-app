@@ -5,7 +5,8 @@ use anyhow::{anyhow, Context as AnyhowContext, Result};
 use chrono::{DateTime, Utc};
 use gpui::{AppContext, Context, Window};
 use gpui_component::input::InputState;
-use knotq_model::{SyncAccountSettings, WorkspaceId};
+use knotq_model::{SyncAccountSettings, SyncAccountStatus, WorkspaceId};
+use knotq_sync::AccountStatusResponse;
 use serde::{Deserialize, Serialize};
 
 use super::{
@@ -77,6 +78,11 @@ pub(crate) enum RefreshError {
     Transient(anyhow::Error),
 }
 
+enum AccountStatusError {
+    Unauthorized,
+    Transient(anyhow::Error),
+}
+
 #[derive(Deserialize)]
 struct LoginError {
     code: String,
@@ -107,6 +113,7 @@ impl KnotQApp {
             self.set_sync_auth_mode(mode, cx);
             return;
         }
+        self.sync_status_popover = None;
         self.close_repeat_popover();
         self.cancel_event_popup_without_commit(cx);
         self.search_open = false;
@@ -149,6 +156,7 @@ impl KnotQApp {
             code_input,
             mode,
             advance_onboarding_on_success,
+            show_advanced: false,
             challenge: None,
         });
         self.sync_auth_status = SyncAuthStatus::Idle;
@@ -174,16 +182,63 @@ impl KnotQApp {
         }
     }
 
+    /// Reveal/hide the Sync API URL field in the sign-in modal.
+    pub fn toggle_sync_advanced(&mut self, cx: &mut Context<Self>) {
+        if let Some(state) = self.sync_sign_in.as_mut() {
+            state.show_advanced = !state.show_advanced;
+            cx.notify();
+        }
+    }
+
+    /// Toggle the glanceable sync status popover anchored under the title-bar
+    /// indicator. Clicking the indicator again (or anywhere outside) closes it.
+    pub fn toggle_sync_status_popover(
+        &mut self,
+        anchor: gpui::Point<gpui::Pixels>,
+        cx: &mut Context<Self>,
+    ) {
+        if self.sync_status_popover.is_some() {
+            self.sync_status_popover = None;
+        } else {
+            self.sync_status_popover = Some(anchor);
+        }
+        cx.notify();
+    }
+
+    pub fn close_sync_status_popover(&mut self, cx: &mut Context<Self>) {
+        if self.sync_status_popover.take().is_some() {
+            cx.notify();
+        }
+    }
+
+    /// Kick off a sync immediately (from the status popover) and close it.
+    pub fn sync_now(&mut self, cx: &mut Context<Self>) {
+        self.sync_status_popover = None;
+        if self
+            .settings
+            .sync_account
+            .as_ref()
+            .is_some_and(|account| account.supports_sync)
+        {
+            self.service_bus.signal_sync();
+        }
+        cx.notify();
+    }
+
     pub fn sign_out_sync_account(&mut self, cx: &mut Context<Self>) {
         if let Some(account) = self.settings.sync_account.take() {
             std::thread::spawn(move || {
                 let _ = logout_sync_backend(&account);
             });
+            // Don't leave a dead refresh token behind in the OS keychain.
+            let _ = knotq_storage_json::secrets::delete_sync();
             self.save_app_settings();
         }
         self.sync_auth_status = SyncAuthStatus::Idle;
         self.sync_run_status = SyncRunStatus::Idle;
         self.sync_account_action = None;
+        self.sync_status_popover = None;
+        self.last_synced_at = None;
         cx.notify();
     }
 
@@ -293,17 +348,14 @@ impl KnotQApp {
         cx.notify();
     }
 
-    fn finish_delete_sync_account(
-        &mut self,
-        result: Result<(), String>,
-        cx: &mut Context<Self>,
-    ) {
+    fn finish_delete_sync_account(&mut self, result: Result<(), String>, cx: &mut Context<Self>) {
         self.sync_auth_task = None;
         match result {
             Ok(()) => {
                 // Deletion is scheduled with a 14-day grace window and the session
                 // is revoked server-side, so drop the local account and close out.
                 self.settings.sync_account = None;
+                let _ = knotq_storage_json::secrets::delete_sync();
                 self.sync_account_action = None;
                 self.sync_run_status = SyncRunStatus::Idle;
                 self.save_app_settings();
@@ -332,39 +384,34 @@ impl KnotQApp {
         // subscribed" to re-check entitlement via refresh_subscription_status.
     }
 
-    /// Re-check the sync entitlement after a checkout by refreshing the session
-    /// (the access token's entitlement is recomputed server-side on refresh).
+    /// Refresh the general account/subscription status shown in Settings.
+    pub fn refresh_account_status(&mut self, cx: &mut Context<Self>) {
+        self.refresh_account_status_with_options(false, cx);
+    }
+
+    /// Re-check the sync entitlement after a checkout.
     pub fn refresh_subscription_status(&mut self, cx: &mut Context<Self>) {
+        self.refresh_account_status_with_options(true, cx);
+    }
+
+    fn refresh_account_status_with_options(&mut self, require_sync: bool, cx: &mut Context<Self>) {
         if matches!(self.sync_auth_status, SyncAuthStatus::InProgress) {
             return;
         }
         let Some(account) = self.settings.sync_account.clone() else {
             return;
         };
-        let Some(refresh_token) = account.refresh_token.clone() else {
-            self.sync_auth_status =
-                SyncAuthStatus::Error("Sign in again to refresh your subscription.".to_string());
-            cx.notify();
-            return;
-        };
-        let api_base = account.api_base.clone();
         self.sync_auth_status = SyncAuthStatus::InProgress;
         let task = cx.spawn(
             async move |weak: gpui::WeakEntity<Self>, cx: &mut gpui::AsyncApp| {
                 let (tx, rx) = mpsc::channel();
                 std::thread::spawn(move || {
-                    let result = refresh_sync_backend(&api_base, &refresh_token).map_err(|err| {
-                        match err {
-                            RefreshError::Unauthorized => {
-                                "Your sync session expired. Please sign in again.".to_string()
-                            }
-                            RefreshError::Transient(e) => format!("{e:#}"),
-                        }
-                    });
+                    let result =
+                        refresh_account_status_backend(account).map_err(|err| format!("{err:#}"));
                     let _ = tx.send(result);
                 });
-                Self::pump_sync_auth_worker(weak, cx, rx, |app, result, cx| {
-                    app.finish_refresh_subscription_status(result, cx);
+                Self::pump_sync_auth_worker(weak, cx, rx, move |app, result, cx| {
+                    app.finish_refresh_account_status(result, require_sync, cx);
                 })
                 .await;
             },
@@ -373,26 +420,23 @@ impl KnotQApp {
         cx.notify();
     }
 
-    fn finish_refresh_subscription_status(
+    fn finish_refresh_account_status(
         &mut self,
-        result: Result<RefreshedTokens, String>,
+        result: Result<SyncAccountSettings, String>,
+        require_sync: bool,
         cx: &mut Context<Self>,
     ) {
         self.sync_auth_task = None;
         match result {
-            Ok(tokens) => {
-                let supports_sync = tokens.supports_sync;
-                if let Some(acct) = self.settings.sync_account.as_mut() {
-                    acct.bearer_token = tokens.bearer_token;
-                    acct.expires_at = tokens.expires_at;
-                    acct.refresh_token = Some(tokens.refresh_token);
-                    acct.refresh_expires_at = tokens.refresh_expires_at;
-                    acct.supports_sync = tokens.supports_sync;
-                }
+            Ok(account) => {
+                let supports_sync = account.supports_sync;
+                self.settings.sync_account = Some(account);
                 self.save_app_settings();
-                if supports_sync {
+                if !require_sync || supports_sync {
                     self.sync_auth_status = SyncAuthStatus::Idle;
-                    self.service_bus.signal_sync();
+                    if supports_sync {
+                        self.service_bus.signal_sync();
+                    }
                 } else {
                     self.sync_auth_status = SyncAuthStatus::Error(
                         "No active subscription found yet. If you just paid, wait a moment and try again."
@@ -701,6 +745,7 @@ fn sync_account_settings_from_session(
         expires_at: session.expires_at,
         refresh_token: non_empty(session.refresh_token),
         refresh_expires_at: session.refresh_expires_at,
+        account_status: Some(SyncAccountStatus::from_supports_sync(session.supports_sync)),
     }
 }
 
@@ -809,6 +854,117 @@ fn cancel_subscription_backend(account: &SyncAccountSettings) -> Result<SyncAcco
     Ok(sync_account_settings_from_session(base, session))
 }
 
+fn refresh_account_status_backend(mut account: SyncAccountSettings) -> Result<SyncAccountSettings> {
+    match fetch_account_status_backend(&account) {
+        Ok(status) => {
+            apply_account_status_response(&mut account, status);
+            return Ok(account);
+        }
+        Err(AccountStatusError::Unauthorized) => {}
+        Err(AccountStatusError::Transient(error)) => return Err(error),
+    }
+
+    let Some(refresh_token) = account.refresh_token.clone() else {
+        return Err(anyhow!("Your sync session expired. Please sign in again."));
+    };
+    let tokens = match refresh_sync_backend(&account.api_base, &refresh_token) {
+        Ok(tokens) => tokens,
+        Err(RefreshError::Unauthorized) => {
+            return Err(anyhow!("Your sync session expired. Please sign in again."));
+        }
+        Err(RefreshError::Transient(error)) => return Err(error),
+    };
+    account.bearer_token = tokens.bearer_token;
+    account.expires_at = tokens.expires_at;
+    account.refresh_token = Some(tokens.refresh_token);
+    account.refresh_expires_at = tokens.refresh_expires_at;
+    account.supports_sync = tokens.supports_sync;
+    account.account_status = Some(SyncAccountStatus::from_supports_sync(tokens.supports_sync));
+
+    let status = fetch_account_status_backend(&account).map_err(|err| match err {
+        AccountStatusError::Unauthorized => {
+            anyhow!("Your sync session expired. Please sign in again.")
+        }
+        AccountStatusError::Transient(error) => error,
+    })?;
+    apply_account_status_response(&mut account, status);
+    Ok(account)
+}
+
+fn fetch_account_status_backend(
+    account: &SyncAccountSettings,
+) -> Result<AccountStatusResponse, AccountStatusError> {
+    let base = normalize_api_base(&account.api_base).map_err(AccountStatusError::Transient)?;
+    let url = format!("{base}/v1/auth/account/status");
+    let response = match ureq::get(&url)
+        .timeout(StdDuration::from_secs(10))
+        .set("authorization", &format!("Bearer {}", account.bearer_token))
+        .call()
+    {
+        Ok(response) => response,
+        Err(ureq::Error::Status(401, _)) => return Err(AccountStatusError::Unauthorized),
+        Err(ureq::Error::Status(404, _)) => {
+            return Err(AccountStatusError::Transient(anyhow!(
+                "The sync Worker does not support account status yet."
+            )));
+        }
+        Err(ureq::Error::Status(_, response)) => {
+            let code = response
+                .into_json::<LoginError>()
+                .map(|error| error.code)
+                .unwrap_or_else(|_| "status_failed".to_string());
+            return Err(AccountStatusError::Transient(anyhow!(
+                account_status_error_message(&code)
+            )));
+        }
+        Err(error) => {
+            return Err(AccountStatusError::Transient(anyhow!(
+                "Could not reach the sync Worker: {error}"
+            )));
+        }
+    };
+    response
+        .into_json()
+        .context("parse sync account status response")
+        .map_err(AccountStatusError::Transient)
+}
+
+fn apply_account_status_response(account: &mut SyncAccountSettings, status: AccountStatusResponse) {
+    account.user_id = status.user_id.to_string();
+    account.workspace_id = Some(status.workspace_id);
+    account.email = status.email.clone();
+    account.supports_sync = status.supports_sync;
+    account.account_status = Some(sync_account_status_from_response(status));
+}
+
+fn sync_account_status_from_response(status: AccountStatusResponse) -> SyncAccountStatus {
+    SyncAccountStatus {
+        level: status.level,
+        subscribed: status.subscribed,
+        supports_sync: status.supports_sync,
+        subscription_status: status.subscription_status.or_else(|| {
+            Some(
+                if status.subscribed {
+                    "active"
+                } else {
+                    "inactive"
+                }
+                .to_string(),
+            )
+        }),
+        subscription_provider: status.subscription_provider,
+        current_period_end: status.current_period_end,
+        checked_at: Some(status.checked_at.unwrap_or_else(Utc::now)),
+    }
+}
+
+fn account_status_error_message(code: &str) -> &'static str {
+    match code {
+        "unauthorized" => "Your sync session expired. Sign in again, then retry.",
+        _ => "The request to the sync Worker failed.",
+    }
+}
+
 fn account_action_error_message(code: &str) -> &'static str {
     match code {
         "unauthorized" => "Your sync session expired. Sign in again, then retry.",
@@ -851,13 +1007,40 @@ fn normalize_api_base(raw: &str) -> Result<String> {
     if trimmed.is_empty() {
         return Err(anyhow!("Enter a sync API URL."));
     }
-    if !(trimmed.starts_with("http://") || trimmed.starts_with("https://")) {
+    if let Some(after_scheme) = trimmed.strip_prefix("http://") {
+        // Bearer tokens must never travel in cleartext, so plain http is only
+        // permitted to a loopback host (local dev / self-hosted Worker on-box).
+        if !is_loopback_http_authority(after_scheme) {
+            return Err(anyhow!(
+                "Sync API must use https:// (plain http is only allowed for localhost)."
+            ));
+        }
+    } else if trimmed.strip_prefix("https://").is_none() {
         return Err(anyhow!("Sync API must start with http:// or https://."));
     }
     Ok(match trimmed {
         "http://127.0.0.1:7878" | "http://localhost:7878" => DEFAULT_SYNC_API_BASE.to_string(),
         _ => trimmed.to_string(),
     })
+}
+
+/// Whether the authority following `http://` names a loopback host. Accepts
+/// `127.0.0.1`, `localhost`, and the IPv6 literal `[::1]`, with or without a port
+/// or trailing path.
+fn is_loopback_http_authority(after_scheme: &str) -> bool {
+    let authority = after_scheme.split('/').next().unwrap_or("");
+    // Defensive: drop any userinfo ("user:pass@host").
+    let authority = authority.rsplit('@').next().unwrap_or(authority);
+    let host = if let Some(rest) = authority.strip_prefix('[') {
+        // IPv6 literal: the host is inside the brackets.
+        rest.split(']').next().unwrap_or("")
+    } else {
+        authority.split(':').next().unwrap_or("")
+    };
+    matches!(
+        host.to_ascii_lowercase().as_str(),
+        "127.0.0.1" | "localhost" | "::1"
+    )
 }
 
 fn login_error_message(code: &str) -> &'static str {
@@ -880,5 +1063,66 @@ fn signup_error_message(code: &str) -> &'static str {
         "password_too_short" => "Use a password with at least 12 characters.",
         "password_too_long" => "Password is too long.",
         _ => "Sync account request failed.",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn normalize_api_base_accepts_https() {
+        assert_eq!(
+            normalize_api_base("https://sync.example.com").unwrap(),
+            "https://sync.example.com"
+        );
+        // Trailing slashes are trimmed.
+        assert_eq!(
+            normalize_api_base("https://sync.example.com/").unwrap(),
+            "https://sync.example.com"
+        );
+    }
+
+    #[test]
+    fn normalize_api_base_allows_http_only_for_loopback() {
+        assert_eq!(
+            normalize_api_base("http://127.0.0.1:8787").unwrap(),
+            "http://127.0.0.1:8787"
+        );
+        assert_eq!(
+            normalize_api_base("http://localhost:8787").unwrap(),
+            "http://localhost:8787"
+        );
+        assert_eq!(
+            normalize_api_base("http://[::1]:8787").unwrap(),
+            "http://[::1]:8787"
+        );
+    }
+
+    #[test]
+    fn normalize_api_base_rejects_plain_http_to_remote_host() {
+        assert!(normalize_api_base("http://example.com").is_err());
+        assert!(normalize_api_base("http://sync.example.com:8787").is_err());
+        // A loopback-looking name embedded elsewhere must not slip through.
+        assert!(normalize_api_base("http://localhost.evil.com").is_err());
+    }
+
+    #[test]
+    fn normalize_api_base_rejects_other_schemes_and_empty() {
+        assert!(normalize_api_base("ftp://example.com").is_err());
+        assert!(normalize_api_base("example.com").is_err());
+        assert!(normalize_api_base("   ").is_err());
+    }
+
+    #[test]
+    fn normalize_api_base_remaps_localhost_dev_port() {
+        assert_eq!(
+            normalize_api_base("http://127.0.0.1:7878").unwrap(),
+            DEFAULT_SYNC_API_BASE
+        );
+        assert_eq!(
+            normalize_api_base("http://localhost:7878").unwrap(),
+            DEFAULT_SYNC_API_BASE
+        );
     }
 }
