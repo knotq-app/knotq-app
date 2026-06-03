@@ -20,6 +20,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
 
       - uses: Swatinem/rust-cache@v2
+        continue-on-error: true
         with:
           key: macos
 
@@ -39,6 +40,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
 
       - uses: Swatinem/rust-cache@v2
+        continue-on-error: true
         with:
           key: linux
 
@@ -46,6 +48,8 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y \
+            pkg-config \
+            libdbus-1-dev \
             libvulkan-dev \
             libwayland-dev \
             libxkbcommon-dev \
@@ -74,6 +78,7 @@ jobs:
           targets: x86_64-pc-windows-msvc
 
       - uses: Swatinem/rust-cache@v2
+        continue-on-error: true
         with:
           key: windows
 
