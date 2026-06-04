@@ -14,7 +14,7 @@ impl KnotQApp {
             .single()
             .map(|dt| dt.with_timezone(&Utc))
             .unwrap_or(now);
-        let horizon = now + Duration::days(14);
+        let horizon = upcoming_range(now).end;
         let today_end = today_start + Duration::days(1);
         self.ensure_daily_queue_calendar_range_loaded(
             Local::now().date_naive(),

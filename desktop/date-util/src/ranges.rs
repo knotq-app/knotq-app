@@ -1,6 +1,9 @@
 use crate::util::start_of_week;
 use chrono::{DateTime, Duration, NaiveDate, TimeZone, Utc};
 
+pub const UPCOMING_HORIZON_DAYS: i64 = 14;
+pub const UPCOMING_LIMIT: usize = 12;
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct DateRange {
     pub start: DateTime<Utc>,
@@ -29,6 +32,13 @@ pub fn day_range(date: NaiveDate) -> DateRange {
     DateRange {
         start: utc_midnight(date),
         end: utc_midnight(date + Duration::days(1)),
+    }
+}
+
+pub fn upcoming_range(from: DateTime<Utc>) -> DateRange {
+    DateRange {
+        start: from,
+        end: from + Duration::days(UPCOMING_HORIZON_DAYS),
     }
 }
 

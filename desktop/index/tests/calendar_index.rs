@@ -1,4 +1,5 @@
 use chrono::{Duration, TimeZone, Utc};
+use knotq_date_util::UPCOMING_HORIZON_DAYS;
 use knotq_index::IndexedWorkspace;
 use knotq_model::{Item, NodeRef, Scheme, Workspace};
 
@@ -26,6 +27,18 @@ fn overdue_query_skips_assignments_older_than_seven_days() {
     let indexed = IndexedWorkspace::build(workspace);
 
     let events = indexed.calendar_query().overdue(as_of);
+
+    assert!(events.is_empty());
+}
+
+#[test]
+fn upcoming_query_skips_items_beyond_shared_horizon() {
+    let as_of = Utc.with_ymd_and_hms(2026, 1, 10, 12, 0, 0).unwrap();
+    let future = as_of + Duration::days(UPCOMING_HORIZON_DAYS + 1);
+    let (workspace, _, _) = workspace_with_item(Item::new("Future review").with_start(future));
+    let indexed = IndexedWorkspace::build(workspace);
+
+    let events = indexed.calendar_query().upcoming(as_of, 10);
 
     assert!(events.is_empty());
 }

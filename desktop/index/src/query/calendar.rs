@@ -1,5 +1,5 @@
 use chrono::{DateTime, Duration, Utc};
-use knotq_date_util::{week_range, DateRange};
+use knotq_date_util::{upcoming_range, week_range, DateRange};
 use knotq_model::ItemKind;
 use knotq_rrule::{DefaultExpander, OccurrenceExpander};
 
@@ -56,10 +56,7 @@ impl<'a> CalendarQuery<'a> {
     }
 
     pub fn upcoming(&self, from: DateTime<Utc>, limit: usize) -> Vec<OccurrenceWithContext> {
-        let mut events = self.range(DateRange {
-            start: from,
-            end: from + Duration::days(365),
-        });
+        let mut events = self.range(upcoming_range(from));
         events.retain(|event| occurrence_anchor(event) >= Some(from));
         events.truncate(limit);
         events

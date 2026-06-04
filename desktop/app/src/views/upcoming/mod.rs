@@ -10,7 +10,7 @@ use crate::theme_gpui::{
     date_status_color, event_status_color, token_hsla, token_rgba, upcoming_scheme_color,
     FONT_MONO, FONT_SIZE_BODY, FONT_SIZE_CAPTION2,
 };
-use knotq_date_util::format_time;
+use knotq_date_util::{format_time, upcoming_range};
 
 #[derive(Clone)]
 pub(super) struct UpRow {
