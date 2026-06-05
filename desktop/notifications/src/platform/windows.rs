@@ -1,6 +1,11 @@
-use crate::{AuthorizationStatus, Error, NotificationRequest, PlatformStatus, Result};
-use std::collections::HashSet;
+use crate::{
+    dispatch_response, AuthorizationStatus, Error, NotificationRequest, NotificationResponse,
+    PlatformStatus, Result, ACTION_MARK_DONE, ACTION_SNOOZE_10_MINUTES,
+    NOTIFICATION_SNOOZE_ACTIONS,
+};
+use std::collections::{BTreeMap, HashSet};
 use std::env;
+use std::fmt::Write;
 use std::mem::ManuallyDrop;
 use std::path::PathBuf;
 use windows::core::{Interface, HSTRING};
@@ -29,6 +34,9 @@ const WINDOWS_GROUP: &str = "knotq";
 const WINDOWS_NOTIFICATION_ID_LEN: usize = 15;
 const WINDOWS_SHORTCUT_DIR: &str = "KnotQ";
 const WINDOWS_SHORTCUT_NAME: &str = "KnotQ.lnk";
+const WINDOWS_ACTION_SNOOZE_SELECTED: &str = "knotq.snooze.selected";
+const WINDOWS_PROTOCOL: &str = "knotq://notification";
+const WINDOWS_SNOOZE_INPUT_ID: &str = "snooze_action_id";
 
 pub fn status() -> PlatformStatus {
     PlatformStatus::Available
@@ -44,9 +52,15 @@ pub fn authorization_status() -> Result<AuthorizationStatus> {
     Ok(AuthorizationStatus::Authorized)
 }
 
+pub fn configure_notification_handling() {
+    if let Some(response) = notification_response_from_windows_args(env::args().skip(1)) {
+        dispatch_response(response);
+    }
+}
+
 pub fn schedule(app_id: &str, request: &NotificationRequest) -> Result<()> {
     let notifier = notifier(app_id)?;
-    let xml = toast_xml(&request.title, &request.body);
+    let xml = toast_xml(request);
     let document = XmlDocument::new().map_err(windows_error)?;
     document
         .LoadXml(&HSTRING::from(xml))
@@ -72,7 +86,7 @@ pub fn schedule(app_id: &str, request: &NotificationRequest) -> Result<()> {
 
 pub fn deliver_now(app_id: &str, request: &NotificationRequest) -> Result<()> {
     let notifier = notifier(app_id)?;
-    let xml = toast_xml(&request.title, &request.body);
+    let xml = toast_xml(request);
     let document = XmlDocument::new().map_err(windows_error)?;
     document
         .LoadXml(&HSTRING::from(xml))
@@ -335,12 +349,211 @@ fn windows_time(time: chrono::DateTime<chrono::Utc>) -> DateTime {
     }
 }
 
-fn toast_xml(title: &str, body: &str) -> String {
+fn toast_xml(request: &NotificationRequest) -> String {
+    let launch_args = if request_has_action_payload(request) {
+        windows_activation_uri(request, "")
+    } else {
+        String::new()
+    };
+    let actions = windows_actions_xml(request);
     format!(
-        r#"<toast scenario="reminder"><visual><binding template="ToastGeneric"><text>{}</text><text>{}</text></binding></visual><audio src="ms-winsoundevent:Notification.Reminder"/></toast>"#,
-        escape_xml(title),
-        escape_xml(body)
+        r#"<toast scenario="reminder" launch="{}"><visual><binding template="ToastGeneric"><text>{}</text><text>{}</text></binding></visual>{}<audio src="ms-winsoundevent:Notification.Reminder"/></toast>"#,
+        escape_xml(&launch_args),
+        escape_xml(&request.title),
+        escape_xml(&request.body),
+        actions,
     )
+}
+
+fn windows_actions_xml(request: &NotificationRequest) -> String {
+    if !request_has_action_payload(request) {
+        return String::new();
+    }
+
+    let mut xml = String::from(r#"<actions>"#);
+    xml.push_str(r#"<input id="snooze_action_id" type="selection" defaultInput=""#);
+    xml.push_str(ACTION_SNOOZE_10_MINUTES);
+    xml.push_str(r#"">"#);
+    for action in NOTIFICATION_SNOOZE_ACTIONS {
+        let _ = write!(
+            xml,
+            r#"<selection id="{}" content="{}"/>"#,
+            escape_xml(action.action_id),
+            escape_xml(action.label),
+        );
+    }
+    xml.push_str(r#"</input>"#);
+    let _ = write!(
+        xml,
+        r#"<action content="Snooze" arguments="{}" activationType="protocol" hint-inputId="{}"/>"#,
+        escape_xml(&windows_activation_uri(
+            request,
+            WINDOWS_ACTION_SNOOZE_SELECTED,
+        )),
+        WINDOWS_SNOOZE_INPUT_ID,
+    );
+    let _ = write!(
+        xml,
+        r#"<action content="Mark done" arguments="{}" activationType="protocol"/>"#,
+        escape_xml(&windows_activation_uri(request, ACTION_MARK_DONE)),
+    );
+    xml.push_str("</actions>");
+    xml
+}
+
+fn request_has_action_payload(request: &NotificationRequest) -> bool {
+    request.user_info.contains_key("scheme_id")
+        && request.user_info.contains_key("item_id")
+        && request.user_info.contains_key("occurrence_json")
+        && request.user_info.contains_key("trigger_at")
+}
+
+fn windows_activation_uri(request: &NotificationRequest, action_id: &str) -> String {
+    format!(
+        "{}?{}",
+        WINDOWS_PROTOCOL,
+        windows_activation_query(request, action_id)
+    )
+}
+
+fn windows_activation_query(request: &NotificationRequest, action_id: &str) -> String {
+    let mut params = vec![
+        ("knotq_notification_action", "1"),
+        ("notification_id", request.id.as_str()),
+        ("action_id", action_id),
+    ];
+    for key in ["scheme_id", "item_id", "occurrence_json", "trigger_at"] {
+        if let Some(value) = request.user_info.get(key) {
+            params.push((key, value.as_str()));
+        }
+    }
+    params
+        .into_iter()
+        .map(|(key, value)| format!("{}={}", key, percent_encode_argument(value)))
+        .collect::<Vec<_>>()
+        .join("&")
+}
+
+fn notification_response_from_windows_args(
+    args: impl IntoIterator<Item = String>,
+) -> Option<NotificationResponse> {
+    let args = args.into_iter().collect::<Vec<_>>();
+    for arg in &args {
+        if let Some(response) = notification_response_from_windows_activation(arg) {
+            return Some(response);
+        }
+    }
+    for pair in args.windows(2) {
+        if pair[0].contains("ToastActivated") || pair[0].contains("NotificationActivated") {
+            if let Some(response) = notification_response_from_windows_activation(&pair[1]) {
+                return Some(response);
+            }
+        }
+    }
+    notification_response_from_windows_activation(&args.join(" "))
+}
+
+fn notification_response_from_windows_activation(raw: &str) -> Option<NotificationResponse> {
+    let query = windows_activation_query_from_arg(raw)?;
+    let params = parse_activation_query(query);
+    if params.get("knotq_notification_action").map(String::as_str) != Some("1") {
+        return None;
+    }
+
+    let mut action_id = params.get("action_id")?.to_string();
+    if action_id == WINDOWS_ACTION_SNOOZE_SELECTED {
+        action_id = params
+            .get(WINDOWS_SNOOZE_INPUT_ID)
+            .cloned()
+            .filter(|action| !action.trim().is_empty())
+            .unwrap_or_else(|| ACTION_SNOOZE_10_MINUTES.to_string());
+    }
+
+    let notification_id = params.get("notification_id")?.to_string();
+    let mut user_info = BTreeMap::new();
+    for key in ["scheme_id", "item_id", "occurrence_json", "trigger_at"] {
+        user_info.insert(key.to_string(), params.get(key)?.to_string());
+    }
+
+    Some(NotificationResponse {
+        notification_id,
+        action_id,
+        user_info,
+    })
+}
+
+fn windows_activation_query_from_arg(raw: &str) -> Option<&str> {
+    let trimmed = raw.trim().trim_matches('"');
+    let start = trimmed
+        .find(WINDOWS_PROTOCOL)
+        .map(|index| index + WINDOWS_PROTOCOL.len())
+        .or_else(|| trimmed.find("knotq_notification_action=").map(|_| 0))?;
+    let candidate = &trimmed[start..];
+    Some(candidate.strip_prefix('?').unwrap_or(candidate))
+}
+
+fn parse_activation_query(query: &str) -> BTreeMap<String, String> {
+    query
+        .split(['&', ';'])
+        .filter_map(|part| {
+            let (key, value) = part.split_once('=')?;
+            Some((
+                percent_decode_argument(key),
+                percent_decode_argument(value.trim_matches('"')),
+            ))
+        })
+        .collect()
+}
+
+fn percent_encode_argument(value: &str) -> String {
+    let mut encoded = String::with_capacity(value.len());
+    for byte in value.bytes() {
+        if byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'.' | b'_' | b'~') {
+            encoded.push(byte as char);
+        } else {
+            let _ = write!(encoded, "%{byte:02X}");
+        }
+    }
+    encoded
+}
+
+fn percent_decode_argument(value: &str) -> String {
+    let bytes = value.as_bytes();
+    let mut decoded = Vec::with_capacity(bytes.len());
+    let mut index = 0;
+    while index < bytes.len() {
+        match bytes[index] {
+            b'%' if index + 2 < bytes.len() => {
+                let hi = hex_value(bytes[index + 1]);
+                let lo = hex_value(bytes[index + 2]);
+                if let (Some(hi), Some(lo)) = (hi, lo) {
+                    decoded.push((hi << 4) | lo);
+                    index += 3;
+                    continue;
+                }
+                decoded.push(bytes[index]);
+                index += 1;
+            }
+            b'+' => {
+                decoded.push(b' ');
+                index += 1;
+            }
+            byte => {
+                decoded.push(byte);
+                index += 1;
+            }
+        }
+    }
+    String::from_utf8_lossy(&decoded).into_owned()
+}
+
+fn hex_value(byte: u8) -> Option<u8> {
+    match byte {
+        b'0'..=b'9' => Some(byte - b'0'),
+        b'a'..=b'f' => Some(byte - b'a' + 10),
+        b'A'..=b'F' => Some(byte - b'A' + 10),
+        _ => None,
+    }
 }
 
 fn escape_xml(value: &str) -> String {
@@ -383,6 +596,8 @@ fn io_error(error: std::io::Error) -> Error {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ACTION_SNOOZE_6_HOURS;
+    use chrono::{Duration, Utc};
 
     #[test]
     fn windows_notification_id_is_short_and_stable() {
@@ -408,5 +623,90 @@ mod tests {
                 WINDOWS_NOTIFICATION_ID_LEN
             );
         }
+    }
+
+    #[test]
+    fn toast_xml_includes_snooze_selector_and_mark_done_action() {
+        let request = actionable_request();
+
+        let xml = toast_xml(&request);
+
+        assert!(xml.contains(r#"<input id="snooze_action_id" type="selection""#));
+        assert!(xml.contains(r#"<selection id="knotq.snooze.6h" content="Snooze 6 hours"/>"#));
+        assert!(xml.contains(
+            r#"<selection id="knotq.snooze.tomorrow_morning" content="Tomorrow Morning"/>"#
+        ));
+        assert!(xml.contains(r#"<action content="Snooze""#));
+        assert!(xml.contains(r#"activationType="protocol""#));
+        assert!(xml.contains("knotq://notification?"));
+        assert!(xml.contains(r#"action_id=knotq.snooze.selected"#));
+        assert!(xml.contains(r#"<action content="Mark done""#));
+        assert!(xml.contains(r#"action_id=knotq.mark_done"#));
+    }
+
+    #[test]
+    fn toast_xml_omits_actions_without_target_payload() {
+        let request =
+            NotificationRequest::new("id", Utc::now() + Duration::hours(1), "title", "body");
+
+        let xml = toast_xml(&request);
+
+        assert!(!xml.contains("<actions>"));
+    }
+
+    #[test]
+    fn notification_response_parses_protocol_activation() {
+        let request = actionable_request();
+        let uri = windows_activation_uri(&request, ACTION_MARK_DONE);
+
+        let response = notification_response_from_windows_activation(&uri).unwrap();
+
+        assert_eq!(response.notification_id, request.id);
+        assert_eq!(response.action_id, ACTION_MARK_DONE);
+        assert_eq!(
+            response
+                .user_info
+                .get("occurrence_json")
+                .map(String::as_str),
+            Some(r#"{"kind":"single"}"#)
+        );
+    }
+
+    #[test]
+    fn notification_response_uses_selected_snooze_input() {
+        let request = actionable_request();
+        let uri = format!(
+            "{}&{}={}",
+            windows_activation_uri(&request, WINDOWS_ACTION_SNOOZE_SELECTED),
+            WINDOWS_SNOOZE_INPUT_ID,
+            ACTION_SNOOZE_6_HOURS
+        );
+
+        let response = notification_response_from_windows_activation(&uri).unwrap();
+
+        assert_eq!(response.action_id, ACTION_SNOOZE_6_HOURS);
+    }
+
+    #[test]
+    fn notification_response_defaults_snooze_selector_to_10_minutes() {
+        let request = actionable_request();
+        let uri = windows_activation_uri(&request, WINDOWS_ACTION_SNOOZE_SELECTED);
+
+        let response = notification_response_from_windows_activation(&uri).unwrap();
+
+        assert_eq!(response.action_id, ACTION_SNOOZE_10_MINUTES);
+    }
+
+    fn actionable_request() -> NotificationRequest {
+        NotificationRequest::new(
+            "note & id",
+            Utc::now() + Duration::hours(1),
+            "title",
+            "body",
+        )
+        .user_info("scheme_id", "scheme")
+        .user_info("item_id", "item")
+        .user_info("occurrence_json", r#"{"kind":"single"}"#)
+        .user_info("trigger_at", "2026-06-05T09:00:00Z")
     }
 }

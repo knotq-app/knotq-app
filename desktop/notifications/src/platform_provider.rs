@@ -1,6 +1,6 @@
 #![allow(unexpected_cfgs)]
 
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, Duration, Local, TimeZone, Utc};
 use std::collections::BTreeMap;
 use std::sync::Mutex;
 
@@ -11,8 +11,10 @@ pub const ACTION_SNOOZE_5_MINUTES: &str = "knotq.snooze.5m";
 pub const ACTION_SNOOZE_15_MINUTES: &str = "knotq.snooze.15m";
 pub const ACTION_SNOOZE_30_MINUTES: &str = "knotq.snooze.30m";
 pub const ACTION_SNOOZE_2_HOURS: &str = "knotq.snooze.2h";
+pub const ACTION_SNOOZE_6_HOURS: &str = "knotq.snooze.6h";
 pub const ACTION_SNOOZE_1_DAY: &str = "knotq.snooze.1d";
 pub const ACTION_SNOOZE_1_WEEK: &str = "knotq.snooze.1w";
+pub const ACTION_SNOOZE_TOMORROW_MORNING: &str = "knotq.snooze.tomorrow_morning";
 pub const ACTION_MARK_DONE: &str = "knotq.mark_done";
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -24,29 +26,9 @@ pub struct NotificationSnoozeAction {
 
 pub const NOTIFICATION_SNOOZE_ACTIONS: &[NotificationSnoozeAction] = &[
     NotificationSnoozeAction {
-        action_id: ACTION_SNOOZE_1_MINUTE,
-        label: "Snooze 1 min",
-        delay_secs: 60,
-    },
-    NotificationSnoozeAction {
-        action_id: ACTION_SNOOZE_5_MINUTES,
-        label: "Snooze 5 min",
-        delay_secs: 5 * 60,
-    },
-    NotificationSnoozeAction {
         action_id: ACTION_SNOOZE_10_MINUTES,
         label: "Snooze 10 min",
         delay_secs: 10 * 60,
-    },
-    NotificationSnoozeAction {
-        action_id: ACTION_SNOOZE_15_MINUTES,
-        label: "Snooze 15 min",
-        delay_secs: 15 * 60,
-    },
-    NotificationSnoozeAction {
-        action_id: ACTION_SNOOZE_30_MINUTES,
-        label: "Snooze 30 min",
-        delay_secs: 30 * 60,
     },
     NotificationSnoozeAction {
         action_id: ACTION_SNOOZE_1_HOUR,
@@ -59,22 +41,80 @@ pub const NOTIFICATION_SNOOZE_ACTIONS: &[NotificationSnoozeAction] = &[
         delay_secs: 2 * 60 * 60,
     },
     NotificationSnoozeAction {
+        action_id: ACTION_SNOOZE_6_HOURS,
+        label: "Snooze 6 hours",
+        delay_secs: 6 * 60 * 60,
+    },
+    NotificationSnoozeAction {
         action_id: ACTION_SNOOZE_1_DAY,
-        label: "Snooze 1 day",
+        label: "Snooze 24 hours",
         delay_secs: 24 * 60 * 60,
     },
     NotificationSnoozeAction {
-        action_id: ACTION_SNOOZE_1_WEEK,
-        label: "Snooze 1 week",
-        delay_secs: 7 * 24 * 60 * 60,
+        action_id: ACTION_SNOOZE_TOMORROW_MORNING,
+        label: "Tomorrow Morning",
+        delay_secs: 0,
     },
 ];
 
 pub fn notification_snooze_action(action_id: &str) -> Option<NotificationSnoozeAction> {
+    if action_id == ACTION_SNOOZE_TOMORROW_MORNING {
+        return None;
+    }
     NOTIFICATION_SNOOZE_ACTIONS
         .iter()
         .copied()
         .find(|action| action.action_id == action_id)
+        .or_else(|| legacy_notification_snooze_action(action_id))
+}
+
+pub fn notification_tomorrow_morning_utc() -> DateTime<Utc> {
+    notification_tomorrow_morning_utc_after(Utc::now())
+}
+
+pub fn notification_tomorrow_morning_utc_after(now: DateTime<Utc>) -> DateTime<Utc> {
+    let tomorrow = now.with_timezone(&Local).date_naive() + Duration::days(1);
+    let Some(naive) = tomorrow.and_hms_opt(9, 0, 0) else {
+        return now + Duration::days(1);
+    };
+    Local
+        .from_local_datetime(&naive)
+        .single()
+        .or_else(|| Local.from_local_datetime(&naive).earliest())
+        .or_else(|| Local.from_local_datetime(&naive).latest())
+        .map(|local| local.with_timezone(&Utc))
+        .unwrap_or_else(|| now + Duration::days(1))
+}
+
+fn legacy_notification_snooze_action(action_id: &str) -> Option<NotificationSnoozeAction> {
+    match action_id {
+        ACTION_SNOOZE_1_MINUTE => Some(NotificationSnoozeAction {
+            action_id: ACTION_SNOOZE_1_MINUTE,
+            label: "Snooze 1 min",
+            delay_secs: 60,
+        }),
+        ACTION_SNOOZE_5_MINUTES => Some(NotificationSnoozeAction {
+            action_id: ACTION_SNOOZE_5_MINUTES,
+            label: "Snooze 5 min",
+            delay_secs: 5 * 60,
+        }),
+        ACTION_SNOOZE_15_MINUTES => Some(NotificationSnoozeAction {
+            action_id: ACTION_SNOOZE_15_MINUTES,
+            label: "Snooze 15 min",
+            delay_secs: 15 * 60,
+        }),
+        ACTION_SNOOZE_30_MINUTES => Some(NotificationSnoozeAction {
+            action_id: ACTION_SNOOZE_30_MINUTES,
+            label: "Snooze 30 min",
+            delay_secs: 30 * 60,
+        }),
+        ACTION_SNOOZE_1_WEEK => Some(NotificationSnoozeAction {
+            action_id: ACTION_SNOOZE_1_WEEK,
+            label: "Snooze 1 week",
+            delay_secs: 7 * 24 * 60 * 60,
+        }),
+        _ => None,
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
@@ -248,7 +288,7 @@ impl NotificationScheduler {
     }
 
     pub fn configure_notification_handling(&self) {
-        #[cfg(any(target_os = "macos", target_os = "linux"))]
+        #[cfg(any(target_os = "macos", target_os = "linux", windows))]
         platform::configure_notification_handling();
     }
 

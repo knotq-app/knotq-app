@@ -119,10 +119,6 @@ impl KnotQApp {
         };
 
         div()
-            .px(px(8.0))
-            .py(px(8.0))
-            .border_b_1()
-            .border_color(token_rgba(t.divider_tiny))
             .flex()
             .flex_col()
             .gap(px(10.0))
@@ -136,15 +132,11 @@ impl KnotQApp {
 /// The signed-out state: a short prompt plus a button that opens the sign-in modal.
 fn signed_out_entry(t: Theme, cx: &mut Context<KnotQApp>) -> gpui::AnyElement {
     div()
-        .px(px(8.0))
-        .py(px(8.0))
         .min_h(px(38.0))
-        .border_b_1()
-        .border_color(token_rgba(t.divider_tiny))
         .flex()
         .items_center()
         .justify_between()
-        .gap(px(8.0))
+        .gap(px(12.0))
         .child(
             div()
                 .min_w_0()
@@ -173,12 +165,12 @@ fn signed_out_entry(t: Theme, cx: &mut Context<KnotQApp>) -> gpui::AnyElement {
                 .px(px(10.0))
                 .py(px(5.0))
                 .rounded(px(5.0))
-                .bg(token_rgba(t.text_highlight))
+                .bg(token_rgba(sync_cta_bg()))
                 .text_size(px(12.0))
                 .font_weight(FontWeight::SEMIBOLD)
                 .text_color(token_hsla(0xffffffff))
                 .cursor_pointer()
-                .hover(|s| s.bg(token_rgba(0xe66f1fff)))
+                .hover(|s| s.bg(token_rgba(sync_cta_hover_bg())))
                 .on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
                     this.open_sync_sign_in(window, cx);
                 }))
@@ -249,23 +241,31 @@ fn account_action_trigger(
 
 /// Primary CTA shown when an account has no sync entitlement: opens the hosted
 /// subscription checkout in the browser.
-fn subscribe_button(t: Theme, cx: &mut Context<KnotQApp>) -> gpui::AnyElement {
+fn subscribe_button(_t: Theme, cx: &mut Context<KnotQApp>) -> gpui::AnyElement {
     div()
         .id("sync-subscribe")
         .px(px(10.0))
         .py(px(5.0))
         .rounded(px(5.0))
-        .bg(token_rgba(t.text_highlight))
+        .bg(token_rgba(sync_cta_bg()))
         .text_size(px(12.0))
         .font_weight(FontWeight::SEMIBOLD)
         .text_color(token_hsla(0xffffffff))
         .cursor_pointer()
-        .hover(|s| s.bg(token_rgba(0xe66f1fff)))
+        .hover(|s| s.bg(token_rgba(sync_cta_hover_bg())))
         .on_click(cx.listener(|this, _: &ClickEvent, _window, cx| {
             this.open_subscription_checkout(cx);
         }))
         .child("Subscribe to enable sync")
         .into_any_element()
+}
+
+pub(crate) fn sync_cta_bg() -> u32 {
+    0x2563ebff
+}
+
+pub(crate) fn sync_cta_hover_bg() -> u32 {
+    0x1d4ed8ff
 }
 
 fn check_account_status_button(

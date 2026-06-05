@@ -4,12 +4,14 @@ use knotq_model::{ItemId, OccurrenceId, SchemeId};
 use uuid::Uuid;
 
 use crate::platform_provider::{
-    notification_snooze_action, NotificationResponse, ACTION_MARK_DONE,
+    notification_snooze_action, notification_tomorrow_morning_utc_after, NotificationResponse,
+    ACTION_MARK_DONE, ACTION_SNOOZE_TOMORROW_MORNING,
 };
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum NotificationAction {
     Snooze { delay_secs: i64 },
+    SnoozeTomorrowMorning,
     MarkDone,
 }
 
@@ -39,6 +41,9 @@ pub fn action_to_command_at(
         }),
         NotificationAction::Snooze { delay_secs } => {
             snooze_command(target, now, Duration::seconds(delay_secs))
+        }
+        NotificationAction::SnoozeTomorrowMorning => {
+            snooze_until_command(target, notification_tomorrow_morning_utc_after(now))
         }
     }
 }
@@ -74,6 +79,9 @@ pub fn notification_action_target(
 }
 
 pub fn notification_action(action_id: &str) -> Option<NotificationAction> {
+    if action_id == ACTION_SNOOZE_TOMORROW_MORNING {
+        return Some(NotificationAction::SnoozeTomorrowMorning);
+    }
     if let Some(action) = notification_snooze_action(action_id) {
         return Some(NotificationAction::Snooze {
             delay_secs: action.delay_secs,
@@ -91,6 +99,13 @@ fn snooze_command(
     delay: Duration,
 ) -> Option<Command> {
     let fire_at = now + delay;
+    snooze_until_command(target, fire_at)
+}
+
+fn snooze_until_command(
+    target: &NotificationActionTarget,
+    fire_at: DateTime<Utc>,
+) -> Option<Command> {
     Some(Command::SetOccurrenceNotificationOffset {
         scheme: target.scheme_id,
         item: target.item_id,

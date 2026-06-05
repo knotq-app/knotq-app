@@ -286,9 +286,6 @@ impl Render for KnotQApp {
         if let Some(notice) = self.render_notice_modal(cx) {
             root = root.child(notice);
         }
-        if let Some(sign_in) = self.render_sync_sign_in_modal(cx) {
-            root = root.child(sign_in);
-        }
         if let Some(popup) = self.render_event_popup(window, cx) {
             root = root.child(popup);
         }

@@ -156,6 +156,10 @@ jobs:
   build-windows:
     name: Windows
     runs-on: windows-latest
+    environment: release-signing
+    permissions:
+      contents: read
+      id-token: write
 
     steps:
       - uses: actions/checkout@v4
@@ -183,26 +187,74 @@ jobs:
       - name: Build
         run: cargo build --package knotq-app --release --target x86_64-pc-windows-msvc
 
+      - name: Azure login
+        uses: azure/login@v3
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Sign Windows app binary
+        uses: azure/artifact-signing-action@v2
+        with:
+          endpoint: ${{ secrets.AZURE_ARTIFACT_SIGNING_ENDPOINT }}
+          signing-account-name: ${{ secrets.AZURE_ARTIFACT_SIGNING_ACCOUNT }}
+          certificate-profile-name: ${{ secrets.AZURE_ARTIFACT_SIGNING_CERT_PROFILE }}
+          files: ${{ github.workspace }}\target\x86_64-pc-windows-msvc\release\knotq.exe
+          file-digest: SHA256
+          timestamp-rfc3161: http://timestamp.acs.microsoft.com
+          timestamp-digest: SHA256
+          description: KnotQ
+          description-url: https://github.com/${{ github.repository }}
+
       - name: Install Inno Setup
         run: choco install innosetup --no-progress -y
-
-      - name: Package MSIX
-        shell: pwsh
-        run: ./bundling/windows/package-msix.ps1 "${{ steps.version.outputs.version }}" "x86_64-pc-windows-msvc"
-        env:
-          WINDOWS_PUBLISHER: ${{ secrets.WINDOWS_PUBLISHER }}
-          WINDOWS_PUBLISHER_DISPLAY_NAME: ${{ secrets.WINDOWS_PUBLISHER_DISPLAY_NAME }}
 
       - name: Package Windows installer
         shell: pwsh
         run: ./bundling/windows/package-installer.ps1 "${{ steps.version.outputs.version }}" "x86_64-pc-windows-msvc"
+
+      - name: Sign Windows installers
+        uses: azure/artifact-signing-action@v2
+        with:
+          endpoint: ${{ secrets.AZURE_ARTIFACT_SIGNING_ENDPOINT }}
+          signing-account-name: ${{ secrets.AZURE_ARTIFACT_SIGNING_ACCOUNT }}
+          certificate-profile-name: ${{ secrets.AZURE_ARTIFACT_SIGNING_CERT_PROFILE }}
+          files-folder: ${{ github.workspace }}\dist\windows
+          files-folder-filter: exe
+          file-digest: SHA256
+          timestamp-rfc3161: http://timestamp.acs.microsoft.com
+          timestamp-digest: SHA256
+          description: KnotQ Windows Installers
+          description-url: https://github.com/${{ github.repository }}
+
+      - name: Verify Windows signatures
+        shell: pwsh
+        run: |
+          $binary = "${{ github.workspace }}\target\x86_64-pc-windows-msvc\release\knotq.exe"
+          $artifacts = @(
+            $binary,
+            "${{ github.workspace }}\dist\windows\KnotQ-${{ steps.version.outputs.version }}-windows-x64-setup.exe"
+          )
+
+          foreach ($file in $artifacts) {
+            if (-not (Test-Path $file)) {
+              throw "signed artifact not found: $file"
+            }
+
+            $signature = Get-AuthenticodeSignature -FilePath $file
+            Write-Host "${file}: $($signature.Status)"
+            if ($signature.Status -ne "Valid") {
+              $signature | Format-List *
+              throw "invalid Authenticode signature: $file"
+            }
+          }
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: KnotQ-release-windows-x64
           path: |
-            dist/windows/KnotQ-*.msix
             dist/windows/KnotQ-*-setup.exe
 
   build-linux:

@@ -60,5 +60,11 @@ Source: "{#SourceRoot}\desktop\app\assets\*"; DestDir: "{app}\assets"; Excludes:
 Name: "{group}\KnotQ"; Filename: "{app}\{#AppExeName}"; WorkingDir: "{app}"; IconFilename: "{app}\{#AppExeName}"; AppUserModelID: "{#AppAumid}"
 Name: "{autodesktop}\KnotQ"; Filename: "{app}\{#AppExeName}"; WorkingDir: "{app}"; IconFilename: "{app}\{#AppExeName}"; Tasks: desktopicon; AppUserModelID: "{#AppAumid}"
 
+[Registry]
+Root: HKCU; Subkey: "Software\Classes\knotq"; ValueType: string; ValueName: ""; ValueData: "URL:KnotQ Notification"; Flags: uninsdeletekey
+Root: HKCU; Subkey: "Software\Classes\knotq"; ValueType: string; ValueName: "URL Protocol"; ValueData: ""
+Root: HKCU; Subkey: "Software\Classes\knotq\DefaultIcon"; ValueType: string; ValueName: ""; ValueData: "{app}\{#AppExeName},0"
+Root: HKCU; Subkey: "Software\Classes\knotq\shell\open\command"; ValueType: string; ValueName: ""; ValueData: """{app}\{#AppExeName}"" ""%1"""
+
 [Run]
 Filename: "{app}\{#AppExeName}"; Description: "{cm:LaunchProgram,KnotQ}"; Flags: nowait postinstall skipifsilent

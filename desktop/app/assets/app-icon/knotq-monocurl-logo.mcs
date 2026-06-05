@@ -1,0 +1,116 @@
+import std.util
+import std.math
+import std.color
+import std.mesh
+import std.anim
+import std.scene
+
+let u_samples = 320
+let v_samples = 88
+let tube_radius = 0.30
+
+let breather_a = 0.8
+
+let RedShadow = [0.12, 0.0, 0.03, 1]
+let RedBlack = [0.26, 0.0, 0.025, 1]
+let Crimson = [0.68, 0.0, 0.055, 1]
+let HotRed = [0.96, 0.02, 0.06, 1]
+let RoseRed = [0.88, 0.07, 0.26, 1]
+let PurpleShadow = [0.16, 0.02, 0.34, 1]
+
+let red_palette = [
+    0 -> RedShadow,
+    0.22 -> PurpleShadow,
+    0.42 -> RedBlack,
+    0.68 -> Crimson,
+    0.88 -> HotRed,
+    1 -> RoseRed
+]
+
+let BreatherColorPoint = |u, v| {
+    let a = breather_a
+    let wsqr = 1 - a * a
+    let w = sqrt(wsqr)
+    let denom = a * ((w * cosh(a * u)) ^ 2 + (a * sin(w * v)) ^ 2)
+
+    let x = -u + (2 * wsqr * cosh(a * u) * sinh(a * u) / denom)
+    let y = 2 * w * cosh(a * u) * (-(w * cos(v) * cos(w * v)) - (sin(v) * sin(w * v))) / denom
+    let z = 2 * w * cosh(a * u) * (-(w * sin(v) * cos(w * v)) + (cos(v) * sin(w * v))) / denom
+
+    return [-x, y, z]
+}
+
+let TrefoilCenter = |t| {
+    let raw = [
+        sin(t) + 2 * sin(2 * t),
+        cos(t) - 2 * cos(2 * t),
+        -sin(3 * t)
+    ]
+
+    return 0.46 * raw
+}
+
+let TrefoilTangent = |t| {
+    let eps = 0.002
+    return normalize(TrefoilCenter(t + eps) - TrefoilCenter(t - eps))
+}
+
+let FrameSeed = |tangent| {
+    if (abs(dot(tangent, UP)) < 0.82) {
+        return UP
+    }
+
+    return RIGHT
+}
+
+let TrefoilTubePoint = |t, theta| {
+    let center = TrefoilCenter(t)
+    let tangent = TrefoilTangent(t)
+    let seed = FrameSeed(tangent)
+    let normal = normalize(cross(seed, tangent))
+    let binormal = normalize(cross(tangent, normal))
+
+    return center + tube_radius * (cos(theta) * normal + sin(theta) * binormal)
+}
+
+let KnotColor = |p| {
+    let b = BreatherColorPoint(1.5 * p[0], p[0])
+    let soft_wave = 0.5 + 0.5 * sin(0.7 * b[0] + 0.35 * b[1])
+    let depth = 0.5 + 0.5 * p[2]
+    let value = clamp(0, 0.54 + 0.22 * soft_wave + 0.18 * depth - 0.08 * abs(b[2]), 1)
+
+    return keyframe_lerp(red_palette, value)
+}
+
+let KnotQLogo = || {
+    return (
+        gloss{0.36}
+        color_map{KnotColor}
+        stroke{CLEAR}
+        point_map{|pos| TrefoilTubePoint(pos[0], pos[1])}
+            ColorGrid(
+                |_, _| RED,
+                [0, TAU, u_samples],
+                [0, TAU, v_samples]
+            )
+    )
+}
+
+background = BLACK
+camera = Camera(position: [-1.6, 1.2, -5.2], target: [0, 0.02, 0], up: UP)
+
+slide "KnotQ Logo"
+    let move_camera = |&camera, at| anim {
+        camera.position = at
+        camera.target = [0, 0.02, 0]
+        play CameraLerp(&camera, 1.8)
+    }
+
+    mesh logo = KnotQLogo()
+
+    camera.position = [-0.9, 1.4, -5.4]
+    camera.target = [0, 0.02, 0]
+
+    play Set([&camera, &logo])
+    play [move_camera(&camera, [-1.6, 1.2, -5.2]), Write(1.2, [&logo])]
+    play Wait(0.8)

@@ -2,7 +2,6 @@ use chrono::{DateTime, Duration, Utc};
 use gpui::Context;
 use knotq_commands::Command;
 use knotq_model::{Item, ItemId, ItemKind, OccurrenceId, Scheme, SchemeId, Workspace};
-use knotq_notifications::notification_snooze_action;
 use knotq_notifications::{
     compute_due_notifications_with_lead_times, delivered_backlog_exceeds, delivered_cleanup_ids,
     expired_event_notification_keys, notification_keys_for_item, DurableNotificationSchedule,
@@ -10,9 +9,10 @@ use knotq_notifications::{
     RetentionReport, ScheduleManifest, ScheduleReconciliationPlan, ScheduledNotification,
     DEFAULT_DURABLE_NOTIFICATION_LIMIT,
 };
+use knotq_notifications::{notification_snooze_action, notification_tomorrow_morning_utc};
 use knotq_notifications::{
     take_notification_responses, AuthorizationStatus, NotificationRequest, NotificationResponse,
-    NotificationScheduler, PlatformStatus, ACTION_MARK_DONE,
+    NotificationScheduler, PlatformStatus, ACTION_MARK_DONE, ACTION_SNOOZE_TOMORROW_MORNING,
 };
 use knotq_rrule::ItemOccurrenceExt;
 use knotq_storage_json::data_dir;
@@ -714,7 +714,13 @@ impl KnotQApp {
     ) {
         for target in targets {
             clear_delivered_notification(&target.notification_id);
-            if let Some(action) = notification_snooze_action(&target.action_id) {
+            if target.action_id == ACTION_SNOOZE_TOMORROW_MORNING {
+                self.snooze_notification_target_until(
+                    target,
+                    notification_tomorrow_morning_utc(),
+                    cx,
+                );
+            } else if let Some(action) = notification_snooze_action(&target.action_id) {
                 self.snooze_notification_target(target, Duration::seconds(action.delay_secs), cx);
             } else if target.action_id == ACTION_MARK_DONE {
                 self.mark_notification_target_done(target, cx);
@@ -728,13 +734,21 @@ impl KnotQApp {
         delay: Duration,
         cx: &mut Context<Self>,
     ) {
+        self.snooze_notification_target_until(target, Utc::now() + delay, cx);
+    }
+
+    fn snooze_notification_target_until(
+        &mut self,
+        target: NotificationActionTarget,
+        fire_at: DateTime<Utc>,
+        cx: &mut Context<Self>,
+    ) {
         let Some(item_id) = self.notification_target_item_id(&target) else {
             return;
         };
         if self.notification_target_is_done(&target, item_id) {
             return;
         }
-        let fire_at = Utc::now() + delay;
         let offset_secs = (target.trigger_at - fire_at).num_seconds();
         self.apply(
             Command::SetOccurrenceNotificationOffset {

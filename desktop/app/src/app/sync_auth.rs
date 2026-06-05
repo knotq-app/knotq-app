@@ -1,47 +1,30 @@
+use std::net::TcpListener;
 use std::sync::mpsc;
 use std::time::Duration as StdDuration;
 
 use anyhow::{anyhow, Context as AnyhowContext, Result};
 use chrono::{DateTime, Utc};
-use gpui::{AppContext, Context, Window};
-use gpui_component::input::InputState;
+use gpui::{Context, Window};
 use knotq_model::{SyncAccountSettings, SyncAccountStatus, WorkspaceId};
 use knotq_sync::AccountStatusResponse;
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 
 use super::{
-    KnotQApp, OnboardingPhase, PendingLoginChallenge, SyncAccountAction, SyncAuthMode,
-    SyncAuthStatus, SyncRunStatus, SyncSignInState,
+    KnotQApp, OnboardingPhase, SyncAccountAction, SyncAuthMode, SyncAuthStatus, SyncRunStatus,
 };
+use crate::app::google_oauth::{code_challenge, open_browser, random_token, wait_for_oauth_code};
 
 const DEFAULT_SYNC_API_BASE: &str = "http://127.0.0.1:8787";
 
-/// Lemon Squeezy hosted checkout for the sync subscription (Lemon Squeezy is the
-/// merchant of record for web/desktop, so it handles tax). Replace the store and
-/// variant with your own from Lemon Squeezy → Products → "Share". The
-/// `checkout[custom][user_id]` value round-trips to the `/v1/billing/lemonsqueezy`
-/// webhook so it can grant sync to this exact account.
-const SUBSCRIPTION_CHECKOUT_URL: &str = "https://YOUR_STORE.lemonsqueezy.com/buy/YOUR_VARIANT_ID";
+/// KnotQ-hosted browser sign-in page. The app opens this with a loopback
+/// `redirect_uri` + PKCE; the page signs the user in and hands back a one-time
+/// authorization code redeemed via `POST /v1/auth/authorize/exchange`.
+const SIGNIN_PAGE_URL: &str = "https://www.knotq.com/signin.html";
 
-#[derive(Serialize)]
-struct LoginRequest {
-    email: String,
-    password: String,
-}
-
-/// Pending two-factor login returned by `POST /v1/auth/login`: the password was
-/// accepted and a code emailed, but no session is minted until the code is verified.
-#[derive(Deserialize)]
-struct LoginChallengeResponse {
-    challenge_id: String,
-}
-
-/// The challenge plus the context the verify step needs (normalized base + email).
-pub(crate) struct LoginChallenge {
-    pub api_base: String,
-    pub email: String,
-    pub challenge_id: String,
-}
+/// KnotQ-hosted subscription page. The page opens Lemon Squeezy's secure
+/// checkout overlay on knotq.com and passes the account id through to Lemon so
+/// the `/v1/billing/lemonsqueezy` webhook can grant sync to this exact account.
+const SUBSCRIPTION_CHECKOUT_URL: &str = "https://www.knotq.com/checkout.html";
 
 #[derive(Deserialize)]
 struct LoginResponse {
@@ -89,28 +72,30 @@ struct LoginError {
 }
 
 impl KnotQApp {
-    pub fn open_sync_sign_in(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        self.open_sync_sign_in_with_options(SyncAuthMode::SignIn, false, window, cx);
+    pub fn open_sync_sign_in(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
+        self.begin_browser_sign_in(SyncAuthMode::SignIn, false, cx);
     }
 
     pub fn open_sync_sign_in_for_onboarding(
         &mut self,
         mode: SyncAuthMode,
-        window: &mut Window,
+        _window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.open_sync_sign_in_with_options(mode, true, window, cx);
+        self.begin_browser_sign_in(mode, true, cx);
     }
 
-    fn open_sync_sign_in_with_options(
+    /// Start a browser-based sign-in: open the hosted sign-in page (with a loopback
+    /// redirect + PKCE) and, on the redirect callback, exchange the one-time code
+    /// for a session. The whole exchange runs on a background thread so the UI
+    /// thread keeps painting while the browser is up.
+    fn begin_browser_sign_in(
         &mut self,
         mode: SyncAuthMode,
-        advance_onboarding_on_success: bool,
-        window: &mut Window,
+        advance_onboarding: bool,
         cx: &mut Context<Self>,
     ) {
-        if self.sync_sign_in.is_some() {
-            self.set_sync_auth_mode(mode, cx);
+        if matches!(self.sync_auth_status, SyncAuthStatus::InProgress) {
             return;
         }
         self.sync_status_popover = None;
@@ -124,70 +109,33 @@ impl KnotQApp {
             .as_ref()
             .map(|account| account.api_base.clone())
             .unwrap_or_else(|| DEFAULT_SYNC_API_BASE.to_string());
-        let email = self
-            .settings
-            .sync_account
-            .as_ref()
-            .map(|account| account.email.clone())
-            .unwrap_or_default();
-
-        let api_input = cx.new(|cx| {
-            InputState::new(window, cx)
-                .placeholder("Sync API")
-                .default_value(api_base)
-        });
-        let email_input = cx.new(|cx| {
-            InputState::new(window, cx)
-                .placeholder("Email")
-                .default_value(email)
-        });
-        let password_input = cx.new(|cx| {
-            InputState::new(window, cx)
-                .placeholder("Password")
-                .masked(true)
-        });
-        let code_input = cx.new(|cx| InputState::new(window, cx).placeholder("6-digit code"));
-
-        email_input.update(cx, |input, cx| input.focus(window, cx));
-        self.sync_sign_in = Some(SyncSignInState {
-            api_input,
-            email_input,
-            password_input,
-            code_input,
-            mode,
-            advance_onboarding_on_success,
-            show_advanced: false,
-            challenge: None,
-        });
-        self.sync_auth_status = SyncAuthStatus::Idle;
-        cx.notify();
-    }
-
-    pub fn set_sync_auth_mode(&mut self, mode: SyncAuthMode, cx: &mut Context<Self>) {
-        if let Some(state) = self.sync_sign_in.as_mut() {
-            if state.mode != mode {
-                state.mode = mode;
-                state.challenge = None;
-                self.sync_auth_status = SyncAuthStatus::Idle;
+        let api_base = match normalize_api_base(&api_base) {
+            Ok(base) => base,
+            Err(err) => {
+                self.sync_auth_status = SyncAuthStatus::Error(err.to_string());
                 cx.notify();
+                return;
             }
-        }
-    }
+        };
 
-    pub fn close_sync_sign_in(&mut self, cx: &mut Context<Self>) {
-        if self.sync_sign_in.take().is_some() {
-            self.sync_auth_status = SyncAuthStatus::Idle;
-            self.sync_account_action = None;
-            cx.notify();
-        }
-    }
-
-    /// Reveal/hide the Sync API URL field in the sign-in modal.
-    pub fn toggle_sync_advanced(&mut self, cx: &mut Context<Self>) {
-        if let Some(state) = self.sync_sign_in.as_mut() {
-            state.show_advanced = !state.show_advanced;
-            cx.notify();
-        }
+        self.sync_advance_onboarding_on_success = advance_onboarding;
+        self.sync_auth_status = SyncAuthStatus::InProgress;
+        let task = cx.spawn(
+            async move |weak: gpui::WeakEntity<Self>, cx: &mut gpui::AsyncApp| {
+                let (tx, rx) = mpsc::channel();
+                std::thread::spawn(move || {
+                    let result =
+                        run_browser_sign_in(&api_base, mode).map_err(|err| format!("{err:#}"));
+                    let _ = tx.send(result);
+                });
+                Self::pump_sync_auth_worker(weak, cx, rx, |app, result, cx| {
+                    app.finish_sync_sign_in(result, cx);
+                })
+                .await;
+            },
+        );
+        self.sync_auth_task = Some(task);
+        cx.notify();
     }
 
     /// Toggle the glanceable sync status popover anchored under the title-bar
@@ -358,8 +306,8 @@ impl KnotQApp {
                 let _ = knotq_storage_json::secrets::delete_sync();
                 self.sync_account_action = None;
                 self.sync_run_status = SyncRunStatus::Idle;
+                self.sync_auth_status = SyncAuthStatus::Idle;
                 self.save_app_settings();
-                self.close_sync_sign_in(cx);
             }
             Err(message) => {
                 self.sync_auth_status = SyncAuthStatus::Error(message);
@@ -451,107 +399,9 @@ impl KnotQApp {
         cx.notify();
     }
 
-    pub fn submit_sync_sign_in(&mut self, cx: &mut Context<Self>) {
-        if matches!(self.sync_auth_status, SyncAuthStatus::InProgress) {
-            return;
-        }
-        let Some(state) = &self.sync_sign_in else {
-            return;
-        };
-        let mode = state.mode;
-
-        // Second step: a challenge is pending, so the submit verifies the emailed code.
-        if let Some(challenge) = &state.challenge {
-            let code = state.code_input.read(cx).value().to_string();
-            if code.trim().is_empty() {
-                self.sync_auth_status =
-                    SyncAuthStatus::Error("Enter the code we emailed you.".to_string());
-                cx.notify();
-                return;
-            }
-            let api_base = challenge.api_base.clone();
-            let challenge_id = challenge.challenge_id.clone();
-            let code = code.trim().to_string();
-            self.sync_auth_status = SyncAuthStatus::InProgress;
-            let task = cx.spawn(
-                async move |weak: gpui::WeakEntity<Self>, cx: &mut gpui::AsyncApp| {
-                    let (tx, rx) = mpsc::channel();
-                    std::thread::spawn(move || {
-                        let result = verify_login_to_sync_backend(&api_base, &challenge_id, &code)
-                            .map_err(|err| format!("{err:#}"));
-                        let _ = tx.send(result);
-                    });
-                    Self::pump_sync_auth_worker(weak, cx, rx, |app, result, cx| {
-                        app.finish_sync_sign_in(result, cx);
-                    })
-                    .await;
-                },
-            );
-            self.sync_auth_task = Some(task);
-            cx.notify();
-            return;
-        }
-
-        let api_base = state.api_input.read(cx).value().to_string();
-        let email = state.email_input.read(cx).value().to_string();
-        let password = state.password_input.read(cx).value().to_string();
-        let api_base = normalize_api_base(&api_base).unwrap_or_else(|err| {
-            self.sync_auth_status = SyncAuthStatus::Error(err.to_string());
-            String::new()
-        });
-        if api_base.is_empty() {
-            cx.notify();
-            return;
-        }
-        if email.trim().is_empty() || password.is_empty() {
-            self.sync_auth_status =
-                SyncAuthStatus::Error("Enter the email and password for your account.".to_string());
-            cx.notify();
-            return;
-        }
-
-        self.sync_auth_status = SyncAuthStatus::InProgress;
-        if mode == SyncAuthMode::CreateAccount {
-            let task = cx.spawn(
-                async move |weak: gpui::WeakEntity<Self>, cx: &mut gpui::AsyncApp| {
-                    let (tx, rx) = mpsc::channel();
-                    std::thread::spawn(move || {
-                        let result = create_sync_account_backend(&api_base, &email, &password)
-                            .map_err(|err| format!("{err:#}"));
-                        let _ = tx.send(result);
-                    });
-                    Self::pump_sync_auth_worker(weak, cx, rx, |app, result, cx| {
-                        app.finish_sync_sign_in(result, cx);
-                    })
-                    .await;
-                },
-            );
-            self.sync_auth_task = Some(task);
-            cx.notify();
-            return;
-        }
-
-        // Sign-in first step: email + password earns a 2FA challenge (a code is emailed).
-        let task = cx.spawn(
-            async move |weak: gpui::WeakEntity<Self>, cx: &mut gpui::AsyncApp| {
-                let (tx, rx) = mpsc::channel();
-                std::thread::spawn(move || {
-                    let result = login_to_sync_backend(&api_base, &email, &password)
-                        .map_err(|err| format!("{err:#}"));
-                    let _ = tx.send(result);
-                });
-                Self::pump_sync_auth_worker(weak, cx, rx, |app, result, cx| {
-                    app.finish_sync_login(result, cx);
-                })
-                .await;
-            },
-        );
-        self.sync_auth_task = Some(task);
-        cx.notify();
-    }
-
     /// Poll a background auth worker's channel from the UI executor and hand the
-    /// result to `finish` on the app entity. Shared by the password and code steps.
+    /// result to `finish` on the app entity. Shared by the browser sign-in and the
+    /// account-management actions.
     async fn pump_sync_auth_worker<T: Send + 'static>(
         weak: gpui::WeakEntity<Self>,
         cx: &mut gpui::AsyncApp,
@@ -579,32 +429,6 @@ impl KnotQApp {
         }
     }
 
-    /// Completion for the password step: store the pending challenge so the modal
-    /// switches to its code-entry phase (or surface the error).
-    fn finish_sync_login(
-        &mut self,
-        result: Result<LoginChallenge, String>,
-        cx: &mut Context<Self>,
-    ) {
-        self.sync_auth_task = None;
-        match result {
-            Ok(challenge) => {
-                if let Some(state) = self.sync_sign_in.as_mut() {
-                    state.challenge = Some(PendingLoginChallenge {
-                        api_base: challenge.api_base,
-                        email: challenge.email,
-                        challenge_id: challenge.challenge_id,
-                    });
-                }
-                self.sync_auth_status = SyncAuthStatus::Idle;
-            }
-            Err(message) => {
-                self.sync_auth_status = SyncAuthStatus::Error(message);
-            }
-        }
-        cx.notify();
-    }
-
     fn finish_sync_sign_in(
         &mut self,
         result: Result<SyncAccountSettings, String>,
@@ -613,12 +437,9 @@ impl KnotQApp {
         self.sync_auth_task = None;
         match result {
             Ok(account) => {
-                let advance_onboarding = self
-                    .sync_sign_in
-                    .as_ref()
-                    .is_some_and(|state| state.advance_onboarding_on_success);
+                let advance_onboarding = self.sync_advance_onboarding_on_success;
+                self.sync_advance_onboarding_on_success = false;
                 self.settings.sync_account = Some(account);
-                self.sync_sign_in = None;
                 self.sync_auth_status = SyncAuthStatus::Idle;
                 if advance_onboarding && self.show_onboarding {
                     self.onboarding_phase = OnboardingPhase::Guide;
@@ -635,84 +456,75 @@ impl KnotQApp {
     }
 }
 
-/// First login step: submit email + password. On success the backend emails a
-/// 2FA code and returns a challenge to be completed via `verify_login_to_sync_backend`.
-fn login_to_sync_backend(api_base: &str, email: &str, password: &str) -> Result<LoginChallenge> {
+/// Run the full browser sign-in on a background thread: open the hosted sign-in
+/// page against a loopback redirect with PKCE, wait for the redirect callback, and
+/// exchange the one-time authorization code for a session. Blocking (`ureq` + a
+/// loopback `TcpListener`), so callers run it off the UI thread.
+fn run_browser_sign_in(api_base: &str, mode: SyncAuthMode) -> Result<SyncAccountSettings> {
     let base = normalize_api_base(api_base)?;
-    let email = email.trim().to_string();
-    let url = format!("{base}/v1/auth/login");
-    let request = LoginRequest {
-        email: email.clone(),
-        password: password.to_string(),
-    };
-    let response = match ureq::post(&url)
-        .timeout(StdDuration::from_secs(10))
-        .send_json(serde_json::to_value(request)?)
-    {
-        Ok(response) => response,
-        Err(ureq::Error::Status(_, response)) => {
-            let code = response
-                .into_json::<LoginError>()
-                .map(|error| error.code)
-                .unwrap_or_else(|_| "unauthorized".to_string());
-            return Err(anyhow!(login_error_message(&code)));
-        }
-        Err(error) => return Err(anyhow!("Could not reach the local sync Worker: {error}")),
-    };
-    let challenge: LoginChallengeResponse = response
-        .into_json()
-        .context("parse sync login challenge from local backend")?;
-    Ok(LoginChallenge {
-        api_base: base,
-        email,
-        challenge_id: challenge.challenge_id,
-    })
+    let listener = TcpListener::bind("127.0.0.1:0").context("bind sign-in loopback listener")?;
+    listener
+        .set_nonblocking(true)
+        .context("make sign-in loopback listener nonblocking")?;
+    let redirect_uri = format!("http://127.0.0.1:{}", listener.local_addr()?.port());
+    let state = random_token(32);
+    // PKCE: the verifier never leaves the app; only its challenge rides the URL, so
+    // an intercepted authorization code is useless without this process.
+    let code_verifier = random_token(64);
+    let challenge = code_challenge(&code_verifier);
+    let url = sign_in_authorize_url(&redirect_uri, &state, mode, &base, &challenge);
+
+    open_browser(&url)?;
+    let code = wait_for_oauth_code(
+        &listener,
+        &state,
+        StdDuration::from_secs(300),
+        "You're signed in to KnotQ. You can close this tab and return to the app.",
+        "Sign-in did not complete. You can close this tab and return to KnotQ.",
+    )?;
+    exchange_authorize_code(&base, &code, &code_verifier)
 }
 
-fn create_sync_account_backend(
+/// Build the hosted sign-in URL. `api` lets the page (and the later exchange) talk
+/// to the same backend the app is configured for (prod, local dev, or self-host).
+fn sign_in_authorize_url(
+    redirect_uri: &str,
+    state: &str,
+    mode: SyncAuthMode,
     api_base: &str,
-    email: &str,
-    password: &str,
-) -> Result<SyncAccountSettings> {
-    let base = normalize_api_base(api_base)?;
-    let email = email.trim().to_string();
-    let url = format!("{base}/v1/auth/signup");
-    let request = LoginRequest {
-        email,
-        password: password.to_string(),
+    code_challenge: &str,
+) -> String {
+    let mode_param = match mode {
+        SyncAuthMode::SignIn => "signin",
+        SyncAuthMode::CreateAccount => "create",
     };
-    let response = match ureq::post(&url)
-        .timeout(StdDuration::from_secs(10))
-        .send_json(serde_json::to_value(request)?)
-    {
-        Ok(response) => response,
-        Err(ureq::Error::Status(_, response)) => {
-            let code = response
-                .into_json::<LoginError>()
-                .map(|error| error.code)
-                .unwrap_or_else(|_| "signup_failed".to_string());
-            return Err(anyhow!(signup_error_message(&code)));
-        }
-        Err(error) => return Err(anyhow!("Could not reach the local sync Worker: {error}")),
-    };
-    let session: LoginResponse = response
-        .into_json()
-        .context("parse sync account response from local backend")?;
-    Ok(sync_account_settings_from_session(base, session))
+    let params = [
+        ("redirect_uri", redirect_uri),
+        ("state", state),
+        ("mode", mode_param),
+        ("api", api_base),
+        ("code_challenge", code_challenge),
+        ("code_challenge_method", "S256"),
+    ];
+    let query = params
+        .iter()
+        .map(|(key, value)| format!("{key}={}", percent_encode(value)))
+        .collect::<Vec<_>>()
+        .join("&");
+    format!("{SIGNIN_PAGE_URL}?{query}")
 }
 
-/// Second login step: submit the emailed code for a challenge and, on success,
-/// receive the session. Runs on a background thread (blocking `ureq`).
-fn verify_login_to_sync_backend(
+/// Redeem the one-time authorization code (with the PKCE verifier) for a session.
+fn exchange_authorize_code(
     api_base: &str,
-    challenge_id: &str,
     code: &str,
+    code_verifier: &str,
 ) -> Result<SyncAccountSettings> {
     let base = normalize_api_base(api_base)?;
-    let url = format!("{base}/v1/auth/login/verify");
+    let url = format!("{base}/v1/auth/authorize/exchange");
     let response = match ureq::post(&url)
         .timeout(StdDuration::from_secs(10))
-        .send_json(serde_json::json!({ "challenge_id": challenge_id, "code": code.trim() }))
+        .send_json(serde_json::json!({ "code": code, "code_verifier": code_verifier }))
     {
         Ok(response) => response,
         Err(ureq::Error::Status(_, response)) => {
@@ -720,13 +532,13 @@ fn verify_login_to_sync_backend(
                 .into_json::<LoginError>()
                 .map(|error| error.code)
                 .unwrap_or_else(|_| "unauthorized".to_string());
-            return Err(anyhow!(login_error_message(&code)));
+            return Err(anyhow!(authorize_error_message(&code)));
         }
-        Err(error) => return Err(anyhow!("Could not reach the local sync Worker: {error}")),
+        Err(error) => return Err(anyhow!("Could not reach the sync Worker: {error}")),
     };
     let session: LoginResponse = response
         .into_json()
-        .context("parse sync login verify response from local backend")?;
+        .context("parse sync sign-in response")?;
     Ok(sync_account_settings_from_session(base, session))
 }
 
@@ -976,11 +788,22 @@ fn account_action_error_message(code: &str) -> &'static str {
 /// Build the hosted checkout URL, threading the account id + email through so the
 /// billing webhook can map the resulting subscription back to this account.
 fn subscription_checkout_url(user_id: &str, email: &str) -> String {
+    let separator = checkout_query_separator(SUBSCRIPTION_CHECKOUT_URL);
     format!(
-        "{SUBSCRIPTION_CHECKOUT_URL}?checkout[email]={}&checkout[custom][user_id]={}",
+        "{SUBSCRIPTION_CHECKOUT_URL}{separator}email={}&user_id={}",
         percent_encode(email),
         percent_encode(user_id),
     )
+}
+
+fn checkout_query_separator(url: &str) -> &'static str {
+    if url.ends_with('?') || url.ends_with('&') {
+        ""
+    } else if url.contains('?') {
+        "&"
+    } else {
+        "?"
+    }
 }
 
 /// Percent-encode a query value, escaping everything outside the RFC 3986
@@ -1043,26 +866,14 @@ fn is_loopback_http_authority(after_scheme: &str) -> bool {
     )
 }
 
-fn login_error_message(code: &str) -> &'static str {
+/// The authorization code is minted by the hosted page and redeemed here; the only
+/// failures the app surfaces are a stale/replayed code, so keep the guidance simple.
+fn authorize_error_message(code: &str) -> &'static str {
     match code {
-        "invalid_email" | "unauthorized" => "Email or password is incorrect.",
-        "password_too_long" => "Password is too long.",
-        "invalid_code" => "That code is incorrect.",
-        "code_expired" | "invalid_or_expired_code" => {
-            "That code has expired. Sign in again to get a new one."
+        "invalid_authorization_code" | "authorization_code_expired" | "invalid_code_challenge" => {
+            "Sign-in could not be completed. Please try signing in again."
         }
-        "too_many_attempts" => "Too many incorrect codes. Sign in again to get a new one.",
         _ => "Sign in failed.",
-    }
-}
-
-fn signup_error_message(code: &str) -> &'static str {
-    match code {
-        "account_exists" => "An account already exists for that email.",
-        "invalid_email" => "Enter a valid email address.",
-        "password_too_short" => "Use a password with at least 12 characters.",
-        "password_too_long" => "Password is too long.",
-        _ => "Sync account request failed.",
     }
 }
 

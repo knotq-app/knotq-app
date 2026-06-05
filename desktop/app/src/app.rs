@@ -281,28 +281,6 @@ pub enum SyncRunStatus {
     },
 }
 
-pub struct SyncSignInState {
-    pub api_input: Entity<InputState>,
-    pub email_input: Entity<InputState>,
-    pub password_input: Entity<InputState>,
-    pub code_input: Entity<InputState>,
-    pub mode: SyncAuthMode,
-    pub advance_onboarding_on_success: bool,
-    // Reveals the Sync API URL field; hidden by default so normal users never
-    // see the dev/self-host endpoint and just enter email + password.
-    pub show_advanced: bool,
-    // Set once the password step succeeds: the modal then collects the emailed
-    // 2FA code and the submit button verifies it instead of re-sending the password.
-    pub challenge: Option<PendingLoginChallenge>,
-}
-
-/// A pending two-factor login awaiting its emailed code.
-pub struct PendingLoginChallenge {
-    pub api_base: String,
-    pub email: String,
-    pub challenge_id: String,
-}
-
 #[derive(Clone, Debug)]
 pub struct SidebarContextMenu {
     pub target: SidebarContextTarget,
@@ -563,7 +541,9 @@ pub struct KnotQApp {
     pub google_calendar_picker_task: Option<Task<()>>,
     pub google_oauth_status: GoogleOAuthStatus,
     pub google_oauth_task: Option<Task<()>>,
-    pub sync_sign_in: Option<SyncSignInState>,
+    /// Sign-in now happens in the browser; this just remembers whether the
+    /// in-flight browser sign-in should advance onboarding when it succeeds.
+    pub sync_advance_onboarding_on_success: bool,
     pub sync_auth_status: SyncAuthStatus,
     pub sync_run_status: SyncRunStatus,
     pub sync_auth_task: Option<Task<()>>,
@@ -688,7 +668,7 @@ impl KnotQApp {
             google_calendar_picker_task: None,
             google_oauth_status: GoogleOAuthStatus::Idle,
             google_oauth_task: None,
-            sync_sign_in: None,
+            sync_advance_onboarding_on_success: false,
             sync_auth_status: SyncAuthStatus::Idle,
             sync_account_action: None,
             sync_run_status: SyncRunStatus::Idle,

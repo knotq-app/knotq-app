@@ -1227,7 +1227,13 @@ fn run_google_oauth(config: GoogleOAuthConfig) -> Result<GoogleOAuthAccount> {
     );
 
     open_browser(&auth_url)?;
-    let code = wait_for_oauth_code(&listener, &state, StdDuration::from_secs(120))?;
+    let code = wait_for_oauth_code(
+        &listener,
+        &state,
+        StdDuration::from_secs(120),
+        "Google Calendar is connected. You can close this tab and return to KnotQ.",
+        "Google Calendar connection failed. You can close this tab and return to KnotQ.",
+    )?;
     let token = exchange_auth_code(&config, &redirect_uri, &code, &code_verifier)?;
     let refresh_token = token
         .refresh_token
@@ -1280,10 +1286,16 @@ fn google_auth_url(
     format!("{GOOGLE_AUTH_URL}?{query}")
 }
 
-fn wait_for_oauth_code(
+/// Block on a loopback OAuth/PKCE redirect, returning the `code` query parameter
+/// once the browser hits the listener (and the `state` matches). Shared by the
+/// Google Calendar import and the sync browser sign-in; callers pass the success
+/// and failure pages shown in the browser tab.
+pub(crate) fn wait_for_oauth_code(
     listener: &TcpListener,
     expected_state: &str,
     timeout: StdDuration,
+    success_body: &str,
+    failure_body: &str,
 ) -> Result<String> {
     let started = Instant::now();
     while started.elapsed() < timeout {
@@ -1291,9 +1303,9 @@ fn wait_for_oauth_code(
             Ok((mut stream, _)) => {
                 let result = read_oauth_callback(&mut stream, expected_state);
                 let body = if result.is_ok() {
-                    "Google Calendar is connected. You can close this tab and return to KnotQ."
+                    success_body
                 } else {
-                    "Google Calendar connection failed. You can close this tab and return to KnotQ."
+                    failure_body
                 };
                 let _ = write_http_response(&mut stream, body);
                 return result;
@@ -2222,11 +2234,11 @@ pub(crate) fn open_browser(url: &str) -> Result<()> {
     Ok(())
 }
 
-fn random_token(len: usize) -> String {
+pub(crate) fn random_token(len: usize) -> String {
     Alphanumeric.sample_string(&mut rand::thread_rng(), len)
 }
 
-fn code_challenge(verifier: &str) -> String {
+pub(crate) fn code_challenge(verifier: &str) -> String {
     let digest = Sha256::digest(verifier.as_bytes());
     base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(digest)
 }

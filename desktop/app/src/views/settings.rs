@@ -2,6 +2,7 @@ use chrono::{DateTime, Duration, Local, Utc};
 use gpui::prelude::*;
 use gpui::{div, px, ClickEvent, Context, IntoElement};
 use gpui_component::scroll::ScrollableElement as _;
+use knotq_model::{CalendarProvider, SchemeId, SchemeSource};
 use knotq_storage_json::{
     list_workspace_snapshots, workspace_dir, CalendarViewMode, CalendarWeekRange,
     NotificationDefaults, ThemeMode, TimeFormat, WorkspaceSnapshot,
@@ -10,6 +11,13 @@ use knotq_storage_json::{
 use crate::app::auto_update::AutoUpdateUiStatus;
 use crate::app::KnotQApp;
 use crate::theme_gpui::{all_themes, token_hsla, token_rgba, Theme as UiTheme};
+
+struct GoogleCalendarSettingsRow {
+    scheme_id: SchemeId,
+    title: String,
+    detail: String,
+    connected: bool,
+}
 
 impl KnotQApp {
     pub fn render_settings(&mut self, cx: &mut Context<Self>) -> gpui::AnyElement {
@@ -154,7 +162,7 @@ impl KnotQApp {
         }
         let history_rows = self.version_history_rows(t, cx);
         let update_rows = self.auto_update_rows(t, cx);
-        let sync_rows = self.sync_account_rows(t, cx);
+        let sync_panel = self.settings_sync_panel(t, cx);
         let google_rows = self.google_calendar_account_rows(t, cx);
 
         div()
@@ -169,12 +177,12 @@ impl KnotQApp {
                         .max_w(px(560.0))
                         .px(px(16.0))
                         .pt(px(10.0))
-                        .pb(px(16.0))
+                        .pb(px(96.0))
                         .flex()
                         .flex_col()
                         .gap(px(8.0))
                         .child(settings_header(t))
-                        .child(settings_section("Sync", sync_rows, t))
+                        .child(sync_panel)
                         .child(settings_section("Appearance", theme_rows, t))
                         .child(settings_section("Calendar", calendar_rows, t))
                         .child(settings_section("Google Calendar", google_rows, t))
@@ -203,8 +211,74 @@ impl KnotQApp {
         rows
     }
 
-    fn sync_account_rows(&mut self, t: UiTheme, cx: &mut Context<Self>) -> Vec<gpui::AnyElement> {
-        vec![self.sync_account_management_section(t, cx)]
+    fn settings_sync_panel(&mut self, t: UiTheme, cx: &mut Context<Self>) -> gpui::AnyElement {
+        let account = self.settings.sync_account.as_ref();
+        let signed_in = account.is_some();
+        let sync_enabled = account.is_some_and(|account| account.supports_sync);
+        let (badge, detail, badge_bg, badge_fg) =
+            settings_sync_panel_state(signed_in, sync_enabled, t);
+
+        div()
+            .w_full()
+            .rounded(px(8.0))
+            .border_1()
+            .border_color(token_rgba(settings_sync_panel_border(t)))
+            .bg(token_rgba(settings_sync_panel_bg(t)))
+            .shadow_md()
+            .p(px(12.0))
+            .flex()
+            .flex_col()
+            .gap(px(11.0))
+            .child(
+                div()
+                    .flex()
+                    .items_start()
+                    .justify_between()
+                    .gap(px(10.0))
+                    .child(
+                        div()
+                            .min_w_0()
+                            .flex()
+                            .items_start()
+                            .gap(px(9.0))
+                            .child(settings_sync_glyph(t))
+                            .child(
+                                div()
+                                    .min_w_0()
+                                    .flex()
+                                    .flex_col()
+                                    .gap(px(3.0))
+                                    .child(
+                                        div()
+                                            .text_size(px(15.0))
+                                            .font_weight(gpui::FontWeight::SEMIBOLD)
+                                            .text_color(token_hsla(t.text_primary))
+                                            .child("KnotQ Sync"),
+                                    )
+                                    .child(
+                                        div()
+                                            .text_size(px(11.0))
+                                            .line_height(px(15.0))
+                                            .text_color(token_hsla(t.text_soft))
+                                            .child(detail),
+                                    ),
+                            ),
+                    )
+                    .child(
+                        div()
+                            .flex_shrink_0()
+                            .px(px(7.0))
+                            .py(px(3.0))
+                            .rounded(px(99.0))
+                            .bg(token_rgba(badge_bg))
+                            .text_size(px(11.0))
+                            .font_weight(gpui::FontWeight::SEMIBOLD)
+                            .text_color(token_hsla(badge_fg))
+                            .child(badge),
+                    ),
+            )
+            .child(self.sync_account_management_section(t, cx))
+            .into_any_element()
     }
 
     fn google_calendar_account_rows(
@@ -212,35 +286,100 @@ impl KnotQApp {
         t: UiTheme,
         cx: &mut Context<Self>,
     ) -> Vec<gpui::AnyElement> {
+        let mut rows = Vec::new();
+        let calendar_rows = self.google_calendar_settings_rows();
+
         if self.settings.google_accounts.is_empty() {
-            return vec![settings_message(
-                "No Google accounts connected locally.".to_string(),
+            rows.push(settings_message(
+                if calendar_rows.is_empty() {
+                    "No Google accounts connected locally.".to_string()
+                } else {
+                    "No local Google account credentials. Calendars below will stay offline until you reconnect.".to_string()
+                },
                 false,
                 t,
-            )];
+            ));
+        } else {
+            rows.push(settings_subheading("Accounts", t));
+            rows.extend(
+                self.settings
+                    .google_accounts
+                    .clone()
+                    .into_iter()
+                    .enumerate()
+                    .map(|(idx, account)| {
+                        let account_id = account.account_id.clone();
+                        let title = account
+                            .email
+                            .clone()
+                            .filter(|email| !email.trim().is_empty())
+                            .unwrap_or_else(|| account.account_id.clone());
+                        let count = self.google_calendar_scheme_count_for_account(&account);
+                        let detail = match count {
+                            0 => "No synced calendars use this local account.".to_string(),
+                            1 => "1 synced calendar uses this local account.".to_string(),
+                            count => format!("{count} synced calendars use this local account."),
+                        };
+                        google_account_row(idx, account_id, title, detail, t, cx)
+                    }),
+            );
         }
 
-        self.settings
-            .google_accounts
-            .clone()
-            .into_iter()
-            .enumerate()
-            .map(|(idx, account)| {
-                let account_id = account.account_id.clone();
-                let title = account
-                    .email
-                    .clone()
-                    .filter(|email| !email.trim().is_empty())
-                    .unwrap_or_else(|| account.account_id.clone());
-                let count = self.google_calendar_scheme_count_for_account(&account);
-                let detail = match count {
-                    0 => "No synced calendars use this local account.".to_string(),
-                    1 => "1 synced calendar uses this local account.".to_string(),
-                    count => format!("{count} synced calendars use this local account."),
+        rows.push(settings_subheading("Calendars", t));
+        if calendar_rows.is_empty() {
+            rows.push(settings_message(
+                "No Google calendars imported into this workspace.".to_string(),
+                false,
+                t,
+            ));
+        } else {
+            rows.extend(
+                calendar_rows
+                    .into_iter()
+                    .enumerate()
+                    .map(|(idx, row)| google_calendar_row(idx, row, t, cx)),
+            );
+        }
+
+        rows
+    }
+
+    fn google_calendar_settings_rows(&self) -> Vec<GoogleCalendarSettingsRow> {
+        let mut rows = self
+            .workspace
+            .schemes
+            .values()
+            .filter_map(|scheme| {
+                if self.workspace.is_scheme_deleted(scheme.id) {
+                    return None;
+                }
+                let SchemeSource::ImportedCalendar(source) = &scheme.source else {
+                    return None;
                 };
-                google_account_row(idx, account_id, title, detail, t, cx)
+                if source.provider != CalendarProvider::Google {
+                    return None;
+                }
+
+                let connected = self.google_calendar_has_local_credentials(scheme);
+                let account_label = self
+                    .imported_calendar_account_label(scheme)
+                    .unwrap_or_else(|| source.account_id.clone());
+                let status = if connected { "Connected" } else { "Offline" };
+                let synced = source
+                    .last_synced_at
+                    .map(google_calendar_last_synced_label)
+                    .unwrap_or_else(|| "Not synced yet".to_string());
+                Some(GoogleCalendarSettingsRow {
+                    scheme_id: scheme.id,
+                    title: self.scheme_display_name(scheme),
+                    detail: format!("{status} as {account_label} - {synced}"),
+                    connected,
+                })
             })
-            .collect()
+            .collect::<Vec<_>>();
+
+        rows.sort_by(|a, b| a.title.cmp(&b.title).then_with(|| a.detail.cmp(&b.detail)));
+        rows
     }
 
     fn version_history_rows(
@@ -277,6 +416,95 @@ impl KnotQApp {
         }
         rows
     }
+}
+
+fn settings_sync_panel_state(
+    signed_in: bool,
+    sync_enabled: bool,
+    t: UiTheme,
+) -> (&'static str, &'static str, u32, u32) {
+    if sync_enabled {
+        return (
+            "Enabled",
+            "Workspace sync is active for this account.",
+            if t.is_dark { 0x30d15826 } else { 0x1f8f4d18 },
+            if t.is_dark { 0x9af0b6ff } else { 0x176b38ff },
+        );
+    }
+
+    if signed_in {
+        return (
+            "Upgrade",
+            "Subscribe to keep this workspace available across installs.",
+            if t.is_dark { 0xf59e0b28 } else { 0xd977061a },
+            if t.is_dark { 0xf8d38dff } else { 0x9a4b00ff },
+        );
+    }
+
+    (
+        "Available",
+        "Sign in to keep this workspace available across installs.",
+        if t.is_dark { 0x3b82f628 } else { 0x2f67cf18 },
+        if t.is_dark { 0x9bc2ffff } else { 0x235ebeff },
+    )
+}
+
+fn settings_sync_panel_bg(t: UiTheme) -> u32 {
+    if t.is_dark {
+        0x3b82f616
+    } else {
+        0xeaf2ffff
+    }
+}
+
+fn settings_sync_panel_border(t: UiTheme) -> u32 {
+    if t.is_dark {
+        0x7aa0ff44
+    } else {
+        0x2f67cf38
+    }
+}
+
+fn settings_sync_glyph(t: UiTheme) -> gpui::AnyElement {
+    div()
+        .w(px(34.0))
+        .h(px(34.0))
+        .flex_shrink_0()
+        .rounded(px(7.0))
+        .border_1()
+        .border_color(token_rgba(settings_sync_panel_border(t)))
+        .bg(token_rgba(if t.is_dark { 0x3b82f632 } else { 0xffffffd8 }))
+        .flex()
+        .items_center()
+        .justify_center()
+        .child(
+            div()
+                .flex()
+                .flex_col()
+                .gap(px(3.0))
+                .child(
+                    div()
+                        .w(px(14.0))
+                        .h(px(3.0))
+                        .rounded(px(2.0))
+                        .bg(token_rgba(if t.is_dark { 0x9bc2ffff } else { 0x235ebeff })),
+                )
+                .child(
+                    div()
+                        .w(px(18.0))
+                        .h(px(3.0))
+                        .rounded(px(2.0))
+                        .bg(token_rgba(if t.is_dark { 0xdbeafeff } else { 0x3b82f6ff })),
+                )
+                .child(
+                    div()
+                        .w(px(10.0))
+                        .h(px(3.0))
+                        .rounded(px(2.0))
+                        .bg(token_rgba(if t.is_dark { 0x9bc2ffff } else { 0x235ebeff })),
+                ),
+        )
+        .into_any_element()
 }
 
 fn settings_header(t: UiTheme) -> gpui::AnyElement {
@@ -550,6 +778,90 @@ fn update_status_row(
     }
 }
 
+fn google_calendar_row(
+    idx: usize,
+    row: GoogleCalendarSettingsRow,
+    t: UiTheme,
+    cx: &mut Context<KnotQApp>,
+) -> gpui::AnyElement {
+    let scheme_id = row.scheme_id;
+
+    div()
+        .id(("google-calendar-setting", idx))
+        .px(px(8.0))
+        .py(px(5.0))
+        .min_h(px(42.0))
+        .flex()
+        .items_center()
+        .justify_between()
+        .gap(px(8.0))
+        .border_b_1()
+        .border_color(token_rgba(t.divider_tiny))
+        .child(
+            div()
+                .min_w_0()
+                .flex()
+                .items_center()
+                .gap(px(7.0))
+                .child(google_calendar_status_dot(row.connected))
+                .child(
+                    div()
+                        .min_w_0()
+                        .flex()
+                        .flex_col()
+                        .gap(px(2.0))
+                        .child(
+                            div()
+                                .text_size(px(12.0))
+                                .font_weight(gpui::FontWeight::SEMIBOLD)
+                                .text_color(token_hsla(t.text_primary))
+                                .child(row.title),
+                        )
+                        .child(
+                            div()
+                                .text_size(px(11.0))
+                                .line_height(px(14.0))
+                                .text_color(token_hsla(t.text_soft))
+                                .child(row.detail),
+                        ),
+                ),
+        )
+        .child(
+            div()
+                .id(("google-calendar-unlink", idx))
+                .flex_shrink_0()
+                .px(px(7.0))
+                .py(px(3.0))
+                .rounded(px(3.0))
+                .border_1()
+                .border_color(token_rgba(t.border_main))
+                .bg(token_rgba(t.button_bg))
+                .hover({
+                    let c = t.button_hover;
+                    move |h| h.bg(token_rgba(c))
+                })
+                .cursor_pointer()
+                .text_size(px(11.0))
+                .font_weight(gpui::FontWeight::SEMIBOLD)
+                .text_color(token_hsla(t.text_primary))
+                .on_click(cx.listener(move |this, _: &ClickEvent, _window, cx| {
+                    this.request_delete_scheme(scheme_id, cx);
+                }))
+                .child("Unlink"),
+        )
+        .into_any_element()
+}
+
+fn google_calendar_status_dot(connected: bool) -> gpui::AnyElement {
+    div()
+        .w(px(7.0))
+        .h(px(7.0))
+        .flex_shrink_0()
+        .rounded(px(99.0))
+        .bg(token_rgba(if connected { 0x30d158ff } else { 0xf59e0bff }))
+        .into_any_element()
+}
+
 fn google_account_row(
     idx: usize,
     account_id: String,
@@ -694,6 +1006,13 @@ where
 
 fn checked_time_label(checked_at: DateTime<Utc>) -> String {
     checked_at.with_timezone(&Local).format("%H:%M").to_string()
+}
+
+fn google_calendar_last_synced_label(value: DateTime<Utc>) -> String {
+    format!(
+        "Last synced {}",
+        value.with_timezone(&Local).format("%Y-%m-%d %H:%M")
+    )
 }
 
 fn snapshot_detail(snapshot: &WorkspaceSnapshot, short_id: String) -> String {
