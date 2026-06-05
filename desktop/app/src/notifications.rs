@@ -322,15 +322,11 @@ fn schedule_os_notifications_reconciled(
     let plan =
         ScheduleReconciliationPlan::new(&snapshot, &desired, &manifest, ReconciliationMode::Full);
 
-    let legacy_cancel_error = cancel_notifications(&scheduler, snapshot.pending_legacy());
     let cancel_error = cancel_notifications(&scheduler, &plan.to_cancel);
     let requests_to_schedule = desired.requests_for(&plan.to_schedule);
     let schedule_error = schedule_requests(&scheduler, &requests_to_schedule, policy.add_interval);
     let verify_error = verify_pending_request_ids(&scheduler, &desired, policy);
-    let reconciliation_error = backlog_error
-        .or(legacy_cancel_error)
-        .or(cancel_error)
-        .or(schedule_error);
+    let reconciliation_error = backlog_error.or(cancel_error).or(schedule_error);
 
     if reconciliation_error.is_none() {
         durable.replace_manifest(&mut manifest);

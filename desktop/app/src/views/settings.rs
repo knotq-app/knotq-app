@@ -1,11 +1,10 @@
-use chrono::{DateTime, Duration, Local, Utc};
+use chrono::{DateTime, Local, Utc};
 use gpui::prelude::*;
 use gpui::{div, px, ClickEvent, Context, IntoElement};
 use gpui_component::scroll::ScrollableElement as _;
 use knotq_model::{CalendarProvider, SchemeId, SchemeSource};
 use knotq_storage_json::{
-    list_workspace_snapshots, workspace_dir, CalendarViewMode, CalendarWeekRange,
-    NotificationDefaults, ThemeMode, TimeFormat, WorkspaceSnapshot,
+    CalendarViewMode, CalendarWeekRange, NotificationDefaults, ThemeMode, TimeFormat,
 };
 
 use crate::app::auto_update::AutoUpdateUiStatus;
@@ -160,7 +159,6 @@ impl KnotQApp {
                 cx,
             ));
         }
-        let history_rows = self.version_history_rows(t, cx);
         let update_rows = self.auto_update_rows(t, cx);
         let sync_panel = self.settings_sync_panel(t, cx);
         let google_rows = self.google_calendar_account_rows(t, cx);
@@ -188,8 +186,7 @@ impl KnotQApp {
                         .child(settings_section("Google Calendar", google_rows, t))
                         .child(settings_section("Time", time_rows, t))
                         .child(settings_section("Notifications", notification_rows, t))
-                        .child(settings_section("Updates", update_rows, t))
-                        .child(settings_section("Version History", history_rows, t)),
+                        .child(settings_section("Updates", update_rows, t)),
                 ),
             )
             .into_any_element()
@@ -215,8 +212,13 @@ impl KnotQApp {
         let account = self.settings.sync_account.as_ref();
         let signed_in = account.is_some();
         let sync_enabled = account.is_some_and(|account| account.supports_sync);
-        let (badge, detail, badge_bg, badge_fg) =
+        let (badge, default_detail, badge_bg, badge_fg) =
             settings_sync_panel_state(signed_in, sync_enabled, t);
+        // When signed in, the email is the most useful subtitle; the badge already
+        // says whether sync is on, so the generic status sentence is redundant.
+        let detail = account
+            .map(|account| account.email.clone())
+            .unwrap_or_else(|| default_detail.to_string());
 
         div()
             .w_full()
@@ -381,41 +383,6 @@ impl KnotQApp {
         rows.sort_by(|a, b| a.title.cmp(&b.title).then_with(|| a.detail.cmp(&b.detail)));
         rows
     }
-
-    fn version_history_rows(
-        &mut self,
-        t: UiTheme,
-        cx: &mut Context<Self>,
-    ) -> Vec<gpui::AnyElement> {
-        let mut rows = Vec::new();
-        if let Some(err) = &self.workspace_history_error {
-            rows.push(settings_message(err.clone(), true, t));
-        }
-        match list_workspace_snapshots(&workspace_dir()) {
-            Ok(snapshots) if snapshots.is_empty() => {
-                rows.push(settings_message(
-                    "No saved versions yet.".to_string(),
-                    false,
-                    t,
-                ));
-            }
-            Ok(snapshots) => {
-                rows.extend(
-                    snapshots
-                        .into_iter()
-                        .take(24)
-                        .enumerate()
-                        .map(|(idx, snapshot)| history_snapshot_row(idx, snapshot, t, cx)),
-                );
-            }
-            Err(err) => rows.push(settings_message(
-                format!("Version history unavailable: {err:#}"),
-                true,
-                t,
-            )),
-        }
-        rows
-    }
 }
 
 fn settings_sync_panel_state(
@@ -465,44 +432,20 @@ fn settings_sync_panel_border(t: UiTheme) -> u32 {
     }
 }
 
-fn settings_sync_glyph(t: UiTheme) -> gpui::AnyElement {
+/// The brand mark: the actual KnotQ app icon, so the card is recognizably ours
+/// rather than a generic glyph.
+fn settings_sync_glyph(_t: UiTheme) -> gpui::AnyElement {
     div()
         .w(px(34.0))
         .h(px(34.0))
         .flex_shrink_0()
         .rounded(px(7.0))
-        .border_1()
-        .border_color(token_rgba(settings_sync_panel_border(t)))
-        .bg(token_rgba(if t.is_dark { 0x3b82f632 } else { 0xffffffd8 }))
-        .flex()
-        .items_center()
-        .justify_center()
+        .overflow_hidden()
         .child(
-            div()
-                .flex()
-                .flex_col()
-                .gap(px(3.0))
-                .child(
-                    div()
-                        .w(px(14.0))
-                        .h(px(3.0))
-                        .rounded(px(2.0))
-                        .bg(token_rgba(if t.is_dark { 0x9bc2ffff } else { 0x235ebeff })),
-                )
-                .child(
-                    div()
-                        .w(px(18.0))
-                        .h(px(3.0))
-                        .rounded(px(2.0))
-                        .bg(token_rgba(if t.is_dark { 0xdbeafeff } else { 0x3b82f6ff })),
-                )
-                .child(
-                    div()
-                        .w(px(10.0))
-                        .h(px(3.0))
-                        .rounded(px(2.0))
-                        .bg(token_rgba(if t.is_dark { 0x9bc2ffff } else { 0x235ebeff })),
-                ),
+            gpui::img("app-icon/128x128.png")
+                .w(px(34.0))
+                .h(px(34.0))
+                .object_fit(gpui::ObjectFit::Cover),
         )
         .into_any_element()
 }
@@ -631,87 +574,6 @@ fn notification_choice_row(
         cx,
         move |this, cx| this.set_notification_defaults(defaults, cx),
     )
-}
-
-fn history_snapshot_row(
-    idx: usize,
-    snapshot: WorkspaceSnapshot,
-    t: UiTheme,
-    cx: &mut Context<KnotQApp>,
-) -> gpui::AnyElement {
-    let snapshot_id = snapshot.id.clone();
-    let short_id = snapshot.id.chars().take(8).collect::<String>();
-    let detail = snapshot_detail(&snapshot, short_id);
-    div()
-        .id(("version-history", idx))
-        .px(px(8.0))
-        .py(px(5.0))
-        .min_h(px(38.0))
-        .flex()
-        .items_center()
-        .justify_between()
-        .gap(px(8.0))
-        .border_b_1()
-        .border_color(token_rgba(t.divider_tiny))
-        .cursor_pointer()
-        .hover({
-            let c = t.row_hover;
-            move |h| h.bg(token_rgba(c))
-        })
-        .on_click(cx.listener(move |this, _: &ClickEvent, _w, cx| {
-            this.restore_workspace_to_snapshot(snapshot_id.clone(), cx);
-        }))
-        .child(
-            div()
-                .flex()
-                .items_center()
-                .gap(px(7.0))
-                .min_w_0()
-                .child(
-                    div()
-                        .w(px(2.0))
-                        .h(px(24.0))
-                        .flex_shrink_0()
-                        .rounded(px(1.0))
-                        .bg(token_rgba(t.border_main)),
-                )
-                .child(
-                    div()
-                        .min_w_0()
-                        .flex()
-                        .flex_col()
-                        .gap(px(2.0))
-                        .child(
-                            div()
-                                .text_size(px(12.0))
-                                .font_weight(gpui::FontWeight::SEMIBOLD)
-                                .text_color(token_hsla(t.text_primary))
-                                .child(snapshot.label),
-                        )
-                        .child(
-                            div()
-                                .text_size(px(11.0))
-                                .line_height(px(14.0))
-                                .text_color(token_hsla(t.text_soft))
-                                .child(detail),
-                        ),
-                ),
-        )
-        .child(
-            div()
-                .flex_shrink_0()
-                .px(px(6.0))
-                .py(px(2.0))
-                .rounded(px(3.0))
-                .border_1()
-                .border_color(token_rgba(t.border_main))
-                .bg(token_rgba(t.button_bg))
-                .text_size(px(11.0))
-                .font_weight(gpui::FontWeight::SEMIBOLD)
-                .text_color(token_hsla(t.text_primary))
-                .child("Restore"),
-        )
-        .into_any_element()
 }
 
 fn update_status_row(
@@ -1013,15 +875,6 @@ fn google_calendar_last_synced_label(value: DateTime<Utc>) -> String {
         "Last synced {}",
         value.with_timezone(&Local).format("%Y-%m-%d %H:%M")
     )
-}
-
-fn snapshot_detail(snapshot: &WorkspaceSnapshot, short_id: String) -> String {
-    let age = Utc::now().signed_duration_since(snapshot.timestamp);
-    if age >= Duration::zero() && age <= Duration::hours(3) {
-        let minutes = age.num_minutes();
-        return format!("{minutes} min ago - {short_id}");
-    }
-    short_id
 }
 
 fn settings_subheading(label: &'static str, t: UiTheme) -> gpui::AnyElement {

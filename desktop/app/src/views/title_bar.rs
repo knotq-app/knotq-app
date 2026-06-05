@@ -444,15 +444,11 @@ impl KnotQApp {
                 dot_color: STATUS_SYNCING,
             },
             SyncRunStatus::Error { .. } => TitleSyncStatus {
-                label: if pending > 0 {
-                    format!("{pending} pending")
-                } else {
-                    "Sync error".to_string()
-                },
+                label: "Sync error".to_string(),
                 dot_color: STATUS_ERROR,
             },
             _ if pending > 0 => TitleSyncStatus {
-                label: format!("{pending} pending"),
+                label: "Pending".to_string(),
                 dot_color: STATUS_PENDING,
             },
             _ => TitleSyncStatus {

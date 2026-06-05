@@ -6,14 +6,9 @@ use std::sync::Mutex;
 
 pub const ACTION_SNOOZE_10_MINUTES: &str = "knotq.snooze.10m";
 pub const ACTION_SNOOZE_1_HOUR: &str = "knotq.snooze.1h";
-pub const ACTION_SNOOZE_1_MINUTE: &str = "knotq.snooze.1m";
-pub const ACTION_SNOOZE_5_MINUTES: &str = "knotq.snooze.5m";
-pub const ACTION_SNOOZE_15_MINUTES: &str = "knotq.snooze.15m";
-pub const ACTION_SNOOZE_30_MINUTES: &str = "knotq.snooze.30m";
 pub const ACTION_SNOOZE_2_HOURS: &str = "knotq.snooze.2h";
 pub const ACTION_SNOOZE_6_HOURS: &str = "knotq.snooze.6h";
 pub const ACTION_SNOOZE_1_DAY: &str = "knotq.snooze.1d";
-pub const ACTION_SNOOZE_1_WEEK: &str = "knotq.snooze.1w";
 pub const ACTION_SNOOZE_TOMORROW_MORNING: &str = "knotq.snooze.tomorrow_morning";
 pub const ACTION_MARK_DONE: &str = "knotq.mark_done";
 
@@ -65,7 +60,6 @@ pub fn notification_snooze_action(action_id: &str) -> Option<NotificationSnoozeA
         .iter()
         .copied()
         .find(|action| action.action_id == action_id)
-        .or_else(|| legacy_notification_snooze_action(action_id))
 }
 
 pub fn notification_tomorrow_morning_utc() -> DateTime<Utc> {
@@ -84,37 +78,6 @@ pub fn notification_tomorrow_morning_utc_after(now: DateTime<Utc>) -> DateTime<U
         .or_else(|| Local.from_local_datetime(&naive).latest())
         .map(|local| local.with_timezone(&Utc))
         .unwrap_or_else(|| now + Duration::days(1))
-}
-
-fn legacy_notification_snooze_action(action_id: &str) -> Option<NotificationSnoozeAction> {
-    match action_id {
-        ACTION_SNOOZE_1_MINUTE => Some(NotificationSnoozeAction {
-            action_id: ACTION_SNOOZE_1_MINUTE,
-            label: "Snooze 1 min",
-            delay_secs: 60,
-        }),
-        ACTION_SNOOZE_5_MINUTES => Some(NotificationSnoozeAction {
-            action_id: ACTION_SNOOZE_5_MINUTES,
-            label: "Snooze 5 min",
-            delay_secs: 5 * 60,
-        }),
-        ACTION_SNOOZE_15_MINUTES => Some(NotificationSnoozeAction {
-            action_id: ACTION_SNOOZE_15_MINUTES,
-            label: "Snooze 15 min",
-            delay_secs: 15 * 60,
-        }),
-        ACTION_SNOOZE_30_MINUTES => Some(NotificationSnoozeAction {
-            action_id: ACTION_SNOOZE_30_MINUTES,
-            label: "Snooze 30 min",
-            delay_secs: 30 * 60,
-        }),
-        ACTION_SNOOZE_1_WEEK => Some(NotificationSnoozeAction {
-            action_id: ACTION_SNOOZE_1_WEEK,
-            label: "Snooze 1 week",
-            delay_secs: 7 * 24 * 60 * 60,
-        }),
-        _ => None,
-    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, serde::Deserialize, serde::Serialize)]

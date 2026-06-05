@@ -5,8 +5,7 @@ use knotq_notifications::{
     action_to_command_at, notification_action_target, notification_tomorrow_morning_utc_after,
     NotificationAction, NotificationActionTarget, NotificationResponse, ACTION_MARK_DONE,
     ACTION_SNOOZE_10_MINUTES, ACTION_SNOOZE_1_DAY, ACTION_SNOOZE_1_HOUR, ACTION_SNOOZE_2_HOURS,
-    ACTION_SNOOZE_5_MINUTES, ACTION_SNOOZE_6_HOURS, ACTION_SNOOZE_TOMORROW_MORNING,
-    NOTIFICATION_SNOOZE_ACTIONS,
+    ACTION_SNOOZE_6_HOURS, ACTION_SNOOZE_TOMORROW_MORNING, NOTIFICATION_SNOOZE_ACTIONS,
 };
 use std::collections::BTreeMap;
 
@@ -57,7 +56,9 @@ fn snooze_action_maps_to_notification_offset_command() {
 
 #[test]
 fn notification_response_parses_expanded_snooze_action() {
-    let target = target(NotificationAction::Snooze { delay_secs: 5 * 60 });
+    let target = target(NotificationAction::Snooze {
+        delay_secs: 2 * 60 * 60,
+    });
     let mut user_info = BTreeMap::new();
     user_info.insert("scheme_id".to_string(), target.scheme_id.0.to_string());
     user_info.insert("item_id".to_string(), target.item_id.0.to_string());
@@ -69,14 +70,16 @@ fn notification_response_parses_expanded_snooze_action() {
 
     let parsed = notification_action_target(NotificationResponse {
         notification_id: "note".to_string(),
-        action_id: ACTION_SNOOZE_5_MINUTES.to_string(),
+        action_id: ACTION_SNOOZE_2_HOURS.to_string(),
         user_info,
     })
     .unwrap();
 
     assert_eq!(
         parsed.action,
-        NotificationAction::Snooze { delay_secs: 5 * 60 }
+        NotificationAction::Snooze {
+            delay_secs: 2 * 60 * 60
+        }
     );
 }
 

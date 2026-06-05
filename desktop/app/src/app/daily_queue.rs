@@ -32,7 +32,7 @@ impl KnotQApp {
                 Ok(Some(mut scheme)) if scheme.id == existing => {
                     ensure_plain_blank_daily_row(&mut scheme);
                     self.workspace.schemes.insert(existing, scheme);
-                    self.state.mark_compat_workspace_dirty();
+                    self.state.mark_direct_workspace_dirty();
                     if should_notify {
                         cx.notify();
                     }
@@ -52,7 +52,7 @@ impl KnotQApp {
                 }
             }
             self.workspace.daily_queue.remove(&date);
-            self.state.mark_compat_workspace_dirty();
+            self.state.mark_direct_workspace_dirty();
         }
 
         let id = knotq_model::daily_queue_scheme_id(date);
@@ -123,7 +123,7 @@ impl KnotQApp {
                         continue;
                     }
                     self.workspace.schemes.insert(scheme.id, scheme);
-                    self.state.mark_compat_workspace_dirty();
+                    self.state.mark_direct_workspace_dirty();
                     changed = true;
                 }
                 self.daily_queue_loaded_calendar_months.extend(months);

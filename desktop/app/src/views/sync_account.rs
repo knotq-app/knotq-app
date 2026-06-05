@@ -58,11 +58,17 @@ impl KnotQApp {
                         .line_height(px(17.0))
                         .text_color(token_hsla(t.text_soft))
                         .child(
-                            "Turn off sync for this account? Your local workspace stays on \
-                             this device, and you can sign in again later to re-enable sync.",
+                            "Cancel the subscription for this account? Your local workspace stays \
+                             on this device. Paid sync may remain available until the current \
+                             billing period ends.",
                         ),
                 )
-                .child(account_confirm_actions("Turn off sync", in_progress, t, cx))
+                .child(account_confirm_actions(
+                    "Cancel subscription",
+                    in_progress,
+                    t,
+                    cx,
+                ))
                 .into_any_element(),
             None if supports_sync => div()
                 .flex()
@@ -122,60 +128,35 @@ impl KnotQApp {
             .flex()
             .flex_col()
             .gap(px(10.0))
-            .child(account_status_panel(&account, t))
+            .children(account_status_panel(&account, t))
             .child(body)
             .when(!armed, |s| s.child(sign_out_row(t, cx)))
             .into_any_element()
     }
 }
 
-/// The signed-out state: a short prompt plus a button that opens the sign-in modal.
-fn signed_out_entry(t: Theme, cx: &mut Context<KnotQApp>) -> gpui::AnyElement {
+/// The signed-out state: a single full-width CTA. The card header above already
+/// carries the "sign in to sync across installs" message, so we don't repeat it.
+fn signed_out_entry(_t: Theme, cx: &mut Context<KnotQApp>) -> gpui::AnyElement {
     div()
-        .min_h(px(38.0))
+        .id("sync-settings-sign-in")
+        .w_full()
         .flex()
         .items_center()
-        .justify_between()
-        .gap(px(12.0))
-        .child(
-            div()
-                .min_w_0()
-                .flex()
-                .flex_col()
-                .gap(px(2.0))
-                .child(
-                    div()
-                        .text_size(px(12.0))
-                        .font_weight(FontWeight::SEMIBOLD)
-                        .text_color(token_hsla(t.text_primary))
-                        .child("Not signed in"),
-                )
-                .child(
-                    div()
-                        .text_size(px(11.0))
-                        .line_height(px(14.0))
-                        .text_color(token_hsla(t.text_soft))
-                        .child("Sign in to sync this workspace across devices."),
-                ),
-        )
-        .child(
-            div()
-                .id("sync-settings-sign-in")
-                .flex_shrink_0()
-                .px(px(10.0))
-                .py(px(5.0))
-                .rounded(px(5.0))
-                .bg(token_rgba(sync_cta_bg()))
-                .text_size(px(12.0))
-                .font_weight(FontWeight::SEMIBOLD)
-                .text_color(token_hsla(0xffffffff))
-                .cursor_pointer()
-                .hover(|s| s.bg(token_rgba(sync_cta_hover_bg())))
-                .on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
-                    this.open_sync_sign_in(window, cx);
-                }))
-                .child("Sign in"),
-        )
+        .justify_center()
+        .px(px(10.0))
+        .py(px(7.0))
+        .rounded(px(6.0))
+        .bg(token_rgba(sync_cta_bg()))
+        .text_size(px(12.0))
+        .font_weight(FontWeight::SEMIBOLD)
+        .text_color(token_hsla(0xffffffff))
+        .cursor_pointer()
+        .hover(|s| s.bg(token_rgba(sync_cta_hover_bg())))
+        .on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
+            this.open_sync_sign_in(window, cx);
+        }))
+        .child("Sign in")
         .into_any_element()
 }
 
@@ -334,71 +315,52 @@ fn refresh_status_button(
         .into_any_element()
 }
 
-fn account_status_panel(account: &SyncAccountSettings, t: Theme) -> gpui::AnyElement {
-    let status = account.account_status.as_ref();
-    let level = status
-        .map(|status| account_level_label(&status.level))
-        .unwrap_or_else(|| "Unknown".to_string());
-    let subscribed = status
-        .map(|status| {
-            if status.subscribed {
-                "Subscribed".to_string()
-            } else {
-                "Not subscribed".to_string()
-            }
-        })
-        .unwrap_or_else(|| "Unknown".to_string());
-    let sync_access = if status
-        .map(|status| status.supports_sync)
-        .unwrap_or(account.supports_sync)
-    {
-        "Enabled"
+/// The detail box of known entitlement facts. Returns `None` until a status has
+/// actually been fetched, so we never show a box full of "Unknown" rows. The
+/// email lives in the card header and sync state in the badge, so neither is
+/// repeated here.
+fn account_status_panel(account: &SyncAccountSettings, t: Theme) -> Option<gpui::AnyElement> {
+    let status = account.account_status.as_ref()?;
+    let plan = account_level_label(&status.level);
+    let subscribed = if status.subscribed {
+        "Subscribed".to_string()
     } else {
-        "Off"
-    }
-    .to_string();
-    let subscription_status = status
-        .and_then(|status| status.subscription_status.as_deref())
-        .map(account_level_label);
+        "Not subscribed".to_string()
+    };
+    let subscription_status = status.subscription_status.as_deref().map(account_level_label);
     let subscription_provider = status
-        .and_then(|status| status.subscription_provider.clone())
+        .subscription_provider
+        .clone()
         .filter(|provider| !provider.trim().is_empty());
-    let current_period_end =
-        status.and_then(|status| status.current_period_end.map(status_date_label));
-    let checked_at = status.and_then(|status| status.checked_at.map(status_timestamp_label));
+    let current_period_end = status.current_period_end.map(status_date_label);
+    let checked_at = status.checked_at.map(status_timestamp_label);
 
-    div()
-        .rounded(px(6.0))
-        .border_1()
-        .border_color(token_rgba(t.border_overlay))
-        .bg(token_rgba(t.button_bg))
-        .p(px(10.0))
-        .flex()
-        .flex_col()
-        .gap(px(7.0))
-        .child(
-            div()
-                .text_size(px(12.0))
-                .line_height(px(17.0))
-                .text_color(token_hsla(t.text_soft))
-                .child(format!("Signed in as {}", account.email)),
-        )
-        .child(account_status_line("Level", level, t))
-        .child(account_status_line("Subscription", subscribed, t))
-        .child(account_status_line("Sync access", sync_access, t))
-        .when_some(subscription_status, |s, value| {
-            s.child(account_status_line("Status", value, t))
-        })
-        .when_some(subscription_provider, |s, value| {
-            s.child(account_status_line("Provider", value, t))
-        })
-        .when_some(current_period_end, |s, value| {
-            s.child(account_status_line("Current period ends", value, t))
-        })
-        .when_some(checked_at, |s, value| {
-            s.child(account_status_line("Checked", value, t))
-        })
-        .into_any_element()
+    Some(
+        div()
+            .rounded(px(6.0))
+            .border_1()
+            .border_color(token_rgba(t.border_overlay))
+            .bg(token_rgba(t.button_bg))
+            .p(px(10.0))
+            .flex()
+            .flex_col()
+            .gap(px(7.0))
+            .child(account_status_line("Plan", plan, t))
+            .child(account_status_line("Subscription", subscribed, t))
+            .when_some(subscription_status, |s, value| {
+                s.child(account_status_line("Status", value, t))
+            })
+            .when_some(subscription_provider, |s, value| {
+                s.child(account_status_line("Provider", value, t))
+            })
+            .when_some(current_period_end, |s, value| {
+                s.child(account_status_line("Current period ends", value, t))
+            })
+            .when_some(checked_at, |s, value| {
+                s.child(account_status_line("Checked", value, t))
+            })
+            .into_any_element(),
+    )
 }
 
 fn account_status_line(label: &'static str, value: String, t: Theme) -> gpui::AnyElement {

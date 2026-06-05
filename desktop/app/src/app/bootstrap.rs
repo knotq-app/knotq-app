@@ -1,31 +1,15 @@
 use super::*;
-use knotq_storage_json::save_app_settings;
 use std::path::Path;
 
 pub fn load_or_default_settings() -> AppSettings {
     let path = settings_path();
     match load_app_settings(&path) {
-        Ok(settings) => migrate_local_sync_api_base(settings, &path),
+        Ok(settings) => settings,
         Err(err) => {
             eprintln!("settings load failed ({err:#}); using defaults");
             AppSettings::default()
         }
     }
-}
-
-fn migrate_local_sync_api_base(mut settings: AppSettings, path: &Path) -> AppSettings {
-    let Some(account) = settings.sync_account.as_mut() else {
-        return settings;
-    };
-    let api_base = account.api_base.trim_end_matches('/');
-    if api_base != "http://127.0.0.1:7878" && api_base != "http://localhost:7878" {
-        return settings;
-    }
-    account.api_base = "http://127.0.0.1:8787".to_string();
-    if let Err(err) = save_app_settings(path, &settings) {
-        eprintln!("sync settings migration failed: {err:#}");
-    }
-    settings
 }
 
 pub(crate) struct WorkspaceBootstrap {

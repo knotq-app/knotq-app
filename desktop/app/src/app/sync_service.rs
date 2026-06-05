@@ -137,7 +137,7 @@ async fn run_sync_once(weak: &gpui::WeakEntity<KnotQApp>, cx: &mut gpui::AsyncAp
                 _cx.notify();
                 return None;
             }
-            app.state.sync_store_from_compat();
+            app.state.sync_store_from_workspace();
             let pending = app.state.pending_crdt_edits();
             app.sync_run_status = SyncRunStatus::Running {
                 pending: pending.len(),
@@ -234,9 +234,16 @@ async fn ensure_fresh_token(
         return Ok(());
     }
     let Some(refresh_token) = account.refresh_token.clone() else {
-        // Legacy session with no refresh token: nothing to refresh. Let the sync
-        // proceed; if the access token has lapsed the run fails and retries later.
-        return Ok(());
+        let _ = weak.update(cx, |app, cx| {
+            app.settings.sync_account = None;
+            app.sync_auth_status = SyncAuthStatus::Error(
+                "Your sync session expired. Please sign in again.".to_string(),
+            );
+            app.sync_run_status = SyncRunStatus::Idle;
+            app.save_app_settings();
+            cx.notify();
+        });
+        return Err(());
     };
     let api_base = account.api_base.clone();
     let outcome = cx
@@ -860,17 +867,13 @@ fn normalize_api_base(raw: &str) -> Result<String> {
     if trimmed.is_empty() {
         return Err(anyhow!("sync API URL is empty"));
     }
-    let normalized = match trimmed {
-        "http://127.0.0.1:7878" | "http://localhost:7878" => "http://127.0.0.1:8787".to_string(),
-        _ => trimmed.to_string(),
-    };
     // The bearer token and all workspace contents travel over this URL. Refuse
     // plaintext HTTP to anything other than a loopback dev server so a misconfig
     // (or tampered settings file) can't silently leak credentials in the clear.
-    if !is_secure_api_base(&normalized) {
-        return Err(anyhow!("sync API URL must use https:// (got {normalized})"));
+    if !is_secure_api_base(trimmed) {
+        return Err(anyhow!("sync API URL must use https:// (got {trimmed})"));
     }
-    Ok(normalized)
+    Ok(trimmed.to_string())
 }
 
 fn is_secure_api_base(url: &str) -> bool {
@@ -903,8 +906,8 @@ mod tests {
     #[test]
     fn loopback_http_is_allowed_for_dev() {
         assert_eq!(
-            normalize_api_base("http://localhost:7878").unwrap(),
-            "http://127.0.0.1:8787"
+            normalize_api_base("http://localhost:8787").unwrap(),
+            "http://localhost:8787"
         );
         assert!(normalize_api_base("http://127.0.0.1:8787").is_ok());
     }

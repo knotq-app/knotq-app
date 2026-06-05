@@ -58,12 +58,12 @@ impl AppState {
             .undo
             .pop_undo()
             .or_else(|| self.undo_stack.pop_back())?;
-        self.sync_store_from_compat();
+        self.sync_store_from_workspace();
         let receipt = self
             .store
             .apply_prechecked_local(command, CommandOrigin::User)
             .ok()?;
-        self.sync_compat_from_store();
+        self.sync_workspace_from_store();
         self.after_workspace_change(&receipt.touched);
         self.undo.push_redo(receipt.inverse.clone());
         self.redo_stack.push_back(receipt.inverse.clone());
@@ -77,12 +77,12 @@ impl AppState {
             .undo
             .pop_redo()
             .or_else(|| self.redo_stack.pop_back())?;
-        self.sync_store_from_compat();
+        self.sync_store_from_workspace();
         let receipt = self
             .store
             .apply_prechecked_local(command, CommandOrigin::User)
             .ok()?;
-        self.sync_compat_from_store();
+        self.sync_workspace_from_store();
         self.after_workspace_change(&receipt.touched);
         self.undo.push_undo(receipt.inverse.clone());
         self.undo_stack.push_back(receipt.inverse.clone());
@@ -102,12 +102,12 @@ impl AppState {
             false
         };
         let recurrence_key = recurrence_undo_key(&command);
-        self.sync_store_from_compat();
+        self.sync_store_from_workspace();
         let receipt = self
             .store
             .apply_prechecked_local(command, CommandOrigin::User)
             .ok()?;
-        self.sync_compat_from_store();
+        self.sync_workspace_from_store();
         if !coalesce {
             self.undo.push_undo(receipt.inverse.clone());
             self.undo_stack.push_back(receipt.inverse.clone());

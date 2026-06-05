@@ -44,7 +44,7 @@ pub fn complete_past_events(state: &mut crate::AppState, now: DateTime<Utc>) -> 
             state.dirty_schemes.insert(id);
         }
         state.index_dirty = true;
-        state.mark_compat_workspace_dirty();
+        state.mark_direct_workspace_dirty();
     }
     changed
 }

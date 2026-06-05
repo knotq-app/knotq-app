@@ -196,7 +196,7 @@ impl KnotQApp {
                 dot_color: STATUS_SYNCING,
                 headline: "Syncing…".into(),
                 detail: Some(if pending > 0 {
-                    SharedString::from(format!("Uploading {}.", change_count(pending)))
+                    "Uploading changes.".into()
                 } else {
                     "Checking for changes.".into()
                 }),
@@ -205,18 +205,14 @@ impl KnotQApp {
                 dot_color: STATUS_ERROR,
                 headline: "Sync error".into(),
                 detail: Some(SharedString::from(if pending > 0 {
-                    format!(
-                        "{} pending. {}",
-                        change_count(pending),
-                        short_error(message)
-                    )
+                    format!("Changes pending. {}", short_error(message))
                 } else {
                     short_error(message)
                 })),
             },
             _ if pending > 0 => SyncStatusView {
                 dot_color: STATUS_PENDING,
-                headline: SharedString::from(format!("{} pending", change_count(pending))),
+                headline: "Pending changes".into(),
                 detail: Some("Will sync automatically in a moment.".into()),
             },
             _ => SyncStatusView {
@@ -264,14 +260,6 @@ fn popover_button(
                 move |s| s.bg(token_rgba(c))
             })
             .into_any_element()
-    }
-}
-
-fn change_count(pending: usize) -> String {
-    if pending == 1 {
-        "1 change".to_string()
-    } else {
-        format!("{pending} changes")
     }
 }
 

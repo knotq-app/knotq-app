@@ -30,11 +30,7 @@ pub fn load_app_settings(path: &Path) -> Result<AppSettings> {
         ));
     }
     let mut settings = env.settings;
-    if rehydrate_from_keychain(&mut settings) {
-        // Legacy plaintext tokens were migrated into the keychain; rewrite the
-        // file immediately so the on-disk copy is redacted.
-        save_app_settings(path, &settings)?;
-    }
+    rehydrate_from_keychain(&mut settings);
     Ok(settings)
 }
 
@@ -95,14 +91,11 @@ fn redact_into_keychain(settings: &mut AppSettings) {
     }
 }
 
-/// Pull secret tokens from the keychain into `settings`. Returns `true` if a
-/// legacy plaintext secret was found in the file and migrated into the keychain,
-/// signalling the caller to re-save so the on-disk copy gets redacted.
-fn rehydrate_from_keychain(settings: &mut AppSettings) -> bool {
+/// Pull secret tokens from the keychain into redacted settings.
+fn rehydrate_from_keychain(settings: &mut AppSettings) {
     if !secrets::is_enabled() {
-        return false;
+        return;
     }
-    let mut migrated = false;
     if let Some(account) = settings.sync_account.as_mut() {
         if account.bearer_token.is_empty() && account.refresh_token.is_none() {
             // Redacted on disk — load the real tokens from the keychain.
@@ -110,13 +103,6 @@ fn rehydrate_from_keychain(settings: &mut AppSettings) -> bool {
                 account.bearer_token = secret.bearer;
                 account.refresh_token = secret.refresh;
             }
-        } else {
-            // Legacy plaintext in the file — migrate it into the keychain.
-            let secret = SyncSecret {
-                bearer: account.bearer_token.clone(),
-                refresh: account.refresh_token.clone(),
-            };
-            migrated |= secrets::store_sync(&secret).is_ok();
         }
     }
     for account in settings.google_accounts.iter_mut() {
@@ -125,15 +111,8 @@ fn rehydrate_from_keychain(settings: &mut AppSettings) -> bool {
                 account.access_token = secret.access;
                 account.refresh_token = secret.refresh;
             }
-        } else {
-            let secret = GoogleSecret {
-                access: account.access_token.clone(),
-                refresh: account.refresh_token.clone(),
-            };
-            migrated |= secrets::store_google(&account.account_id, &secret).is_ok();
         }
     }
-    migrated
 }
 
 /// Warn (once per process) that the OS keychain could not be reached, so we are
@@ -211,8 +190,8 @@ mod tests {
 
     /// The full secret lifecycle, kept in a single test so the process-global
     /// `KNOTQ_DISABLE_KEYCHAIN` env var is mutated sequentially (never racing
-    /// another test). Covers: redact-on-save + rehydrate-on-load, legacy
-    /// plaintext migration, and the disable-keychain fallback.
+    /// another test). Covers: redact-on-save + rehydrate-on-load, and the
+    /// disable-keychain fallback.
     #[test]
     fn keychain_secret_lifecycle() {
         std::env::remove_var("KNOTQ_DISABLE_KEYCHAIN");
@@ -252,30 +231,7 @@ mod tests {
         assert_eq!(g.refresh_token, "GOOGLE-REFRESH");
         fs::remove_file(&path).ok();
 
-        // 2. A legacy plaintext file migrates into the keychain and is redacted
-        //    on the follow-up save triggered by load.
-        let path = temp_settings_path();
-        let mut legacy = AppSettings::default();
-        legacy.sync_account = Some(sync_account("LEGACY-BEARER", "LEGACY-REFRESH"));
-        std::env::set_var("KNOTQ_DISABLE_KEYCHAIN", "1");
-        save_app_settings(&path, &legacy).unwrap();
-        let raw = fs::read_to_string(&path).unwrap();
-        assert!(
-            raw.contains("LEGACY-BEARER"),
-            "disabled save should keep plaintext"
-        );
-        std::env::remove_var("KNOTQ_DISABLE_KEYCHAIN");
-
-        let loaded = load_app_settings(&path).unwrap();
-        assert_eq!(loaded.sync_account.unwrap().bearer_token, "LEGACY-BEARER");
-        let raw_after = fs::read_to_string(&path).unwrap();
-        assert!(
-            !raw_after.contains("LEGACY-BEARER"),
-            "load should re-save a redacted file after migrating legacy tokens"
-        );
-        fs::remove_file(&path).ok();
-
-        // 3. With the keychain disabled, tokens stay in the file and round-trip.
+        // 2. With the keychain disabled, tokens stay in the file and round-trip.
         let path = temp_settings_path();
         std::env::set_var("KNOTQ_DISABLE_KEYCHAIN", "1");
         let mut settings = AppSettings::default();

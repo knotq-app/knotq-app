@@ -150,7 +150,6 @@ impl DesiredPlatformSchedule {
 #[derive(Clone, Debug, Default)]
 pub struct PlatformScheduleSnapshot {
     pending_managed: BTreeSet<String>,
-    pending_legacy: BTreeSet<String>,
     delivered: BTreeSet<String>,
 }
 
@@ -159,29 +158,17 @@ impl PlatformScheduleSnapshot {
         pending_ids: impl IntoIterator<Item = String>,
         delivered_ids: impl IntoIterator<Item = String>,
     ) -> Self {
-        let mut pending_managed = BTreeSet::new();
-        let mut pending_legacy = BTreeSet::new();
-        for id in pending_ids {
-            if is_managed_notification_id(&id) {
-                pending_managed.insert(id);
-            } else {
-                pending_legacy.insert(id);
-            }
-        }
-
         Self {
-            pending_managed,
-            pending_legacy,
+            pending_managed: pending_ids
+                .into_iter()
+                .filter(|id| is_managed_notification_id(id))
+                .collect(),
             delivered: delivered_ids.into_iter().collect(),
         }
     }
 
     pub fn pending_managed(&self) -> &BTreeSet<String> {
         &self.pending_managed
-    }
-
-    pub fn pending_legacy(&self) -> &BTreeSet<String> {
-        &self.pending_legacy
     }
 
     pub fn delivered(&self) -> &BTreeSet<String> {

@@ -719,7 +719,7 @@ impl YrsSchemeDocument {
                                 apply_text_diff(&text_ref, &mut txn, &current, &item.text);
                             }
                         }
-                        // No Text present (corrupt/legacy entry) — rebuild it whole.
+                        // No Text present (corrupt entry) — rebuild it whole.
                         None => {
                             items_by_id.insert(&mut txn, item_id, item_prelim(item, position)?);
                             continue;

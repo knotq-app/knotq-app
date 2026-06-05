@@ -31,12 +31,12 @@ pub struct AppState {
     pub(crate) daily_queue: DailyQueueState,
     pub(crate) notifications: NotificationState,
     pub(crate) event_bus: EventBus,
-    // True when legacy app code has mutated `workspace` directly and the
-    // canonical store must be rebuilt before the next dispatched command.
-    compat_workspace_dirty: bool,
+    // True when app code has mutated `workspace` directly and the canonical store
+    // must be rebuilt before the next dispatched command.
+    direct_workspace_dirty: bool,
 
-    // Compatibility fields still read directly by knotq-app during the shell
-    // slimming phase. Keep them synchronized when dispatching through state.
+    // Fields still read directly by knotq-app during the shell slimming phase.
+    // Keep them synchronized when dispatching through state.
     pub workspace: Workspace,
     pub theme_mode: ThemeMode,
     pub system_theme_dark: bool,
@@ -90,7 +90,7 @@ impl AppState {
             daily_queue: daily_queue.clone(),
             notifications,
             event_bus: EventBus::default(),
-            compat_workspace_dirty: false,
+            direct_workspace_dirty: false,
             workspace,
             theme_mode: settings.theme_mode,
             system_theme_dark: true,
@@ -142,8 +142,8 @@ impl AppState {
     /// affected so only their files need to be written.
     pub fn mark_dirty_from_command(&mut self, cmd: &Command) {
         self.store.mark_dirty_from_command(cmd);
-        self.sync_compat_from_store_dirty();
-        self.compat_workspace_dirty = true;
+        self.sync_workspace_from_store_dirty();
+        self.direct_workspace_dirty = true;
     }
 
     /// Mark a single scheme as dirty.
@@ -151,18 +151,18 @@ impl AppState {
         self.store.mark_scheme_dirty(scheme_id);
         self.dirty_schemes.insert(scheme_id);
         self.index_dirty = true;
-        self.compat_workspace_dirty = true;
+        self.direct_workspace_dirty = true;
     }
 
     /// Mark only the workspace index as dirty (folder structure changes, etc.)
     pub fn mark_index_dirty(&mut self) {
         self.store.mark_index_dirty();
         self.index_dirty = true;
-        self.compat_workspace_dirty = true;
+        self.direct_workspace_dirty = true;
     }
 
-    pub fn mark_compat_workspace_dirty(&mut self) {
-        self.compat_workspace_dirty = true;
+    pub fn mark_direct_workspace_dirty(&mut self) {
+        self.direct_workspace_dirty = true;
     }
 
     /// Returns true if any scheme or the index needs saving.
@@ -183,25 +183,25 @@ impl AppState {
             .clear_pushed_crdt_edits(document, through_local_sequence)
     }
 
-    pub fn sync_store_from_compat(&mut self) {
+    pub fn sync_store_from_workspace(&mut self) {
         let dirty = WorkspaceDirtyState::from_parts(self.dirty_schemes.clone(), self.index_dirty);
-        if self.compat_workspace_dirty {
+        if self.direct_workspace_dirty {
             self.store
                 .replace_workspace(self.workspace.clone(), dirty, false);
-            self.compat_workspace_dirty = false;
+            self.direct_workspace_dirty = false;
         } else {
             self.store.replace_dirty_state(dirty);
         }
     }
 
-    pub fn sync_compat_from_store(&mut self) {
+    pub fn sync_workspace_from_store(&mut self) {
         self.workspace = self.store.workspace().clone();
         self.indexed = self.store.indexed().clone();
-        self.sync_compat_from_store_dirty();
-        self.compat_workspace_dirty = false;
+        self.sync_workspace_from_store_dirty();
+        self.direct_workspace_dirty = false;
     }
 
-    pub fn sync_compat_from_store_dirty(&mut self) {
+    pub fn sync_workspace_from_store_dirty(&mut self) {
         self.dirty_schemes = self.store.dirty().schemes.clone();
         self.index_dirty = self.store.dirty().index;
     }
@@ -211,9 +211,9 @@ impl AppState {
         command: Command,
         origin: CommandOrigin,
     ) -> Result<CommandReceipt, CommandError> {
-        self.sync_store_from_compat();
+        self.sync_store_from_workspace();
         let receipt = self.store.apply_prechecked_local(command, origin)?;
-        self.sync_compat_from_store();
+        self.sync_workspace_from_store();
         Ok(receipt)
     }
 
@@ -225,7 +225,7 @@ impl AppState {
     ) {
         self.store
             .replace_workspace(workspace, WorkspaceDirtyState::default(), true);
-        self.sync_compat_from_store();
+        self.sync_workspace_from_store();
         self.undo = UndoRedoStack::default();
         self.editor_undo_group = None;
         self.recurrence_undo_group = None;
@@ -245,7 +245,7 @@ impl AppState {
     pub fn replace_workspace_from_sync(&mut self, workspace: Workspace) {
         let dirty = WorkspaceDirtyState::all(&workspace);
         self.store.replace_workspace(workspace, dirty, false);
-        self.sync_compat_from_store();
+        self.sync_workspace_from_store();
         self.undo = UndoRedoStack::default();
         self.editor_undo_group = None;
         self.recurrence_undo_group = None;

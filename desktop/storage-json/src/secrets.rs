@@ -77,8 +77,8 @@ fn delete(user: &str) -> Result<()> {
 // Tests can't use a real OS keychain (non-hermetic, prompts, headless CI) and the
 // `keyring` mock store is per-`Entry`, so it can't round-trip a value stored under
 // one `Entry` and read under another. Route the backend through a process-global
-// in-memory map instead, which faithfully exercises the redact/rehydrate/migrate
-// logic in `settings.rs`.
+// in-memory map instead, which faithfully exercises the redact/rehydrate logic in
+// `settings.rs`.
 #[cfg(test)]
 fn test_store() -> &'static std::sync::Mutex<std::collections::HashMap<String, String>> {
     use std::sync::{Mutex, OnceLock};

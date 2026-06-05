@@ -14,17 +14,12 @@ use super::{
 };
 use crate::app::google_oauth::{code_challenge, open_browser, random_token, wait_for_oauth_code};
 
-const DEFAULT_SYNC_API_BASE: &str = "http://127.0.0.1:8787";
+const DEFAULT_SYNC_API_BASE: &str = "https://api.knotq.com";
 
 /// KnotQ-hosted browser sign-in page. The app opens this with a loopback
 /// `redirect_uri` + PKCE; the page signs the user in and hands back a one-time
 /// authorization code redeemed via `POST /v1/auth/authorize/exchange`.
 const SIGNIN_PAGE_URL: &str = "https://www.knotq.com/signin.html";
-
-/// KnotQ-hosted subscription page. The page opens Lemon Squeezy's secure
-/// checkout overlay on knotq.com and passes the account id through to Lemon so
-/// the `/v1/billing/lemonsqueezy` webhook can grant sync to this exact account.
-const SUBSCRIPTION_CHECKOUT_URL: &str = "https://www.knotq.com/checkout.html";
 
 #[derive(Deserialize)]
 struct LoginResponse {
@@ -38,10 +33,14 @@ struct LoginResponse {
     supports_sync: bool,
     bearer_token: String,
     expires_at: DateTime<Utc>,
-    #[serde(default)]
     refresh_token: String,
     #[serde(default)]
     refresh_expires_at: Option<DateTime<Utc>>,
+}
+
+#[derive(Deserialize)]
+struct CheckoutResponse {
+    checkout_url: String,
 }
 
 /// Fresh credentials returned by `POST /v1/auth/refresh`.
@@ -255,12 +254,16 @@ impl KnotQApp {
         self.sync_auth_task = None;
         match result {
             Ok(account) => {
-                // Entitlement is now off; keep the (re-credentialed) account so the
-                // user stays signed in, but stop syncing.
+                // Provider-backed cancellation may keep entitlement active until
+                // the paid period ends. Install the re-credentialed account either
+                // way so local state matches the backend's current decision.
+                let supports_sync = account.supports_sync;
                 self.settings.sync_account = Some(account);
                 self.sync_account_action = None;
                 self.sync_auth_status = SyncAuthStatus::Idle;
-                self.sync_run_status = SyncRunStatus::Idle;
+                if !supports_sync {
+                    self.sync_run_status = SyncRunStatus::Idle;
+                }
                 self.save_app_settings();
             }
             Err(message) => {
@@ -316,20 +319,57 @@ impl KnotQApp {
         cx.notify();
     }
 
-    /// Open the hosted subscription checkout in the browser, passing this account's
-    /// id through so the billing webhook can grant sync once payment completes.
+    /// Ask the API to create a provider checkout tied to this account, then open the
+    /// returned hosted checkout URL in the browser.
     pub fn open_subscription_checkout(&mut self, cx: &mut Context<Self>) {
-        let Some(account) = self.settings.sync_account.as_ref() else {
+        if matches!(self.sync_auth_status, SyncAuthStatus::InProgress) {
+            return;
+        }
+        let Some(account) = self.settings.sync_account.clone() else {
             return;
         };
-        let url = subscription_checkout_url(&account.user_id, &account.email);
-        if let Err(err) = crate::app::google_oauth::open_browser(&url) {
-            self.sync_auth_status =
-                SyncAuthStatus::Error(format!("Could not open the checkout page: {err}"));
-            cx.notify();
+        self.sync_auth_status = SyncAuthStatus::InProgress;
+        let task = cx.spawn(
+            async move |weak: gpui::WeakEntity<Self>, cx: &mut gpui::AsyncApp| {
+                let (tx, rx) = mpsc::channel();
+                std::thread::spawn(move || {
+                    let result = create_subscription_checkout_backend(&account)
+                        .map_err(|err| format!("{err:#}"));
+                    let _ = tx.send(result);
+                });
+                Self::pump_sync_auth_worker(weak, cx, rx, move |app, result, cx| {
+                    app.finish_open_subscription_checkout(result, cx);
+                })
+                .await;
+            },
+        );
+        self.sync_auth_task = Some(task);
+        cx.notify();
+    }
+
+    fn finish_open_subscription_checkout(
+        &mut self,
+        result: Result<String, String>,
+        cx: &mut Context<Self>,
+    ) {
+        self.sync_auth_task = None;
+        match result {
+            Ok(url) => match open_browser(&url) {
+                Ok(()) => {
+                    self.sync_auth_status = SyncAuthStatus::Idle;
+                }
+                Err(err) => {
+                    self.sync_auth_status =
+                        SyncAuthStatus::Error(format!("Could not open the checkout page: {err}"));
+                }
+            },
+            Err(message) => {
+                self.sync_auth_status = SyncAuthStatus::Error(message);
+            }
         }
         // On success the browser takes over; the user returns and taps "I've
         // subscribed" to re-check entitlement via refresh_subscription_status.
+        cx.notify();
     }
 
     /// Refresh the general account/subscription status shown in Settings.
@@ -534,19 +574,22 @@ fn exchange_authorize_code(
                 .unwrap_or_else(|_| "unauthorized".to_string());
             return Err(anyhow!(authorize_error_message(&code)));
         }
-        Err(error) => return Err(anyhow!("Could not reach the sync Worker: {error}")),
+        Err(error) => return Err(anyhow!("Could not reach the sync API: {error}")),
     };
     let session: LoginResponse = response
         .into_json()
         .context("parse sync sign-in response")?;
-    Ok(sync_account_settings_from_session(base, session))
+    sync_account_settings_from_session(base, session)
 }
 
 fn sync_account_settings_from_session(
     api_base: String,
     session: LoginResponse,
-) -> SyncAccountSettings {
-    SyncAccountSettings {
+) -> Result<SyncAccountSettings> {
+    if session.refresh_token.is_empty() {
+        return Err(anyhow!("sync response missing refresh token"));
+    }
+    Ok(SyncAccountSettings {
         api_base,
         user_id: session.user_id,
         session_id: session.session_id,
@@ -555,18 +598,10 @@ fn sync_account_settings_from_session(
         supports_sync: session.supports_sync,
         bearer_token: session.bearer_token,
         expires_at: session.expires_at,
-        refresh_token: non_empty(session.refresh_token),
+        refresh_token: Some(session.refresh_token),
         refresh_expires_at: session.refresh_expires_at,
         account_status: Some(SyncAccountStatus::from_supports_sync(session.supports_sync)),
-    }
-}
-
-fn non_empty(value: String) -> Option<String> {
-    if value.is_empty() {
-        None
-    } else {
-        Some(value)
-    }
+    })
 }
 
 /// Exchange a refresh token for a fresh access token (and a rotated refresh
@@ -636,7 +671,7 @@ fn delete_sync_account_backend(account: &SyncAccountSettings) -> Result<()> {
                 .unwrap_or_else(|_| "delete_failed".to_string());
             Err(anyhow!(account_action_error_message(&code)))
         }
-        Err(error) => Err(anyhow!("Could not reach the sync Worker: {error}")),
+        Err(error) => Err(anyhow!("Could not reach the sync API: {error}")),
     }
 }
 
@@ -658,12 +693,42 @@ fn cancel_subscription_backend(account: &SyncAccountSettings) -> Result<SyncAcco
                 .unwrap_or_else(|_| "cancel_failed".to_string());
             return Err(anyhow!(account_action_error_message(&code)));
         }
-        Err(error) => return Err(anyhow!("Could not reach the sync Worker: {error}")),
+        Err(error) => return Err(anyhow!("Could not reach the sync API: {error}")),
     };
     let session: LoginResponse = response
         .into_json()
         .context("parse sync subscription cancel response")?;
-    Ok(sync_account_settings_from_session(base, session))
+    sync_account_settings_from_session(base, session)
+}
+
+/// Create a provider-hosted checkout URL for the signed-in account.
+fn create_subscription_checkout_backend(account: &SyncAccountSettings) -> Result<String> {
+    let base = normalize_api_base(&account.api_base)?;
+    let url = format!("{base}/v1/billing/lemonsqueezy/checkout");
+    let response = match ureq::post(&url)
+        .timeout(StdDuration::from_secs(10))
+        .set("authorization", &format!("Bearer {}", account.bearer_token))
+        .send_json(serde_json::json!({
+            "user_id": account.user_id,
+            "email": account.email,
+        })) {
+        Ok(response) => response,
+        Err(ureq::Error::Status(_, response)) => {
+            let code = response
+                .into_json::<LoginError>()
+                .map(|error| error.code)
+                .unwrap_or_else(|_| "checkout_failed".to_string());
+            return Err(anyhow!(account_action_error_message(&code)));
+        }
+        Err(error) => return Err(anyhow!("Could not reach the sync API: {error}")),
+    };
+    let checkout: CheckoutResponse = response
+        .into_json()
+        .context("parse sync subscription checkout response")?;
+    if checkout.checkout_url.trim().is_empty() {
+        return Err(anyhow!("The sync API did not return a checkout URL."));
+    }
+    Ok(checkout.checkout_url)
 }
 
 fn refresh_account_status_backend(mut account: SyncAccountSettings) -> Result<SyncAccountSettings> {
@@ -717,7 +782,7 @@ fn fetch_account_status_backend(
         Err(ureq::Error::Status(401, _)) => return Err(AccountStatusError::Unauthorized),
         Err(ureq::Error::Status(404, _)) => {
             return Err(AccountStatusError::Transient(anyhow!(
-                "The sync Worker does not support account status yet."
+                "The sync API does not support account status yet."
             )));
         }
         Err(ureq::Error::Status(_, response)) => {
@@ -731,7 +796,7 @@ fn fetch_account_status_backend(
         }
         Err(error) => {
             return Err(AccountStatusError::Transient(anyhow!(
-                "Could not reach the sync Worker: {error}"
+                "Could not reach the sync API: {error}"
             )));
         }
     };
@@ -773,7 +838,11 @@ fn sync_account_status_from_response(status: AccountStatusResponse) -> SyncAccou
 fn account_status_error_message(code: &str) -> &'static str {
     match code {
         "unauthorized" => "Your sync session expired. Sign in again, then retry.",
-        _ => "The request to the sync Worker failed.",
+        "billing_api_not_configured" => "Subscription cancellation is not configured yet.",
+        "cancel_in_app_store" => {
+            "Manage this App Store subscription from your Apple account subscriptions."
+        }
+        _ => "The request to the sync API failed.",
     }
 }
 
@@ -781,33 +850,20 @@ fn account_action_error_message(code: &str) -> &'static str {
     match code {
         "unauthorized" => "Your sync session expired. Sign in again, then retry.",
         "delete_confirmation_mismatch" => "Could not confirm the account. Please try again.",
-        _ => "The request to the sync Worker failed.",
-    }
-}
-
-/// Build the hosted checkout URL, threading the account id + email through so the
-/// billing webhook can map the resulting subscription back to this account.
-fn subscription_checkout_url(user_id: &str, email: &str) -> String {
-    let separator = checkout_query_separator(SUBSCRIPTION_CHECKOUT_URL);
-    format!(
-        "{SUBSCRIPTION_CHECKOUT_URL}{separator}email={}&user_id={}",
-        percent_encode(email),
-        percent_encode(user_id),
-    )
-}
-
-fn checkout_query_separator(url: &str) -> &'static str {
-    if url.ends_with('?') || url.ends_with('&') {
-        ""
-    } else if url.contains('?') {
-        "&"
-    } else {
-        "?"
+        "billing_api_not_configured" | "billing_checkout_not_configured" => {
+            "Subscription checkout is not configured yet."
+        }
+        "billing_provider_error" => "Subscription checkout is temporarily unavailable.",
+        "email_mismatch" | "forbidden" => "This checkout does not match the signed-in account.",
+        "cancel_in_app_store" => {
+            "Manage this App Store subscription from your Apple account subscriptions."
+        }
+        _ => "The request to the sync API failed.",
     }
 }
 
 /// Percent-encode a query value, escaping everything outside the RFC 3986
-/// unreserved set (keeps the UUID/email safe inside the checkout URL).
+/// unreserved set.
 fn percent_encode(value: &str) -> String {
     let mut out = String::with_capacity(value.len());
     for byte in value.bytes() {
@@ -841,10 +897,7 @@ fn normalize_api_base(raw: &str) -> Result<String> {
     } else if trimmed.strip_prefix("https://").is_none() {
         return Err(anyhow!("Sync API must start with http:// or https://."));
     }
-    Ok(match trimmed {
-        "http://127.0.0.1:7878" | "http://localhost:7878" => DEFAULT_SYNC_API_BASE.to_string(),
-        _ => trimmed.to_string(),
-    })
+    Ok(trimmed.to_string())
 }
 
 /// Whether the authority following `http://` names a loopback host. Accepts
@@ -923,17 +976,5 @@ mod tests {
         assert!(normalize_api_base("ftp://example.com").is_err());
         assert!(normalize_api_base("example.com").is_err());
         assert!(normalize_api_base("   ").is_err());
-    }
-
-    #[test]
-    fn normalize_api_base_remaps_localhost_dev_port() {
-        assert_eq!(
-            normalize_api_base("http://127.0.0.1:7878").unwrap(),
-            DEFAULT_SYNC_API_BASE
-        );
-        assert_eq!(
-            normalize_api_base("http://localhost:7878").unwrap(),
-            DEFAULT_SYNC_API_BASE
-        );
     }
 }
