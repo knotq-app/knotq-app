@@ -214,6 +214,7 @@ jobs:
           timestamp-digest: SHA256
           description: KnotQ
           description-url: https://github.com/${{ github.repository }}
+          cache-dependencies: false
 
       - name: Install Inno Setup
         run: choco install innosetup --no-progress -y
@@ -235,6 +236,7 @@ jobs:
           timestamp-digest: SHA256
           description: KnotQ Windows Installers
           description-url: https://github.com/${{ github.repository }}
+          cache-dependencies: false
 
       - name: Verify Windows signatures
         shell: pwsh
