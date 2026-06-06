@@ -611,6 +611,7 @@ fn update_status_row(
         AutoUpdateUiStatus::Ready { update } => {
             let button = match update.install_strategy {
                 knotq_auto_update::InstallStrategy::InstalledOnRestart => "Restart",
+                knotq_auto_update::InstallStrategy::OpenInstaller => "Open",
                 knotq_auto_update::InstallStrategy::RunInstallerAndQuit => "Install",
             };
             settings_action_row(
@@ -638,15 +639,30 @@ fn update_status_row(
             cx,
             |this, cx| this.check_for_updates(cx),
         ),
-        AutoUpdateUiStatus::Errored { message, .. } => settings_action_row(
-            "auto-update-check",
-            "Update check failed".to_string(),
-            message,
-            "Check",
-            t,
-            cx,
-            |this, cx| this.check_for_updates(cx),
-        ),
+        AutoUpdateUiStatus::Errored {
+            message, update, ..
+        } => {
+            let has_retry = update.is_some();
+            settings_action_row(
+                "auto-update-check",
+                if has_retry {
+                    "Update failed".to_string()
+                } else {
+                    "Update check failed".to_string()
+                },
+                message,
+                if has_retry { "Retry" } else { "Check" },
+                t,
+                cx,
+                move |this, cx| {
+                    if has_retry {
+                        this.download_available_update(cx);
+                    } else {
+                        this.check_for_updates(cx);
+                    }
+                },
+            )
+        }
     }
 }
 

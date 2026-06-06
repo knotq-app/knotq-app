@@ -9,7 +9,8 @@ use knotq_storage_json::CalendarViewMode;
 use crate::app::auto_update::AutoUpdateUiStatus;
 use crate::app::{daily_queue_marker_color, KnotQApp, SyncAuthStatus, SyncRunStatus, View};
 use crate::theme_gpui::{
-    palette_hsla, scheme_color, token_hsla, token_rgba, Theme, FONT_SIZE_HEADLINE,
+    palette_hsla, scheme_color, selected_date_text_color, token_hsla, token_rgba, Theme,
+    FONT_SIZE_HEADLINE,
 };
 
 const TITLE_CONTENT_W: f32 = 430.0;
@@ -320,11 +321,15 @@ impl KnotQApp {
             AutoUpdateUiStatus::Ready { update } => {
                 let label = match update.install_strategy {
                     knotq_auto_update::InstallStrategy::InstalledOnRestart => "Restart to update",
+                    knotq_auto_update::InstallStrategy::OpenInstaller => "Open update",
                     knotq_auto_update::InstallStrategy::RunInstallerAndQuit => "Install update",
                 };
                 let tooltip = match update.install_strategy {
                     knotq_auto_update::InstallStrategy::InstalledOnRestart => {
                         format!("Restart KnotQ to finish updating to {}.", update.version)
+                    }
+                    knotq_auto_update::InstallStrategy::OpenInstaller => {
+                        format!("Open the KnotQ {} installer.", update.version)
                     }
                     knotq_auto_update::InstallStrategy::RunInstallerAndQuit => {
                         format!("Run the KnotQ {} installer.", update.version)
@@ -332,26 +337,50 @@ impl KnotQApp {
                 };
                 (label, tooltip, Some(TitleUpdateAction::Install))
             }
+            AutoUpdateUiStatus::Errored {
+                update: Some(update),
+                ..
+            } => (
+                "Update",
+                format!("Retry downloading KnotQ {}.", update.version),
+                Some(TitleUpdateAction::Download),
+            ),
             _ => return None,
         };
         let actionable = action.is_some();
+        let button_bg = if actionable {
+            t.caret_color
+        } else {
+            t.button_bg
+        };
+        let button_border = if actionable {
+            t.caret_color
+        } else {
+            t.border_soft
+        };
+        let button_text = if actionable {
+            selected_date_text_color(t)
+        } else {
+            t.text_dim
+        };
 
         Some(
             div()
                 .id("title-auto-update")
                 .h(px(26.0))
-                .px(px(9.0))
+                .min_w(px(92.0))
+                .px(px(10.0))
                 .rounded(px(7.0))
                 .border_1()
-                .border_color(token_rgba(t.border_soft))
-                .bg(token_rgba(if t.is_dark { 0x3f7cff24 } else { 0x2f67cf18 }))
+                .border_color(token_rgba(button_border))
+                .bg(token_rgba(button_bg))
                 .flex()
                 .items_center()
                 .justify_center()
                 .gap(px(6.0))
                 .when(actionable, |button| {
                     button.cursor_pointer().hover({
-                        let c = t.button_hover;
+                        let c = if t.is_dark { 0x9bb5ffff } else { 0x2f67cfff };
                         move |s| s.bg(token_rgba(c))
                     })
                 })
@@ -371,17 +400,13 @@ impl KnotQApp {
                 .child(
                     Icon::new(IconName::Redo2)
                         .xsmall()
-                        .text_color(token_hsla(t.text_highlight)),
+                        .text_color(token_hsla(button_text)),
                 )
                 .child(
                     div()
                         .text_size(px(12.0))
                         .font_weight(gpui::FontWeight::SEMIBOLD)
-                        .text_color(token_hsla(if actionable {
-                            t.text_primary
-                        } else {
-                            t.text_dim
-                        }))
+                        .text_color(token_hsla(button_text))
                         .child(label),
                 )
                 .into_any_element(),

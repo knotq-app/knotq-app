@@ -2,13 +2,14 @@ use std::fs::{self, File};
 use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::{anyhow, bail, Context, Result};
 use chrono::{DateTime, Utc};
 use semver::Version;
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
+#[cfg(target_os = "linux")]
+use std::time::{SystemTime, UNIX_EPOCH};
 
 const LATEST_RELEASE_URL: &str = "https://api.github.com/repos/knotq-app/knotq-app/releases/latest";
 const USER_AGENT: &str = concat!("KnotQ/", env!("CARGO_PKG_VERSION"));
@@ -59,6 +60,7 @@ pub struct ReleaseAsset {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum InstallStrategy {
     InstalledOnRestart,
+    OpenInstaller,
     RunInstallerAndQuit,
 }
 
@@ -127,10 +129,7 @@ pub fn prepare_update(
 
     let kind = target_kind()?;
     let (install_strategy, restart_path) = match kind {
-        TargetKind::MacOs => {
-            install_macos(&asset_path, app_path, updates_dir)?;
-            (InstallStrategy::InstalledOnRestart, None)
-        }
+        TargetKind::MacOs => (InstallStrategy::OpenInstaller, None),
         TargetKind::Linux => {
             let restart_path = install_linux(&asset_path, app_path, updates_dir)?;
             (InstallStrategy::InstalledOnRestart, Some(restart_path))
@@ -148,6 +147,26 @@ pub fn prepare_update(
         install_strategy,
         staged_at: Utc::now(),
     })
+}
+
+pub fn open_staged_installer(update: &StagedUpdate) -> Result<()> {
+    if update.install_strategy != InstallStrategy::OpenInstaller {
+        bail!("staged update is not an installer that can be opened");
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        Command::new("open")
+            .arg(&update.asset_path)
+            .spawn()
+            .with_context(|| format!("open update installer {}", update.asset_path.display()))?;
+        Ok(())
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    {
+        bail!("opening staged installers is not supported on this platform")
+    }
 }
 
 pub fn run_windows_installer(update: &StagedUpdate) -> Result<()> {
@@ -412,298 +431,6 @@ impl AssetProfile {
     }
 }
 
-#[cfg(target_os = "macos")]
-fn install_macos(downloaded_dmg: &Path, running_app_path: &Path, updates_dir: &Path) -> Result<()> {
-    if running_app_path.extension().and_then(|ext| ext.to_str()) != Some("app") {
-        bail!(
-            "auto update requires a bundled .app, got {}",
-            running_app_path.display()
-        );
-    }
-
-    let temp_dir = unique_temp_dir(updates_dir, "mount")?;
-    let attach_output = Command::new("hdiutil")
-        .arg("attach")
-        .arg("-nobrowse")
-        .arg(downloaded_dmg)
-        .arg("-mountroot")
-        .arg(&temp_dir)
-        .output()
-        .context("mount update DMG")?;
-    if !attach_output.status.success() {
-        bail!(
-            "failed to mount update DMG: {}",
-            String::from_utf8_lossy(&attach_output.stderr)
-        );
-    }
-
-    let app_name = running_app_path
-        .file_name()
-        .ok_or_else(|| anyhow!("running app path has no file name"))?;
-    let mounted_app = find_child_app(&temp_dir, app_name);
-    let detach_target = mounted_app
-        .as_ref()
-        .and_then(|path| path.parent().map(Path::to_path_buf))
-        .unwrap_or_else(|| temp_dir.clone());
-    let result = mounted_app
-        .ok_or_else(|| anyhow!("mounted update did not contain KnotQ.app"))
-        .and_then(|mounted_app| {
-            sync_dir_filtered(&mounted_app, running_app_path, finder_icon_file)
-        });
-
-    let detach_output = Command::new("hdiutil")
-        .arg("detach")
-        .arg("-force")
-        .arg(detach_target)
-        .output();
-    if let Err(err) = detach_output {
-        eprintln!("failed to detach update DMG: {err:#}");
-    }
-    let _ = fs::remove_dir_all(&temp_dir);
-    result
-}
-
-#[cfg(not(target_os = "macos"))]
-fn install_macos(
-    _downloaded_dmg: &Path,
-    _running_app_path: &Path,
-    _updates_dir: &Path,
-) -> Result<()> {
-    bail!("macOS updater called on non-macOS platform")
-}
-
-#[cfg(target_os = "macos")]
-fn find_child_app(root: &Path, app_name: &std::ffi::OsStr) -> Option<PathBuf> {
-    let direct = root.join(app_name);
-    if direct.is_dir() {
-        return Some(direct);
-    }
-    let entries = fs::read_dir(root).ok()?;
-    for entry in entries.flatten() {
-        let path = entry.path();
-        if !path.is_dir() {
-            continue;
-        }
-        let candidate = path.join(app_name);
-        if candidate.is_dir() {
-            return Some(candidate);
-        }
-    }
-    None
-}
-
-#[cfg(target_os = "macos")]
-fn finder_icon_file(relative_path: &Path) -> bool {
-    relative_path.file_name().is_some_and(|name| {
-        let name = name.to_string_lossy();
-        name.starts_with("Icon") && name.chars().count() == 5
-    })
-}
-
-#[cfg(target_os = "macos")]
-fn sync_dir_filtered(
-    source: &Path,
-    destination: &Path,
-    should_skip: impl Fn(&Path) -> bool,
-) -> Result<()> {
-    if !source.is_dir() {
-        bail!("source directory does not exist: {}", source.display());
-    }
-    fs::create_dir_all(destination)
-        .with_context(|| format!("create destination {}", destination.display()))?;
-    delete_stale_entries(source, destination, destination, &should_skip)?;
-    copy_entries(source, source, destination, &should_skip)?;
-    copy_permissions(source, destination)?;
-    Ok(())
-}
-
-#[cfg(target_os = "macos")]
-fn delete_stale_entries(
-    source_root: &Path,
-    destination_root: &Path,
-    directory: &Path,
-    should_skip: &impl Fn(&Path) -> bool,
-) -> Result<()> {
-    for entry in fs::read_dir(directory).with_context(|| format!("read {}", directory.display()))? {
-        let entry = entry?;
-        let destination_path = entry.path();
-        let relative_path = destination_path
-            .strip_prefix(destination_root)
-            .with_context(|| format!("relativize {}", destination_path.display()))?;
-        if should_skip(relative_path) {
-            continue;
-        }
-
-        let source_path = source_root.join(relative_path);
-        match fs::symlink_metadata(&source_path) {
-            Ok(_) => {
-                let metadata = fs::symlink_metadata(&destination_path)
-                    .with_context(|| format!("inspect {}", destination_path.display()))?;
-                if metadata.is_dir() && !metadata.file_type().is_symlink() {
-                    delete_stale_entries(
-                        source_root,
-                        destination_root,
-                        &destination_path,
-                        should_skip,
-                    )?;
-                }
-            }
-            Err(error) if error.kind() == io::ErrorKind::NotFound => {
-                remove_path(&destination_path)
-                    .with_context(|| format!("remove stale {}", destination_path.display()))?;
-            }
-            Err(error) => {
-                return Err(error)
-                    .with_context(|| format!("inspect source {}", source_path.display()));
-            }
-        }
-    }
-    Ok(())
-}
-
-#[cfg(target_os = "macos")]
-fn copy_entries(
-    source_root: &Path,
-    directory: &Path,
-    destination_root: &Path,
-    should_skip: &impl Fn(&Path) -> bool,
-) -> Result<()> {
-    for entry in fs::read_dir(directory).with_context(|| format!("read {}", directory.display()))? {
-        let entry = entry?;
-        let source_path = entry.path();
-        let relative_path = source_path
-            .strip_prefix(source_root)
-            .with_context(|| format!("relativize {}", source_path.display()))?;
-        if should_skip(relative_path) {
-            continue;
-        }
-
-        let destination_path = destination_root.join(relative_path);
-        let file_type = entry.file_type()?;
-        if file_type.is_dir() {
-            prepare_destination_dir(&destination_path)?;
-            copy_entries(source_root, &source_path, destination_root, should_skip)?;
-            copy_permissions(&source_path, &destination_path)?;
-        } else if file_type.is_symlink() {
-            copy_symlink(&source_path, &destination_path)?;
-        } else if file_type.is_file() {
-            copy_file(&source_path, &destination_path)?;
-        } else {
-            bail!("unsupported update bundle entry {}", source_path.display());
-        }
-    }
-    Ok(())
-}
-
-#[cfg(target_os = "macos")]
-fn prepare_destination_dir(path: &Path) -> Result<()> {
-    if let Ok(metadata) = fs::symlink_metadata(path) {
-        if !metadata.is_dir() || metadata.file_type().is_symlink() {
-            remove_path(path)
-                .with_context(|| format!("replace {} with directory", path.display()))?;
-        }
-    }
-    fs::create_dir_all(path).with_context(|| format!("create {}", path.display()))
-}
-
-#[cfg(target_os = "macos")]
-fn copy_file(source: &Path, destination: &Path) -> Result<()> {
-    ensure_parent(destination)?;
-    if let Ok(metadata) = fs::symlink_metadata(destination) {
-        if !metadata.is_file() {
-            remove_path(destination)
-                .with_context(|| format!("replace {}", destination.display()))?;
-        }
-    }
-
-    let temp_path = temp_path_for(destination)?;
-    fs::copy(source, &temp_path).with_context(|| {
-        format!(
-            "copy update file {} to {}",
-            source.display(),
-            destination.display()
-        )
-    })?;
-    copy_permissions(source, &temp_path)?;
-    if let Err(error) = fs::rename(&temp_path, destination) {
-        let _ = fs::remove_file(&temp_path);
-        return Err(error).with_context(|| format!("move {} into place", destination.display()));
-    }
-    Ok(())
-}
-
-#[cfg(target_os = "macos")]
-fn copy_symlink(source: &Path, destination: &Path) -> Result<()> {
-    ensure_parent(destination)?;
-    if fs::symlink_metadata(destination).is_ok() {
-        remove_path(destination).with_context(|| format!("replace {}", destination.display()))?;
-    }
-    let target =
-        fs::read_link(source).with_context(|| format!("read symlink {}", source.display()))?;
-    std::os::unix::fs::symlink(&target, destination).with_context(|| {
-        format!(
-            "create symlink {} -> {}",
-            destination.display(),
-            target.display()
-        )
-    })
-}
-
-#[cfg(target_os = "macos")]
-fn copy_permissions(source: &Path, destination: &Path) -> Result<()> {
-    let permissions = fs::symlink_metadata(source)
-        .with_context(|| format!("inspect {}", source.display()))?
-        .permissions();
-    fs::set_permissions(destination, permissions)
-        .with_context(|| format!("set permissions on {}", destination.display()))
-}
-
-#[cfg(target_os = "macos")]
-fn remove_path(path: &Path) -> Result<()> {
-    let metadata =
-        fs::symlink_metadata(path).with_context(|| format!("inspect {}", path.display()))?;
-    let file_type = metadata.file_type();
-    if file_type.is_symlink() || file_type.is_file() {
-        fs::remove_file(path).with_context(|| format!("remove {}", path.display()))
-    } else if file_type.is_dir() {
-        fs::remove_dir_all(path).with_context(|| format!("remove {}", path.display()))
-    } else {
-        bail!("unsupported path type {}", path.display())
-    }
-}
-
-#[cfg(target_os = "macos")]
-fn ensure_parent(path: &Path) -> Result<()> {
-    let parent = path
-        .parent()
-        .ok_or_else(|| anyhow!("path has no parent: {}", path.display()))?;
-    fs::create_dir_all(parent).with_context(|| format!("create {}", parent.display()))
-}
-
-#[cfg(target_os = "macos")]
-fn temp_path_for(destination: &Path) -> Result<PathBuf> {
-    let parent = destination
-        .parent()
-        .ok_or_else(|| anyhow!("path has no parent: {}", destination.display()))?;
-    let file_name = destination
-        .file_name()
-        .ok_or_else(|| anyhow!("path has no file name: {}", destination.display()))?
-        .to_string_lossy();
-    for attempt in 0..1000 {
-        let candidate = parent.join(format!(
-            ".{file_name}.knotq-update-{}-{attempt}.tmp",
-            std::process::id()
-        ));
-        if fs::symlink_metadata(&candidate).is_err() {
-            return Ok(candidate);
-        }
-    }
-    bail!(
-        "could not create temporary path next to {}",
-        destination.display()
-    )
-}
-
 #[cfg(target_os = "linux")]
 fn install_linux(
     downloaded_tar_gz: &Path,
@@ -802,6 +529,7 @@ fn install_linux(
     bail!("Linux updater called on non-Linux platform")
 }
 
+#[cfg(target_os = "linux")]
 fn unique_temp_dir(parent: &Path, prefix: &str) -> Result<PathBuf> {
     let nanos = SystemTime::now()
         .duration_since(UNIX_EPOCH)

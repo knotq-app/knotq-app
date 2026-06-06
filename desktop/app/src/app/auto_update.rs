@@ -5,8 +5,9 @@ use chrono::{DateTime, Utc};
 use futures::{pin_mut, select, FutureExt};
 use gpui::{Context, Task};
 use knotq_auto_update::{
-    check_latest_release, current_version, prepare_update, run_windows_installer, AutoUpdateConfig,
-    AvailableUpdate, InstallStrategy, LatestRelease, StagedUpdate,
+    check_latest_release, current_version, open_staged_installer, prepare_update,
+    run_windows_installer, AutoUpdateConfig, AvailableUpdate, InstallStrategy, LatestRelease,
+    StagedUpdate,
 };
 use knotq_storage_json::data_dir;
 
@@ -36,6 +37,7 @@ pub enum AutoUpdateUiStatus {
     Errored {
         message: String,
         checked_at: DateTime<Utc>,
+        update: Option<AvailableUpdate>,
     },
 }
 
@@ -46,6 +48,28 @@ impl AutoUpdateUiStatus {
 
     pub fn is_busy(&self) -> bool {
         matches!(self, Self::Checking | Self::Downloading { .. })
+    }
+
+    pub fn available_update(&self) -> Option<AvailableUpdate> {
+        match self {
+            Self::Available { update, .. } => Some(update.clone()),
+            Self::Errored {
+                update: Some(update),
+                ..
+            } => Some(update.clone()),
+            _ => None,
+        }
+    }
+
+    fn has_actionable_update(&self) -> bool {
+        matches!(self, Self::Available { .. } | Self::Ready { .. })
+            || matches!(
+                self,
+                Self::Errored {
+                    update: Some(_),
+                    ..
+                }
+            )
     }
 }
 
@@ -131,7 +155,7 @@ impl KnotQApp {
         if self.auto_update_status.is_busy() {
             return;
         }
-        let AutoUpdateUiStatus::Available { update, .. } = self.auto_update_status.clone() else {
+        let Some(update) = self.auto_update_status.available_update() else {
             return;
         };
         self.auto_update_status = AutoUpdateUiStatus::Downloading {
@@ -153,6 +177,17 @@ impl KnotQApp {
                 self.flush_for_shutdown("auto update restart");
                 cx.restart();
             }
+            InstallStrategy::OpenInstaller => match open_staged_installer(&update) {
+                Ok(()) => {}
+                Err(err) => {
+                    self.auto_update_status = AutoUpdateUiStatus::Errored {
+                        message: format!("Could not open update installer: {err:#}"),
+                        checked_at: Utc::now(),
+                        update: None,
+                    };
+                    cx.notify();
+                }
+            },
             InstallStrategy::RunInstallerAndQuit => match run_windows_installer(&update) {
                 Ok(()) => {
                     self.flush_for_shutdown("auto update installer");
@@ -162,6 +197,7 @@ impl KnotQApp {
                     self.auto_update_status = AutoUpdateUiStatus::Errored {
                         message: format!("Could not launch installer: {err:#}"),
                         checked_at: Utc::now(),
+                        update: None,
                     };
                     cx.notify();
                 }
@@ -183,10 +219,7 @@ async fn run_update_check(
     }
     let update_actionable = weak
         .update(cx, |app, _cx| {
-            matches!(
-                app.auto_update_status,
-                AutoUpdateUiStatus::Available { .. } | AutoUpdateUiStatus::Ready { .. }
-            )
+            app.auto_update_status.has_actionable_update()
         })
         .unwrap_or(false);
     if kind == AutoUpdateCheckKind::Automatic && update_actionable {
@@ -297,7 +330,13 @@ async fn prepare_available_update(
             set_update_status(weak, cx, AutoUpdateUiStatus::Ready { update: staged });
         }
         Err(err) => {
-            set_check_error(weak, cx, kind, format!("Could not prepare update: {err:#}"));
+            set_prepare_error(
+                weak,
+                cx,
+                kind,
+                update,
+                format!("Could not prepare update: {err:#}"),
+            );
         }
     }
 }
@@ -330,6 +369,30 @@ fn set_check_error(
             AutoUpdateUiStatus::Errored {
                 message,
                 checked_at: Utc::now(),
+                update: None,
+            },
+        );
+    }
+}
+
+fn set_prepare_error(
+    weak: &gpui::WeakEntity<KnotQApp>,
+    cx: &mut gpui::AsyncApp,
+    kind: AutoUpdateCheckKind,
+    update: AvailableUpdate,
+    message: String,
+) {
+    if kind == AutoUpdateCheckKind::Automatic {
+        eprintln!("auto-update prepare failed: {message}");
+        set_update_status(weak, cx, AutoUpdateUiStatus::Idle);
+    } else {
+        set_update_status(
+            weak,
+            cx,
+            AutoUpdateUiStatus::Errored {
+                message,
+                checked_at: Utc::now(),
+                update: Some(update),
             },
         );
     }
