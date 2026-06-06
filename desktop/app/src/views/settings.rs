@@ -584,7 +584,6 @@ fn update_status_row(
     cx: &mut Context<KnotQApp>,
 ) -> gpui::AnyElement {
     match status {
-        AutoUpdateUiStatus::Disabled { reason } => settings_message(reason, false, t),
         AutoUpdateUiStatus::Idle => settings_action_row(
             "auto-update-check",
             "Current version".to_string(),
@@ -597,6 +596,15 @@ fn update_status_row(
         AutoUpdateUiStatus::Checking => {
             settings_message("Checking for updates...".to_string(), false, t)
         }
+        AutoUpdateUiStatus::Available { update, .. } => settings_action_row(
+            "auto-update-download",
+            format!("KnotQ {} is available", update.version),
+            update.asset.name,
+            "Update",
+            t,
+            cx,
+            |this, cx| this.download_available_update(cx),
+        ),
         AutoUpdateUiStatus::Downloading { version } => {
             settings_message(format!("Downloading KnotQ {version}..."), false, t)
         }

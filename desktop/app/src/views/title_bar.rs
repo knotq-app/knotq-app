@@ -31,6 +31,12 @@ struct TitleSyncStatus {
     dot_color: u32,
 }
 
+#[derive(Clone, Copy)]
+enum TitleUpdateAction {
+    Download,
+    Install,
+}
+
 impl KnotQApp {
     pub(crate) fn render_title_bar(
         &mut self,
@@ -300,22 +306,35 @@ impl KnotQApp {
         t: Theme,
         cx: &mut Context<Self>,
     ) -> Option<gpui::AnyElement> {
-        let AutoUpdateUiStatus::Ready { update } = &self.auto_update_status else {
-            return None;
-        };
-
-        let label = match update.install_strategy {
-            knotq_auto_update::InstallStrategy::InstalledOnRestart => "Restart to update",
-            knotq_auto_update::InstallStrategy::RunInstallerAndQuit => "Install update",
-        };
-        let tooltip = match update.install_strategy {
-            knotq_auto_update::InstallStrategy::InstalledOnRestart => {
-                format!("Restart KnotQ to finish updating to {}.", update.version)
+        let (label, tooltip, action) = match &self.auto_update_status {
+            AutoUpdateUiStatus::Available { update, .. } => (
+                "Update",
+                format!("Download KnotQ {}.", update.version),
+                Some(TitleUpdateAction::Download),
+            ),
+            AutoUpdateUiStatus::Downloading { version } => (
+                "Downloading",
+                format!("Downloading KnotQ {version}..."),
+                None,
+            ),
+            AutoUpdateUiStatus::Ready { update } => {
+                let label = match update.install_strategy {
+                    knotq_auto_update::InstallStrategy::InstalledOnRestart => "Restart to update",
+                    knotq_auto_update::InstallStrategy::RunInstallerAndQuit => "Install update",
+                };
+                let tooltip = match update.install_strategy {
+                    knotq_auto_update::InstallStrategy::InstalledOnRestart => {
+                        format!("Restart KnotQ to finish updating to {}.", update.version)
+                    }
+                    knotq_auto_update::InstallStrategy::RunInstallerAndQuit => {
+                        format!("Run the KnotQ {} installer.", update.version)
+                    }
+                };
+                (label, tooltip, Some(TitleUpdateAction::Install))
             }
-            knotq_auto_update::InstallStrategy::RunInstallerAndQuit => {
-                format!("Run the KnotQ {} installer.", update.version)
-            }
+            _ => return None,
         };
+        let actionable = action.is_some();
 
         Some(
             div()
@@ -330,14 +349,24 @@ impl KnotQApp {
                 .items_center()
                 .justify_center()
                 .gap(px(6.0))
-                .cursor_pointer()
-                .hover({
-                    let c = t.button_hover;
-                    move |s| s.bg(token_rgba(c))
+                .when(actionable, |button| {
+                    button.cursor_pointer().hover({
+                        let c = t.button_hover;
+                        move |s| s.bg(token_rgba(c))
+                    })
                 })
-                .on_click(cx.listener(|this, _: &ClickEvent, _window, cx| {
-                    this.install_ready_update(cx);
-                }))
+                .when_some(action, |button, action| match action {
+                    TitleUpdateAction::Download => {
+                        button.on_click(cx.listener(|this, _: &ClickEvent, _window, cx| {
+                            this.download_available_update(cx);
+                        }))
+                    }
+                    TitleUpdateAction::Install => {
+                        button.on_click(cx.listener(|this, _: &ClickEvent, _window, cx| {
+                            this.install_ready_update(cx);
+                        }))
+                    }
+                })
                 .tooltip(move |window, cx| Tooltip::new(tooltip.clone()).build(window, cx))
                 .child(
                     Icon::new(IconName::Redo2)
@@ -348,7 +377,11 @@ impl KnotQApp {
                     div()
                         .text_size(px(12.0))
                         .font_weight(gpui::FontWeight::SEMIBOLD)
-                        .text_color(token_hsla(t.text_primary))
+                        .text_color(token_hsla(if actionable {
+                            t.text_primary
+                        } else {
+                            t.text_dim
+                        }))
                         .child(label),
                 )
                 .into_any_element(),

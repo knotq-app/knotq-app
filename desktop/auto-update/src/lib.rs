@@ -10,29 +10,21 @@ use semver::Version;
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
 
-const DEFAULT_REPOSITORY: &str = "knotq-app/knotq-app";
+const LATEST_RELEASE_URL: &str = "https://api.github.com/repos/knotq-app/knotq-app/releases/latest";
 const USER_AGENT: &str = concat!("KnotQ/", env!("CARGO_PKG_VERSION"));
 
 #[derive(Clone, Debug)]
 pub struct AutoUpdateConfig {
     pub current_version: Version,
-    pub repository: String,
     pub latest_release_url: String,
     pub user_agent: String,
 }
 
 impl AutoUpdateConfig {
     pub fn github(current_version: Version) -> Self {
-        let repository =
-            std::env::var("KNOTQ_UPDATE_REPOSITORY").unwrap_or_else(|_| DEFAULT_REPOSITORY.into());
-        let latest_release_url =
-            std::env::var("KNOTQ_UPDATE_LATEST_RELEASE_URL").unwrap_or_else(|_| {
-                format!("https://api.github.com/repos/{repository}/releases/latest")
-            });
         Self {
             current_version,
-            repository,
-            latest_release_url,
+            latest_release_url: LATEST_RELEASE_URL.into(),
             user_agent: USER_AGENT.into(),
         }
     }
@@ -854,7 +846,6 @@ mod tests {
     fn older_release_is_up_to_date() {
         let config = AutoUpdateConfig {
             current_version: Version::new(1, 2, 3),
-            repository: DEFAULT_REPOSITORY.into(),
             latest_release_url: "https://example.invalid".into(),
             user_agent: USER_AGENT.into(),
         };

@@ -6,7 +6,7 @@ use futures::{pin_mut, select, FutureExt};
 use gpui::{Context, Task};
 use knotq_auto_update::{
     check_latest_release, current_version, prepare_update, run_windows_installer, AutoUpdateConfig,
-    InstallStrategy, LatestRelease, StagedUpdate,
+    AvailableUpdate, InstallStrategy, LatestRelease, StagedUpdate,
 };
 use knotq_storage_json::data_dir;
 
@@ -17,11 +17,12 @@ const AUTO_UPDATE_POLL_INTERVAL: StdDuration = StdDuration::from_secs(30 * 60);
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum AutoUpdateUiStatus {
-    Disabled {
-        reason: String,
-    },
     Idle,
     Checking,
+    Available {
+        update: AvailableUpdate,
+        checked_at: DateTime<Utc>,
+    },
     Downloading {
         version: String,
     },
@@ -40,9 +41,7 @@ pub enum AutoUpdateUiStatus {
 
 impl AutoUpdateUiStatus {
     pub fn initial() -> Self {
-        auto_update_disabled_reason()
-            .map(|reason| Self::Disabled { reason })
-            .unwrap_or(Self::Idle)
+        Self::Idle
     }
 
     pub fn is_busy(&self) -> bool {
@@ -50,9 +49,11 @@ impl AutoUpdateUiStatus {
     }
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) enum AutoUpdateSignal {
     CheckNow,
+    CheckNowAutomatic,
+    Download(AvailableUpdate),
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -73,18 +74,28 @@ pub(crate) fn spawn_auto_update_task(
                 let signal = rx.recv().fuse();
                 pin_mut!(timer, signal);
 
-                let kind = select! {
-                    _ = timer => AutoUpdateCheckKind::Automatic,
+                let signal = select! {
+                    _ = timer => AutoUpdateSignal::CheckNowAutomatic,
                     signal = signal => {
                         match signal {
-                            Ok(AutoUpdateSignal::CheckNow) => AutoUpdateCheckKind::Manual,
+                            Ok(signal) => signal,
                             Err(_) => break,
                         }
                     }
                 };
 
-                run_update_check(&weak, cx, kind).await;
-                while rx.try_recv().is_ok() {}
+                match signal {
+                    AutoUpdateSignal::CheckNow => {
+                        run_update_check(&weak, cx, AutoUpdateCheckKind::Manual).await;
+                    }
+                    AutoUpdateSignal::CheckNowAutomatic => {
+                        run_update_check(&weak, cx, AutoUpdateCheckKind::Automatic).await;
+                    }
+                    AutoUpdateSignal::Download(update) => {
+                        prepare_available_update(&weak, cx, update, AutoUpdateCheckKind::Manual)
+                            .await;
+                    }
+                }
                 delay = AUTO_UPDATE_POLL_INTERVAL;
             }
         },
@@ -99,9 +110,7 @@ impl KnotQApp {
         self.settings.auto_update = enabled;
         if enabled {
             self.auto_update_status = AutoUpdateUiStatus::initial();
-            if auto_update_disabled_reason().is_none() {
-                let _ = self.auto_update_tx.try_send(AutoUpdateSignal::CheckNow);
-            }
+            let _ = self.auto_update_tx.try_send(AutoUpdateSignal::CheckNow);
         } else {
             self.auto_update_status = AutoUpdateUiStatus::Idle;
         }
@@ -113,16 +122,24 @@ impl KnotQApp {
         if self.auto_update_status.is_busy() {
             return;
         }
-        if let Some(reason) = auto_update_disabled_reason() {
-            self.auto_update_status = AutoUpdateUiStatus::Errored {
-                message: reason,
-                checked_at: Utc::now(),
-            };
-            cx.notify();
-            return;
-        }
         self.auto_update_status = AutoUpdateUiStatus::Checking;
         let _ = self.auto_update_tx.try_send(AutoUpdateSignal::CheckNow);
+        cx.notify();
+    }
+
+    pub fn download_available_update(&mut self, cx: &mut Context<Self>) {
+        if self.auto_update_status.is_busy() {
+            return;
+        }
+        let AutoUpdateUiStatus::Available { update, .. } = self.auto_update_status.clone() else {
+            return;
+        };
+        self.auto_update_status = AutoUpdateUiStatus::Downloading {
+            version: update.version.to_string(),
+        };
+        let _ = self
+            .auto_update_tx
+            .try_send(AutoUpdateSignal::Download(update));
         cx.notify();
     }
 
@@ -158,32 +175,21 @@ async fn run_update_check(
     cx: &mut gpui::AsyncApp,
     kind: AutoUpdateCheckKind,
 ) {
-    if let Some(reason) = auto_update_disabled_reason() {
-        if kind == AutoUpdateCheckKind::Manual {
-            set_update_status(
-                weak,
-                cx,
-                AutoUpdateUiStatus::Errored {
-                    message: reason,
-                    checked_at: Utc::now(),
-                },
-            );
-        }
-        return;
-    }
-
     let enabled = weak
         .update(cx, |app, _cx| app.settings.auto_update)
         .unwrap_or(false);
     if kind == AutoUpdateCheckKind::Automatic && !enabled {
         return;
     }
-    let update_ready = weak
+    let update_actionable = weak
         .update(cx, |app, _cx| {
-            matches!(app.auto_update_status, AutoUpdateUiStatus::Ready { .. })
+            matches!(
+                app.auto_update_status,
+                AutoUpdateUiStatus::Available { .. } | AutoUpdateUiStatus::Ready { .. }
+            )
         })
         .unwrap_or(false);
-    if kind == AutoUpdateCheckKind::Automatic && update_ready {
+    if kind == AutoUpdateCheckKind::Automatic && update_actionable {
         return;
     }
 
@@ -205,7 +211,7 @@ async fn run_update_check(
         })
         .await;
 
-    let update = match latest {
+    match latest {
         Ok(LatestRelease::UpToDate { version, .. }) => {
             let status = if kind == AutoUpdateCheckKind::Manual {
                 AutoUpdateUiStatus::UpToDate {
@@ -218,7 +224,16 @@ async fn run_update_check(
             set_update_status(weak, cx, status);
             return;
         }
-        Ok(LatestRelease::Available(update)) => update,
+        Ok(LatestRelease::Available(update)) => {
+            set_update_status(
+                weak,
+                cx,
+                AutoUpdateUiStatus::Available {
+                    update,
+                    checked_at: Utc::now(),
+                },
+            );
+        }
         Err(err) => {
             set_check_error(
                 weak,
@@ -226,10 +241,16 @@ async fn run_update_check(
                 kind,
                 format!("Could not check for updates: {err:#}"),
             );
-            return;
         }
-    };
+    }
+}
 
+async fn prepare_available_update(
+    weak: &gpui::WeakEntity<KnotQApp>,
+    cx: &mut gpui::AsyncApp,
+    update: AvailableUpdate,
+    kind: AutoUpdateCheckKind,
+) {
     set_update_status(
         weak,
         cx,
@@ -250,6 +271,14 @@ async fn run_update_check(
             return;
         }
     };
+    let current_version = match current_version(env!("CARGO_PKG_VERSION")) {
+        Ok(version) => version,
+        Err(err) => {
+            set_check_error(weak, cx, kind, format!("Invalid app version: {err:#}"));
+            return;
+        }
+    };
+    let config = AutoUpdateConfig::github(current_version);
     let updates_dir = data_dir().join("updates");
     let prepared = cx
         .background_executor()
@@ -315,13 +344,4 @@ fn set_update_status(
         app.auto_update_status = status;
         cx.notify();
     });
-}
-
-fn auto_update_disabled_reason() -> Option<String> {
-    if cfg!(debug_assertions)
-        && std::env::var("KNOTQ_AUTO_UPDATE_ALLOW_DEV").ok().as_deref() != Some("1")
-    {
-        return Some("Auto updates are disabled for development builds.".to_string());
-    }
-    None
 }
