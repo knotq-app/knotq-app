@@ -1,7 +1,10 @@
 use chrono::{DateTime, Duration, Utc};
 use serde::{Deserialize, Serialize};
 
-use knotq_model::{ItemId, ItemKind, OccurrenceId, SchemeId};
+use knotq_model::{
+    ItemId, ItemKind, OccurrenceId, SchemeId, DEFAULT_ASSIGNMENT_NOTIFICATION_OFFSET_SECS,
+    DEFAULT_EVENT_NOTIFICATION_OFFSET_SECS,
+};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -33,8 +36,8 @@ impl Default for NotificationLeadTimes {
     fn default() -> Self {
         Self {
             reminder_offset_secs: 0,
-            event_offset_secs: 10 * 60,
-            assignment_offset_secs: 2 * 60 * 60,
+            event_offset_secs: DEFAULT_EVENT_NOTIFICATION_OFFSET_SECS,
+            assignment_offset_secs: DEFAULT_ASSIGNMENT_NOTIFICATION_OFFSET_SECS,
         }
     }
 }

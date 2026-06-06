@@ -202,10 +202,13 @@ pub struct NotificationLeadTimes {
     pub reminder: i64,
 }
 
+pub const DEFAULT_EVENT_NOTIFICATION_OFFSET_SECS: i64 = 10 * 60;
+pub const DEFAULT_ASSIGNMENT_NOTIFICATION_OFFSET_SECS: i64 = 2 * 60 * 60;
+
 fn default_event_notification_offset_secs() -> i64 {
-    10 * 60
+    DEFAULT_EVENT_NOTIFICATION_OFFSET_SECS
 }
 
 fn default_assignment_notification_offset_secs() -> i64 {
-    2 * 60 * 60
+    DEFAULT_ASSIGNMENT_NOTIFICATION_OFFSET_SECS
 }

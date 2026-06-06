@@ -2,7 +2,9 @@ use chrono::{DateTime, Local, Utc};
 use gpui::prelude::*;
 use gpui::{div, px, ClickEvent, Context, IntoElement};
 use gpui_component::scroll::ScrollableElement as _;
-use knotq_model::{CalendarProvider, SchemeId, SchemeSource};
+use knotq_model::{
+    CalendarProvider, SchemeId, SchemeSource, DEFAULT_EVENT_NOTIFICATION_OFFSET_SECS,
+};
 use knotq_storage_json::{
     CalendarViewMode, CalendarWeekRange, NotificationDefaults, ThemeMode, TimeFormat,
 };
@@ -115,7 +117,7 @@ impl KnotQApp {
         for (idx, (label, offset_secs)) in [
             ("At start", 0),
             ("5 minutes before", 5 * 60),
-            ("10 minutes before", 10 * 60),
+            ("10 minutes before", DEFAULT_EVENT_NOTIFICATION_OFFSET_SECS),
             ("15 minutes before", 15 * 60),
             ("30 minutes before", 30 * 60),
             ("1 hour before", 60 * 60),
