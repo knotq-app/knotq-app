@@ -9,9 +9,9 @@ use knotq_storage_json::CalendarViewMode;
 use crate::app::auto_update::AutoUpdateUiStatus;
 use crate::app::{daily_queue_marker_color, KnotQApp, SyncAuthStatus, SyncRunStatus, View};
 use crate::theme_gpui::{
-    palette_hsla, scheme_color, selected_date_text_color, token_hsla, token_rgba, Theme,
-    FONT_SIZE_HEADLINE,
+    palette_hsla, scheme_color, token_hsla, token_rgba, Theme, FONT_SIZE_HEADLINE,
 };
+use crate::views::sync_account::{sync_cta_bg, sync_cta_hover_bg};
 
 const TITLE_CONTENT_W: f32 = 430.0;
 const LINUX_TITLE_CONTENT_W: f32 = 340.0;
@@ -349,20 +349,16 @@ impl KnotQApp {
         };
         let actionable = action.is_some();
         let button_bg = if actionable {
-            t.caret_color
+            sync_cta_bg()
         } else {
             t.button_bg
         };
         let button_border = if actionable {
-            t.caret_color
+            sync_cta_bg()
         } else {
             t.border_soft
         };
-        let button_text = if actionable {
-            selected_date_text_color(t)
-        } else {
-            t.text_dim
-        };
+        let button_text = if actionable { 0xffffffff } else { t.text_dim };
 
         Some(
             div()
@@ -379,10 +375,9 @@ impl KnotQApp {
                 .justify_center()
                 .gap(px(6.0))
                 .when(actionable, |button| {
-                    button.cursor_pointer().hover({
-                        let c = if t.is_dark { 0x9bb5ffff } else { 0x2f67cfff };
-                        move |s| s.bg(token_rgba(c))
-                    })
+                    button
+                        .cursor_pointer()
+                        .hover(|s| s.bg(token_rgba(sync_cta_hover_bg())))
                 })
                 .when_some(action, |button, action| match action {
                     TitleUpdateAction::Download => {

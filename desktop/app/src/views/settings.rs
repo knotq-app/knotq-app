@@ -12,6 +12,7 @@ use knotq_storage_json::{
 use crate::app::auto_update::AutoUpdateUiStatus;
 use crate::app::KnotQApp;
 use crate::theme_gpui::{all_themes, token_hsla, token_rgba, Theme as UiTheme};
+use crate::views::sync_account::{sync_cta_bg, sync_cta_hover_bg};
 
 struct GoogleCalendarSettingsRow {
     scheme_id: SchemeId,
@@ -591,6 +592,7 @@ fn update_status_row(
             "Check",
             t,
             cx,
+            false,
             |this, cx| this.check_for_updates(cx),
         ),
         AutoUpdateUiStatus::Checking => {
@@ -603,6 +605,7 @@ fn update_status_row(
             "Update",
             t,
             cx,
+            true,
             |this, cx| this.download_available_update(cx),
         ),
         AutoUpdateUiStatus::Downloading { version } => {
@@ -621,6 +624,7 @@ fn update_status_row(
                 button,
                 t,
                 cx,
+                true,
                 |this, cx| this.install_ready_update(cx),
             )
         }
@@ -637,6 +641,7 @@ fn update_status_row(
             "Check",
             t,
             cx,
+            false,
             |this, cx| this.check_for_updates(cx),
         ),
         AutoUpdateUiStatus::Errored {
@@ -654,6 +659,7 @@ fn update_status_row(
                 if has_retry { "Retry" } else { "Check" },
                 t,
                 cx,
+                has_retry,
                 move |this, cx| {
                     if has_retry {
                         this.download_available_update(cx);
@@ -829,6 +835,7 @@ fn settings_action_row<F>(
     button_label: &'static str,
     t: UiTheme,
     cx: &mut Context<KnotQApp>,
+    primary: bool,
     on_click: F,
 ) -> gpui::AnyElement
 where
@@ -874,16 +881,31 @@ where
                 .py(px(3.0))
                 .rounded(px(3.0))
                 .border_1()
-                .border_color(token_rgba(t.border_main))
-                .bg(token_rgba(t.button_bg))
-                .hover({
-                    let c = t.button_hover;
-                    move |h| h.bg(token_rgba(c))
+                .border_color(token_rgba(if primary {
+                    sync_cta_bg()
+                } else {
+                    t.border_main
+                }))
+                .bg(token_rgba(if primary {
+                    sync_cta_bg()
+                } else {
+                    t.button_bg
+                }))
+                .hover(move |h| {
+                    h.bg(token_rgba(if primary {
+                        sync_cta_hover_bg()
+                    } else {
+                        t.button_hover
+                    }))
                 })
                 .cursor_pointer()
                 .text_size(px(11.0))
                 .font_weight(gpui::FontWeight::SEMIBOLD)
-                .text_color(token_hsla(t.text_primary))
+                .text_color(token_hsla(if primary {
+                    0xffffffff
+                } else {
+                    t.text_primary
+                }))
                 .on_click(cx.listener(move |this, _: &ClickEvent, _w, cx| {
                     on_click(this, cx);
                 }))

@@ -14,7 +14,7 @@ use super::{
 };
 use crate::app::google_oauth::{code_challenge, open_browser, random_token, wait_for_oauth_code};
 
-const DEFAULT_SYNC_API_BASE: &str = "https://api.knotq.com";
+const DEFAULT_SYNC_API_BASE: &str = "https://knotq-sync.manu-s-bhat.workers.dev";
 
 /// KnotQ-hosted browser sign-in page. The app opens this with a loopback
 /// `redirect_uri` + PKCE; the page signs the user in and hands back a one-time
