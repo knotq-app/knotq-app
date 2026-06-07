@@ -404,7 +404,7 @@ fn settings_sync_panel_state(
     if signed_in {
         return (
             "Upgrade",
-            "Subscribe to keep this workspace available across installs.",
+            "Subscribe to keep this workspace available across devices.",
             if t.is_dark { 0xf59e0b28 } else { 0xd977061a },
             if t.is_dark { 0xf8d38dff } else { 0x9a4b00ff },
         );
@@ -412,7 +412,7 @@ fn settings_sync_panel_state(
 
     (
         "Available",
-        "Sign in to keep this workspace available across installs.",
+        "Sign in to keep this workspace available across devices.",
         if t.is_dark { 0x3b82f628 } else { 0x2f67cf18 },
         if t.is_dark { 0x9bc2ffff } else { 0x235ebeff },
     )

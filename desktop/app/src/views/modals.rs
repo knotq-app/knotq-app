@@ -35,30 +35,32 @@ struct SpotlightStep {
     target: OnboardingTarget,
 }
 
+// Copy is kept consistent with the mobile (iOS/Android) tours; only the Calendar
+// step uses desktop-specific gesture wording (click / shift-click / drag).
 const STEPS: &[SpotlightStep] = &[
     SpotlightStep {
         title: "Welcome to KnotQ",
-        body: "KnotQ serves as a single app for calendar events, reminders, assignments, and general purpose notes. It aims to be simple yet functional.",
+        body: "KnotQ is a single app for calendar events, reminders, assignments, and general notes. It aims to be simple yet functional.",
         target: OnboardingTarget::Welcome,
     },
     SpotlightStep {
-        title: "Calendar Editor",
-        body: "Use the calendar to create events, assignments, and reminders. Click for a reminder, shift-click for an assignment, or drag for an event.",
+        title: "Calendar",
+        body: "Your calendar holds events, assignments, and reminders. Click to add a reminder, shift-click for an assignment, or drag to block out an event.",
         target: OnboardingTarget::Calendar,
     },
     SpotlightStep {
-        title: "Scheme Editor",
-        body: "Schemes are editable outlines for projects, notes, and plans. You can add start and end times to each line, transforming them into visible calendar items.",
+        title: "Schemes",
+        body: "Schemes are editable outlines for projects, notes, and plans. Add start and end times to any line to turn it into a calendar item.",
         target: OnboardingTarget::Scheme,
     },
     SpotlightStep {
         title: "Daily",
-        body: "Daily is a special and default scheme. You write an optimistic task list each day and cross off the ones that you complete.",
+        body: "Daily is a special, default scheme. Write an optimistic task list each day and check off the ones you complete.",
         target: OnboardingTarget::Daily,
     },
     SpotlightStep {
         title: "Upcoming",
-        body: "Upcoming displays nearby events, assignments, and reminders. You can directly mark tasks completed from here.",
+        body: "Upcoming gathers nearby events, assignments, and reminders. You can mark tasks complete right from here.",
         target: OnboardingTarget::Upcoming,
     },
 ];

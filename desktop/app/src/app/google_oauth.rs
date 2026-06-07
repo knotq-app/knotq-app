@@ -1,5 +1,4 @@
 use std::collections::{HashMap, HashSet};
-use std::env;
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::process::Command;
@@ -41,11 +40,12 @@ const GOOGLE_OAUTH_SCOPES: &[&str] = &[
 ];
 const IMPORTED_GOOGLE_CALENDAR_SCHEME_NAME: &str = "Google Calendar";
 const GOOGLE_CALENDAR_BACKGROUND_SYNC_INTERVAL_SECS: u64 = 5 * 60;
+const GOOGLE_OAUTH_CLIENT_ID_ENV: &str = "KNOTQ_GOOGLE_OAUTH_CLIENT_ID";
+const COMPILED_GOOGLE_OAUTH_CLIENT_ID: Option<&str> = option_env!("KNOTQ_GOOGLE_OAUTH_CLIENT_ID");
 
 #[derive(Clone)]
 struct GoogleOAuthConfig {
     client_id: String,
-    client_secret: Option<String>,
 }
 
 #[derive(Clone)]
@@ -321,7 +321,7 @@ impl KnotQApp {
             return;
         }
 
-        let config = match google_oauth_config_from_env() {
+        let config = match google_oauth_config_from_build() {
             Ok(config) => config,
             Err(err) => {
                 eprintln!("Google Calendar import failed: {err:#}");
@@ -582,7 +582,7 @@ impl KnotQApp {
             return;
         };
 
-        let config = match google_oauth_config_from_env() {
+        let config = match google_oauth_config_from_build() {
             Ok(config) => config,
             Err(err) => {
                 eprintln!("Google Calendar reconnect failed: {err:#}");
@@ -984,36 +984,29 @@ impl KnotQApp {
     }
 }
 
-fn google_oauth_config_from_env() -> Result<GoogleOAuthConfig> {
-    let client_id = env::var("KNOTQ_GOOGLE_CLIENT_ID")
-        .or_else(|_| env::var("GOOGLE_CLIENT_ID"))
-        .context("set KNOTQ_GOOGLE_CLIENT_ID to a Google Desktop OAuth client id")?;
-    let client_secret = env::var("KNOTQ_GOOGLE_CLIENT_SECRET")
-        .or_else(|_| env::var("GOOGLE_CLIENT_SECRET"))
-        .ok()
-        .filter(|secret| !secret.trim().is_empty());
-    Ok(GoogleOAuthConfig {
-        client_id,
-        client_secret,
-    })
+fn google_oauth_config_from_build() -> Result<GoogleOAuthConfig> {
+    let client_id = compiled_google_oauth_client_id().with_context(|| {
+        format!(
+            "set {GOOGLE_OAUTH_CLIENT_ID_ENV} at compile time to a Google Desktop OAuth client id"
+        )
+    })?;
+    Ok(GoogleOAuthConfig { client_id })
 }
 
 fn google_oauth_config_for_existing_accounts(
     accounts: &[GoogleOAuthAccount],
 ) -> Result<GoogleOAuthConfig> {
-    let client_id = env::var("KNOTQ_GOOGLE_CLIENT_ID")
-        .or_else(|_| env::var("GOOGLE_CLIENT_ID"))
-        .ok()
+    let client_id = compiled_google_oauth_client_id()
         .or_else(|| accounts.first().map(|account| account.client_id.clone()))
-        .context("no stored Google account is available")?;
-    let client_secret = env::var("KNOTQ_GOOGLE_CLIENT_SECRET")
-        .or_else(|_| env::var("GOOGLE_CLIENT_SECRET"))
-        .ok()
-        .filter(|secret| !secret.trim().is_empty());
-    Ok(GoogleOAuthConfig {
-        client_id,
-        client_secret,
-    })
+        .with_context(|| format!("no stored Google account is available and {GOOGLE_OAUTH_CLIENT_ID_ENV} was not set at compile time"))?;
+    Ok(GoogleOAuthConfig { client_id })
+}
+
+fn compiled_google_oauth_client_id() -> Option<String> {
+    COMPILED_GOOGLE_OAUTH_CLIENT_ID
+        .map(str::trim)
+        .filter(|client_id| !client_id.is_empty())
+        .map(ToOwned::to_owned)
 }
 
 fn run_google_calendar_picker_load(
@@ -1363,16 +1356,13 @@ fn exchange_auth_code(
     code: &str,
     code_verifier: &str,
 ) -> Result<GoogleTokenResponse> {
-    let mut form = vec![
+    let form = vec![
         ("client_id", config.client_id.as_str()),
         ("code", code),
         ("code_verifier", code_verifier),
         ("grant_type", "authorization_code"),
         ("redirect_uri", redirect_uri),
     ];
-    if let Some(secret) = &config.client_secret {
-        form.push(("client_secret", secret.as_str()));
-    }
 
     ureq::post(GOOGLE_TOKEN_URL)
         .send_form(&form)
@@ -1382,7 +1372,7 @@ fn exchange_auth_code(
 }
 
 fn refresh_google_access_token_if_needed(
-    config: &GoogleOAuthConfig,
+    _config: &GoogleOAuthConfig,
     account: &mut GoogleOAuthAccount,
 ) -> Result<()> {
     let still_valid = account
@@ -1392,14 +1382,11 @@ fn refresh_google_access_token_if_needed(
         return Ok(());
     }
 
-    let mut form = vec![
+    let form = vec![
         ("client_id", account.client_id.as_str()),
         ("grant_type", "refresh_token"),
         ("refresh_token", account.refresh_token.as_str()),
     ];
-    if let Some(secret) = &config.client_secret {
-        form.push(("client_secret", secret.as_str()));
-    }
 
     let token = ureq::post(GOOGLE_TOKEN_URL)
         .send_form(&form)

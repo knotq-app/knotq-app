@@ -136,7 +136,7 @@ impl KnotQApp {
 }
 
 /// The signed-out state: a single full-width CTA. The card header above already
-/// carries the "sign in to sync across installs" message, so we don't repeat it.
+/// carries the "sign in to sync across devices" message, so we don't repeat it.
 fn signed_out_entry(_t: Theme, cx: &mut Context<KnotQApp>) -> gpui::AnyElement {
     div()
         .id("sync-settings-sign-in")
@@ -327,7 +327,10 @@ fn account_status_panel(account: &SyncAccountSettings, t: Theme) -> Option<gpui:
     } else {
         "Not subscribed".to_string()
     };
-    let subscription_status = status.subscription_status.as_deref().map(account_level_label);
+    let subscription_status = status
+        .subscription_status
+        .as_deref()
+        .map(account_level_label);
     let subscription_provider = status
         .subscription_provider
         .clone()

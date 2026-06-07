@@ -9,8 +9,8 @@ use knotq_model::{
 use serde::{Deserialize, Serialize};
 use yrs::updates::{decoder::Decode, encoder::Encode};
 use yrs::{
-    Doc, GetString, In, Map, MapPrelim, MapRef, OffsetKind, Options, Out, ReadTxn, StateVector,
-    Text, TextPrelim, TextRef, Transact, TransactionMut, Update,
+    ClientID, Doc, GetString, Map, MapPrelim, MapRef, OffsetKind, Options, Out, ReadTxn,
+    StateVector, Text, TextPrelim, TextRef, Transact, TransactionMut, Update,
 };
 
 use crate::{CrdtDocumentUpdate, StoredCrdtUpdate};
@@ -106,6 +106,33 @@ impl WorkspaceCrdtDocuments {
         docs.sync_changes(workspace, &WorkspaceCrdtChangeSet::default().workspace())
     }
 
+    pub fn snapshot_updates_with_client_ids(
+        workspace: &Workspace,
+        workspace_client_id: u64,
+        mut scheme_client_id: impl FnMut(SchemeId, DocumentId) -> u64,
+    ) -> WorkspaceCrdtSyncOutcome {
+        let mut workspace = workspace.clone();
+        workspace.ensure_sync_metadata();
+        let mut docs = Self {
+            workspace: YrsJsonDocument::new_with_client_id(
+                workspace.sync.id,
+                SyncDocumentKind::PersonalWorkspace,
+                workspace_client_id,
+            ),
+            schemes: HashMap::new(),
+        };
+        docs.sync_changes_with_scheme_factory(
+            &workspace,
+            &WorkspaceCrdtChangeSet::default().workspace(),
+            |scheme_id, document_id| {
+                YrsSchemeDocument::new_with_client_id(
+                    document_id,
+                    scheme_client_id(scheme_id, document_id),
+                )
+            },
+        )
+    }
+
     pub fn empty(workspace: &Workspace) -> Self {
         let mut workspace = workspace.clone();
         workspace.ensure_sync_metadata();
@@ -144,6 +171,17 @@ impl WorkspaceCrdtDocuments {
         &mut self,
         workspace: &Workspace,
         changeset: &WorkspaceCrdtChangeSet,
+    ) -> WorkspaceCrdtSyncOutcome {
+        self.sync_changes_with_scheme_factory(workspace, changeset, |_, document_id| {
+            YrsSchemeDocument::new(document_id)
+        })
+    }
+
+    fn sync_changes_with_scheme_factory(
+        &mut self,
+        workspace: &Workspace,
+        changeset: &WorkspaceCrdtChangeSet,
+        mut new_scheme_document: impl FnMut(SchemeId, DocumentId) -> YrsSchemeDocument,
     ) -> WorkspaceCrdtSyncOutcome {
         let mut workspace = workspace.clone();
         workspace.ensure_sync_metadata();
@@ -187,7 +225,7 @@ impl WorkspaceCrdtDocuments {
             match self
                 .schemes
                 .entry(id)
-                .or_insert_with(|| YrsSchemeDocument::new(meta.id))
+                .or_insert_with(|| new_scheme_document(id, meta.id))
                 .sync_scheme(scheme)
             {
                 Ok(Some(update)) => outcome.updates.push(update),
@@ -591,6 +629,13 @@ impl YrsSchemeDocument {
         Self { id, doc }
     }
 
+    fn new_with_client_id(id: DocumentId, client_id: u64) -> Self {
+        let doc = Doc::with_options(yrs_doc_options(id, client_id, OffsetKind::Utf16));
+        doc.get_or_insert_map("scheme_file");
+        doc.get_or_insert_map("items_by_id");
+        Self { id, doc }
+    }
+
     pub fn from_scheme(id: DocumentId, scheme: &Scheme) -> anyhow::Result<Self> {
         let this = Self::new(id);
         this.replace_scheme(scheme)?;
@@ -706,7 +751,8 @@ impl YrsSchemeDocument {
             let prev = stored.get(&item_id);
             match item_map_ref(&items_by_id, &txn, &item_id) {
                 None => {
-                    items_by_id.insert(&mut txn, item_id, item_prelim(item, position)?);
+                    let item_map = items_by_id.insert(&mut txn, item_id, MapPrelim::default());
+                    write_new_item(&item_map, &mut txn, item, position, &next_snapshot)?;
                 }
                 Some(item_map) => {
                     match item_text_ref(&item_map, &txn) {
@@ -721,7 +767,9 @@ impl YrsSchemeDocument {
                         }
                         // No Text present (corrupt entry) — rebuild it whole.
                         None => {
-                            items_by_id.insert(&mut txn, item_id, item_prelim(item, position)?);
+                            let item_map =
+                                items_by_id.insert(&mut txn, item_id, MapPrelim::default());
+                            write_new_item(&item_map, &mut txn, item, position, &next_snapshot)?;
                             continue;
                         }
                     }
@@ -856,6 +904,16 @@ fn item_snapshot_json(item: &Item) -> anyhow::Result<String> {
     Ok(serde_json::to_string(&snapshot)?)
 }
 
+fn write_new_item(
+    item_map: &MapRef,
+    txn: &mut TransactionMut,
+    item: &Item,
+    position: &str,
+    snapshot_json: &str,
+) -> anyhow::Result<()> {
+    write_item_fields(item_map, txn, item, position, snapshot_json, true)
+}
+
 /// Rewrite an existing item's last-writer-wins metadata fields in place, leaving
 /// its collaborative Text untouched.
 fn write_item_metadata(
@@ -865,9 +923,23 @@ fn write_item_metadata(
     position: &str,
     snapshot_json: &str,
 ) -> anyhow::Result<()> {
+    write_item_fields(item_map, txn, item, position, snapshot_json, false)
+}
+
+fn write_item_fields(
+    item_map: &MapRef,
+    txn: &mut TransactionMut,
+    item: &Item,
+    position: &str,
+    snapshot_json: &str,
+    include_text: bool,
+) -> anyhow::Result<()> {
     item_map.insert(txn, "schema", "knotq.item.v1");
     item_map.insert(txn, "id", item.id.to_string());
     item_map.insert(txn, "position", position.to_string());
+    if include_text {
+        item_map.insert(txn, "text", TextPrelim::new(item.text.clone()));
+    }
     item_map.insert(txn, "marker", serde_json_string_value(&item.marker)?);
     item_map.insert(txn, "indent", i64::from(item.indent));
     item_map.insert(
@@ -927,48 +999,16 @@ fn apply_text_diff(text: &TextRef, txn: &mut TransactionMut, old: &str, new: &st
     }
 }
 
-fn item_prelim(item: &Item, position: &str) -> anyhow::Result<MapPrelim> {
-    Ok(MapPrelim::from([
-        ("schema", In::from("knotq.item.v1")),
-        ("id", In::from(item.id.to_string())),
-        ("position", In::from(position.to_string())),
-        // Collaborative line text as a sequence CRDT (merges character edits).
-        ("text", In::from(TextPrelim::new(item.text.clone()))),
-        ("marker", In::from(serde_json_string_value(&item.marker)?)),
-        ("indent", In::from(i64::from(item.indent))),
-        (
-            "start",
-            In::from(item.start.map(|dt| dt.to_rfc3339()).unwrap_or_default()),
-        ),
-        (
-            "end",
-            In::from(item.end.map(|dt| dt.to_rfc3339()).unwrap_or_default()),
-        ),
-        (
-            "available",
-            In::from(item.available.map(|dt| dt.to_rfc3339()).unwrap_or_default()),
-        ),
-        ("media_json", In::from(serde_json::to_string(&item.media)?)),
-        (
-            "repeats_json",
-            In::from(serde_json::to_string(&item.repeats)?),
-        ),
-        ("state_json", In::from(serde_json::to_string(&item.state)?)),
-        (
-            "priority_json",
-            In::from(serde_json::to_string(&item.priority)?),
-        ),
-        (
-            "external_json",
-            In::from(serde_json::to_string(&item.external)?),
-        ),
-        ("snapshot_json", In::from(item_snapshot_json(item)?)),
-    ]))
-}
-
 fn serde_json_string_value(value: &impl Serialize) -> anyhow::Result<String> {
     let value = serde_json::to_value(value)?;
     Ok(value.as_str().unwrap_or_default().to_string())
+}
+
+fn yrs_doc_options(id: DocumentId, client_id: u64, offset_kind: OffsetKind) -> Options {
+    let mut options =
+        Options::with_guid_and_client_id(id.0.to_string().into(), ClientID::new(client_id));
+    options.offset_kind = offset_kind;
+    options
 }
 
 struct YrsJsonDocument {
@@ -980,6 +1020,21 @@ struct YrsJsonDocument {
 impl YrsJsonDocument {
     fn new(id: DocumentId, kind: SyncDocumentKind) -> Self {
         let doc = Doc::new();
+        // The workspace document is decomposed into independent, id-keyed maps so
+        // that concurrent edits to distinct entities (e.g. two replicas each adding
+        // a folder) merge additively instead of resolving as whole-document LWW.
+        doc.get_or_insert_map("meta");
+        doc.get_or_insert_map("nodes");
+        doc.get_or_insert_map("scheme_sync");
+        doc.get_or_insert_map("folder_sync");
+        doc.get_or_insert_map("daily_queue");
+        doc.get_or_insert_map("recently_deleted");
+        doc.get_or_insert_map("deleted_scheme_origins");
+        Self { id, kind, doc }
+    }
+
+    fn new_with_client_id(id: DocumentId, kind: SyncDocumentKind, client_id: u64) -> Self {
+        let doc = Doc::with_options(yrs_doc_options(id, client_id, OffsetKind::Bytes));
         // The workspace document is decomposed into independent, id-keyed maps so
         // that concurrent edits to distinct entities (e.g. two replicas each adding
         // a folder) merge additively instead of resolving as whole-document LWW.
