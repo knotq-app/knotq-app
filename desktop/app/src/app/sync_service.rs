@@ -313,7 +313,12 @@ fn sync_snapshot(snapshot: SyncSnapshot) -> Result<SyncRunResult> {
     let mut remote_updates_applied = 0;
     let mut forced_snapshot_applied = false;
 
-    upsert_documents(&client, server_workspace_id, sync_documents(&workspace))?;
+    upsert_documents(
+        &client,
+        &local_state,
+        server_workspace_id,
+        sync_documents(&workspace),
+    )?;
     upload_local_media_assets(&client, &mut local_state, server_workspace_id, &workspace)?;
 
     let workspace_doc = SyncDocumentRef {
@@ -344,7 +349,12 @@ fn sync_snapshot(snapshot: SyncSnapshot) -> Result<SyncRunResult> {
         workspace_pull.latest_sequence,
     );
 
-    upsert_documents(&client, server_workspace_id, sync_documents(&workspace))?;
+    upsert_documents(
+        &client,
+        &local_state,
+        server_workspace_id,
+        sync_documents(&workspace),
+    )?;
     download_missing_media_assets(&client, server_workspace_id, &workspace)?;
 
     let mut scheme_updates = Vec::new();
@@ -443,16 +453,22 @@ fn merge_pending(local_state: &mut LocalSyncState, pending: Vec<PendingCrdtEdit>
 
 fn upsert_documents(
     client: &SyncHttpClient,
+    local_state: &LocalSyncState,
     workspace_id: WorkspaceId,
     docs: Vec<SyncDocumentRef>,
 ) -> Result<()> {
     let mut seen = HashSet::new();
     for doc in docs {
-        if seen.insert(doc.document) {
-            client.upsert_document(workspace_id, doc)?;
+        if !seen.insert(doc.document) || !should_upsert_document(local_state, doc) {
+            continue;
         }
+        client.upsert_document(workspace_id, doc)?;
     }
     Ok(())
+}
+
+fn should_upsert_document(local_state: &LocalSyncState, doc: SyncDocumentRef) -> bool {
+    !local_state.document_cursors.contains_key(&doc.document)
 }
 
 struct AccumulatedPull {
@@ -561,7 +577,10 @@ fn push_pending_documents(
             return Ok(());
         }
         let kind = pending[0].kind;
-        client.upsert_document(workspace_id, SyncDocumentRef { document, kind })?;
+        let doc = SyncDocumentRef { document, kind };
+        if should_upsert_document(local_state, doc) {
+            client.upsert_document(workspace_id, doc)?;
+        }
         let mut request = local_state
             .next_push_request(document, SYNC_BATCH_LIMIT)
             .ok_or_else(|| anyhow!("missing push request for pending document"))?;
@@ -893,7 +912,9 @@ fn is_secure_api_base(url: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::normalize_api_base;
+    use super::{normalize_api_base, should_upsert_document, SyncDocumentRef};
+    use knotq_model::{DocumentId, SyncDocumentKind};
+    use knotq_sync::{DocumentSyncCursor, LocalSyncState};
 
     #[test]
     fn https_urls_are_accepted_and_trimmed() {
@@ -917,5 +938,29 @@ mod tests {
         assert!(normalize_api_base("http://sync.example.com").is_err());
         assert!(normalize_api_base("ftp://sync.example.com").is_err());
         assert!(normalize_api_base("").is_err());
+    }
+
+    #[test]
+    fn known_documents_do_not_need_repeated_upserts() {
+        let document = DocumentId::new();
+        let doc = SyncDocumentRef {
+            document,
+            kind: SyncDocumentKind::Scheme,
+        };
+        let mut state = LocalSyncState::default();
+
+        assert!(should_upsert_document(&state, doc));
+
+        state.document_cursors.insert(
+            document,
+            DocumentSyncCursor {
+                document,
+                kind: SyncDocumentKind::Scheme,
+                last_pulled_sequence: 1,
+                last_pushed_sequence: 1,
+            },
+        );
+
+        assert!(!should_upsert_document(&state, doc));
     }
 }

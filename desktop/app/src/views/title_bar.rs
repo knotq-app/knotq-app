@@ -490,8 +490,8 @@ impl KnotQApp {
         }
 
         match &self.sync_run_status {
-            SyncRunStatus::Running { .. } => TitleSyncStatus {
-                label: "Syncing".to_string(),
+            SyncRunStatus::Running { pending } => TitleSyncStatus {
+                label: if *pending > 0 { "Syncing" } else { "Checking" }.to_string(),
                 dot_color: STATUS_SYNCING,
             },
             SyncRunStatus::Error { .. } => TitleSyncStatus {

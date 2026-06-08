@@ -546,6 +546,9 @@ pub struct KnotQApp {
     pub sync_auth_status: SyncAuthStatus,
     pub sync_run_status: SyncRunStatus,
     pub sync_auth_task: Option<Task<()>>,
+    /// Bounded background poll that re-checks entitlement after the user opens the
+    /// subscription checkout, so sync turns on without them clicking anything.
+    pub sync_subscription_poll_task: Option<Task<()>>,
     /// Pending confirmation for a destructive account action shown in Settings.
     pub sync_account_action: Option<SyncAccountAction>,
     /// Anchor for the title-bar sync status popover; `Some` while it is open.
@@ -671,6 +674,7 @@ impl KnotQApp {
             sync_account_action: None,
             sync_run_status: SyncRunStatus::Idle,
             sync_auth_task: None,
+            sync_subscription_poll_task: None,
             sync_status_popover: None,
             last_synced_at: None,
             scheme_sessions: HashMap::new(),

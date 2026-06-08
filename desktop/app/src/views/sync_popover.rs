@@ -192,10 +192,14 @@ impl KnotQApp {
         }
 
         match &self.sync_run_status {
-            SyncRunStatus::Running { .. } => SyncStatusView {
+            SyncRunStatus::Running { pending } => SyncStatusView {
                 dot_color: STATUS_SYNCING,
-                headline: "Syncing…".into(),
-                detail: Some(if pending > 0 {
+                headline: if *pending > 0 {
+                    "Syncing…".into()
+                } else {
+                    "Checking sync…".into()
+                },
+                detail: Some(if *pending > 0 {
                     "Uploading changes.".into()
                 } else {
                     "Checking for changes.".into()

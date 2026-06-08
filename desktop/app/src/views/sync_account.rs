@@ -24,7 +24,6 @@ impl KnotQApp {
         };
         let in_progress = matches!(self.sync_auth_status, SyncAuthStatus::InProgress);
         let supports_sync = account.supports_sync;
-        let armed = self.sync_account_action.is_some();
 
         let body: gpui::AnyElement = match self.sync_account_action {
             Some(SyncAccountAction::DeleteAccount) => div()
@@ -72,28 +71,30 @@ impl KnotQApp {
                 .into_any_element(),
             None if supports_sync => div()
                 .flex()
-                .items_center()
+                .flex_col()
                 .gap(px(8.0))
-                .child(check_account_status_button(in_progress, t, cx))
-                .child(account_action_trigger(
-                    "sync-cancel-subscription",
-                    "Cancel subscription",
-                    SyncAccountAction::CancelSubscription,
-                    false,
-                    t,
-                    cx,
-                ))
-                .child(account_action_trigger(
-                    "sync-delete-account",
-                    "Delete account",
-                    SyncAccountAction::DeleteAccount,
-                    true,
-                    t,
-                    cx,
-                ))
+                .child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap(px(8.0))
+                        .child(check_account_status_button(in_progress, t, cx))
+                        .child(account_action_trigger(
+                            "sync-cancel-subscription",
+                            "Cancel subscription",
+                            SyncAccountAction::CancelSubscription,
+                            false,
+                            t,
+                            cx,
+                        )),
+                )
+                .child(account_footer_actions(t, cx))
                 .into_any_element(),
-            // Signed in but no sync entitlement: offer the paywall (subscribe +
-            // re-check) above the destructive Delete action.
+            // Signed in but without sync: one Subscribe CTA with the account footer
+            // (Delete / Sign out) on the same row to stay compact. Entitlement is
+            // re-checked automatically after checkout (see
+            // start_subscription_status_poll), so there is no manual "I've
+            // subscribed" button.
             None => div()
                 .flex()
                 .flex_col()
@@ -103,34 +104,26 @@ impl KnotQApp {
                         .text_size(px(11.0))
                         .line_height(px(15.0))
                         .text_color(token_hsla(t.text_soft))
-                        .child("Sync is turned off for this account. Subscribe to enable it."),
+                        .child("Sync is turned off for this account."),
                 )
                 .child(
                     div()
                         .flex()
                         .items_center()
+                        .justify_between()
                         .gap(px(8.0))
                         .child(subscribe_button(t, cx))
-                        .child(refresh_status_button(in_progress, t, cx)),
+                        .child(account_footer_actions(t, cx)),
                 )
-                .child(div().flex().justify_end().child(account_action_trigger(
-                    "sync-delete-account",
-                    "Delete account",
-                    SyncAccountAction::DeleteAccount,
-                    true,
-                    t,
-                    cx,
-                )))
                 .into_any_element(),
         };
 
         div()
             .flex()
             .flex_col()
-            .gap(px(10.0))
+            .gap(px(8.0))
             .children(account_status_panel(&account, t))
             .child(body)
-            .when(!armed, |s| s.child(sign_out_row(t, cx)))
             .into_any_element()
     }
 }
@@ -160,29 +153,44 @@ fn signed_out_entry(_t: Theme, cx: &mut Context<KnotQApp>) -> gpui::AnyElement {
         .into_any_element()
 }
 
-fn sign_out_row(t: Theme, cx: &mut Context<KnotQApp>) -> gpui::AnyElement {
+/// The shared bottom row for a signed-in account: the destructive "Delete
+/// account" next to "Sign out", right-aligned so it reads as a footer.
+fn account_footer_actions(t: Theme, cx: &mut Context<KnotQApp>) -> gpui::AnyElement {
     div()
         .flex()
+        .items_center()
         .justify_end()
-        .child(
-            div()
-                .id("sync-sign-out")
-                .px(px(10.0))
-                .py(px(5.0))
-                .rounded(px(5.0))
-                .bg(token_rgba(t.button_bg))
-                .text_size(px(12.0))
-                .text_color(token_hsla(t.text_primary))
-                .cursor_pointer()
-                .hover({
-                    let c = t.button_hover;
-                    move |s| s.bg(token_rgba(c))
-                })
-                .on_click(cx.listener(|this, _: &ClickEvent, _window, cx| {
-                    this.sign_out_sync_account(cx);
-                }))
-                .child("Sign out"),
-        )
+        .gap(px(8.0))
+        .child(account_action_trigger(
+            "sync-delete-account",
+            "Delete account",
+            SyncAccountAction::DeleteAccount,
+            true,
+            t,
+            cx,
+        ))
+        .child(sign_out_button(t, cx))
+        .into_any_element()
+}
+
+fn sign_out_button(t: Theme, cx: &mut Context<KnotQApp>) -> gpui::AnyElement {
+    div()
+        .id("sync-sign-out")
+        .px(px(10.0))
+        .py(px(5.0))
+        .rounded(px(5.0))
+        .bg(token_rgba(t.button_bg))
+        .text_size(px(12.0))
+        .text_color(token_hsla(t.text_primary))
+        .cursor_pointer()
+        .hover({
+            let c = t.button_hover;
+            move |s| s.bg(token_rgba(c))
+        })
+        .on_click(cx.listener(|this, _: &ClickEvent, _window, cx| {
+            this.sign_out_sync_account(cx);
+        }))
+        .child("Sign out")
         .into_any_element()
 }
 
@@ -277,40 +285,6 @@ fn check_account_status_button(
             "Checking..."
         } else {
             "Check status"
-        })
-        .into_any_element()
-}
-
-/// Secondary CTA next to Subscribe: re-checks entitlement after the user returns
-/// from the checkout (the subscription is granted by a server-side webhook).
-fn refresh_status_button(
-    in_progress: bool,
-    t: Theme,
-    cx: &mut Context<KnotQApp>,
-) -> gpui::AnyElement {
-    div()
-        .id("sync-refresh-status")
-        .px(px(10.0))
-        .py(px(5.0))
-        .rounded(px(5.0))
-        .bg(token_rgba(t.button_bg))
-        .text_size(px(12.0))
-        .text_color(token_hsla(t.text_primary))
-        .when(!in_progress, |s| {
-            s.cursor_pointer()
-                .hover({
-                    let c = t.button_hover;
-                    move |s| s.bg(token_rgba(c))
-                })
-                .on_click(cx.listener(|this, _: &ClickEvent, _window, cx| {
-                    this.refresh_subscription_status(cx);
-                }))
-        })
-        .when(in_progress, |s| s.opacity(0.65))
-        .child(if in_progress {
-            "Checking..."
-        } else {
-            "I've subscribed"
         })
         .into_any_element()
 }

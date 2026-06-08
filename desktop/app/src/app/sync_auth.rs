@@ -357,6 +357,10 @@ impl KnotQApp {
             Ok(url) => match open_browser(&url) {
                 Ok(()) => {
                     self.sync_auth_status = SyncAuthStatus::Idle;
+                    // The purchase finishes in the browser with no callback into
+                    // the app, so quietly poll entitlement until the webhook lands
+                    // and sync turns on by itself — no manual re-check needed.
+                    self.start_subscription_status_poll(cx);
                 }
                 Err(err) => {
                     self.sync_auth_status =
@@ -367,8 +371,6 @@ impl KnotQApp {
                 self.sync_auth_status = SyncAuthStatus::Error(message);
             }
         }
-        // On success the browser takes over; the user returns and taps "I've
-        // subscribed" to re-check entitlement via refresh_subscription_status.
         cx.notify();
     }
 
@@ -377,9 +379,89 @@ impl KnotQApp {
         self.refresh_account_status_with_options(false, cx);
     }
 
-    /// Re-check the sync entitlement after a checkout.
-    pub fn refresh_subscription_status(&mut self, cx: &mut Context<Self>) {
-        self.refresh_account_status_with_options(true, cx);
+    /// After the checkout opens in the browser, quietly re-check entitlement on a
+    /// timer until the purchase webhook lands and sync turns on — so the user
+    /// doesn't have to return and press anything. Runs in the background without
+    /// touching `sync_auth_status`, so the rest of the account UI stays usable.
+    fn start_subscription_status_poll(&mut self, cx: &mut Context<Self>) {
+        let already_syncing = self
+            .settings
+            .sync_account
+            .as_ref()
+            .is_some_and(|account| account.supports_sync);
+        if self.settings.sync_account.is_none() || already_syncing {
+            return;
+        }
+
+        // Re-check every few seconds for several minutes. The status endpoint
+        // reconciles with the billing provider on each call, so entitlement flips
+        // within one tick of the payment completing; the long window just covers a
+        // user who lingers on the checkout page before paying.
+        const POLL_INTERVAL: StdDuration = StdDuration::from_secs(5);
+        const MAX_ATTEMPTS: usize = 60;
+
+        let task = cx.spawn(
+            async move |weak: gpui::WeakEntity<Self>, cx: &mut gpui::AsyncApp| {
+                for _ in 0..MAX_ATTEMPTS {
+                    cx.background_executor().timer(POLL_INTERVAL).await;
+
+                    // Snapshot the freshest account each tick (a prior tick or a
+                    // manual refresh may have rotated its tokens). Stop once the
+                    // account is gone or sync has turned on.
+                    let account = match weak.update(cx, |app, _| {
+                        app.settings
+                            .sync_account
+                            .clone()
+                            .filter(|account| !account.supports_sync)
+                    }) {
+                        Ok(Some(account)) => account,
+                        Ok(None) => break,
+                        Err(_) => return, // app entity dropped
+                    };
+
+                    let (tx, rx) = mpsc::channel();
+                    std::thread::spawn(move || {
+                        let _ = tx.send(refresh_account_status_backend(account));
+                    });
+
+                    // Await the worker without blocking the UI executor.
+                    let result = loop {
+                        match rx.try_recv() {
+                            Ok(result) => break Some(result),
+                            Err(mpsc::TryRecvError::Empty) => {
+                                cx.background_executor()
+                                    .timer(StdDuration::from_millis(100))
+                                    .await;
+                            }
+                            Err(mpsc::TryRecvError::Disconnected) => break None,
+                        }
+                    };
+
+                    // A transient error (offline, 5xx) just means retry next tick.
+                    let Some(Ok(updated)) = result else {
+                        continue;
+                    };
+
+                    let enabled = updated.supports_sync;
+                    let applied = weak.update(cx, |app, cx| {
+                        app.settings.sync_account = Some(updated);
+                        app.save_app_settings();
+                        if enabled {
+                            app.service_bus.signal_sync();
+                        }
+                        cx.notify();
+                    });
+                    if applied.is_err() || enabled {
+                        break;
+                    }
+                }
+
+                let _ = weak.update(cx, |app, _| {
+                    app.sync_subscription_poll_task = None;
+                });
+            },
+        );
+        self.sync_subscription_poll_task = Some(task);
     }
 
     fn refresh_account_status_with_options(&mut self, require_sync: bool, cx: &mut Context<Self>) {
