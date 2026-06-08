@@ -46,6 +46,26 @@ fn archived_scheme_stays_archived_across_sync_round_trips() {
 }
 
 #[test]
+fn fresh_device_pulls_existing_archived_scheme_with_content() {
+    let mut h = Harness::new(2);
+    h.login_all();
+
+    let active = h.add_scheme(D0, "Active", &["visible"]);
+    let archived = h.add_scheme(D0, "Archived", &["hidden but synced"]);
+    h.archive_scheme(D0, archived);
+    h.sync(D0);
+
+    // D1 has never synced before. Its first pull must discover both the workspace
+    // archive state and the archived scheme's document content.
+    h.sync(D1);
+
+    h.assert_all_converged();
+    h.assert_scheme_active(D1, active);
+    h.assert_scheme_archived(D1, archived);
+    h.assert_scheme_items(D1, archived, &["hidden but synced"]);
+}
+
+#[test]
 fn concurrent_edits_then_archive_converge() {
     let mut h = Harness::new(2);
     h.login_all();

@@ -55,7 +55,9 @@ mod base64_bytes_vec {
         seq.end()
     }
 
-    pub fn deserialize<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Vec<Vec<u8>>, D::Error> {
+    pub fn deserialize<'de, D: Deserializer<'de>>(
+        deserializer: D,
+    ) -> Result<Vec<Vec<u8>>, D::Error> {
         Vec::<String>::deserialize(deserializer)?
             .into_iter()
             .map(|encoded| {

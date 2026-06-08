@@ -188,8 +188,14 @@ fn archive_on_one_device_while_other_edits_content_converges_archived() {
     h.assert_all_converged();
     for device in h.device_keys() {
         let d = h.device(device);
-        assert!(d.workspace.is_scheme_deleted(scheme), "{device:?} un-archived");
-        assert!(!d.root_scheme_ids().contains(&scheme), "{device:?} sidebar leak");
+        assert!(
+            d.workspace.is_scheme_deleted(scheme),
+            "{device:?} un-archived"
+        );
+        assert!(
+            !d.root_scheme_ids().contains(&scheme),
+            "{device:?} sidebar leak"
+        );
     }
 }
 
@@ -211,8 +217,14 @@ fn archive_then_restore_round_trips_through_sidebar() {
     h.assert_all_converged();
     for device in h.device_keys() {
         let d = h.device(device);
-        assert!(!d.workspace.is_scheme_deleted(scheme), "{device:?} still archived");
-        assert!(d.root_scheme_ids().contains(&scheme), "{device:?} not back in sidebar");
+        assert!(
+            !d.workspace.is_scheme_deleted(scheme),
+            "{device:?} still archived"
+        );
+        assert!(
+            d.root_scheme_ids().contains(&scheme),
+            "{device:?} not back in sidebar"
+        );
     }
 }
 
@@ -241,7 +253,11 @@ fn late_device_catches_up_through_merged_state() {
     assert_eq!(h.device(D1).workspace.schemes[&scheme].name, "Compacted");
     let texts = h.device(D1).scheme_item_texts(scheme);
     assert_eq!(texts.first().map(String::as_str), Some("v1"));
-    assert_eq!(texts.len(), 16, "late device lost history through merged state: {texts:?}");
+    assert_eq!(
+        texts.len(),
+        16,
+        "late device lost history through merged state: {texts:?}"
+    );
 }
 
 #[test]

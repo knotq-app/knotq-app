@@ -124,7 +124,8 @@ pub fn batch_push_pending(
     pushed: &mut Vec<PushedDocument>,
 ) -> Result<()> {
     loop {
-        let Some((request, acks)) = build_push_request(local_state, replica_id, notification_schedule)
+        let Some((request, acks)) =
+            build_push_request(local_state, replica_id, notification_schedule)
         else {
             return Ok(());
         };
@@ -199,9 +200,7 @@ fn build_push_request(
 }
 
 // Distinct documents present in the pending queue, in first-appearance order.
-fn distinct_pending_documents(
-    local_state: &LocalSyncState,
-) -> Vec<(DocumentId, SyncDocumentKind)> {
+fn distinct_pending_documents(local_state: &LocalSyncState) -> Vec<(DocumentId, SyncDocumentKind)> {
     let mut seen = HashSet::new();
     let mut documents = Vec::new();
     for edit in &local_state.pending {

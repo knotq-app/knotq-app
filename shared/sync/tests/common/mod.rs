@@ -136,7 +136,12 @@ impl Harness {
         self.device_mut(key).restore_scheme(scheme);
     }
 
-    pub fn set_daily_queue(&mut self, key: DeviceKey, date: chrono::NaiveDate, lines: &[&str]) -> SchemeId {
+    pub fn set_daily_queue(
+        &mut self,
+        key: DeviceKey,
+        date: chrono::NaiveDate,
+        lines: &[&str],
+    ) -> SchemeId {
         self.device_mut(key).set_daily_queue(date, lines)
     }
 
@@ -189,20 +194,35 @@ impl Harness {
         let expected = self.device(*first).summary();
         for key in rest {
             let actual = self.device(*key).summary();
-            assert_eq!(actual, expected, "seed {seed}: {key:?} diverged from {first:?}");
+            assert_eq!(
+                actual, expected,
+                "seed {seed}: {key:?} diverged from {first:?}"
+            );
         }
     }
 
     pub fn assert_scheme_active(&self, key: DeviceKey, scheme: SchemeId) {
         let device = self.device(key);
-        assert!(!device.workspace.is_scheme_deleted(scheme), "{scheme} archived");
-        assert!(device.root_scheme_ids().contains(&scheme), "{scheme} missing from root");
+        assert!(
+            !device.workspace.is_scheme_deleted(scheme),
+            "{scheme} archived"
+        );
+        assert!(
+            device.root_scheme_ids().contains(&scheme),
+            "{scheme} missing from root"
+        );
     }
 
     pub fn assert_scheme_archived(&self, key: DeviceKey, scheme: SchemeId) {
         let device = self.device(key);
-        assert!(device.workspace.is_scheme_deleted(scheme), "{scheme} not archived");
-        assert!(!device.root_scheme_ids().contains(&scheme), "{scheme} reintroduced into root");
+        assert!(
+            device.workspace.is_scheme_deleted(scheme),
+            "{scheme} not archived"
+        );
+        assert!(
+            !device.root_scheme_ids().contains(&scheme),
+            "{scheme} reintroduced into root"
+        );
     }
 
     pub fn assert_scheme_items(&self, key: DeviceKey, scheme: SchemeId, expected: &[&str]) {
@@ -211,7 +231,12 @@ impl Harness {
         assert_eq!(actual, expected);
     }
 
-    pub fn assert_scheme_items_unordered(&self, key: DeviceKey, scheme: SchemeId, expected: &[&str]) {
+    pub fn assert_scheme_items_unordered(
+        &self,
+        key: DeviceKey,
+        scheme: SchemeId,
+        expected: &[&str],
+    ) {
         let mut actual = self.device(key).scheme_item_texts(scheme);
         let mut expected = expected.iter().map(|t| t.to_string()).collect::<Vec<_>>();
         actual.sort();
@@ -285,7 +310,11 @@ impl SyncTransport for TestServer {
                     seq: 0,
                     state_v1: Vec::new(),
                 });
-            assert_eq!(entry.kind, doc.kind, "document kind changed under {}", doc.document);
+            assert_eq!(
+                entry.kind, doc.kind,
+                "document kind changed under {}",
+                doc.document
+            );
             // Validate the merged base + incoming updates the way the worker does,
             // then fold them into a single merged state — there is no delta log.
             let mut chain: Vec<&[u8]> = Vec::new();
@@ -453,7 +482,9 @@ impl TestDevice {
             })
             .unwrap_or(0);
         for folder in self.workspace.folders.values_mut() {
-            folder.children.retain(|child| *child != NodeRef::Scheme(scheme_id));
+            folder
+                .children
+                .retain(|child| *child != NodeRef::Scheme(scheme_id));
         }
         self.workspace
             .mark_scheme_deleted_from(scheme_id, root, position);
