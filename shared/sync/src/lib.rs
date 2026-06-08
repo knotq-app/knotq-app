@@ -87,7 +87,10 @@ pub const MAX_SYNC_MEDIA_BYTES: usize = 3 * 1024 * 1024;
 /// by `/v1/sync/pull` + `/v1/sync/push`, and document `seq` is now a per-document
 /// version counter rather than a global append sequence. Clearing cursors makes the
 /// first sync re-pull every document's merged state and re-converge idempotently.
-pub const SYNC_STATE_RECOVERY_VERSION: u32 = 3;
+/// Generation 4 canonicalizes account workspace root folders and Daily Queue
+/// scheme identities so independently-created devices do not merge duplicate
+/// roots or visible Daily Queue documents into the sidebar tree.
+pub const SYNC_STATE_RECOVERY_VERSION: u32 = 4;
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq, Serialize, Deserialize)]
 #[serde(transparent)]

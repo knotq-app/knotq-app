@@ -9,6 +9,9 @@
 mod common;
 
 use common::{Harness, D0, D1};
+use knotq_model::{
+    personal_workspace_root_folder_id, DocumentId, Item, NodeRef, Scheme, Workspace,
+};
 
 #[test]
 fn fresh_signed_in_device_discovers_existing_workspace_and_converges() {
@@ -63,6 +66,57 @@ fn fresh_device_pulls_existing_archived_scheme_with_content() {
     h.assert_scheme_active(D1, active);
     h.assert_scheme_archived(D1, archived);
     h.assert_scheme_items(D1, archived, &["hidden but synced"]);
+}
+
+#[test]
+fn fresh_device_repairs_legacy_root_and_keeps_archived_scheme_synced() {
+    let mut h = Harness::new(1);
+    h.login_all();
+    let account_workspace = h.account_workspace();
+
+    let mut legacy = Workspace::new();
+    let legacy_root = legacy.root;
+    legacy.id = account_workspace;
+    legacy.sync.id = DocumentId(account_workspace.0);
+
+    let active = Scheme::new("Active", 0);
+    let active_id = active.id;
+    let mut archived = Scheme::new("Archived", 1);
+    archived.items.push(Item::new("archived content"));
+    let archived_id = archived.id;
+    legacy.schemes.insert(active_id, active);
+    legacy.schemes.insert(archived_id, archived);
+    legacy
+        .folders
+        .get_mut(&legacy_root)
+        .unwrap()
+        .children
+        .push(NodeRef::Scheme(active_id));
+    legacy.mark_scheme_deleted_from(archived_id, legacy_root, 0);
+    legacy.ensure_sync_metadata();
+    h.push_remote_workspace_snapshot(&legacy);
+
+    h.sync(D0);
+
+    let device = h.device(D0);
+    let expected_root = personal_workspace_root_folder_id(account_workspace);
+    assert_eq!(device.workspace.root, expected_root);
+    assert!(!device.workspace.folders.contains_key(&legacy_root));
+    assert!(!device
+        .workspace
+        .folders
+        .values()
+        .any(|folder| folder.id != expected_root && folder.name == "root"));
+    assert!(device.root_scheme_ids().contains(&active_id));
+    assert!(device.workspace.is_scheme_deleted(archived_id));
+    assert_eq!(
+        device.scheme_item_texts(archived_id),
+        legacy.schemes[&archived_id]
+            .items
+            .iter()
+            .map(|item| item.text.clone())
+            .collect::<Vec<_>>()
+    );
 }
 
 #[test]

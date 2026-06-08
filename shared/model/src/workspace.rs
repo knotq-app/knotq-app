@@ -1,12 +1,18 @@
 use chrono::NaiveDate;
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, HashMap, HashSet};
+use uuid::Uuid;
 
 use crate::{
     daily_queue_scheme_id, daily_queue_sync_metadata, default_folder_sync, default_scheme_sync,
     default_workspace_sync, CrdtBackend, DocumentId, FolderId, Scheme, SchemeId, SyncDocumentKind,
     SyncDocumentMeta, WorkspaceId,
 };
+
+const PERSONAL_WORKSPACE_ROOT_FOLDER_NAMESPACE: [u8; 16] = [
+    0xd8, 0x7b, 0xce, 0x73, 0x80, 0x0d, 0x4b, 0x27, 0x93, 0x62, 0x66, 0x15, 0x17, 0xe2, 0x8e, 0xd4,
+];
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", content = "id", rename_all = "snake_case")]
@@ -39,7 +45,7 @@ pub struct Workspace {
 impl Workspace {
     pub fn new() -> Self {
         let id = WorkspaceId::new();
-        let root = FolderId::new();
+        let root = personal_workspace_root_folder_id(id);
         let mut folders = HashMap::new();
         folders.insert(
             root,
@@ -412,7 +418,214 @@ impl Workspace {
             self.sync.id = document_id;
             changed = true;
         }
+        changed |=
+            self.canonicalize_root_folder_id(personal_workspace_root_folder_id(workspace_id));
+        changed |= self.canonicalize_daily_queue_ids();
         changed | self.ensure_sync_metadata()
+    }
+
+    fn canonicalize_root_folder_id(&mut self, expected_root: FolderId) -> bool {
+        let old_root = self.root;
+        let mut changed = false;
+        if self.root != expected_root {
+            self.root = expected_root;
+            changed = true;
+        }
+
+        let merge_roots: HashSet<FolderId> = self
+            .folders
+            .iter()
+            .filter_map(|(id, folder)| {
+                (*id != expected_root
+                    && folder.name == "root"
+                    && (folder.parent.is_none()
+                        || folder.parent == Some(old_root)
+                        || folder.parent == Some(expected_root)))
+                .then_some(*id)
+            })
+            .chain((old_root != expected_root).then_some(old_root))
+            .collect();
+
+        let expected_existing = self.folders.remove(&expected_root);
+        let mut root_children = expected_existing
+            .as_ref()
+            .map(|folder| folder.children.clone())
+            .unwrap_or_default();
+        let mut expanded = expected_existing
+            .as_ref()
+            .map(|folder| folder.expanded)
+            .unwrap_or(true);
+
+        for id in &merge_roots {
+            if let Some(folder) = self.folders.remove(id) {
+                root_children.extend(folder.children);
+                expanded |= folder.expanded;
+                changed = true;
+            }
+        }
+
+        let old_root_ref = NodeRef::Folder(old_root);
+        let expected_root_ref = NodeRef::Folder(expected_root);
+        let merge_root_refs: HashSet<NodeRef> =
+            merge_roots.iter().copied().map(NodeRef::Folder).collect();
+        let new_root_children = dedupe_node_refs(root_children.into_iter().filter(|child| {
+            *child != old_root_ref
+                && *child != expected_root_ref
+                && !merge_root_refs.contains(child)
+        }));
+
+        let root_needs_insert = expected_existing.as_ref().is_none_or(|folder| {
+            folder.id != expected_root
+                || folder.name != "root"
+                || folder.parent.is_some()
+                || folder.children != new_root_children
+                || folder.expanded != expanded
+        });
+        if root_needs_insert {
+            changed = true;
+        }
+        self.folders.insert(
+            expected_root,
+            Folder {
+                id: expected_root,
+                name: "root".into(),
+                parent: None,
+                children: new_root_children,
+                expanded,
+            },
+        );
+
+        for folder in self.folders.values_mut() {
+            if folder.id == expected_root {
+                if folder.parent.is_some() {
+                    folder.parent = None;
+                    changed = true;
+                }
+            } else if folder.parent == Some(old_root)
+                || folder
+                    .parent
+                    .is_some_and(|parent| merge_roots.contains(&parent))
+            {
+                folder.parent = Some(expected_root);
+                changed = true;
+            }
+
+            let old_children = folder.children.clone();
+            let new_children = dedupe_node_refs(old_children.into_iter().flat_map(|child| {
+                if child == expected_root_ref
+                    || child == old_root_ref
+                    || merge_root_refs.contains(&child)
+                {
+                    Vec::new()
+                } else {
+                    vec![child]
+                }
+            }));
+            if folder.children != new_children {
+                folder.children = new_children;
+                changed = true;
+            }
+        }
+
+        if old_root != expected_root && self.folder_sync.remove(&old_root).is_some() {
+            changed = true;
+        }
+        for id in &merge_roots {
+            if self.folder_sync.remove(id).is_some() {
+                changed = true;
+            }
+        }
+        for origin in self.deleted_scheme_origins.values_mut() {
+            if origin.folder == old_root || merge_roots.contains(&origin.folder) {
+                origin.folder = expected_root;
+                changed = true;
+            }
+        }
+        changed
+    }
+
+    fn canonicalize_daily_queue_ids(&mut self) -> bool {
+        let inferred_daily_queues = self
+            .schemes
+            .iter()
+            .filter_map(|(id, scheme)| {
+                daily_queue_date_from_scheme_name(&scheme.name)
+                    .filter(|date| !self.daily_queue.contains_key(date))
+                    .map(|date| (date, *id))
+            })
+            .collect::<Vec<_>>();
+        let mut changed = false;
+        for (date, id) in inferred_daily_queues {
+            self.daily_queue.insert(date, id);
+            changed = true;
+        }
+
+        let entries = self.daily_queue.clone();
+        let mut daily_ids = HashSet::new();
+
+        for (date, current_id) in entries {
+            let expected_id = daily_queue_scheme_id(date);
+            daily_ids.insert(expected_id);
+            if current_id == expected_id {
+                continue;
+            }
+
+            let mut replacement = self.schemes.remove(&expected_id);
+            if let Some(mut legacy) = self.schemes.remove(&current_id) {
+                legacy.id = expected_id;
+                match &mut replacement {
+                    Some(existing) => merge_daily_queue_scheme(existing, legacy),
+                    None => replacement = Some(legacy),
+                }
+            }
+            if let Some(mut scheme) = replacement {
+                scheme.id = expected_id;
+                self.schemes.insert(expected_id, scheme);
+            }
+
+            self.daily_queue.insert(date, expected_id);
+            self.scheme_sync.remove(&current_id);
+            self.deleted_scheme_origins.remove(&current_id);
+            self.recently_deleted
+                .retain(|id| *id != current_id && *id != expected_id);
+            daily_ids.insert(current_id);
+            changed = true;
+        }
+
+        for (date, id) in &self.daily_queue {
+            let expected_id = daily_queue_scheme_id(*date);
+            if *id == expected_id {
+                let sync = daily_queue_sync_metadata(*date);
+                if self.scheme_sync.get(&expected_id) != Some(&sync) {
+                    self.scheme_sync.insert(expected_id, sync);
+                    changed = true;
+                }
+                daily_ids.insert(expected_id);
+            }
+        }
+
+        for id in &daily_ids {
+            if self.deleted_scheme_origins.remove(id).is_some() {
+                changed = true;
+            }
+        }
+        let deleted_before = self.recently_deleted.len();
+        self.recently_deleted.retain(|id| !daily_ids.contains(id));
+        if self.recently_deleted.len() != deleted_before {
+            changed = true;
+        }
+
+        for folder in self.folders.values_mut() {
+            let before = folder.children.len();
+            folder
+                .children
+                .retain(|child| !matches!(child, NodeRef::Scheme(id) if daily_ids.contains(id)));
+            if folder.children.len() != before {
+                changed = true;
+            }
+        }
+
+        changed
     }
 }
 
@@ -438,10 +651,62 @@ pub struct DeletedSchemeOrigin {
     pub position: usize,
 }
 
+pub fn personal_workspace_root_folder_id(workspace_id: WorkspaceId) -> FolderId {
+    FolderId(stable_workspace_uuid(
+        PERSONAL_WORKSPACE_ROOT_FOLDER_NAMESPACE,
+        &workspace_id.to_string(),
+    ))
+}
+
+fn stable_workspace_uuid(namespace: [u8; 16], name: &str) -> Uuid {
+    let mut hasher = Sha256::new();
+    hasher.update(namespace);
+    hasher.update(name.as_bytes());
+    let digest = hasher.finalize();
+    let mut bytes = [0u8; 16];
+    bytes.copy_from_slice(&digest[..16]);
+    bytes[6] = (bytes[6] & 0x0f) | 0x80;
+    bytes[8] = (bytes[8] & 0x3f) | 0x80;
+    Uuid::from_bytes(bytes)
+}
+
+fn dedupe_node_refs(children: impl IntoIterator<Item = NodeRef>) -> Vec<NodeRef> {
+    let mut seen = HashSet::new();
+    let mut out = Vec::new();
+    for child in children {
+        if seen.insert(child) {
+            out.push(child);
+        }
+    }
+    out
+}
+
+fn merge_daily_queue_scheme(existing: &mut Scheme, legacy: Scheme) {
+    let mut item_ids = existing
+        .items
+        .iter()
+        .map(|item| item.id)
+        .collect::<HashSet<_>>();
+    for item in legacy.items {
+        if item_ids.insert(item.id) {
+            existing.items.push(item);
+        }
+    }
+    if existing.name.is_empty() {
+        existing.name = legacy.name;
+    }
+    existing.color_index = crate::DAILY_QUEUE_COLOR_INDEX;
+}
+
+fn daily_queue_date_from_scheme_name(name: &str) -> Option<NaiveDate> {
+    name.strip_prefix("Daily ")
+        .and_then(|date| NaiveDate::parse_from_str(date, "%Y-%m-%d").ok())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::Scheme;
+    use crate::{Item, Scheme, DAILY_QUEUE_COLOR_INDEX};
 
     #[test]
     fn normalize_removes_unreferenced_schemes_unless_recently_deleted() {
@@ -557,12 +822,130 @@ mod tests {
     fn canonical_personal_sync_identity_uses_account_workspace_id() {
         let mut workspace = Workspace::new();
         let account_workspace = WorkspaceId::new();
+        let old_root = workspace.root;
+        let expected_root = personal_workspace_root_folder_id(account_workspace);
 
         assert!(workspace.canonicalize_personal_sync_identity(account_workspace));
         assert_eq!(workspace.id, account_workspace);
         assert_eq!(workspace.sync.id, DocumentId(account_workspace.0));
         assert_eq!(workspace.sync.kind, SyncDocumentKind::PersonalWorkspace);
+        assert_eq!(workspace.root, expected_root);
+        assert!(workspace.folders.contains_key(&expected_root));
+        assert!(!workspace.folders.contains_key(&old_root));
 
         assert!(!workspace.canonicalize_personal_sync_identity(account_workspace));
+    }
+
+    #[test]
+    fn canonical_personal_sync_identity_merges_duplicate_roots() {
+        let account_workspace = WorkspaceId::new();
+        let mut workspace = Workspace::new();
+        let old_root = workspace.root;
+        let local = Scheme::new("Local", 0);
+        let local_id = local.id;
+        let remote = Scheme::new("Remote", 1);
+        let remote_id = remote.id;
+        let duplicate_root = FolderId::new();
+
+        workspace.schemes.insert(local_id, local);
+        workspace.schemes.insert(remote_id, remote);
+        workspace
+            .folders
+            .get_mut(&workspace.root)
+            .unwrap()
+            .children
+            .extend([NodeRef::Scheme(local_id), NodeRef::Folder(duplicate_root)]);
+        workspace.folders.insert(
+            duplicate_root,
+            Folder {
+                id: duplicate_root,
+                name: "root".into(),
+                parent: None,
+                children: vec![NodeRef::Scheme(remote_id)],
+                expanded: true,
+            },
+        );
+
+        assert!(workspace.canonicalize_personal_sync_identity(account_workspace));
+        let expected_root = personal_workspace_root_folder_id(account_workspace);
+        let root_children = &workspace.folder(expected_root).unwrap().children;
+        assert_eq!(workspace.root, expected_root);
+        assert!(root_children.contains(&NodeRef::Scheme(local_id)));
+        assert!(root_children.contains(&NodeRef::Scheme(remote_id)));
+        assert!(!root_children.contains(&NodeRef::Folder(old_root)));
+        assert!(!root_children.contains(&NodeRef::Folder(duplicate_root)));
+        assert!(!workspace.folders.contains_key(&old_root));
+        assert!(!workspace.folders.contains_key(&duplicate_root));
+    }
+
+    #[test]
+    fn canonical_personal_sync_identity_migrates_legacy_daily_queue_ids() {
+        let date = NaiveDate::from_ymd_opt(2026, 5, 31).unwrap();
+        let mut workspace = Workspace::new();
+        let workspace_id = workspace.id;
+        let legacy_id = SchemeId::new();
+        let expected_id = daily_queue_scheme_id(date);
+        let mut legacy = Scheme::new("Daily 2026-05-31", DAILY_QUEUE_COLOR_INDEX);
+        legacy.id = legacy_id;
+        legacy.items.push(Item::new("legacy entry"));
+
+        workspace.schemes.insert(legacy_id, legacy);
+        workspace.daily_queue.insert(date, legacy_id);
+        workspace
+            .folders
+            .get_mut(&workspace.root)
+            .unwrap()
+            .children
+            .push(NodeRef::Scheme(legacy_id));
+
+        assert!(workspace.canonicalize_personal_sync_identity(workspace_id));
+        assert_eq!(workspace.daily_queue_scheme_id(date), Some(expected_id));
+        assert!(!workspace.schemes.contains_key(&legacy_id));
+        assert_eq!(
+            workspace.schemes[&expected_id].items[0].text,
+            "legacy entry"
+        );
+        assert_eq!(
+            workspace.scheme_sync[&expected_id].id,
+            crate::daily_queue_document_id(date)
+        );
+        assert!(!workspace
+            .folder(workspace.root)
+            .unwrap()
+            .children
+            .contains(&NodeRef::Scheme(legacy_id)));
+        assert!(!workspace
+            .folder(workspace.root)
+            .unwrap()
+            .children
+            .contains(&NodeRef::Scheme(expected_id)));
+    }
+
+    #[test]
+    fn canonical_personal_sync_identity_infers_visible_daily_queue_schemes() {
+        let date = NaiveDate::from_ymd_opt(2026, 5, 26).unwrap();
+        let mut workspace = Workspace::new();
+        let workspace_id = workspace.id;
+        let legacy_id = SchemeId::new();
+        let expected_id = daily_queue_scheme_id(date);
+        let mut legacy = Scheme::new("Daily 2026-05-26", DAILY_QUEUE_COLOR_INDEX);
+        legacy.id = legacy_id;
+
+        workspace.schemes.insert(legacy_id, legacy);
+        workspace
+            .folders
+            .get_mut(&workspace.root)
+            .unwrap()
+            .children
+            .push(NodeRef::Scheme(legacy_id));
+
+        assert!(workspace.canonicalize_personal_sync_identity(workspace_id));
+        assert_eq!(workspace.daily_queue_scheme_id(date), Some(expected_id));
+        assert!(workspace.schemes.contains_key(&expected_id));
+        assert!(!workspace
+            .folder(workspace.root)
+            .unwrap()
+            .children
+            .contains(&NodeRef::Scheme(legacy_id)));
     }
 }

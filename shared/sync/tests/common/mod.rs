@@ -21,8 +21,8 @@ use knotq_sync::{
     batch_pull_and_apply, batch_push_pending, queue_workspace_bootstrap_updates,
     validate_crdt_update_sequence, BatchPullRequest, BatchPullResponse, BatchPushRequest,
     BatchPushResponse, LocalSyncState, NotificationScheduleSnapshot, PendingCrdtEdit,
-    PulledCrdtDocument, PushedCrdtDocument, SyncTransport, WorkspaceCrdtChangeSet,
-    WorkspaceCrdtDocuments,
+    PulledCrdtDocument, PushDocumentUpdates, PushedCrdtDocument, SyncTransport,
+    WorkspaceCrdtChangeSet, WorkspaceCrdtDocuments,
 };
 use yrs::updates::decoder::Decode;
 use yrs::{Doc, ReadTxn, StateVector, Transact, Update};
@@ -76,6 +76,10 @@ impl Harness {
 
     pub fn device_keys(&self) -> Vec<DeviceKey> {
         self.devices.keys().copied().collect()
+    }
+
+    pub fn account_workspace(&self) -> WorkspaceId {
+        self.account_workspace
     }
 
     pub fn device(&self, key: DeviceKey) -> &TestDevice {
@@ -149,6 +153,26 @@ impl Harness {
         let mut device = self.devices.remove(&key).expect("missing device");
         device.sync(&self.server);
         self.devices.insert(key, device);
+    }
+
+    pub fn push_remote_workspace_snapshot(&self, workspace: &Workspace) {
+        let documents = WorkspaceCrdtDocuments::snapshot_updates(workspace)
+            .updates
+            .into_iter()
+            .map(|update| PushDocumentUpdates {
+                document: update.document,
+                kind: update.kind,
+                updates: vec![update.update_v1],
+            })
+            .collect::<Vec<_>>();
+        self.server
+            .push(&BatchPushRequest {
+                replica_id: ReplicaId::new(),
+                documents,
+                notification_schedule_changed: false,
+                notification_schedule: Some(test_notification_schedule()),
+            })
+            .expect("push remote workspace snapshot");
     }
 
     /// Sync every device until all replicas reach a fixed point (byte-identical
@@ -556,6 +580,32 @@ impl TestDevice {
         // the workspace. The test keeps the engine-mutated docs, which is the
         // simplest faithful model and keeps later local diffs against merged state.)
         self.workspace = pull.workspace;
+        let mut repaired_workspace_changed = self
+            .workspace
+            .canonicalize_personal_sync_identity(self.account_workspace);
+        repaired_workspace_changed |= self.workspace.normalize_one_level_folders();
+        if repaired_workspace_changed {
+            let outcome = self.crdt.sync_changes(
+                &self.workspace,
+                &WorkspaceCrdtChangeSet::default().workspace(),
+            );
+            assert!(outcome.is_ok(), "{:?}", outcome.errors);
+            let operation_id = OperationId::new();
+            let local_sequence = self.next_sequence;
+            self.next_sequence += 1;
+            for update in outcome.updates {
+                self.local_state.push_pending(PendingCrdtEdit {
+                    operation_id,
+                    workspace_id: self.workspace.id,
+                    replica_id: self.replica_id,
+                    local_sequence,
+                    created_at: Utc::now(),
+                    document: update.document,
+                    kind: update.kind,
+                    update_v1: update.update_v1,
+                });
+            }
+        }
 
         let remote_latest: HashMap<DocumentId, u64> = self
             .local_state

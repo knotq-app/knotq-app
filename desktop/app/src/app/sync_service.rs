@@ -9,8 +9,8 @@ use chrono::Utc;
 use futures::{pin_mut, select, FutureExt};
 use gpui::{Context, Task};
 use knotq_model::{
-    DocumentId, ImageAssetFormat, ItemMedia, ReplicaId, SyncAccountSettings, SyncAccountStatus,
-    Workspace, WorkspaceId,
+    DocumentId, ImageAssetFormat, ItemMedia, OperationId, ReplicaId, SyncAccountSettings,
+    SyncAccountStatus, Workspace, WorkspaceId,
 };
 use knotq_storage_json::{
     image_asset_path, load_local_sync_state, load_workspace_with_options, save_local_sync_state,
@@ -20,7 +20,7 @@ use knotq_sync::{
     batch_pull_and_apply, batch_push_pending, queue_workspace_bootstrap_updates, BatchPullRequest,
     BatchPullResponse, BatchPushRequest, BatchPushResponse, ErrorResponse, LocalSyncState,
     NotificationScheduleSnapshot, PendingCrdtEdit, PushedDocument, SyncTransport,
-    WorkspaceCrdtDocuments, MAX_SYNC_MEDIA_BYTES,
+    WorkspaceCrdtChangeSet, WorkspaceCrdtDocuments, MAX_SYNC_MEDIA_BYTES,
 };
 use sha2::{Digest, Sha256};
 
@@ -313,8 +313,20 @@ fn sync_snapshot(snapshot: SyncSnapshot) -> Result<SyncRunResult> {
         workspace,
         snapshot.replica_id,
     )?;
-    let workspace = pull.workspace;
+    let mut workspace = pull.workspace;
     let remote_updates_applied = pull.remote_updates_applied;
+    let mut repaired_workspace_changed =
+        workspace.canonicalize_personal_sync_identity(server_workspace_id);
+    repaired_workspace_changed |= workspace.normalize_one_level_folders();
+    repaired_workspace_changed |= workspace.normalize_item_markers();
+    if repaired_workspace_changed {
+        queue_repair_crdt_updates(
+            &mut local_state,
+            &workspace,
+            snapshot.replica_id,
+            &mut crdt_docs,
+        )?;
+    }
 
     download_missing_media_assets(&client, &workspace)?;
 
@@ -325,7 +337,7 @@ fn sync_snapshot(snapshot: SyncSnapshot) -> Result<SyncRunResult> {
     // state, and the next sync (cursor already advanced) would never re-pull them.
     // That desync silently drops other devices' schemes and re-activates archived
     // ones.
-    if remote_updates_applied > 0 || local_workspace_changed {
+    if remote_updates_applied > 0 || local_workspace_changed || repaired_workspace_changed {
         save_workspace(&path, &workspace)?;
     }
 
@@ -358,8 +370,44 @@ fn sync_snapshot(snapshot: SyncSnapshot) -> Result<SyncRunResult> {
         pushed,
         remote_updates_applied,
         remaining_pending: local_state.pending.len(),
-        local_workspace_changed,
+        local_workspace_changed: local_workspace_changed || repaired_workspace_changed,
     })
+}
+
+fn queue_repair_crdt_updates(
+    local_state: &mut LocalSyncState,
+    workspace: &Workspace,
+    replica_id: ReplicaId,
+    crdt_docs: &mut WorkspaceCrdtDocuments,
+) -> Result<()> {
+    let outcome = crdt_docs.sync_changes(workspace, &WorkspaceCrdtChangeSet::default().workspace());
+    if !outcome.is_ok() {
+        return Err(anyhow!("CRDT repair update failed: {:?}", outcome.errors));
+    }
+    if outcome.updates.is_empty() {
+        return Ok(());
+    }
+    let operation_id = OperationId::new();
+    let local_sequence = local_state
+        .pending
+        .iter()
+        .map(|edit| edit.local_sequence)
+        .max()
+        .unwrap_or(0)
+        + 1;
+    for update in outcome.updates {
+        local_state.push_pending(PendingCrdtEdit {
+            operation_id,
+            workspace_id: workspace.id,
+            replica_id,
+            local_sequence,
+            created_at: Utc::now(),
+            document: update.document,
+            kind: update.kind,
+            update_v1: update.update_v1,
+        });
+    }
+    Ok(())
 }
 
 fn workspace_for_background_sync(path: &std::path::Path, current: Workspace) -> Workspace {
