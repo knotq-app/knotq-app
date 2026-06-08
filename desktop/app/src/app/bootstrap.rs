@@ -26,10 +26,19 @@ pub fn load_or_seed() -> WorkspaceBootstrap {
 fn load_or_seed_from_path(path: &Path, today: NaiveDate) -> WorkspaceBootstrap {
     let options = WorkspaceLoadOptions::daily_queue_range(daily_queue_initial_start(today), today);
     match load_workspace_with_options(path, options) {
-        Ok(Some(workspace)) => WorkspaceBootstrap {
-            workspace,
-            save_blocked_reason: None,
-        },
+        Ok(Some(mut workspace)) => {
+            let folders_changed = workspace.normalize_one_level_folders();
+            let markers_changed = workspace.normalize_item_markers();
+            if folders_changed || markers_changed {
+                if let Err(err) = save_workspace(path, &workspace) {
+                    eprintln!("workspace repair save failed: {err:#}");
+                }
+            }
+            WorkspaceBootstrap {
+                workspace,
+                save_blocked_reason: None,
+            }
+        }
         Ok(None) => {
             let workspace = make_default_workspace_for_date(today);
             if let Err(err) = save_workspace(path, &workspace) {
@@ -76,6 +85,46 @@ mod tests {
         assert!(fs::read_to_string(&path)
             .unwrap()
             .contains("\"version\": 999"));
+
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn successful_workspace_load_persists_startup_normalization() {
+        let dir = unique_temp_dir("knotq-bootstrap-normalize-save");
+        let path = dir.join("workspace.json");
+        let today = NaiveDate::from_ymd_opt(2026, 6, 8).unwrap();
+        let mut workspace = Workspace::new();
+        let active = Scheme::new("Active", 0);
+        let active_id = active.id;
+        let deleted = Scheme::new("Archived", 1);
+        let deleted_id = deleted.id;
+        workspace.schemes.insert(active_id, active);
+        workspace.schemes.insert(deleted_id, deleted);
+        workspace.mark_scheme_deleted_from(deleted_id, workspace.root, 1);
+        workspace.folders.get_mut(&workspace.root).unwrap().children =
+            vec![NodeRef::Scheme(active_id), NodeRef::Scheme(deleted_id)];
+        save_workspace(&path, &workspace).unwrap();
+
+        let bootstrap = load_or_seed_from_path(&path, today);
+        assert!(bootstrap.save_blocked_reason.is_none());
+        assert_eq!(
+            bootstrap
+                .workspace
+                .folder(bootstrap.workspace.root)
+                .unwrap()
+                .children,
+            vec![NodeRef::Scheme(active_id)]
+        );
+
+        let persisted = load_workspace_with_options(&path, WorkspaceLoadOptions::all())
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            persisted.folder(persisted.root).unwrap().children,
+            vec![NodeRef::Scheme(active_id)]
+        );
+        assert!(persisted.is_scheme_deleted(deleted_id));
 
         let _ = fs::remove_dir_all(dir);
     }

@@ -5,7 +5,7 @@ use std::time::Duration as StdDuration;
 use anyhow::{anyhow, Context as AnyhowContext, Result};
 use chrono::{DateTime, Utc};
 use gpui::{Context, Window};
-use knotq_model::{SyncAccountSettings, SyncAccountStatus, WorkspaceId};
+use knotq_model::{SyncAccountSettings, SyncAccountStatus};
 use knotq_sync::AccountStatusResponse;
 use serde::Deserialize;
 
@@ -26,8 +26,7 @@ struct LoginResponse {
     #[serde(default)]
     session_id: Option<String>,
     user_id: String,
-    #[serde(default)]
-    workspace_id: Option<WorkspaceId>,
+    workspace_id: String,
     email: String,
     #[serde(default = "default_supports_sync")]
     supports_sync: bool,
@@ -49,6 +48,7 @@ pub(crate) struct RefreshedTokens {
     pub expires_at: DateTime<Utc>,
     pub refresh_token: String,
     pub refresh_expires_at: Option<DateTime<Utc>>,
+    pub workspace_id: String,
     pub supports_sync: bool,
 }
 
@@ -675,7 +675,7 @@ fn sync_account_settings_from_session(
         api_base,
         user_id: session.user_id,
         session_id: session.session_id,
-        workspace_id: session.workspace_id,
+        workspace_id: Some(session.workspace_id),
         email: session.email,
         supports_sync: session.supports_sync,
         bearer_token: session.bearer_token,
@@ -720,6 +720,7 @@ pub(crate) fn refresh_sync_backend(
         expires_at: session.expires_at,
         refresh_token: session.refresh_token,
         refresh_expires_at: session.refresh_expires_at,
+        workspace_id: session.workspace_id,
         supports_sync: session.supports_sync,
     })
 }
@@ -837,6 +838,7 @@ fn refresh_account_status_backend(mut account: SyncAccountSettings) -> Result<Sy
     account.expires_at = tokens.expires_at;
     account.refresh_token = Some(tokens.refresh_token);
     account.refresh_expires_at = tokens.refresh_expires_at;
+    account.workspace_id = Some(tokens.workspace_id);
     account.supports_sync = tokens.supports_sync;
     account.account_status = Some(SyncAccountStatus::from_supports_sync(tokens.supports_sync));
 
@@ -890,7 +892,7 @@ fn fetch_account_status_backend(
 
 fn apply_account_status_response(account: &mut SyncAccountSettings, status: AccountStatusResponse) {
     account.user_id = status.user_id.to_string();
-    account.workspace_id = Some(status.workspace_id);
+    account.workspace_id = Some(status.workspace_id.to_string());
     account.email = status.email.clone();
     account.supports_sync = status.supports_sync;
     account.account_status = Some(sync_account_status_from_response(status));

@@ -1,16 +1,23 @@
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 
 mod crdt;
+mod engine;
 mod fractional;
 
 use chrono::{DateTime, Utc};
-use knotq_model::{DocumentId, OperationId, ReplicaId, ShareId, SyncDocumentKind, WorkspaceId};
+use knotq_model::{
+    DocumentId, OperationId, ReplicaId, ShareId, SyncDocumentKind, Workspace, WorkspaceId,
+};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 pub use crdt::{
     validate_crdt_update_sequence, WorkspaceCrdtApplyOutcome, WorkspaceCrdtChangeSet,
     WorkspaceCrdtDocuments, WorkspaceCrdtSyncOutcome, YrsSchemeDocument,
+};
+pub use engine::{
+    batch_pull_and_apply, batch_push_pending, PullOutcome, PushedDocument, SyncTransport,
+    PUSH_MAX_DOCUMENTS_PER_REQUEST, PUSH_MAX_UPDATES_PER_DOCUMENT,
 };
 
 /// Serde codec that represents CRDT update bytes as a base64 string rather than
@@ -33,9 +40,52 @@ mod base64_bytes {
     }
 }
 
-pub const SYNC_API_VERSION: &str = "2026-05-30-crdt-sync-beta";
+/// Like [`base64_bytes`] but for a list of update payloads, so a batched push can
+/// carry `["<b64>", "<b64>", …]` on the wire instead of nested integer arrays.
+mod base64_bytes_vec {
+    use base64::{engine::general_purpose::STANDARD, Engine};
+    use serde::ser::SerializeSeq;
+    use serde::{Deserialize, Deserializer, Serializer};
+
+    pub fn serialize<S: Serializer>(items: &[Vec<u8>], serializer: S) -> Result<S::Ok, S::Error> {
+        let mut seq = serializer.serialize_seq(Some(items.len()))?;
+        for item in items {
+            seq.serialize_element(&STANDARD.encode(item))?;
+        }
+        seq.end()
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Vec<Vec<u8>>, D::Error> {
+        Vec::<String>::deserialize(deserializer)?
+            .into_iter()
+            .map(|encoded| {
+                STANDARD
+                    .decode(encoded.as_bytes())
+                    .map_err(serde::de::Error::custom)
+            })
+            .collect()
+    }
+}
+
+pub const SYNC_API_VERSION: &str = "2026-06-08-crdt-sync-batched";
 pub const LOCAL_SYNC_STATE_FILE: &str = "sync-state.json";
 pub const MAX_SYNC_MEDIA_BYTES: usize = 3 * 1024 * 1024;
+
+/// One-time local-state recovery generation. Bump this when a fixed sync bug could
+/// have left persisted `document_cursors` pointing past data that never made it
+/// into the on-disk workspace. On load, a client whose stored generation is lower
+/// clears its pull cursors once, forcing an idempotent full re-pull/re-merge that
+/// repairs the divergence. Generation 1 recovers from the push-failure desync that
+/// advanced cursors without persisting the merged workspace (dropping other
+/// devices' schemes and re-activating archived ones). Generation 2 reruns the
+/// recovery after fixing CRDT materialization of archived and Daily Queue schemes
+/// and drops stale workspace-index deltas so they cannot re-push the bad shape.
+/// Generation 3 reruns the one-time pull-cursor reset for the merged-state batched
+/// sync protocol (2026-06-08): the per-document append-log endpoints were replaced
+/// by `/v1/sync/pull` + `/v1/sync/push`, and document `seq` is now a per-document
+/// version counter rather than a global append sequence. Clearing cursors makes the
+/// first sync re-pull every document's merged state and re-converge idempotently.
+pub const SYNC_STATE_RECOVERY_VERSION: u32 = 3;
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq, Serialize, Deserialize)]
 #[serde(transparent)]
@@ -286,6 +336,33 @@ pub struct CrdtDocumentUpdate {
     pub update_v1: Vec<u8>,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct SyncDocumentRef {
+    pub document: DocumentId,
+    pub kind: SyncDocumentKind,
+}
+
+pub fn sync_documents(workspace: &Workspace) -> Vec<SyncDocumentRef> {
+    let mut docs = vec![SyncDocumentRef {
+        document: workspace.sync.id,
+        kind: SyncDocumentKind::PersonalWorkspace,
+    }];
+    docs.extend(scheme_documents(workspace));
+    docs
+}
+
+pub fn scheme_documents(workspace: &Workspace) -> Vec<SyncDocumentRef> {
+    workspace
+        .scheme_sync
+        .values()
+        .filter(|meta| meta.kind == SyncDocumentKind::Scheme)
+        .map(|meta| SyncDocumentRef {
+            document: meta.id,
+            kind: SyncDocumentKind::Scheme,
+        })
+        .collect()
+}
+
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct PendingCrdtEdit {
     pub operation_id: OperationId,
@@ -345,6 +422,10 @@ pub struct LocalSyncState {
     pub media_cursors: HashMap<String, MediaSyncCursor>,
     #[serde(default)]
     pub pending: VecDeque<PendingCrdtEdit>,
+    /// Last applied recovery generation (see [`SYNC_STATE_RECOVERY_VERSION`]).
+    /// Absent in older files, so it defaults to 0 and triggers the heal.
+    #[serde(default)]
+    pub recovery_version: u32,
 }
 
 impl LocalSyncState {
@@ -365,6 +446,24 @@ impl LocalSyncState {
         self.pending = pending.into_iter().collect();
     }
 
+    /// Apply any pending one-time recovery for the current
+    /// [`SYNC_STATE_RECOVERY_VERSION`]. Clears pull cursors so the next sync
+    /// re-pulls every document from sequence zero and re-merges (idempotent in
+    /// Yjs), repairing an on-disk workspace that diverged from advanced cursors.
+    /// Workspace-index pending edits are dropped during recovery because older
+    /// clients could queue deltas from a partial/corrupt workspace index. Scheme
+    /// content edits are left intact. Returns `true` if a heal was applied.
+    pub fn heal_for_recovery_version(&mut self) -> bool {
+        if self.recovery_version >= SYNC_STATE_RECOVERY_VERSION {
+            return false;
+        }
+        self.document_cursors.clear();
+        self.pending
+            .retain(|edit| edit.kind != SyncDocumentKind::PersonalWorkspace);
+        self.recovery_version = SYNC_STATE_RECOVERY_VERSION;
+        true
+    }
+
     pub fn push_pending(&mut self, edit: PendingCrdtEdit) {
         self.pending.push_back(edit);
     }
@@ -376,6 +475,24 @@ impl LocalSyncState {
             .take(limit)
             .cloned()
             .collect()
+    }
+
+    pub fn pending_document_sequence_is_valid(
+        &self,
+        document: DocumentId,
+        kind: SyncDocumentKind,
+    ) -> bool {
+        let updates = self
+            .pending
+            .iter()
+            .filter(|edit| edit.document == document)
+            .map(|edit| edit.update_v1.as_slice())
+            .collect::<Vec<_>>();
+        !updates.is_empty() && validate_crdt_update_sequence(kind, updates).is_ok()
+    }
+
+    pub fn should_upsert_document(&self, doc: SyncDocumentRef) -> bool {
+        !self.document_cursors.contains_key(&doc.document)
     }
 
     pub fn next_push_request(
@@ -479,6 +596,61 @@ impl LocalSyncState {
     }
 }
 
+pub fn queue_workspace_bootstrap_updates(
+    sync_state: &mut LocalSyncState,
+    workspace: &Workspace,
+    replica_id: ReplicaId,
+    remote_latest: &HashMap<DocumentId, u64>,
+) {
+    let mut next_sequence = sync_state
+        .pending
+        .iter()
+        .map(|edit| edit.local_sequence)
+        .max()
+        .unwrap_or(0)
+        + 1;
+    let mut bootstrapped: HashSet<DocumentId> = HashSet::new();
+    for update in WorkspaceCrdtDocuments::snapshot_updates(workspace).updates {
+        if remote_latest.get(&update.document).copied().unwrap_or(0) != 0 {
+            continue;
+        }
+        if sync_state.pending_document_sequence_is_valid(update.document, update.kind) {
+            bootstrapped.insert(update.document);
+            continue;
+        }
+        // If local deltas were queued before the first successful upload, they
+        // cannot be applied on the server without a base document. Trust the
+        // server's zero sequence over any stale local cursor, then push the
+        // current full snapshot first.
+        sync_state
+            .pending
+            .retain(|pending| pending.document != update.document);
+        bootstrapped.insert(update.document);
+        sync_state.push_pending(PendingCrdtEdit {
+            operation_id: OperationId::new(),
+            workspace_id: workspace.id,
+            replica_id,
+            local_sequence: next_sequence,
+            created_at: Utc::now(),
+            document: update.document,
+            kind: update.kind,
+            update_v1: update.update_v1,
+        });
+        next_sequence += 1;
+    }
+
+    // Drop queued deltas that the server can never accept: a document it has no
+    // base snapshot for (remote sequence 0) that we also did not just re-seed with
+    // a full snapshot above. These orphans appear when a scheme is deleted or its
+    // sync-document id is reassigned while edits are still queued. A lone delta
+    // reconstructs a document with no `schema` field, which the backend rejects as
+    // `crdt_schema_invalid`, wedging the push loop behind the bad edit.
+    sync_state.pending.retain(|edit| {
+        bootstrapped.contains(&edit.document)
+            || remote_latest.get(&edit.document).copied().unwrap_or(0) != 0
+    });
+}
+
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct PushUpdatesRequest {
     pub replica_id: ReplicaId,
@@ -542,6 +714,82 @@ pub struct StoredCrdtUpdate {
     pub received_at: DateTime<Utc>,
     #[serde(with = "base64_bytes")]
     pub update_v1: Vec<u8>,
+}
+
+// ---------------------------------------------------------------------------
+// Batched sync protocol (2026-06-08). One round-trip syncs the whole workspace:
+// `pull` returns the current merged state of every changed document, `push` merges
+// a batch of documents' updates server-side. This replaces the per-document
+// pull/push fan-out (one HTTP request per document) and the append-only update log.
+// ---------------------------------------------------------------------------
+
+/// `POST /v1/sync/pull`. Cursors map each known document to the last `seq` this
+/// replica applied; the server returns merged state for any document past that
+/// (a missing/zero cursor also discovers documents created on other devices).
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct BatchPullRequest {
+    pub replica_id: ReplicaId,
+    #[serde(default)]
+    pub cursors: HashMap<DocumentId, u64>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct PulledCrdtDocument {
+    pub document: DocumentId,
+    pub kind: SyncDocumentKind,
+    pub seq: u64,
+    #[serde(with = "base64_bytes")]
+    pub state_v1: Vec<u8>,
+}
+
+#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+pub struct BatchPullResponse {
+    #[serde(default)]
+    pub documents: Vec<PulledCrdtDocument>,
+    #[serde(default)]
+    pub notification_schedule_revision: u64,
+    /// More changed documents remain beyond the per-response cap; the client should
+    /// pull again with advanced cursors until this is false.
+    #[serde(default)]
+    pub has_more: bool,
+}
+
+/// One document's batch of CRDT updates within a [`BatchPushRequest`].
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct PushDocumentUpdates {
+    pub document: DocumentId,
+    pub kind: SyncDocumentKind,
+    #[serde(with = "base64_bytes_vec")]
+    pub updates: Vec<Vec<u8>>,
+}
+
+/// `POST /v1/sync/push`. Every dirty document in one request; each document's
+/// updates are merged into its stored state (one server row write per document).
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct BatchPushRequest {
+    pub replica_id: ReplicaId,
+    pub documents: Vec<PushDocumentUpdates>,
+    #[serde(default)]
+    pub notification_schedule_changed: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub notification_schedule: Option<NotificationScheduleSnapshot>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct PushedCrdtDocument {
+    pub document: DocumentId,
+    pub seq: u64,
+    pub accepted: usize,
+}
+
+#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+pub struct BatchPushResponse {
+    #[serde(default)]
+    pub documents: Vec<PushedCrdtDocument>,
+    #[serde(default)]
+    pub notification_schedule_revision: u64,
+    #[serde(default)]
+    pub background_pushes_enqueued: usize,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]

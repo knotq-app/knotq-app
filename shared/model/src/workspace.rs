@@ -4,7 +4,7 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 
 use crate::{
     daily_queue_scheme_id, daily_queue_sync_metadata, default_folder_sync, default_scheme_sync,
-    default_workspace_sync, CrdtBackend, FolderId, Scheme, SchemeId, SyncDocumentKind,
+    default_workspace_sync, CrdtBackend, DocumentId, FolderId, Scheme, SchemeId, SyncDocumentKind,
     SyncDocumentMeta, WorkspaceId,
 };
 
@@ -265,7 +265,11 @@ impl Workspace {
         for child in old_children {
             match child {
                 NodeRef::Scheme(id) => {
-                    if self.schemes.contains_key(&id) && referenced_schemes.insert(id) {
+                    if self.schemes.contains_key(&id)
+                        && !self.is_scheme_deleted(id)
+                        && !self.is_daily_queue_scheme(id)
+                        && referenced_schemes.insert(id)
+                    {
                         new_children.push(NodeRef::Scheme(id));
                     } else {
                         *changed = true;
@@ -320,12 +324,19 @@ impl Workspace {
             .map(|(date, id)| (*id, *date))
             .collect();
         let scheme_ids: HashSet<SchemeId> = self.schemes.keys().copied().collect();
+        let daily_queue_ids: HashSet<SchemeId> = self.daily_queue.values().copied().collect();
+        let sync_scheme_ids: HashSet<SchemeId> = scheme_ids
+            .iter()
+            .copied()
+            .chain(daily_queue_ids.iter().copied())
+            .collect();
         let scheme_sync_before = self.scheme_sync.len();
-        self.scheme_sync.retain(|id, _| scheme_ids.contains(id));
+        self.scheme_sync
+            .retain(|id, _| sync_scheme_ids.contains(id));
         if self.scheme_sync.len() != scheme_sync_before {
             changed = true;
         }
-        for id in scheme_ids {
+        for id in sync_scheme_ids {
             let stable_daily_sync = daily_queue_dates_by_id
                 .get(&id)
                 .copied()
@@ -385,6 +396,23 @@ impl Workspace {
             }
         }
         changed
+    }
+
+    /// Use the account-owned workspace UUID as the stable personal workspace and
+    /// workspace-index CRDT document identity. This lets a fresh signed-in device
+    /// discover the same workspace document as every other device on the account.
+    pub fn canonicalize_personal_sync_identity(&mut self, workspace_id: WorkspaceId) -> bool {
+        let mut changed = false;
+        if self.id != workspace_id {
+            self.id = workspace_id;
+            changed = true;
+        }
+        let document_id = DocumentId(workspace_id.0);
+        if self.sync.id != document_id {
+            self.sync.id = document_id;
+            changed = true;
+        }
+        changed | self.ensure_sync_metadata()
     }
 }
 
@@ -489,5 +517,52 @@ mod tests {
         );
         assert_eq!(workspace.folder(grandchild).unwrap().parent, Some(child));
         assert!(workspace.schemes.contains_key(&scheme_id));
+    }
+
+    #[test]
+    fn normalize_keeps_trash_and_daily_queue_out_of_sidebar() {
+        let mut workspace = Workspace::new();
+        let active = Scheme::new("Active", 0);
+        let active_id = active.id;
+        let deleted = Scheme::new("Archived", 1);
+        let deleted_id = deleted.id;
+        let daily_date = NaiveDate::from_ymd_opt(2026, 6, 8).unwrap();
+        let daily_id = daily_queue_scheme_id(daily_date);
+        let mut daily = Scheme::new("Daily", 0);
+        daily.id = daily_id;
+
+        workspace.schemes.insert(active_id, active);
+        workspace.schemes.insert(deleted_id, deleted);
+        workspace.schemes.insert(daily_id, daily);
+        workspace.mark_scheme_deleted_from(deleted_id, workspace.root, 1);
+        workspace.daily_queue.insert(daily_date, daily_id);
+        workspace.folders.get_mut(&workspace.root).unwrap().children = vec![
+            NodeRef::Scheme(active_id),
+            NodeRef::Scheme(deleted_id),
+            NodeRef::Scheme(daily_id),
+        ];
+
+        assert!(workspace.normalize_one_level_folders());
+        assert_eq!(
+            workspace.folder(workspace.root).unwrap().children,
+            vec![NodeRef::Scheme(active_id)]
+        );
+        assert!(workspace.is_scheme_deleted(deleted_id));
+        assert_eq!(workspace.daily_queue_scheme_id(daily_date), Some(daily_id));
+        assert!(workspace.schemes.contains_key(&deleted_id));
+        assert!(workspace.schemes.contains_key(&daily_id));
+    }
+
+    #[test]
+    fn canonical_personal_sync_identity_uses_account_workspace_id() {
+        let mut workspace = Workspace::new();
+        let account_workspace = WorkspaceId::new();
+
+        assert!(workspace.canonicalize_personal_sync_identity(account_workspace));
+        assert_eq!(workspace.id, account_workspace);
+        assert_eq!(workspace.sync.id, DocumentId(account_workspace.0));
+        assert_eq!(workspace.sync.kind, SyncDocumentKind::PersonalWorkspace);
+
+        assert!(!workspace.canonicalize_personal_sync_identity(account_workspace));
     }
 }

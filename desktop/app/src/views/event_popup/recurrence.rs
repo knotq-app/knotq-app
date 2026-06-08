@@ -240,65 +240,6 @@ pub(super) fn parse_rrule_weekdays(value: &str) -> Vec<RepeatWeekday> {
         .collect()
 }
 
-pub(super) fn recurrence_can_delete_future(repeat: &Recurrence) -> bool {
-    editable_simple_recurrence(repeat).is_some()
-}
-
-pub(super) fn recurrence_without_this_and_future(
-    repeat: &Recurrence,
-    occurrence: &OccurrenceId,
-    occurrence_index: usize,
-) -> Option<Option<Recurrence>> {
-    if occurrence_index == 0 {
-        return Some(None);
-    }
-    let OccurrenceId::Recurring { original_start } = occurrence else {
-        return None;
-    };
-    let until = RepeatEnd::Until(original_start.as_utc_lossy() - Duration::seconds(1));
-    let simple = match editable_simple_recurrence(repeat)? {
-        SimpleRecurrence::Daily { interval, .. } => SimpleRecurrence::Daily {
-            interval,
-            end: until.clone(),
-        },
-        SimpleRecurrence::Weekly {
-            interval, weekdays, ..
-        } => SimpleRecurrence::Weekly {
-            interval,
-            weekdays,
-            end: until.clone(),
-        },
-        SimpleRecurrence::Monthly { interval, .. } => SimpleRecurrence::Monthly {
-            interval,
-            end: until.clone(),
-        },
-        SimpleRecurrence::Yearly { interval, .. } => SimpleRecurrence::Yearly {
-            interval,
-            end: until,
-        },
-    };
-    Some(Some(recurrence_with_simple(Some(repeat), simple)))
-}
-
-pub(super) fn recurrence_without_occurrence(
-    repeat: &Recurrence,
-    occurrence: &OccurrenceId,
-) -> Option<Recurrence> {
-    let OccurrenceId::Recurring { original_start } = occurrence else {
-        return None;
-    };
-    let mut complex = repeat.clone();
-    let deleted_anchor = original_start.as_utc_lossy();
-    if !complex
-        .exdates
-        .iter()
-        .any(|date| date.as_utc_lossy() == deleted_anchor)
-    {
-        complex.exdates.push(original_start.clone());
-    }
-    Some(complex)
-}
-
 pub(super) fn simple_recurrence_rrule(simple: &SimpleRecurrence) -> String {
     let mut parts = match simple {
         SimpleRecurrence::Daily { interval, .. } => {

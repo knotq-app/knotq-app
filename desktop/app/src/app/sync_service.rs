@@ -10,24 +10,25 @@ use futures::{pin_mut, select, FutureExt};
 use gpui::{Context, Task};
 use knotq_model::{
     DocumentId, ImageAssetFormat, ItemMedia, ReplicaId, SyncAccountSettings, SyncAccountStatus,
-    SyncDocumentKind, Workspace, WorkspaceId,
+    Workspace, WorkspaceId,
 };
 use knotq_storage_json::{
-    image_asset_path, load_local_sync_state, save_local_sync_state, save_workspace, workspace_path,
+    image_asset_path, load_local_sync_state, load_workspace_with_options, save_local_sync_state,
+    save_workspace, workspace_path, WorkspaceLoadOptions,
 };
 use knotq_sync::{
-    DocumentResponse, ErrorResponse, LocalSyncState, NotificationScheduleSnapshot, PendingCrdtEdit,
-    PullUpdatesResponse, PushUpdatesRequest, PushUpdatesResponse, StoredCrdtSnapshot,
-    StoredCrdtUpdate, UpsertDocumentRequest, WorkspaceCrdtDocuments, MAX_SYNC_MEDIA_BYTES,
+    batch_pull_and_apply, batch_push_pending, queue_workspace_bootstrap_updates, BatchPullRequest,
+    BatchPullResponse, BatchPushRequest, BatchPushResponse, ErrorResponse, LocalSyncState,
+    NotificationScheduleSnapshot, PendingCrdtEdit, PushedDocument, SyncTransport,
+    WorkspaceCrdtDocuments, MAX_SYNC_MEDIA_BYTES,
 };
 use sha2::{Digest, Sha256};
 
 use super::sync_auth::{refresh_sync_backend, RefreshError};
-use super::{KnotQApp, NoticeModal, SyncAuthStatus, SyncRunStatus};
+use super::{KnotQApp, SyncAuthStatus, SyncRunStatus};
 
 const SYNC_DEBOUNCE: StdDuration = StdDuration::from_secs(2);
 const SYNC_POLL_INTERVAL: StdDuration = StdDuration::from_secs(30);
-const SYNC_BATCH_LIMIT: usize = 50;
 // Refresh the access token this many seconds before it expires, so a sync run
 // never starts with a token that could lapse mid-flight.
 const ACCESS_REFRESH_SKEW_SECS: i64 = 120;
@@ -41,24 +42,12 @@ struct SyncSnapshot {
     notification_schedule: NotificationScheduleSnapshot,
 }
 
-#[derive(Clone, Copy, Debug)]
-struct PushedDocument {
-    document: DocumentId,
-    through_local_sequence: u64,
-}
-
 struct SyncRunResult {
     workspace: Workspace,
     pushed: Vec<PushedDocument>,
     remote_updates_applied: usize,
     remaining_pending: usize,
-    forced_snapshot_applied: bool,
-}
-
-#[derive(Clone, Copy)]
-struct SyncDocumentRef {
-    document: DocumentId,
-    kind: SyncDocumentKind,
+    local_workspace_changed: bool,
 }
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
@@ -105,17 +94,6 @@ pub(crate) fn spawn_sync_task(sync_rx: Receiver<()>, cx: &mut Context<KnotQApp>)
             }
         },
     )
-}
-
-impl KnotQApp {
-    fn show_sync_snapshot_notice(&mut self, cx: &mut Context<Self>) {
-        self.notice_modal = Some(NoticeModal {
-            title: "Sync snapshot applied".to_string(),
-            message: "This device was far enough behind that the sync server had already compacted older CRDT changes. KnotQ applied the latest compacted snapshot and then continued syncing from there.".to_string(),
-            button_label: "OK".to_string(),
-        });
-        cx.notify();
-    }
 }
 
 async fn run_sync_once(weak: &gpui::WeakEntity<KnotQApp>, cx: &mut gpui::AsyncApp) {
@@ -175,7 +153,7 @@ async fn run_sync_once(weak: &gpui::WeakEntity<KnotQApp>, cx: &mut gpui::AsyncAp
             let pushed = result.pushed.clone();
             let workspace = result.workspace.clone();
             let remaining_pending = result.remaining_pending;
-            let forced_snapshot_applied = result.forced_snapshot_applied;
+            let local_workspace_changed = result.local_workspace_changed;
             let _ = weak.update(cx, |app, cx| {
                 for pushed in pushed {
                     app.state
@@ -185,14 +163,11 @@ async fn run_sync_once(weak: &gpui::WeakEntity<KnotQApp>, cx: &mut gpui::AsyncAp
                     pending: remaining_pending,
                 };
                 app.last_synced_at = Some(Utc::now());
-                if remote_updates_applied > 0 {
+                if remote_updates_applied > 0 || local_workspace_changed {
                     app.state.replace_workspace_from_sync(workspace);
                     app.service_bus.signal_save();
                     app.service_bus.signal_notifications();
                     app.service_bus.signal_timeline();
-                }
-                if forced_snapshot_applied {
-                    app.show_sync_snapshot_notice(cx);
                 }
                 cx.notify();
             });
@@ -290,11 +265,18 @@ async fn ensure_fresh_token(
 
 fn sync_snapshot(snapshot: SyncSnapshot) -> Result<SyncRunResult> {
     let path = workspace_path();
-    let mut workspace = snapshot.workspace;
+    let mut workspace = workspace_for_background_sync(&path, snapshot.workspace);
+    let server_workspace_id = sync_workspace_id(&snapshot.account, workspace.id);
+    let local_workspace_changed =
+        workspace.canonicalize_personal_sync_identity(server_workspace_id);
     workspace.ensure_sync_metadata();
-    let server_workspace_id = snapshot.account.workspace_id.unwrap_or(workspace.id);
+    let snapshot_pending_empty = snapshot.pending.is_empty();
 
     let mut local_state = load_local_sync_state(&path).unwrap_or_default();
+    // One-time recovery: clear stale pull cursors so this sync re-pulls and
+    // re-merges every document, repairing any workspace left diverged by the earlier
+    // push-failure desync.
+    local_state.heal_for_recovery_version();
     configure_local_state(
         &mut local_state,
         server_workspace_id,
@@ -307,124 +289,110 @@ fn sync_snapshot(snapshot: SyncSnapshot) -> Result<SyncRunResult> {
         api_base: normalize_api_base(&snapshot.account.api_base)?,
         bearer_token: snapshot.account.bearer_token.clone(),
     };
-    let mut crdt_docs = WorkspaceCrdtDocuments::try_new(&workspace)?;
-    let mut remote_latest = HashMap::new();
-    let mut pushed = Vec::new();
-    let mut remote_updates_applied = 0;
-    let mut forced_snapshot_applied = false;
-
-    upsert_documents(
-        &client,
-        &local_state,
-        server_workspace_id,
-        sync_documents(&workspace),
-    )?;
-    upload_local_media_assets(&client, &mut local_state, server_workspace_id, &workspace)?;
-
-    let workspace_doc = SyncDocumentRef {
-        document: workspace.sync.id,
-        kind: SyncDocumentKind::PersonalWorkspace,
+    let first_sync_without_local_pending = snapshot_pending_empty
+        && local_state.pending.is_empty()
+        && local_state.document_cursors.is_empty();
+    let mut crdt_docs = if first_sync_without_local_pending {
+        WorkspaceCrdtDocuments::empty(&workspace)
+    } else {
+        WorkspaceCrdtDocuments::try_new(&workspace)?
     };
-    let workspace_pull = pull_document_all(
+    let mut pushed = Vec::new();
+
+    upload_local_media_assets(&client, &mut local_state, &workspace)?;
+
+    // One batched pull syncs the whole workspace: the server returns the current
+    // merged state of every document whose seq advanced past our cursor (and any
+    // document created on another device). Applying it materializes the merged
+    // workspace; the engine applies the workspace index before scheme content so
+    // newly discovered schemes route correctly.
+    let pull = batch_pull_and_apply(
         &client,
-        &local_state,
-        server_workspace_id,
-        workspace_doc,
+        &mut crdt_docs,
+        &mut local_state,
+        workspace,
         snapshot.replica_id,
     )?;
-    remote_latest.insert(workspace_doc.document, workspace_pull.latest_sequence);
-    let workspace_updates = workspace_pull.updates;
-    forced_snapshot_applied |= workspace_pull.forced_snapshot;
-    if !workspace_updates.is_empty() {
-        let outcome = crdt_docs.apply_remote_updates(&workspace, &workspace_updates);
-        if !outcome.is_ok() {
-            return Err(anyhow!("workspace CRDT apply failed: {:?}", outcome.errors));
-        }
-        remote_updates_applied += outcome.applied;
-        workspace = outcome.workspace;
-    }
-    local_state.mark_pulled(
-        workspace_doc.document,
-        workspace_doc.kind,
-        workspace_pull.latest_sequence,
-    );
+    let workspace = pull.workspace;
+    let remote_updates_applied = pull.remote_updates_applied;
 
-    upsert_documents(
-        &client,
-        &local_state,
-        server_workspace_id,
-        sync_documents(&workspace),
-    )?;
-    download_missing_media_assets(&client, server_workspace_id, &workspace)?;
+    download_missing_media_assets(&client, &workspace)?;
 
-    let mut scheme_updates = Vec::new();
-    for doc in scheme_documents(&workspace) {
-        let pull = pull_document_all(
-            &client,
-            &local_state,
-            server_workspace_id,
-            doc,
-            snapshot.replica_id,
-        )?;
-        remote_latest.insert(doc.document, pull.latest_sequence);
-        forced_snapshot_applied |= pull.forced_snapshot;
-        if !pull.updates.is_empty() {
-            scheme_updates.extend(pull.updates);
-        }
-        local_state.mark_pulled(doc.document, doc.kind, pull.latest_sequence);
-    }
-    if !scheme_updates.is_empty() {
-        let outcome = crdt_docs.apply_remote_updates(&workspace, &scheme_updates);
-        if !outcome.is_ok() {
-            return Err(anyhow!("scheme CRDT apply failed: {:?}", outcome.errors));
-        }
-        remote_updates_applied += outcome.applied;
-        workspace = outcome.workspace;
-    }
-    download_missing_media_assets(&client, server_workspace_id, &workspace)?;
-
-    queue_bootstrap_updates(&mut local_state, &workspace, &remote_latest);
-    push_pending_documents(
-        &client,
-        &mut local_state,
-        server_workspace_id,
-        &mut pushed,
-        &snapshot.notification_schedule,
-    )?;
-
-    save_local_sync_state(&path, &local_state)?;
-    if remote_updates_applied > 0 {
+    // Persist the merged workspace BEFORE pushing. The durable pull cursors are
+    // saved after the push regardless of its outcome, so the workspace must be on
+    // disk first — otherwise a push failure would advance the cursor while
+    // discarding the just-pulled remote schemes and archive (recently_deleted)
+    // state, and the next sync (cursor already advanced) would never re-pull them.
+    // That desync silently drops other devices' schemes and re-activates archived
+    // ones.
+    if remote_updates_applied > 0 || local_workspace_changed {
         save_workspace(&path, &workspace)?;
     }
+
+    let replica_id = local_state.replica_id.unwrap_or_default();
+    // The server's per-document seq (our advanced pull cursor) tells the bootstrap
+    // which documents the server already has a base for; the rest get a full
+    // snapshot queued before their deltas.
+    let remote_latest: HashMap<DocumentId, u64> = local_state
+        .document_cursors
+        .values()
+        .map(|cursor| (cursor.document, cursor.last_pulled_sequence))
+        .collect();
+    queue_workspace_bootstrap_updates(&mut local_state, &workspace, replica_id, &remote_latest);
+    // Persist pull cursors, dropped orphans, and per-document push acks even if the
+    // push below fails partway, so a transient push error never forces the next
+    // sync to re-download every document from sequence zero. The merged workspace
+    // above is already durable, so the cursor never runs ahead of it.
+    let push_result = batch_push_pending(
+        &client,
+        &mut local_state,
+        replica_id,
+        &snapshot.notification_schedule,
+        &mut pushed,
+    );
+    save_local_sync_state(&path, &local_state)?;
+    push_result?;
 
     Ok(SyncRunResult {
         workspace,
         pushed,
         remote_updates_applied,
         remaining_pending: local_state.pending.len(),
-        forced_snapshot_applied,
+        local_workspace_changed,
     })
 }
 
-fn pull_response_updates(response: &PullUpdatesResponse) -> Vec<StoredCrdtUpdate> {
-    let mut updates = Vec::new();
-    if let Some(snapshot) = &response.snapshot {
-        updates.push(snapshot_as_update(snapshot));
+fn workspace_for_background_sync(path: &std::path::Path, current: Workspace) -> Workspace {
+    let Ok(Some(mut full)) = load_workspace_with_options(path, WorkspaceLoadOptions::all()) else {
+        return current;
+    };
+    if full.id != current.id {
+        eprintln!(
+            "sync full workspace load ignored: loaded workspace id {} does not match in-memory id {}",
+            full.id, current.id
+        );
+        return current;
     }
-    updates.extend(response.updates.iter().cloned());
-    updates
+    overlay_current_workspace_for_sync(&mut full, current);
+    full
 }
 
-fn snapshot_as_update(snapshot: &StoredCrdtSnapshot) -> StoredCrdtUpdate {
-    StoredCrdtUpdate {
-        workspace_id: snapshot.workspace_id,
-        document: snapshot.document,
-        kind: snapshot.kind,
-        replica_id: ReplicaId::new(),
-        sequence: snapshot.sequence,
-        received_at: snapshot.compacted_at,
-        update_v1: snapshot.update_v1.clone(),
+fn overlay_current_workspace_for_sync(full: &mut Workspace, current: Workspace) {
+    full.id = current.id;
+    full.sync = current.sync;
+    full.root = current.root;
+    full.folders = current.folders;
+    full.scheme_sync = current.scheme_sync;
+    full.folder_sync = current.folder_sync;
+    full.daily_queue = current.daily_queue;
+    full.recently_deleted = current.recently_deleted;
+    full.deleted_scheme_origins = current.deleted_scheme_origins;
+    for (scheme_id, scheme) in current.schemes {
+        full.schemes.insert(scheme_id, scheme);
     }
+    full.normalize_one_level_folders();
+    full.normalize_item_markers();
+    full.ensure_sync_metadata();
 }
 
 fn configure_local_state(
@@ -433,10 +401,18 @@ fn configure_local_state(
     replica_id: ReplicaId,
     account: &SyncAccountSettings,
 ) {
-    local_state.workspace_id = Some(workspace_id);
+    local_state.workspace_id = Some(sync_workspace_id(account, workspace_id));
     local_state.replica_id = Some(replica_id);
     local_state.server_url = Some(account.api_base.clone());
     local_state.bearer_token = Some(account.bearer_token.clone());
+}
+
+fn sync_workspace_id(account: &SyncAccountSettings, fallback: WorkspaceId) -> WorkspaceId {
+    account
+        .workspace_id
+        .as_deref()
+        .and_then(|workspace_id| workspace_id.parse().ok())
+        .unwrap_or(fallback)
 }
 
 fn merge_pending(local_state: &mut LocalSyncState, pending: Vec<PendingCrdtEdit>) {
@@ -449,185 +425,6 @@ fn merge_pending(local_state: &mut LocalSyncState, pending: Vec<PendingCrdtEdit>
             local_state.push_pending(edit);
         }
     }
-}
-
-fn upsert_documents(
-    client: &SyncHttpClient,
-    local_state: &LocalSyncState,
-    workspace_id: WorkspaceId,
-    docs: Vec<SyncDocumentRef>,
-) -> Result<()> {
-    let mut seen = HashSet::new();
-    for doc in docs {
-        if !seen.insert(doc.document) || !should_upsert_document(local_state, doc) {
-            continue;
-        }
-        client.upsert_document(workspace_id, doc)?;
-    }
-    Ok(())
-}
-
-fn should_upsert_document(local_state: &LocalSyncState, doc: SyncDocumentRef) -> bool {
-    !local_state.document_cursors.contains_key(&doc.document)
-}
-
-struct AccumulatedPull {
-    updates: Vec<StoredCrdtUpdate>,
-    latest_sequence: u64,
-    forced_snapshot: bool,
-}
-
-/// Pull a document one bounded page at a time, following the server's `has_more`
-/// flag until caught up. Paging keeps individual responses small even when a
-/// replica is far behind.
-fn pull_document_all(
-    client: &SyncHttpClient,
-    local_state: &LocalSyncState,
-    workspace_id: WorkspaceId,
-    doc: SyncDocumentRef,
-    replica_id: ReplicaId,
-) -> Result<AccumulatedPull> {
-    let mut after = local_state
-        .document_cursors
-        .get(&doc.document)
-        .map(|cursor| cursor.last_pulled_sequence)
-        .unwrap_or(0);
-    let mut updates = Vec::new();
-    let mut latest_sequence;
-    let mut forced_snapshot = false;
-    loop {
-        let response = client.pull_updates(workspace_id, doc.document, after, replica_id)?;
-        latest_sequence = response.latest_sequence;
-        forced_snapshot |= response.forced_snapshot;
-        let page = pull_response_updates(&response);
-        let page_max = page.iter().map(|update| update.sequence).max();
-        updates.extend(page);
-        match page_max {
-            // Advance only while the cursor strictly moves forward, so a
-            // misbehaving server that keeps reporting `has_more` cannot wedge
-            // the client in an infinite pull loop.
-            Some(max) if response.has_more && max > after => after = max,
-            _ => break,
-        }
-    }
-    Ok(AccumulatedPull {
-        updates,
-        latest_sequence,
-        forced_snapshot,
-    })
-}
-
-fn queue_bootstrap_updates(
-    local_state: &mut LocalSyncState,
-    workspace: &Workspace,
-    remote_latest: &HashMap<DocumentId, u64>,
-) {
-    let mut next_sequence = local_state
-        .pending
-        .iter()
-        .map(|edit| edit.local_sequence)
-        .max()
-        .unwrap_or(0)
-        + 1;
-    for update in WorkspaceCrdtDocuments::snapshot_updates(workspace).updates {
-        if remote_latest.get(&update.document).copied().unwrap_or(0) != 0 {
-            continue;
-        }
-        if local_state
-            .pending
-            .iter()
-            .any(|pending| pending.document == update.document)
-        {
-            continue;
-        }
-        if local_state
-            .document_cursors
-            .get(&update.document)
-            .is_some_and(|cursor| cursor.last_pushed_sequence > 0)
-        {
-            continue;
-        }
-        local_state.push_pending(PendingCrdtEdit {
-            operation_id: knotq_model::OperationId::new(),
-            workspace_id: workspace.id,
-            replica_id: local_state.replica_id.unwrap_or_default(),
-            local_sequence: next_sequence,
-            created_at: Utc::now(),
-            document: update.document,
-            kind: update.kind,
-            update_v1: update.update_v1,
-        });
-        next_sequence += 1;
-    }
-}
-
-fn push_pending_documents(
-    client: &SyncHttpClient,
-    local_state: &mut LocalSyncState,
-    workspace_id: WorkspaceId,
-    pushed: &mut Vec<PushedDocument>,
-    notification_schedule: &NotificationScheduleSnapshot,
-) -> Result<()> {
-    loop {
-        let Some(document) = local_state.pending.front().map(|edit| edit.document) else {
-            return Ok(());
-        };
-        let pending = local_state.pending_for_document(document, SYNC_BATCH_LIMIT);
-        if pending.is_empty() {
-            return Ok(());
-        }
-        let kind = pending[0].kind;
-        let doc = SyncDocumentRef { document, kind };
-        if should_upsert_document(local_state, doc) {
-            client.upsert_document(workspace_id, doc)?;
-        }
-        let mut request = local_state
-            .next_push_request(document, SYNC_BATCH_LIMIT)
-            .ok_or_else(|| anyhow!("missing push request for pending document"))?;
-        let through_local_sequence = pending
-            .iter()
-            .map(|edit| edit.local_sequence)
-            .max()
-            .unwrap_or(0);
-        let mut notification_schedule = notification_schedule.clone();
-        notification_schedule.sequence = through_local_sequence;
-        request.notification_schedule = Some(notification_schedule);
-        let response = client.push_updates(workspace_id, document, &request)?;
-        if response.accepted != request.updates.len() {
-            return Err(anyhow!(
-                "sync backend accepted {}/{} updates for {}",
-                response.accepted,
-                request.updates.len(),
-                document
-            ));
-        }
-        local_state.mark_pushed(document, through_local_sequence);
-        pushed.push(PushedDocument {
-            document,
-            through_local_sequence,
-        });
-    }
-}
-
-fn sync_documents(workspace: &Workspace) -> Vec<SyncDocumentRef> {
-    let mut docs = vec![SyncDocumentRef {
-        document: workspace.sync.id,
-        kind: SyncDocumentKind::PersonalWorkspace,
-    }];
-    docs.extend(scheme_documents(workspace));
-    docs
-}
-
-fn scheme_documents(workspace: &Workspace) -> Vec<SyncDocumentRef> {
-    workspace
-        .scheme_sync
-        .values()
-        .filter(|meta| meta.kind == SyncDocumentKind::Scheme)
-        .map(|meta| SyncDocumentRef {
-            document: meta.id,
-            kind: SyncDocumentKind::Scheme,
-        })
-        .collect()
 }
 
 fn workspace_media_assets(workspace: &Workspace) -> Vec<SyncMediaAsset> {
@@ -657,7 +454,6 @@ fn workspace_media_assets(workspace: &Workspace) -> Vec<SyncMediaAsset> {
 fn upload_local_media_assets(
     client: &SyncHttpClient,
     local_state: &mut LocalSyncState,
-    workspace_id: WorkspaceId,
     workspace: &Workspace,
 ) -> Result<()> {
     for media in workspace_media_assets(workspace) {
@@ -691,23 +487,19 @@ fn upload_local_media_assets(
         if local_state.media_upload_is_current(&image_name, media.document, byte_length, &sha256) {
             continue;
         }
-        client.upload_media_asset(workspace_id, media, &bytes)?;
+        client.upload_media_asset(media, &bytes)?;
         local_state.mark_media_uploaded(image_name, media.document, byte_length, sha256);
     }
     Ok(())
 }
 
-fn download_missing_media_assets(
-    client: &SyncHttpClient,
-    workspace_id: WorkspaceId,
-    workspace: &Workspace,
-) -> Result<()> {
+fn download_missing_media_assets(client: &SyncHttpClient, workspace: &Workspace) -> Result<()> {
     for media in workspace_media_assets(workspace) {
         let path = image_asset_path(media.asset, media.format.extension());
         if path.exists() {
             continue;
         }
-        let bytes = client.download_media_asset(workspace_id, media)?;
+        let bytes = client.download_media_asset(media)?;
         if bytes.len() > MAX_SYNC_MEDIA_BYTES {
             return Err(anyhow!(
                 "downloaded image {} is {} bytes, above the {} byte sync limit",
@@ -724,50 +516,21 @@ fn download_missing_media_assets(
     Ok(())
 }
 
-impl SyncHttpClient {
-    fn upsert_document(&self, workspace_id: WorkspaceId, doc: SyncDocumentRef) -> Result<()> {
-        let url = format!(
-            "{}/v1/workspaces/{}/documents/{}",
-            self.api_base, workspace_id, doc.document
-        );
-        self.put_json::<_, DocumentResponse>(&url, &UpsertDocumentRequest { kind: doc.kind })
-            .map(|_| ())
-    }
-
-    fn pull_updates(
-        &self,
-        workspace_id: WorkspaceId,
-        document: DocumentId,
-        after: u64,
-        replica_id: ReplicaId,
-    ) -> Result<PullUpdatesResponse> {
-        let url = format!(
-            "{}/v1/workspaces/{}/documents/{}/updates?after={}&exclude_replica={}",
-            self.api_base, workspace_id, document, after, replica_id
-        );
-        self.get_json(&url)
-    }
-
-    fn push_updates(
-        &self,
-        workspace_id: WorkspaceId,
-        document: DocumentId,
-        request: &PushUpdatesRequest,
-    ) -> Result<PushUpdatesResponse> {
-        let url = format!(
-            "{}/v1/workspaces/{}/documents/{}/updates",
-            self.api_base, workspace_id, document
-        );
+impl SyncTransport for SyncHttpClient {
+    fn pull(&self, request: &BatchPullRequest) -> Result<BatchPullResponse> {
+        let url = format!("{}/v1/sync/pull", self.api_base);
         self.post_json(&url, request)
     }
 
-    fn upload_media_asset(
-        &self,
-        workspace_id: WorkspaceId,
-        media: SyncMediaAsset,
-        bytes: &[u8],
-    ) -> Result<()> {
-        let url = self.media_url(workspace_id, media);
+    fn push(&self, request: &BatchPushRequest) -> Result<BatchPushResponse> {
+        let url = format!("{}/v1/sync/push", self.api_base);
+        self.post_json(&url, request)
+    }
+}
+
+impl SyncHttpClient {
+    fn upload_media_asset(&self, media: SyncMediaAsset, bytes: &[u8]) -> Result<()> {
+        let url = self.media_url(media);
         self.authorized(ureq::put(&url))
             .set("content-type", media_content_type(media.format))
             .send_bytes(bytes)
@@ -775,12 +538,8 @@ impl SyncHttpClient {
         Ok(())
     }
 
-    fn download_media_asset(
-        &self,
-        workspace_id: WorkspaceId,
-        media: SyncMediaAsset,
-    ) -> Result<Vec<u8>> {
-        let url = self.media_url(workspace_id, media);
+    fn download_media_asset(&self, media: SyncMediaAsset) -> Result<Vec<u8>> {
+        let url = self.media_url(media);
         let response = self
             .authorized(ureq::get(&url))
             .call()
@@ -802,22 +561,13 @@ impl SyncHttpClient {
         Ok(bytes)
     }
 
-    fn media_url(&self, workspace_id: WorkspaceId, media: SyncMediaAsset) -> String {
+    fn media_url(&self, media: SyncMediaAsset) -> String {
         format!(
-            "{}/v1/workspaces/{}/documents/{}/media/{}",
+            "{}/v1/sync/documents/{}/media/{}",
             self.api_base,
-            workspace_id,
             media.document,
             media.image_name()
         )
-    }
-
-    fn get_json<T: serde::de::DeserializeOwned>(&self, url: &str) -> Result<T> {
-        self.authorized(ureq::get(url))
-            .call()
-            .map_err(sync_http_error)?
-            .into_json()
-            .with_context(|| format!("parse sync response from {url}"))
     }
 
     fn post_json<T, R>(&self, url: &str, body: &T) -> Result<R>
@@ -826,18 +576,6 @@ impl SyncHttpClient {
         R: serde::de::DeserializeOwned,
     {
         self.authorized(ureq::post(url))
-            .send_json(serde_json::to_value(body)?)
-            .map_err(sync_http_error)?
-            .into_json()
-            .with_context(|| format!("parse sync response from {url}"))
-    }
-
-    fn put_json<T, R>(&self, url: &str, body: &T) -> Result<R>
-    where
-        T: serde::Serialize,
-        R: serde::de::DeserializeOwned,
-    {
-        self.authorized(ureq::put(url))
             .send_json(serde_json::to_value(body)?)
             .map_err(sync_http_error)?
             .into_json()
@@ -912,9 +650,18 @@ fn is_secure_api_base(url: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{normalize_api_base, should_upsert_document, SyncDocumentRef};
-    use knotq_model::{DocumentId, SyncDocumentKind};
-    use knotq_sync::{DocumentSyncCursor, LocalSyncState};
+    use super::{normalize_api_base, workspace_for_background_sync};
+    use chrono::{NaiveDate, Utc};
+    use knotq_model::{
+        daily_queue_scheme_id, DocumentId, OperationId, ReplicaId, Scheme, SyncDocumentKind,
+        Workspace, WorkspaceId,
+    };
+    use knotq_storage_json::{load_workspace_with_options, save_workspace, WorkspaceLoadOptions};
+    use knotq_sync::{
+        queue_workspace_bootstrap_updates, DocumentSyncCursor, LocalSyncState, PendingCrdtEdit,
+        SyncDocumentRef, WorkspaceCrdtDocuments,
+    };
+    use std::{fs, path::PathBuf};
 
     #[test]
     fn https_urls_are_accepted_and_trimmed() {
@@ -949,7 +696,7 @@ mod tests {
         };
         let mut state = LocalSyncState::default();
 
-        assert!(should_upsert_document(&state, doc));
+        assert!(state.should_upsert_document(doc));
 
         state.document_cursors.insert(
             document,
@@ -961,6 +708,291 @@ mod tests {
             },
         );
 
-        assert!(!should_upsert_document(&state, doc));
+        assert!(!state.should_upsert_document(doc));
+    }
+
+    #[test]
+    fn background_sync_loads_full_daily_queue_without_losing_memory_edits() {
+        let dir = unique_temp_dir("knotq-sync-full-load");
+        let path = dir.join("workspace.json");
+        let today = NaiveDate::from_ymd_opt(2026, 6, 8).unwrap();
+        let old_daily_date = NaiveDate::from_ymd_opt(2026, 1, 1).unwrap();
+        let mut workspace = Workspace::new();
+        let active = Scheme::new("Disk Name", 0);
+        let active_id = active.id;
+        let old_daily_id = daily_queue_scheme_id(old_daily_date);
+        let mut old_daily = Scheme::new("Old Daily", 0);
+        old_daily.id = old_daily_id;
+        workspace.schemes.insert(active_id, active);
+        workspace.schemes.insert(old_daily_id, old_daily);
+        workspace.daily_queue.insert(old_daily_date, old_daily_id);
+        workspace
+            .folders
+            .get_mut(&workspace.root)
+            .unwrap()
+            .children
+            .push(knotq_model::NodeRef::Scheme(active_id));
+        save_workspace(&path, &workspace).unwrap();
+
+        let mut partial = load_workspace_with_options(
+            &path,
+            WorkspaceLoadOptions::daily_queue_range(today, today),
+        )
+        .unwrap()
+        .unwrap();
+        assert!(!partial.schemes.contains_key(&old_daily_id));
+        partial.schemes.get_mut(&active_id).unwrap().name = "Memory Name".into();
+
+        let merged = workspace_for_background_sync(&path, partial);
+
+        assert!(merged.schemes.contains_key(&old_daily_id));
+        assert_eq!(merged.schemes[&active_id].name, "Memory Name");
+
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn bootstrap_snapshot_supersedes_pending_delta_for_new_remote_document() {
+        let mut workspace = Workspace::new();
+        let scheme = Scheme::new("Unsynced", 0);
+        let scheme_id = scheme.id;
+        workspace.schemes.insert(scheme_id, scheme);
+        workspace.ensure_sync_metadata();
+        let document = workspace.scheme_sync.get(&scheme_id).unwrap().id;
+        let replica_id = ReplicaId::new();
+        let stale_delta = vec![1, 2, 3];
+        let mut state = LocalSyncState {
+            workspace_id: Some(workspace.id),
+            replica_id: Some(replica_id),
+            ..LocalSyncState::default()
+        };
+        state.document_cursors.insert(
+            document,
+            DocumentSyncCursor {
+                document,
+                kind: SyncDocumentKind::Scheme,
+                last_pulled_sequence: 0,
+                last_pushed_sequence: 12,
+            },
+        );
+        state.push_pending(PendingCrdtEdit {
+            operation_id: OperationId::new(),
+            workspace_id: workspace.id,
+            replica_id,
+            local_sequence: 1,
+            created_at: Utc::now(),
+            document,
+            kind: SyncDocumentKind::Scheme,
+            update_v1: stale_delta.clone(),
+        });
+
+        queue_workspace_bootstrap_updates(
+            &mut state,
+            &workspace,
+            replica_id,
+            &std::collections::HashMap::new(),
+        );
+
+        let pending = state
+            .pending
+            .iter()
+            .filter(|edit| edit.document == document)
+            .collect::<Vec<_>>();
+        assert_eq!(pending.len(), 1);
+        assert_ne!(pending[0].update_v1, stale_delta);
+        knotq_sync::validate_crdt_update_sequence(
+            SyncDocumentKind::Scheme,
+            [pending[0].update_v1.as_slice()],
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn bootstrap_preserves_valid_pending_base_for_new_remote_document() {
+        let mut workspace = Workspace::new();
+        let scheme = Scheme::new("Unsynced", 0);
+        let scheme_id = scheme.id;
+        workspace.schemes.insert(scheme_id, scheme);
+        workspace.ensure_sync_metadata();
+        let document = workspace.scheme_sync.get(&scheme_id).unwrap().id;
+        let valid_base = WorkspaceCrdtDocuments::snapshot_updates(&workspace)
+            .updates
+            .into_iter()
+            .find(|update| update.document == document)
+            .unwrap()
+            .update_v1;
+        let replica_id = ReplicaId::new();
+        let mut state = LocalSyncState {
+            workspace_id: Some(workspace.id),
+            replica_id: Some(replica_id),
+            ..LocalSyncState::default()
+        };
+        state.push_pending(PendingCrdtEdit {
+            operation_id: OperationId::new(),
+            workspace_id: workspace.id,
+            replica_id,
+            local_sequence: 1,
+            created_at: Utc::now(),
+            document,
+            kind: SyncDocumentKind::Scheme,
+            update_v1: valid_base.clone(),
+        });
+
+        queue_workspace_bootstrap_updates(
+            &mut state,
+            &workspace,
+            replica_id,
+            &std::collections::HashMap::new(),
+        );
+
+        let pending = state
+            .pending
+            .iter()
+            .filter(|edit| edit.document == document)
+            .collect::<Vec<_>>();
+        assert_eq!(pending.len(), 1);
+        assert_eq!(pending[0].update_v1, valid_base);
+    }
+
+    #[test]
+    fn bootstrap_drops_orphaned_pending_delta_without_remote_base() {
+        // A delta queued for a scheme that has since been deleted (so it is no
+        // longer in the workspace) and that the server has no base snapshot for
+        // can never be accepted — pushing it trips `crdt_schema_invalid` and wedges
+        // the whole push loop. Bootstrap must drop it.
+        let mut workspace = Workspace::new();
+        workspace.ensure_sync_metadata();
+        let replica_id = ReplicaId::new();
+        let orphan_document = DocumentId::new();
+        let mut state = LocalSyncState {
+            workspace_id: Some(workspace.id),
+            replica_id: Some(replica_id),
+            ..LocalSyncState::default()
+        };
+        state.push_pending(PendingCrdtEdit {
+            operation_id: OperationId::new(),
+            workspace_id: workspace.id,
+            replica_id,
+            local_sequence: 1,
+            created_at: Utc::now(),
+            document: orphan_document,
+            kind: SyncDocumentKind::Scheme,
+            update_v1: vec![9, 9, 9],
+        });
+
+        // No remote_latest entry for the orphan document → server has no base.
+        queue_workspace_bootstrap_updates(
+            &mut state,
+            &workspace,
+            replica_id,
+            &std::collections::HashMap::new(),
+        );
+
+        assert!(
+            !state
+                .pending
+                .iter()
+                .any(|edit| edit.document == orphan_document),
+            "orphaned pending delta should be dropped"
+        );
+    }
+
+    #[test]
+    fn recovery_heal_clears_pull_cursors_exactly_once() {
+        let document = DocumentId::new();
+        let workspace_document = DocumentId::new();
+        let cursor = DocumentSyncCursor {
+            document,
+            kind: SyncDocumentKind::Scheme,
+            last_pulled_sequence: 9,
+            last_pushed_sequence: 4,
+        };
+        let mut state = LocalSyncState::default();
+        state.document_cursors.insert(document, cursor.clone());
+        state.push_pending(PendingCrdtEdit {
+            operation_id: OperationId::new(),
+            workspace_id: WorkspaceId::new(),
+            replica_id: ReplicaId::new(),
+            local_sequence: 1,
+            created_at: Utc::now(),
+            document: workspace_document,
+            kind: SyncDocumentKind::PersonalWorkspace,
+            update_v1: vec![1],
+        });
+        state.push_pending(PendingCrdtEdit {
+            operation_id: OperationId::new(),
+            workspace_id: WorkspaceId::new(),
+            replica_id: ReplicaId::new(),
+            local_sequence: 2,
+            created_at: Utc::now(),
+            document,
+            kind: SyncDocumentKind::Scheme,
+            update_v1: vec![2],
+        });
+
+        // A pre-recovery file (version 0) heals once: cursors are dropped so the
+        // next sync re-pulls and re-merges from zero, and stale workspace-index
+        // deltas are not allowed to re-push the corrupt index.
+        assert!(state.heal_for_recovery_version());
+        assert!(state.document_cursors.is_empty());
+        assert_eq!(state.pending.len(), 1);
+        assert_eq!(state.pending[0].kind, SyncDocumentKind::Scheme);
+        assert_eq!(
+            state.recovery_version,
+            knotq_sync::SYNC_STATE_RECOVERY_VERSION
+        );
+
+        // Idempotent afterward: an already-healed file is left untouched.
+        state.document_cursors.insert(document, cursor);
+        assert!(!state.heal_for_recovery_version());
+        assert_eq!(state.document_cursors.len(), 1);
+    }
+
+    #[test]
+    fn bootstrap_keeps_orphan_delta_when_server_has_a_base() {
+        // If the server does have a base for the (now-removed) document, its deltas
+        // can still be applied, so they must be preserved rather than dropped.
+        let mut workspace = Workspace::new();
+        workspace.ensure_sync_metadata();
+        let replica_id = ReplicaId::new();
+        let document = DocumentId::new();
+        let mut state = LocalSyncState {
+            workspace_id: Some(workspace.id),
+            replica_id: Some(replica_id),
+            ..LocalSyncState::default()
+        };
+        state.push_pending(PendingCrdtEdit {
+            operation_id: OperationId::new(),
+            workspace_id: workspace.id,
+            replica_id,
+            local_sequence: 1,
+            created_at: Utc::now(),
+            document,
+            kind: SyncDocumentKind::Scheme,
+            update_v1: vec![4, 5, 6],
+        });
+
+        let mut remote_latest = std::collections::HashMap::new();
+        remote_latest.insert(document, 7u64);
+        queue_workspace_bootstrap_updates(&mut state, &workspace, replica_id, &remote_latest);
+
+        assert!(
+            state.pending.iter().any(|edit| edit.document == document),
+            "delta with a server base must be preserved"
+        );
+    }
+
+    fn unique_temp_dir(prefix: &str) -> PathBuf {
+        let mut path = std::env::temp_dir();
+        path.push(format!(
+            "{prefix}-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::create_dir_all(&path).unwrap();
+        path
     }
 }

@@ -187,13 +187,16 @@ impl WorkspaceCrdtDocuments {
         workspace.ensure_sync_metadata();
         let mut outcome = WorkspaceCrdtSyncOutcome::default();
 
-        if changeset.workspace
-            || documents_missing(self, &workspace)
-            || documents_removed(self, &workspace)
-        {
+        let workspace_documents_missing = documents_missing(self, &workspace);
+        let workspace_documents_removed = documents_removed(self, &workspace);
+        if changeset.workspace || workspace_documents_missing || workspace_documents_removed {
+            // A document-set change (a scheme added or removed) must re-emit the
+            // full workspace state so a server that lost the document can rebuild
+            // it; an ordinary edit emits only the incremental diff.
+            let force = workspace_documents_missing || workspace_documents_removed;
             match self
                 .workspace
-                .sync_snapshot(&workspace_document_snapshot(&workspace))
+                .sync_snapshot(&workspace_document_snapshot(&workspace), force)
             {
                 Ok(Some(update)) => outcome.updates.push(update),
                 Ok(None) => {}
@@ -1048,16 +1051,37 @@ impl YrsJsonDocument {
         Self { id, kind, doc }
     }
 
+    /// Reconcile the persistent workspace document to `snapshot` and return the
+    /// resulting update as an incremental diff from this document's own prior
+    /// state. Encoding from the *persistent* doc (rather than a throwaway one) is
+    /// essential: every op then carries this document's stable clientID and
+    /// monotonically increasing clocks, so the same logical change keeps one
+    /// identity across emits and replicas. A throwaway `Doc` would mint fresh
+    /// clientIDs and clocks-from-zero for unchanged state, which Yjs then treats
+    /// as competing concurrent writes whose last-writer-wins winner differs per
+    /// replica — i.e. the workspace silently diverges (scheme names, archive
+    /// state, ordering).
+    ///
+    /// When `force` is set (a sync document was added or removed) the full state
+    /// is re-emitted instead of a diff, so a server that lost the document can
+    /// rebuild it; the op ids are still the persistent doc's real ids, so the
+    /// re-emit is idempotent on merge.
     fn sync_snapshot(
         &self,
         snapshot: &WorkspaceDocumentSnapshot,
+        force: bool,
     ) -> anyhow::Result<Option<CrdtDocumentUpdate>> {
-        let before = self.doc.transact().state_vector().encode_v1();
-        if !self.replace_snapshot(snapshot)? {
+        let before = self.doc.transact().state_vector();
+        let changed = self.replace_snapshot(snapshot)?;
+        if !changed && !force {
             return Ok(None);
         }
-        let remote_state = StateVector::decode_v1(&before)?;
-        let update_v1 = self.doc.transact().encode_diff_v1(&remote_state);
+        let base = if force {
+            StateVector::default()
+        } else {
+            before
+        };
+        let update_v1 = self.doc.transact().encode_diff_v1(&base);
         if update_v1.is_empty() {
             return Ok(None);
         }
@@ -1246,6 +1270,16 @@ impl YrsJsonDocument {
         let recently_deleted_map = self.doc.get_or_insert_map("recently_deleted");
         let deleted_origins_map = self.doc.get_or_insert_map("deleted_scheme_origins");
         let txn = self.doc.transact();
+        let raw_recently_deleted = string_map_entries(&recently_deleted_map, &txn);
+        let raw_daily_queue = string_map_entries(&daily_queue_map, &txn);
+        let deleted_scheme_ids = raw_recently_deleted
+            .iter()
+            .map(|(id, _)| id.clone())
+            .collect::<HashSet<_>>();
+        let daily_queue_scheme_ids = raw_daily_queue
+            .iter()
+            .map(|(_, scheme)| scheme.clone())
+            .collect::<HashSet<_>>();
 
         let read_meta = |key: &str| -> anyhow::Result<String> {
             meta.get_as::<_, Option<String>>(&txn, key)
@@ -1290,6 +1324,11 @@ impl YrsJsonDocument {
         let mut children_by_parent: HashMap<String, Vec<(String, String)>> = HashMap::new();
         for (id_str, node) in &parsed {
             if *id_str == root_key {
+                continue;
+            }
+            if node.kind == NODE_KIND_SCHEME
+                && (deleted_scheme_ids.contains(id_str) || daily_queue_scheme_ids.contains(id_str))
+            {
                 continue;
             }
             let parent = if !node.parent.is_empty() && folder_ids.contains(&node.parent) {
@@ -1355,7 +1394,7 @@ impl YrsJsonDocument {
         folders.sort_by_key(|folder| folder.id.to_string());
         schemes.sort_by_key(|scheme| scheme.id.to_string());
 
-        let mut deleted = string_map_entries(&recently_deleted_map, &txn)
+        let mut deleted = raw_recently_deleted
             .into_iter()
             .map(|(id, position)| {
                 let scheme = id
@@ -1367,7 +1406,7 @@ impl YrsJsonDocument {
         deleted.sort_by(|(lp, lid, _), (rp, rid, _)| lp.cmp(rp).then_with(|| lid.cmp(rid)));
         let recently_deleted = deleted.into_iter().map(|(_, _, scheme)| scheme).collect();
 
-        let mut daily_queue = string_map_entries(&daily_queue_map, &txn)
+        let mut daily_queue = raw_daily_queue
             .into_iter()
             .map(|(date, scheme)| {
                 Ok::<_, anyhow::Error>(DailyQueueEntry {
@@ -1990,11 +2029,9 @@ mod tests {
         let mut txn = doc.transact_mut();
         metadata.insert(&mut txn, "schema", SCHEME_SCHEMA_V1);
         metadata.insert(&mut txn, "id", SchemeId::new().to_string());
-        items_by_id.insert(
-            &mut txn,
-            item.id.to_string(),
-            item_prelim(&item, "").unwrap(),
-        );
+        let item_map = items_by_id.insert(&mut txn, item.id.to_string(), MapPrelim::default());
+        let snapshot_json = item_snapshot_json(&item).unwrap();
+        write_new_item(&item_map, &mut txn, &item, "", &snapshot_json).unwrap();
         drop(txn);
 
         assert!(validate_crdt_update_sequence(
@@ -2014,11 +2051,10 @@ mod tests {
         metadata.insert(&mut txn, "schema", SCHEME_SCHEMA_V1);
         metadata.insert(&mut txn, "id", SchemeId::new().to_string());
         // Store the item under a different (still valid) key than its own id.
-        items_by_id.insert(
-            &mut txn,
-            ItemId::new().to_string(),
-            item_prelim(&item, "V").unwrap(),
-        );
+        let item_map =
+            items_by_id.insert(&mut txn, ItemId::new().to_string(), MapPrelim::default());
+        let snapshot_json = item_snapshot_json(&item).unwrap();
+        write_new_item(&item_map, &mut txn, &item, "V", &snapshot_json).unwrap();
         drop(txn);
 
         assert!(validate_crdt_update_sequence(
@@ -2142,6 +2178,109 @@ mod tests {
         assert!(outcome.workspace.folders[&outcome.workspace.root]
             .children
             .contains(&NodeRef::Scheme(scheme_id)));
+    }
+
+    #[test]
+    fn remote_workspace_materialization_keeps_trash_and_daily_queue_out_of_sidebar() {
+        let mut source = Workspace::new();
+        let active = add_root_scheme(&mut source, "Active");
+
+        let archived = Scheme::new("Archived", 1);
+        let archived_id = archived.id;
+        source.schemes.insert(archived_id, archived);
+        source.mark_scheme_deleted_from(archived_id, source.root, 0);
+
+        let daily_date = NaiveDate::from_ymd_opt(2026, 6, 8).unwrap();
+        let daily_id = knotq_model::daily_queue_scheme_id(daily_date);
+        let mut daily = Scheme::new("Daily", 0);
+        daily.id = daily_id;
+        source.daily_queue.insert(daily_date, daily_id);
+        source.schemes.insert(daily_id, daily);
+        source.ensure_sync_metadata();
+
+        let updates = WorkspaceCrdtDocuments::snapshot_updates(&source).updates;
+        let mut target = Workspace::new();
+        target.id = source.id;
+        target.sync = source.sync.clone();
+        target.root = source.root;
+        target.folders.insert(
+            source.root,
+            Folder {
+                id: source.root,
+                name: "root".to_string(),
+                parent: None,
+                children: Vec::new(),
+                expanded: true,
+            },
+        );
+        let mut docs = WorkspaceCrdtDocuments::empty(&target);
+        let outcome = docs.apply_remote_updates(&target, &stored_updates(source.id, updates));
+
+        assert!(outcome.is_ok(), "{:?}", outcome.errors);
+        let root_children = &outcome.workspace.folders[&outcome.workspace.root].children;
+        assert!(root_children.contains(&NodeRef::Scheme(active)));
+        assert!(!root_children.contains(&NodeRef::Scheme(archived_id)));
+        assert!(!root_children.contains(&NodeRef::Scheme(daily_id)));
+        assert!(outcome.workspace.is_scheme_deleted(archived_id));
+        assert_eq!(
+            outcome.workspace.daily_queue_scheme_id(daily_date),
+            Some(daily_id)
+        );
+    }
+
+    #[test]
+    fn incremental_archive_update_keeps_scheme_out_of_sidebar() {
+        let mut source = Workspace::new();
+        let scheme = add_root_scheme(&mut source, "Archive Me");
+        // One persistent document produces both the initial snapshot and the
+        // later archive delta, exactly as the client's long-lived Store does.
+        // Emitting them from two different documents would give the same logical
+        // state two different Yjs identities and break LWW convergence.
+        let mut source_docs = WorkspaceCrdtDocuments::empty(&source);
+        let initial_updates = source_docs
+            .sync_changes(&source, &WorkspaceCrdtChangeSet::default().workspace())
+            .updates;
+
+        let mut target = Workspace::new();
+        target.id = source.id;
+        target.sync = source.sync.clone();
+        target.root = source.root;
+        let mut target_docs = WorkspaceCrdtDocuments::empty(&target);
+        let initial =
+            target_docs.apply_remote_updates(&target, &stored_updates(source.id, initial_updates));
+        assert!(initial.is_ok(), "{:?}", initial.errors);
+        target = initial.workspace;
+        assert!(target
+            .folder(target.root)
+            .unwrap()
+            .children
+            .contains(&NodeRef::Scheme(scheme)));
+
+        source
+            .folders
+            .get_mut(&source.root)
+            .unwrap()
+            .children
+            .retain(|child| *child != NodeRef::Scheme(scheme));
+        source.mark_scheme_deleted_from(scheme, source.root, 0);
+        let archive_updates = source_docs
+            .sync_changes(&source, &WorkspaceCrdtChangeSet::default().workspace())
+            .updates;
+        assert!(
+            !archive_updates.is_empty(),
+            "archive should emit a workspace update"
+        );
+
+        let archived =
+            target_docs.apply_remote_updates(&target, &stored_updates(source.id, archive_updates));
+        assert!(archived.is_ok(), "{:?}", archived.errors);
+        assert!(archived.workspace.is_scheme_deleted(scheme));
+        assert!(!archived
+            .workspace
+            .folder(archived.workspace.root)
+            .unwrap()
+            .children
+            .contains(&NodeRef::Scheme(scheme)));
     }
 
     #[test]
@@ -2325,7 +2464,9 @@ mod tests {
         let mut txn = doc.transact_mut();
         metadata.insert(&mut txn, "schema", SCHEME_SCHEMA_V1);
         metadata.insert(&mut txn, "id", scheme.id.to_string());
-        items_by_id.insert(&mut txn, item_id, item_prelim(&item, "V").unwrap());
+        let item_map = items_by_id.insert(&mut txn, item_id, MapPrelim::default());
+        let snapshot_json = item_snapshot_json(&item).unwrap();
+        write_new_item(&item_map, &mut txn, &item, "V", &snapshot_json).unwrap();
         drop(txn);
         doc
     }

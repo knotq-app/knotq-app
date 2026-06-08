@@ -5,10 +5,12 @@ use gpui::{
     SharedString, Window,
 };
 use gpui_component::{Icon, Sizable};
-use knotq_commands::{event_popup_delete_command, DateKind, EventDeleteScope};
+use knotq_commands::{
+    event_popup_delete_command, recurrence_can_delete_future, DateKind, EventDeleteScope,
+};
 use knotq_model::{
-    CalendarRecurrence, FolderId, Item, ItemId, ItemKind, NodeRef, OccurrenceId, Recurrence,
-    RepeatEnd, RepeatWeekday, SchemeId, SimpleRecurrence,
+    CalendarRecurrence, FolderId, Item, ItemId, ItemKind, NodeRef, Recurrence, RepeatEnd,
+    RepeatWeekday, SchemeId, SimpleRecurrence,
 };
 use knotq_storage_json::{NotificationDefaults, TimeFormat};
 
