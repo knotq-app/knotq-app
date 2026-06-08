@@ -499,11 +499,15 @@ fn download_missing_media_assets(client: &SyncHttpClient, workspace: &Workspace)
         if path.exists() {
             continue;
         }
-        let bytes = client.download_media_asset(media)?;
+        let image_name = media.image_name();
+        let Some(bytes) = client.download_media_asset(media)? else {
+            eprintln!("sync media missing on backend: {image_name}; skipping download");
+            continue;
+        };
         if bytes.len() > MAX_SYNC_MEDIA_BYTES {
             return Err(anyhow!(
                 "downloaded image {} is {} bytes, above the {} byte sync limit",
-                media.image_name(),
+                image_name,
                 bytes.len(),
                 MAX_SYNC_MEDIA_BYTES
             ));
@@ -538,12 +542,22 @@ impl SyncHttpClient {
         Ok(())
     }
 
-    fn download_media_asset(&self, media: SyncMediaAsset) -> Result<Vec<u8>> {
+    fn download_media_asset(&self, media: SyncMediaAsset) -> Result<Option<Vec<u8>>> {
         let url = self.media_url(media);
-        let response = self
-            .authorized(ureq::get(&url))
-            .call()
-            .map_err(sync_http_error)?;
+        let response = match self.authorized(ureq::get(&url)).call() {
+            Ok(response) => response,
+            Err(ureq::Error::Status(404, response)) => {
+                let code = response
+                    .into_json::<ErrorResponse>()
+                    .map(|error| error.code)
+                    .unwrap_or_else(|_| "404".to_string());
+                if code == "not_found" {
+                    return Ok(None);
+                }
+                return Err(anyhow!("sync backend rejected request: {code}"));
+            }
+            Err(error) => return Err(sync_http_error(error)),
+        };
         let mut reader = response
             .into_reader()
             .take((MAX_SYNC_MEDIA_BYTES + 1) as u64);
@@ -558,7 +572,7 @@ impl SyncHttpClient {
                 MAX_SYNC_MEDIA_BYTES
             ));
         }
-        Ok(bytes)
+        Ok(Some(bytes))
     }
 
     fn media_url(&self, media: SyncMediaAsset) -> String {
