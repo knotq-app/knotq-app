@@ -609,7 +609,7 @@ fn update_status_row(
             |this, cx| this.download_available_update(cx),
         ),
         AutoUpdateUiStatus::Downloading { version } => {
-            settings_message(format!("Downloading KnotQ {version}..."), false, t)
+            settings_message(format!("Updating KnotQ {version}..."), false, t)
         }
         AutoUpdateUiStatus::Ready { update } => {
             let button = match update.install_strategy {

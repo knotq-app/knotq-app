@@ -8,6 +8,10 @@ use chrono::{DateTime, Utc};
 use semver::Version;
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
+#[cfg(target_os = "macos")]
+use std::ffi::OsStr;
+#[cfg(target_os = "macos")]
+use std::process::{Output, Stdio};
 #[cfg(target_os = "linux")]
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -129,7 +133,10 @@ pub fn prepare_update(
 
     let kind = target_kind()?;
     let (install_strategy, restart_path) = match kind {
-        TargetKind::MacOs => (InstallStrategy::OpenInstaller, None),
+        TargetKind::MacOs => {
+            install_macos(&asset_path, app_path, &version_dir)?;
+            (InstallStrategy::InstalledOnRestart, None)
+        }
         TargetKind::Linux => {
             let restart_path = install_linux(&asset_path, app_path, updates_dir)?;
             (InstallStrategy::InstalledOnRestart, Some(restart_path))
@@ -173,15 +180,42 @@ pub fn run_windows_installer(update: &StagedUpdate) -> Result<()> {
     if update.install_strategy != InstallStrategy::RunInstallerAndQuit {
         bail!("staged update is not a Windows installer");
     }
-    let mut command = Command::new(&update.asset_path);
-    command
-        .arg("/verysilent")
-        .arg("/update=true")
-        .arg("/MERGETASKS=!desktopicon");
-    command
-        .spawn()
-        .with_context(|| format!("launch installer {}", update.asset_path.display()))?;
-    Ok(())
+
+    #[cfg(target_os = "windows")]
+    {
+        let app_exe = std::env::current_exe().context("resolve current executable")?;
+        let app_working_dir =
+            std::env::current_dir().context("resolve current working directory")?;
+        let script = format!(
+            r#"
+$pidToWaitFor = {}
+$installer = '{}'
+$appExe = '{}'
+$appWorkingDir = '{}'
+Wait-Process -Id $pidToWaitFor -ErrorAction SilentlyContinue
+$install = Start-Process -FilePath $installer -ArgumentList @('/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART','/update=true','/MERGETASKS=!desktopicon') -Wait -PassThru
+if ($install.ExitCode -eq 0 -and (Test-Path -LiteralPath $appExe)) {{
+    Start-Process -FilePath $appExe -WorkingDirectory $appWorkingDir
+}}
+"#,
+            std::process::id(),
+            powershell_string(&update.asset_path),
+            powershell_string(&app_exe),
+            powershell_string(&app_working_dir)
+        );
+
+        Command::new("powershell.exe")
+            .args(["-NoProfile", "-WindowStyle", "Hidden", "-Command"])
+            .arg(script)
+            .spawn()
+            .with_context(|| format!("launch installer {}", update.asset_path.display()))?;
+        Ok(())
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        bail!("running Windows installers is not supported on this platform")
+    }
 }
 
 fn fetch_latest_release(config: &AutoUpdateConfig) -> Result<GithubRelease> {
@@ -527,6 +561,307 @@ fn install_linux(
     _updates_dir: &Path,
 ) -> Result<PathBuf> {
     bail!("Linux updater called on non-Linux platform")
+}
+
+#[cfg(target_os = "macos")]
+fn install_macos(downloaded_dmg: &Path, app_path: &Path, updates_dir: &Path) -> Result<()> {
+    ensure_command("hdiutil")?;
+
+    let app_path = macos_app_bundle_path(app_path)?;
+    let app_name = app_path
+        .file_name()
+        .ok_or_else(|| anyhow!("invalid app bundle path {}", app_path.display()))?;
+    let mount_root = updates_dir.join("mount");
+    fs::create_dir_all(&mount_root)
+        .with_context(|| format!("create mount root {}", mount_root.display()))?;
+
+    let output = Command::new("hdiutil")
+        .args(["attach", "-nobrowse"])
+        .arg(downloaded_dmg)
+        .arg("-mountroot")
+        .arg(&mount_root)
+        .output()
+        .context("mount update disk image")?;
+    ensure_output_success(output, "mount update disk image")?;
+
+    let (mount_path, mounted_app) = find_mounted_app(&mount_root, app_name)?;
+    let copy_result = sync_dir_filtered(&mounted_app, &app_path, macos_finder_icon_file);
+    let detach_result = Command::new("hdiutil")
+        .args(["detach", "-force"])
+        .arg(&mount_path)
+        .output()
+        .context("detach update disk image")
+        .and_then(|output| ensure_output_success(output, "detach update disk image"));
+
+    copy_result.and(detach_result)
+}
+
+#[cfg(not(target_os = "macos"))]
+fn install_macos(_downloaded_dmg: &Path, _app_path: &Path, _updates_dir: &Path) -> Result<()> {
+    bail!("macOS updater called on non-macOS platform")
+}
+
+#[cfg(target_os = "macos")]
+fn ensure_command(command: &str) -> Result<()> {
+    Command::new(command)
+        .arg("--version")
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .map(|_| ())
+        .with_context(|| format!("could not find required command `{command}`"))
+}
+
+#[cfg(target_os = "macos")]
+fn macos_app_bundle_path(app_path: &Path) -> Result<PathBuf> {
+    if app_path.extension().and_then(OsStr::to_str) == Some("app") {
+        return Ok(app_path.to_path_buf());
+    }
+
+    let current_exe = std::env::current_exe().context("resolve current executable")?;
+    current_exe
+        .ancestors()
+        .find(|path| path.extension().and_then(OsStr::to_str) == Some("app"))
+        .map(Path::to_path_buf)
+        .ok_or_else(|| anyhow!("auto updates require KnotQ to be running from an .app bundle"))
+}
+
+#[cfg(target_os = "macos")]
+fn find_mounted_app(mount_root: &Path, app_name: &OsStr) -> Result<(PathBuf, PathBuf)> {
+    for entry in fs::read_dir(mount_root)
+        .with_context(|| format!("read mount root {}", mount_root.display()))?
+    {
+        let entry = entry?;
+        let mount_path = entry.path();
+        if !mount_path.is_dir() {
+            continue;
+        }
+
+        let app = mount_path.join(app_name);
+        if app.is_dir() {
+            return Ok((mount_path, app));
+        }
+    }
+
+    bail!(
+        "mounted update disk image did not contain {}",
+        Path::new(app_name).display()
+    )
+}
+
+#[cfg(target_os = "macos")]
+fn macos_finder_icon_file(relative_path: &Path) -> bool {
+    relative_path.file_name().is_some_and(|name| {
+        let name = name.to_string_lossy();
+        name.starts_with("Icon") && name.chars().count() == 5
+    })
+}
+
+#[cfg(target_os = "macos")]
+fn ensure_output_success(output: Output, action: &str) -> Result<()> {
+    if output.status.success() {
+        return Ok(());
+    }
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    Err(anyhow!(
+        "{action} failed with status {}: {}{}{}",
+        output.status,
+        stderr.trim(),
+        if stderr.trim().is_empty() || stdout.trim().is_empty() {
+            ""
+        } else {
+            "\n"
+        },
+        stdout.trim()
+    ))
+}
+
+#[cfg(target_os = "macos")]
+fn sync_dir_filtered(
+    source: &Path,
+    destination: &Path,
+    should_skip: impl Fn(&Path) -> bool,
+) -> Result<()> {
+    if !source.is_dir() {
+        bail!("source directory does not exist: {}", source.display());
+    }
+
+    fs::create_dir_all(destination)
+        .with_context(|| format!("create destination {}", destination.display()))?;
+    delete_stale_entries(source, destination, destination, &should_skip)?;
+    copy_entries(source, destination, source, &should_skip)?;
+    copy_permissions(source, destination)?;
+    Ok(())
+}
+
+#[cfg(target_os = "macos")]
+fn delete_stale_entries(
+    source_root: &Path,
+    destination_root: &Path,
+    destination: &Path,
+    should_skip: &impl Fn(&Path) -> bool,
+) -> Result<()> {
+    for entry in
+        fs::read_dir(destination).with_context(|| format!("read {}", destination.display()))?
+    {
+        let entry = entry?;
+        let destination_path = entry.path();
+        let relative_path = destination_path
+            .strip_prefix(destination_root)
+            .with_context(|| format!("relativize {}", destination_path.display()))?;
+
+        if should_skip(relative_path) {
+            continue;
+        }
+
+        let source_path = source_root.join(relative_path);
+        match fs::symlink_metadata(&source_path) {
+            Ok(_) => {
+                if entry.file_type()?.is_dir() {
+                    delete_stale_entries(
+                        source_root,
+                        destination_root,
+                        &destination_path,
+                        should_skip,
+                    )?;
+                }
+            }
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                remove_path(&destination_path)
+                    .with_context(|| format!("remove stale {}", destination_path.display()))?;
+            }
+            Err(error) => {
+                return Err(error)
+                    .with_context(|| format!("inspect source {}", source_path.display()));
+            }
+        }
+    }
+
+    Ok(())
+}
+
+#[cfg(target_os = "macos")]
+fn copy_entries(
+    source_root: &Path,
+    destination_root: &Path,
+    source: &Path,
+    should_skip: &impl Fn(&Path) -> bool,
+) -> Result<()> {
+    for entry in fs::read_dir(source).with_context(|| format!("read {}", source.display()))? {
+        let entry = entry?;
+        let source_path = entry.path();
+        let relative_path = source_path
+            .strip_prefix(source_root)
+            .with_context(|| format!("relativize {}", source_path.display()))?;
+
+        if should_skip(relative_path) {
+            continue;
+        }
+
+        let destination_path = destination_root.join(relative_path);
+        let file_type = entry.file_type()?;
+
+        if file_type.is_dir() {
+            prepare_destination_dir(&destination_path)?;
+            copy_entries(source_root, destination_root, &source_path, should_skip)?;
+            copy_permissions(&source_path, &destination_path)?;
+        } else if file_type.is_symlink() {
+            copy_symlink(&source_path, &destination_path)?;
+        } else if file_type.is_file() {
+            copy_file(&source_path, &destination_path)?;
+        } else {
+            bail!("unsupported update bundle entry {}", source_path.display());
+        }
+    }
+
+    Ok(())
+}
+
+#[cfg(target_os = "macos")]
+fn prepare_destination_dir(path: &Path) -> Result<()> {
+    if let Ok(metadata) = fs::symlink_metadata(path) {
+        if !metadata.is_dir() {
+            remove_path(path)
+                .with_context(|| format!("replace {} with a directory", path.display()))?;
+        }
+    }
+
+    fs::create_dir_all(path).with_context(|| format!("create {}", path.display()))
+}
+
+#[cfg(target_os = "macos")]
+fn copy_file(source: &Path, destination: &Path) -> Result<()> {
+    ensure_parent(destination)?;
+    if let Ok(metadata) = fs::symlink_metadata(destination) {
+        if !metadata.is_file() {
+            remove_path(destination)
+                .with_context(|| format!("replace {}", destination.display()))?;
+        }
+    }
+
+    let temp_path = destination.with_extension("knotq-update-copy");
+    fs::copy(source, &temp_path)
+        .with_context(|| format!("copy {} to {}", source.display(), temp_path.display()))?;
+    copy_permissions(source, &temp_path)?;
+    if let Err(error) = fs::rename(&temp_path, destination) {
+        let _ = fs::remove_file(&temp_path);
+        return Err(error).with_context(|| format!("move {} into place", destination.display()));
+    }
+    Ok(())
+}
+
+#[cfg(target_os = "macos")]
+fn copy_symlink(source: &Path, destination: &Path) -> Result<()> {
+    ensure_parent(destination)?;
+    if fs::symlink_metadata(destination).is_ok() {
+        remove_path(destination).with_context(|| format!("replace {}", destination.display()))?;
+    }
+    let target =
+        fs::read_link(source).with_context(|| format!("read symlink {}", source.display()))?;
+    std::os::unix::fs::symlink(&target, destination).with_context(|| {
+        format!(
+            "create symlink {} -> {}",
+            destination.display(),
+            target.display()
+        )
+    })
+}
+
+#[cfg(target_os = "macos")]
+fn copy_permissions(source: &Path, destination: &Path) -> Result<()> {
+    let permissions = fs::symlink_metadata(source)
+        .with_context(|| format!("inspect {}", source.display()))?
+        .permissions();
+    fs::set_permissions(destination, permissions)
+        .with_context(|| format!("set permissions on {}", destination.display()))
+}
+
+#[cfg(target_os = "macos")]
+fn remove_path(path: &Path) -> Result<()> {
+    let metadata =
+        fs::symlink_metadata(path).with_context(|| format!("inspect {}", path.display()))?;
+    if metadata.file_type().is_symlink() || metadata.is_file() {
+        fs::remove_file(path).with_context(|| format!("remove file {}", path.display()))
+    } else if metadata.is_dir() {
+        fs::remove_dir_all(path).with_context(|| format!("remove directory {}", path.display()))
+    } else {
+        bail!("unsupported update path {}", path.display())
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn ensure_parent(path: &Path) -> Result<()> {
+    let parent = path
+        .parent()
+        .ok_or_else(|| anyhow!("path has no parent: {}", path.display()))?;
+    fs::create_dir_all(parent).with_context(|| format!("create {}", parent.display()))
+}
+
+#[cfg(target_os = "windows")]
+fn powershell_string(path: &Path) -> String {
+    path.display().to_string().replace('\'', "''")
 }
 
 #[cfg(target_os = "linux")]

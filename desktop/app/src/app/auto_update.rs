@@ -77,7 +77,10 @@ impl AutoUpdateUiStatus {
 pub(crate) enum AutoUpdateSignal {
     CheckNow,
     CheckNowAutomatic,
-    Download(AvailableUpdate),
+    Download {
+        update: AvailableUpdate,
+        install_when_ready: bool,
+    },
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -115,9 +118,18 @@ pub(crate) fn spawn_auto_update_task(
                     AutoUpdateSignal::CheckNowAutomatic => {
                         run_update_check(&weak, cx, AutoUpdateCheckKind::Automatic).await;
                     }
-                    AutoUpdateSignal::Download(update) => {
-                        prepare_available_update(&weak, cx, update, AutoUpdateCheckKind::Manual)
-                            .await;
+                    AutoUpdateSignal::Download {
+                        update,
+                        install_when_ready,
+                    } => {
+                        prepare_available_update(
+                            &weak,
+                            cx,
+                            update,
+                            AutoUpdateCheckKind::Manual,
+                            install_when_ready,
+                        )
+                        .await;
                     }
                 }
                 delay = AUTO_UPDATE_POLL_INTERVAL;
@@ -161,9 +173,10 @@ impl KnotQApp {
         self.auto_update_status = AutoUpdateUiStatus::Downloading {
             version: update.version.to_string(),
         };
-        let _ = self
-            .auto_update_tx
-            .try_send(AutoUpdateSignal::Download(update));
+        let _ = self.auto_update_tx.try_send(AutoUpdateSignal::Download {
+            update,
+            install_when_ready: true,
+        });
         cx.notify();
     }
 
@@ -283,6 +296,7 @@ async fn prepare_available_update(
     cx: &mut gpui::AsyncApp,
     update: AvailableUpdate,
     kind: AutoUpdateCheckKind,
+    install_when_ready: bool,
 ) {
     set_update_status(
         weak,
@@ -327,7 +341,14 @@ async fn prepare_available_update(
             if let Some(path) = staged.restart_path.clone() {
                 let _ = cx.update(|cx| cx.set_restart_path(path));
             }
-            set_update_status(weak, cx, AutoUpdateUiStatus::Ready { update: staged });
+            if install_when_ready {
+                let _ = weak.update(cx, |app, cx| {
+                    app.auto_update_status = AutoUpdateUiStatus::Ready { update: staged };
+                    app.install_ready_update(cx);
+                });
+            } else {
+                set_update_status(weak, cx, AutoUpdateUiStatus::Ready { update: staged });
+            }
         }
         Err(err) => {
             set_prepare_error(

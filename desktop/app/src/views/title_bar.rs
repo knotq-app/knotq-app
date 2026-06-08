@@ -310,14 +310,12 @@ impl KnotQApp {
         let (label, tooltip, action) = match &self.auto_update_status {
             AutoUpdateUiStatus::Available { update, .. } => (
                 "Update",
-                format!("Download KnotQ {}.", update.version),
+                format!("Update and restart KnotQ to {}.", update.version),
                 Some(TitleUpdateAction::Download),
             ),
-            AutoUpdateUiStatus::Downloading { version } => (
-                "Downloading",
-                format!("Downloading KnotQ {version}..."),
-                None,
-            ),
+            AutoUpdateUiStatus::Downloading { version } => {
+                ("Updating", format!("Updating KnotQ {version}..."), None)
+            }
             AutoUpdateUiStatus::Ready { update } => {
                 let label = match update.install_strategy {
                     knotq_auto_update::InstallStrategy::InstalledOnRestart => "Restart to update",
