@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 use std::fs;
 use std::io::Read;
 use std::time::Duration as StdDuration;
@@ -345,12 +345,12 @@ fn sync_snapshot(snapshot: SyncSnapshot) -> Result<SyncRunResult> {
     // The server's per-document seq (our advanced pull cursor) tells the bootstrap
     // which documents the server already has a base for; the rest get a full
     // snapshot queued before their deltas.
-    let remote_latest: HashMap<DocumentId, u64> = local_state
-        .document_cursors
-        .values()
-        .map(|cursor| (cursor.document, cursor.last_pulled_sequence))
-        .collect();
-    queue_workspace_bootstrap_updates(&mut local_state, &workspace, replica_id, &remote_latest);
+    queue_workspace_bootstrap_updates(
+        &mut local_state,
+        &workspace,
+        replica_id,
+        &pull.remote_latest,
+    );
     // Persist pull cursors, dropped orphans, and per-document push acks even if the
     // push below fails partway, so a transient push error never forces the next
     // sync to re-download every document from sequence zero. The merged workspace
@@ -957,6 +957,52 @@ mod tests {
                 .any(|edit| edit.document == orphan_document),
             "orphaned pending delta should be dropped"
         );
+    }
+
+    #[test]
+    fn bootstrap_reseeds_document_with_stale_cursor_when_server_lacks_base() {
+        let mut workspace = Workspace::new();
+        let scheme = Scheme::new("Cursor stale", 0);
+        let scheme_id = scheme.id;
+        workspace.schemes.insert(scheme_id, scheme);
+        workspace.ensure_sync_metadata();
+        let document = workspace.scheme_sync.get(&scheme_id).unwrap().id;
+        let replica_id = ReplicaId::new();
+        let mut state = LocalSyncState {
+            workspace_id: Some(workspace.id),
+            replica_id: Some(replica_id),
+            ..LocalSyncState::default()
+        };
+        state.document_cursors.insert(
+            document,
+            DocumentSyncCursor {
+                document,
+                kind: SyncDocumentKind::Scheme,
+                last_pulled_sequence: 12,
+                last_pushed_sequence: 12,
+            },
+        );
+
+        // The authoritative server head map is empty after a durable-object purge,
+        // so the stale local cursor must not suppress a full snapshot bootstrap.
+        queue_workspace_bootstrap_updates(
+            &mut state,
+            &workspace,
+            replica_id,
+            &std::collections::HashMap::new(),
+        );
+
+        let pending = state
+            .pending
+            .iter()
+            .filter(|edit| edit.document == document)
+            .collect::<Vec<_>>();
+        assert_eq!(pending.len(), 1);
+        knotq_sync::validate_crdt_update_sequence(
+            SyncDocumentKind::Scheme,
+            [pending[0].update_v1.as_slice()],
+        )
+        .unwrap();
     }
 
     #[test]

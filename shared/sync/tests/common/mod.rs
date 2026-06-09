@@ -315,8 +315,10 @@ impl SyncTransport for TestServer {
                 state_v1: doc.state_v1.clone(),
             })
             .collect();
+        let known_documents = documents.iter().map(|(id, doc)| (*id, doc.seq)).collect();
         Ok(BatchPullResponse {
             documents: pulled,
+            known_documents: Some(known_documents),
             notification_schedule_revision: 0,
             has_more: false,
         })

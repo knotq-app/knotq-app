@@ -42,6 +42,7 @@ pub trait SyncTransport {
 pub struct PullOutcome {
     pub workspace: Workspace,
     pub remote_updates_applied: usize,
+    pub remote_latest: HashMap<DocumentId, u64>,
 }
 
 /// A document whose pending edits the server accepted, with the local sequence the
@@ -68,6 +69,7 @@ pub fn batch_pull_and_apply(
 ) -> Result<PullOutcome> {
     let mut workspace = workspace;
     let mut remote_updates_applied = 0;
+    let mut authoritative_remote_latest: Option<HashMap<DocumentId, u64>> = None;
     loop {
         let request = BatchPullRequest {
             replica_id,
@@ -78,6 +80,9 @@ pub fn batch_pull_and_apply(
                 .collect(),
         };
         let response = transport.pull(&request)?;
+        if let Some(known_documents) = &response.known_documents {
+            authoritative_remote_latest = Some(known_documents.clone());
+        }
         if response.documents.is_empty() {
             break;
         }
@@ -104,9 +109,17 @@ pub fn batch_pull_and_apply(
             break;
         }
     }
+    let remote_latest = authoritative_remote_latest.unwrap_or_else(|| {
+        local_state
+            .document_cursors
+            .values()
+            .map(|cursor| (cursor.document, cursor.last_pulled_sequence))
+            .collect()
+    });
     Ok(PullOutcome {
         workspace,
         remote_updates_applied,
+        remote_latest,
     })
 }
 

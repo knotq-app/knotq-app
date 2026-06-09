@@ -751,6 +751,11 @@ pub struct PulledCrdtDocument {
 pub struct BatchPullResponse {
     #[serde(default)]
     pub documents: Vec<PulledCrdtDocument>,
+    /// Authoritative server-side document heads after this pull. This lets clients
+    /// distinguish "no changed documents" from "the server has no copy of a
+    /// document named by a stale local cursor" after a workspace purge/reset.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub known_documents: Option<HashMap<DocumentId, u64>>,
     #[serde(default)]
     pub notification_schedule_revision: u64,
     /// More changed documents remain beyond the per-response cap; the client should
