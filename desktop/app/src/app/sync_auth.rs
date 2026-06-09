@@ -20,6 +20,7 @@ const DEFAULT_SYNC_API_BASE: &str = "https://api.knotq.com";
 /// `redirect_uri` + PKCE; the page signs the user in and hands back a one-time
 /// authorization code redeemed via `POST /v1/auth/authorize/exchange`.
 const SIGNIN_PAGE_URL: &str = "https://www.knotq.com/signin.html";
+const ACCOUNT_PAGE_URL: &str = "https://www.knotq.com/account.html#signin";
 
 #[derive(Deserialize)]
 struct LoginResponse {
@@ -189,6 +190,19 @@ impl KnotQApp {
         cx.notify();
     }
 
+    pub fn open_online_account_management(&mut self, cx: &mut Context<Self>) {
+        match open_browser(ACCOUNT_PAGE_URL) {
+            Ok(()) => {
+                self.sync_auth_status = SyncAuthStatus::Idle;
+            }
+            Err(err) => {
+                self.sync_auth_status =
+                    SyncAuthStatus::Error(format!("Could not open account management: {err}"));
+            }
+        }
+        cx.notify();
+    }
+
     /// Arm the second-confirmation step for a destructive account action.
     pub fn prompt_sync_account_action(
         &mut self,
@@ -215,7 +229,6 @@ impl KnotQApp {
     pub fn confirm_sync_account_action(&mut self, cx: &mut Context<Self>) {
         match self.sync_account_action {
             Some(SyncAccountAction::CancelSubscription) => self.cancel_sync_subscription(cx),
-            Some(SyncAccountAction::DeleteAccount) => self.delete_sync_account(cx),
             None => {}
         }
     }
@@ -264,52 +277,6 @@ impl KnotQApp {
                 if !supports_sync {
                     self.sync_run_status = SyncRunStatus::Idle;
                 }
-                self.save_app_settings();
-            }
-            Err(message) => {
-                self.sync_auth_status = SyncAuthStatus::Error(message);
-            }
-        }
-        cx.notify();
-    }
-
-    fn delete_sync_account(&mut self, cx: &mut Context<Self>) {
-        if matches!(self.sync_auth_status, SyncAuthStatus::InProgress) {
-            return;
-        }
-        let Some(account) = self.settings.sync_account.clone() else {
-            return;
-        };
-        self.sync_auth_status = SyncAuthStatus::InProgress;
-        let task = cx.spawn(
-            async move |weak: gpui::WeakEntity<Self>, cx: &mut gpui::AsyncApp| {
-                let (tx, rx) = mpsc::channel();
-                std::thread::spawn(move || {
-                    let result =
-                        delete_sync_account_backend(&account).map_err(|err| format!("{err:#}"));
-                    let _ = tx.send(result);
-                });
-                Self::pump_sync_auth_worker(weak, cx, rx, |app, result, cx| {
-                    app.finish_delete_sync_account(result, cx);
-                })
-                .await;
-            },
-        );
-        self.sync_auth_task = Some(task);
-        cx.notify();
-    }
-
-    fn finish_delete_sync_account(&mut self, result: Result<(), String>, cx: &mut Context<Self>) {
-        self.sync_auth_task = None;
-        match result {
-            Ok(()) => {
-                // Deletion is scheduled with a 14-day grace window and the session
-                // is revoked server-side, so drop the local account and close out.
-                self.settings.sync_account = None;
-                let _ = knotq_storage_json::secrets::delete_sync();
-                self.sync_account_action = None;
-                self.sync_run_status = SyncRunStatus::Idle;
-                self.sync_auth_status = SyncAuthStatus::Idle;
                 self.save_app_settings();
             }
             Err(message) => {
@@ -734,27 +701,6 @@ fn logout_sync_backend(account: &SyncAccountSettings) -> Result<()> {
     {
         Ok(_) | Err(ureq::Error::Status(401, _)) => Ok(()),
         Err(error) => Err(anyhow!("Could not revoke sync session: {error}")),
-    }
-}
-
-/// Schedule account deletion (14-day grace window; signing back in undoes it).
-/// The backend echoes the account email back as a deliberate-action guard.
-fn delete_sync_account_backend(account: &SyncAccountSettings) -> Result<()> {
-    let url = format!("{}/v1/auth/account", normalize_api_base(&account.api_base)?);
-    match ureq::delete(&url)
-        .timeout(StdDuration::from_secs(10))
-        .set("authorization", &format!("Bearer {}", account.bearer_token))
-        .send_json(serde_json::json!({ "confirm_email": account.email }))
-    {
-        Ok(_) => Ok(()),
-        Err(ureq::Error::Status(_, response)) => {
-            let code = response
-                .into_json::<LoginError>()
-                .map(|error| error.code)
-                .unwrap_or_else(|_| "delete_failed".to_string());
-            Err(anyhow!(account_action_error_message(&code)))
-        }
-        Err(error) => Err(anyhow!("Could not reach the sync API: {error}")),
     }
 }
 

@@ -36,10 +36,6 @@ impl KnotQApp {
         let supports_sync = account
             .as_ref()
             .is_some_and(|account| account.supports_sync);
-        let email: SharedString = account
-            .as_ref()
-            .map(|account| SharedString::from(account.email.clone()))
-            .unwrap_or_else(|| "Not signed in".into());
         let status = self.sync_status_view(t);
 
         let viewport_width = px(f32::from(window.viewport_size().width));
@@ -121,7 +117,7 @@ impl KnotQApp {
                     .text_size(px(11.0))
                     .font_weight(FontWeight::SEMIBOLD)
                     .text_color(token_hsla(t.text_soft))
-                    .child(email),
+                    .child("KnotQ Sync"),
             )
             .child(
                 div()
@@ -187,9 +183,7 @@ impl KnotQApp {
             return SyncStatusView {
                 dot_color: STATUS_ERROR,
                 headline: "Sync disabled".into(),
-                detail: Some(
-                    "This account doesn't have sync enabled. Manage it to subscribe.".into(),
-                ),
+                detail: Some("Subscribe to enable cross-device notes and notifications.".into()),
             };
         }
 

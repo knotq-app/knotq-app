@@ -140,7 +140,10 @@ impl PersistedCrdtState {
 /// re-encodings and dropped cross-device schemes. Clearing cursors once forces a
 /// full re-pull so each device adopts the server's canonical document identities and
 /// re-converges; the persisted CRDT-state file then keeps that identity stable.
-pub const SYNC_STATE_RECOVERY_VERSION: u32 = 5;
+/// Generation 6 clears media upload cursors once so clients re-upload local image
+/// bytes after the media-sync recovery. CRDT metadata can converge while raw image
+/// objects are absent, especially after a durable-object/object-store reset.
+pub const SYNC_STATE_RECOVERY_VERSION: u32 = 6;
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq, Serialize, Deserialize)]
 #[serde(transparent)]
@@ -513,6 +516,7 @@ impl LocalSyncState {
             return false;
         }
         self.document_cursors.clear();
+        self.media_cursors.clear();
         self.pending
             .retain(|edit| edit.kind != SyncDocumentKind::PersonalWorkspace);
         self.recovery_version = SYNC_STATE_RECOVERY_VERSION;
@@ -629,6 +633,18 @@ impl LocalSyncState {
                 && cursor.byte_length == byte_length
                 && cursor.sha256 == sha256
         })
+    }
+
+    pub fn should_upload_media_asset(
+        &self,
+        image_name: &str,
+        document: DocumentId,
+        byte_length: u64,
+        sha256: &str,
+        remote_latest: &HashMap<DocumentId, u64>,
+    ) -> bool {
+        remote_latest.get(&document).copied().unwrap_or(0) == 0
+            || !self.media_upload_is_current(image_name, document, byte_length, sha256)
     }
 
     pub fn mark_media_uploaded(
@@ -1099,5 +1115,45 @@ mod tests {
             .pending
             .iter()
             .any(|edit| edit.document == left && edit.local_sequence == 3));
+    }
+
+    #[test]
+    fn media_upload_retries_when_server_lacks_document_base() {
+        let document = DocumentId::new();
+        let image_name = "asset.png".to_string();
+        let bytes = b"image bytes";
+        let sha256 = "same-hash".to_string();
+        let mut state = LocalSyncState::default();
+        state.mark_media_uploaded(
+            image_name.clone(),
+            document,
+            bytes.len() as u64,
+            sha256.clone(),
+        );
+
+        assert!(state.should_upload_media_asset(
+            &image_name,
+            document,
+            bytes.len() as u64,
+            &sha256,
+            &HashMap::new(),
+        ));
+
+        let mut remote_latest = HashMap::new();
+        remote_latest.insert(document, 4);
+        assert!(!state.should_upload_media_asset(
+            &image_name,
+            document,
+            bytes.len() as u64,
+            &sha256,
+            &remote_latest,
+        ));
+        assert!(state.should_upload_media_asset(
+            &image_name,
+            document,
+            bytes.len() as u64,
+            "changed-hash",
+            &remote_latest,
+        ));
     }
 }

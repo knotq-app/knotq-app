@@ -2,14 +2,15 @@ use chrono::{DateTime, Local, Utc};
 use gpui::prelude::*;
 use gpui::{div, px, ClickEvent, Context, IntoElement};
 use gpui_component::scroll::ScrollableElement as _;
+use gpui_component::{Icon, IconName, Sizable};
 use knotq_model::{
     CalendarProvider, SchemeId, SchemeSource, DEFAULT_EVENT_NOTIFICATION_OFFSET_SECS,
 };
 use knotq_storage_json::{CalendarViewMode, CalendarWeekRange, ThemeMode, TimeFormat};
 
 use crate::app::auto_update::AutoUpdateUiStatus;
-use crate::app::KnotQApp;
-use crate::theme_gpui::{all_themes, token_hsla, token_rgba, Theme as UiTheme};
+use crate::app::{KnotQApp, SettingsDropdown};
+use crate::theme_gpui::{token_hsla, token_rgba, Theme as UiTheme};
 use crate::views::sync_account::{sync_cta_bg, sync_cta_hover_bg};
 
 struct GoogleCalendarSettingsRow {
@@ -22,163 +23,117 @@ struct GoogleCalendarSettingsRow {
 impl KnotQApp {
     pub fn render_settings(&mut self, cx: &mut Context<Self>) -> gpui::AnyElement {
         let t = self.theme();
-        let themes = all_themes();
-
-        let theme_rows = vec![settings_chip_group(
+        let theme_rows = vec![settings_dropdown_group(
+            "theme-setting",
             "Theme",
-            [
-                ("Dark", ThemeMode::Dark, themes[0]),
-                ("Light", ThemeMode::Light, themes[1]),
-                ("System", ThemeMode::System, self.theme()),
-            ]
-            .into_iter()
-            .enumerate()
-            .map(|(idx, (label, mode, theme))| {
-                let is_active = self.theme_mode == mode;
-                choice_chip(
-                    ("theme", idx),
-                    label,
-                    is_active,
-                    theme_swatch(theme, t),
-                    t,
-                    cx,
-                    move |this, cx| this.set_theme_mode(mode, cx),
-                )
-            })
-            .collect(),
+            SettingsDropdown::Theme,
+            theme_mode_label(self.theme_mode),
+            vec![
+                ("Dark", ThemeMode::Dark),
+                ("Light", ThemeMode::Light),
+                ("System", ThemeMode::System),
+            ],
+            self.theme_mode,
+            self.settings_dropdown == Some(SettingsDropdown::Theme),
             t,
+            cx,
+            |this, mode, cx| this.set_theme_mode(mode, cx),
         )];
 
         let mut calendar_rows = Vec::new();
-        calendar_rows.push(settings_chip_group(
+        calendar_rows.push(settings_dropdown_group(
+            "calendar-view-setting",
             "View",
-            [
+            SettingsDropdown::CalendarView,
+            calendar_view_label(self.calendar_view),
+            vec![
                 ("Week", CalendarViewMode::Week),
                 ("Month", CalendarViewMode::Month),
-            ]
-            .into_iter()
-            .enumerate()
-            .map(|(idx, (label, mode))| {
-                let is_active = self.calendar_view == mode;
-                choice_chip(
-                    ("calendar-setting", idx),
-                    label,
-                    is_active,
-                    active_marker(is_active, t),
-                    t,
-                    cx,
-                    move |this, cx| this.set_calendar_view(mode, cx),
-                )
-            })
-            .collect(),
+            ],
+            self.calendar_view,
+            self.settings_dropdown == Some(SettingsDropdown::CalendarView),
             t,
+            cx,
+            |this, mode, cx| this.set_calendar_view(mode, cx),
         ));
-        calendar_rows.push(settings_chip_group(
+        calendar_rows.push(settings_dropdown_group(
+            "calendar-range-setting",
             "Range",
-            [
+            SettingsDropdown::CalendarRange,
+            calendar_range_label(self.calendar_week_range),
+            vec![
                 ("Rolling week", CalendarWeekRange::NextSevenDays),
                 ("Calendar week", CalendarWeekRange::CalendarWeek),
-            ]
-            .into_iter()
-            .enumerate()
-            .map(|(idx, (label, range))| {
-                let is_active = self.calendar_week_range == range;
-                choice_chip(
-                    ("calendar-range-setting", idx),
-                    label,
-                    is_active,
-                    active_marker(is_active, t),
-                    t,
-                    cx,
-                    move |this, cx| this.set_calendar_week_range(range, cx),
-                )
-            })
-            .collect(),
+            ],
+            self.calendar_week_range,
+            self.settings_dropdown == Some(SettingsDropdown::CalendarRange),
             t,
+            cx,
+            |this, range, cx| this.set_calendar_week_range(range, cx),
         ));
 
-        let time_rows = vec![settings_chip_group(
+        let time_rows = vec![settings_dropdown_group(
+            "time-format-setting",
             "Clock",
-            [
+            SettingsDropdown::TimeFormat,
+            time_format_label(self.time_format),
+            vec![
                 ("12-hour", TimeFormat::TwelveHour),
                 ("24-hour", TimeFormat::TwentyFourHour),
-            ]
-            .into_iter()
-            .enumerate()
-            .map(|(idx, (label, format))| {
-                let is_active = self.time_format == format;
-                choice_chip(
-                    ("time-format-setting", idx),
-                    label,
-                    is_active,
-                    active_marker(is_active, t),
-                    t,
-                    cx,
-                    move |this, cx| this.set_time_format(format, cx),
-                )
-            })
-            .collect(),
+            ],
+            self.time_format,
+            self.settings_dropdown == Some(SettingsDropdown::TimeFormat),
             t,
+            cx,
+            |this, format, cx| this.set_time_format(format, cx),
         )];
 
         let mut notification_rows: Vec<gpui::AnyElement> = Vec::new();
-        notification_rows.push(settings_chip_group(
+        notification_rows.push(settings_dropdown_group(
+            "event-notification-setting",
             "Events",
-            [
+            SettingsDropdown::EventNotification,
+            notification_offset_label(self.notification_defaults.event_offset_secs),
+            vec![
                 ("At start", 0),
                 ("5 min", 5 * 60),
                 ("10 min", DEFAULT_EVENT_NOTIFICATION_OFFSET_SECS),
                 ("15 min", 15 * 60),
                 ("30 min", 30 * 60),
                 ("1 hr", 60 * 60),
-            ]
-            .into_iter()
-            .enumerate()
-            .map(|(idx, (label, offset_secs))| {
-                let is_active = self.notification_defaults.event_offset_secs == offset_secs;
-                let mut defaults = self.notification_defaults;
-                defaults.event_offset_secs = offset_secs;
-                choice_chip(
-                    ("event-notification-setting", idx),
-                    label,
-                    is_active,
-                    active_marker(is_active, t),
-                    t,
-                    cx,
-                    move |this, cx| this.set_notification_defaults(defaults, cx),
-                )
-            })
-            .collect(),
+            ],
+            self.notification_defaults.event_offset_secs,
+            self.settings_dropdown == Some(SettingsDropdown::EventNotification),
             t,
+            cx,
+            |this, offset_secs, cx| {
+                let mut defaults = this.notification_defaults;
+                defaults.event_offset_secs = offset_secs;
+                this.set_notification_defaults(defaults, cx);
+            },
         ));
-        notification_rows.push(settings_chip_group(
+        notification_rows.push(settings_dropdown_group(
+            "assignment-notification-setting",
             "Assignments",
-            [
+            SettingsDropdown::AssignmentNotification,
+            assignment_notification_offset_label(self.notification_defaults.assignment_offset_secs),
+            vec![
                 ("At due", 0),
                 ("1 hr", 60 * 60),
                 ("2 hr", 2 * 60 * 60),
                 ("6 hr", 6 * 60 * 60),
                 ("1 day", 24 * 60 * 60),
                 ("2 days", 2 * 24 * 60 * 60),
-            ]
-            .into_iter()
-            .enumerate()
-            .map(|(idx, (label, offset_secs))| {
-                let is_active = self.notification_defaults.assignment_offset_secs == offset_secs;
-                let mut defaults = self.notification_defaults;
-                defaults.assignment_offset_secs = offset_secs;
-                choice_chip(
-                    ("assignment-notification-setting", idx),
-                    label,
-                    is_active,
-                    active_marker(is_active, t),
-                    t,
-                    cx,
-                    move |this, cx| this.set_notification_defaults(defaults, cx),
-                )
-            })
-            .collect(),
+            ],
+            self.notification_defaults.assignment_offset_secs,
+            self.settings_dropdown == Some(SettingsDropdown::AssignmentNotification),
             t,
+            cx,
+            |this, offset_secs, cx| {
+                let mut defaults = this.notification_defaults;
+                defaults.assignment_offset_secs = offset_secs;
+                this.set_notification_defaults(defaults, cx);
+            },
         ));
         let update_rows = self.auto_update_rows(t, cx);
         let sync_panel = self.settings_sync_panel(t, cx);
@@ -233,12 +188,8 @@ impl KnotQApp {
         let account = self.settings.sync_account.as_ref();
         let signed_in = account.is_some();
         let sync_enabled = account.is_some_and(|account| account.supports_sync);
-        let (badge, default_detail, badge_bg, badge_fg) = settings_sync_panel_state(
-            signed_in,
-            sync_enabled,
-            account.map(|account| account.email.as_str()),
-            t,
-        );
+        let (badge, default_detail, badge_bg, badge_fg) =
+            settings_sync_panel_state(signed_in, sync_enabled, t);
 
         div()
             .w_full()
@@ -412,13 +363,12 @@ impl KnotQApp {
 fn settings_sync_panel_state(
     signed_in: bool,
     sync_enabled: bool,
-    email: Option<&str>,
     t: UiTheme,
 ) -> (&'static str, String, u32, u32) {
     if sync_enabled {
         return (
             "Enabled",
-            email.unwrap_or("Sync on").to_string(),
+            "Sync is active on this device.".to_string(),
             if t.is_dark { 0x30d15826 } else { 0x1f8f4d18 },
             if t.is_dark { 0x9af0b6ff } else { 0x176b38ff },
         );
@@ -427,7 +377,7 @@ fn settings_sync_panel_state(
     if signed_in {
         return (
             "Upgrade",
-            email.unwrap_or("Sync off").to_string(),
+            "Signed in. Subscribe to enable cross-device sync.".to_string(),
             if t.is_dark { 0xf59e0b28 } else { 0xd977061a },
             if t.is_dark { 0xf8d38dff } else { 0x9a4b00ff },
         );
@@ -435,7 +385,7 @@ fn settings_sync_panel_state(
 
     (
         "Available",
-        "Sign in".to_string(),
+        "Sign up for cross-device notes and notifications.".to_string(),
         if t.is_dark { 0x3b82f628 } else { 0x2f67cf18 },
         if t.is_dark { 0x9bc2ffff } else { 0x235ebeff },
     )
@@ -527,11 +477,64 @@ fn settings_section(
         .into_any_element()
 }
 
-fn settings_chip_group(
+fn settings_dropdown_group<T, F>(
+    id: &'static str,
     label: &'static str,
-    chips: Vec<gpui::AnyElement>,
+    dropdown: SettingsDropdown,
+    selected_label: &'static str,
+    options: Vec<(&'static str, T)>,
+    current: T,
+    is_open: bool,
     t: UiTheme,
-) -> gpui::AnyElement {
+    cx: &mut Context<KnotQApp>,
+    on_select: F,
+) -> gpui::AnyElement
+where
+    T: Copy + PartialEq + 'static,
+    F: Fn(&mut KnotQApp, T, &mut Context<KnotQApp>) + Copy + 'static,
+{
+    let option_rows = options
+        .into_iter()
+        .enumerate()
+        .map(|(idx, (option_label, value))| {
+            let selected = value == current;
+            div()
+                .id((id, idx + 1))
+                .w_full()
+                .min_h(px(26.0))
+                .px(px(7.0))
+                .py(px(3.0))
+                .flex()
+                .items_center()
+                .gap(px(7.0))
+                .rounded(px(4.0))
+                .cursor_pointer()
+                .when(selected, {
+                    let c = settings_selection_bg(t);
+                    move |s| s.bg(token_rgba(c))
+                })
+                .when(!selected, {
+                    let c = t.row_hover;
+                    move |s| s.hover(move |h| h.bg(token_rgba(c)))
+                })
+                .on_click(cx.listener(move |this, _: &ClickEvent, _window, cx| {
+                    on_select(this, value, cx);
+                    this.settings_dropdown = None;
+                    cx.notify();
+                }))
+                .child(active_marker(selected, t))
+                .child(
+                    div()
+                        .min_w_0()
+                        .text_size(px(11.0))
+                        .font_weight(gpui::FontWeight::SEMIBOLD)
+                        .text_color(token_hsla(t.text_primary))
+                        .child(option_label),
+                )
+                .into_any_element()
+        })
+        .collect::<Vec<_>>();
+
     div()
         .px(px(8.0))
         .py(px(5.0))
@@ -545,7 +548,7 @@ fn settings_chip_group(
             div()
                 .w(px(86.0))
                 .flex_shrink_0()
-                .pt(px(4.0))
+                .pt(px(5.0))
                 .text_size(px(11.0))
                 .font_weight(gpui::FontWeight::SEMIBOLD)
                 .text_color(token_hsla(t.text_dim))
@@ -556,65 +559,73 @@ fn settings_chip_group(
                 .min_w_0()
                 .flex_1()
                 .flex()
-                .flex_wrap()
-                .gap(px(6.0))
-                .children(chips),
-        )
-        .into_any_element()
-}
-
-fn choice_chip<F>(
-    id: (&'static str, usize),
-    label: &'static str,
-    is_active: bool,
-    marker: gpui::AnyElement,
-    t: UiTheme,
-    cx: &mut Context<KnotQApp>,
-    on_click: F,
-) -> gpui::AnyElement
-where
-    F: Fn(&mut KnotQApp, &mut Context<KnotQApp>) + 'static,
-{
-    div()
-        .id(id)
-        .min_h(px(26.0))
-        .px(px(7.0))
-        .py(px(3.0))
-        .flex()
-        .items_center()
-        .gap(px(5.0))
-        .rounded(px(4.0))
-        .border_1()
-        .border_color(token_rgba(if is_active {
-            settings_selection_accent(t)
-        } else {
-            t.border_main
-        }))
-        .bg(token_rgba(if is_active {
-            settings_selection_bg(t)
-        } else {
-            t.button_bg
-        }))
-        .cursor_pointer()
-        .hover({
-            let c = if is_active {
-                settings_selection_bg(t)
-            } else {
-                t.button_hover
-            };
-            move |h| h.bg(token_rgba(c))
-        })
-        .on_click(cx.listener(move |this, _: &ClickEvent, _w, cx| {
-            on_click(this, cx);
-        }))
-        .child(marker)
-        .child(
-            div()
-                .text_size(px(11.0))
-                .font_weight(gpui::FontWeight::SEMIBOLD)
-                .text_color(token_hsla(t.text_primary))
-                .whitespace_nowrap()
-                .child(label),
+                .flex_col()
+                .gap(px(4.0))
+                .child(
+                    div()
+                        .id((id, 0_usize))
+                        .h(px(28.0))
+                        .max_w(px(240.0))
+                        .px(px(8.0))
+                        .flex()
+                        .items_center()
+                        .justify_between()
+                        .gap(px(8.0))
+                        .rounded(px(5.0))
+                        .border_1()
+                        .border_color(token_rgba(if is_open {
+                            settings_selection_accent(t)
+                        } else {
+                            t.border_main
+                        }))
+                        .bg(token_rgba(t.button_bg))
+                        .cursor_pointer()
+                        .hover({
+                            let c = t.button_hover;
+                            move |h| h.bg(token_rgba(c))
+                        })
+                        .on_click(cx.listener(move |this, _: &ClickEvent, _window, cx| {
+                            this.settings_dropdown = if this.settings_dropdown == Some(dropdown) {
+                                None
+                            } else {
+                                Some(dropdown)
+                            };
+                            cx.notify();
+                        }))
+                        .child(
+                            div()
+                                .min_w_0()
+                                .text_size(px(11.0))
+                                .font_weight(gpui::FontWeight::SEMIBOLD)
+                                .text_color(token_hsla(t.text_primary))
+                                .child(selected_label),
+                        )
+                        .child(
+                            Icon::new(if is_open {
+                                IconName::ChevronUp
+                            } else {
+                                IconName::ChevronDown
+                            })
+                            .with_size(px(13.0))
+                            .text_color(token_hsla(t.text_soft)),
+                        ),
+                )
+                .when(is_open, |s| {
+                    s.child(
+                        div()
+                            .max_w(px(240.0))
+                            .p(px(3.0))
+                            .rounded(px(5.0))
+                            .border_1()
+                            .border_color(token_rgba(t.border_main))
+                            .bg(token_rgba(t.bg_modal))
+                            .shadow_md()
+                            .flex()
+                            .flex_col()
+                            .gap(px(2.0))
+                            .children(option_rows),
+                    )
+                }),
         )
         .into_any_element()
 }
@@ -1011,6 +1022,58 @@ fn checked_time_label(checked_at: DateTime<Utc>) -> String {
     checked_at.with_timezone(&Local).format("%H:%M").to_string()
 }
 
+fn theme_mode_label(mode: ThemeMode) -> &'static str {
+    match mode {
+        ThemeMode::Dark => "Dark",
+        ThemeMode::Light => "Light",
+        ThemeMode::System => "System",
+    }
+}
+
+fn calendar_view_label(mode: CalendarViewMode) -> &'static str {
+    match mode {
+        CalendarViewMode::Week => "Week",
+        CalendarViewMode::Month => "Month",
+    }
+}
+
+fn calendar_range_label(range: CalendarWeekRange) -> &'static str {
+    match range {
+        CalendarWeekRange::NextSevenDays => "Rolling week",
+        CalendarWeekRange::CalendarWeek => "Calendar week",
+    }
+}
+
+fn time_format_label(format: TimeFormat) -> &'static str {
+    match format {
+        TimeFormat::TwelveHour => "12-hour",
+        TimeFormat::TwentyFourHour => "24-hour",
+    }
+}
+
+fn notification_offset_label(offset_secs: i64) -> &'static str {
+    match offset_secs {
+        0 => "At start",
+        300 => "5 min",
+        600 => "10 min",
+        900 => "15 min",
+        1_800 => "30 min",
+        3_600 => "1 hr",
+        7_200 => "2 hr",
+        21_600 => "6 hr",
+        86_400 => "1 day",
+        172_800 => "2 days",
+        _ => "Custom",
+    }
+}
+
+fn assignment_notification_offset_label(offset_secs: i64) -> &'static str {
+    match offset_secs {
+        0 => "At due",
+        _ => notification_offset_label(offset_secs),
+    }
+}
+
 fn google_calendar_last_synced_label(value: DateTime<Utc>) -> String {
     format!(
         "Synced {}",
@@ -1049,17 +1112,6 @@ fn settings_message(message: String, is_error: bool, t: UiTheme) -> gpui::AnyEle
                 }))
                 .child(message),
         )
-        .into_any_element()
-}
-
-fn theme_swatch(theme: UiTheme, t: UiTheme) -> gpui::AnyElement {
-    div()
-        .w(px(16.0))
-        .h(px(16.0))
-        .rounded(px(3.0))
-        .border_1()
-        .border_color(token_rgba(t.border_main))
-        .bg(token_rgba(theme.bg_app))
         .into_any_element()
 }
 

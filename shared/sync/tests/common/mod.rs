@@ -197,6 +197,18 @@ impl Harness {
         self.devices.insert(key, device);
     }
 
+    pub fn server_pull_calls(&self) -> usize {
+        self.server.pull_calls()
+    }
+
+    pub fn server_push_calls(&self) -> usize {
+        self.server.push_calls()
+    }
+
+    pub fn server_document_count(&self) -> usize {
+        self.server.document_count()
+    }
+
     pub fn push_remote_workspace_snapshot(&self, workspace: &Workspace) {
         let documents = WorkspaceCrdtDocuments::snapshot_updates(workspace)
             .updates
@@ -410,6 +422,10 @@ impl TestServer {
 
     pub fn push_calls(&self) -> usize {
         self.counters.borrow().push_calls
+    }
+
+    pub fn document_count(&self) -> usize {
+        self.documents.borrow().len()
     }
 }
 

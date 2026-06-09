@@ -249,14 +249,22 @@ pub enum SyncAuthMode {
     CreateAccount,
 }
 
-/// A destructive account action awaiting an explicit second confirmation in the
-/// sync modal (so a single misclick can't cancel sync or delete the account).
+/// An account action awaiting an explicit second confirmation in Settings, so a
+/// single misclick cannot change billing state.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum SyncAccountAction {
     /// Turn off the sync entitlement for the account (keeps the account + data).
     CancelSubscription,
-    /// Schedule account deletion (14-day grace; signing back in undoes it).
-    DeleteAccount,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum SettingsDropdown {
+    Theme,
+    CalendarView,
+    CalendarRange,
+    TimeFormat,
+    EventNotification,
+    AssignmentNotification,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -550,6 +558,10 @@ pub struct KnotQApp {
     /// Bounded background poll that re-checks entitlement after the user opens the
     /// subscription checkout, so sync turns on without them clicking anything.
     pub sync_subscription_poll_task: Option<Task<()>>,
+    /// The currently expanded compact selector in Settings.
+    pub settings_dropdown: Option<SettingsDropdown>,
+    /// Whether the signed-in sync card is showing account-management actions.
+    pub sync_account_manage_open: bool,
     /// Pending confirmation for a destructive account action shown in Settings.
     pub sync_account_action: Option<SyncAccountAction>,
     /// Anchor for the title-bar sync status popover; `Some` while it is open.
@@ -678,6 +690,8 @@ impl KnotQApp {
             sync_advance_onboarding_on_success: false,
             sync_auth_status: SyncAuthStatus::Idle,
             sync_account_action: None,
+            settings_dropdown: None,
+            sync_account_manage_open: false,
             sync_run_status: SyncRunStatus::Idle,
             sync_auth_task: None,
             sync_subscription_poll_task: None,

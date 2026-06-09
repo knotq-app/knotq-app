@@ -164,7 +164,9 @@ impl SchemeEditor {
         }
 
         let image = load_image_for_media(media);
-        self.image_cache.insert(*asset, image.clone());
+        if image.is_some() {
+            self.image_cache.insert(*asset, image.clone());
+        }
         image
     }
 }

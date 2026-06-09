@@ -1,6 +1,7 @@
 use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::io::Read;
+use std::path::Path;
 use std::time::Duration as StdDuration;
 
 use anyhow::{anyhow, Context as AnyhowContext, Result};
@@ -56,6 +57,7 @@ struct SyncRunResult {
     remote_updates_applied: usize,
     remaining_pending: usize,
     local_workspace_changed: bool,
+    media_downloaded: bool,
 }
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
@@ -165,6 +167,7 @@ async fn run_sync_once(weak: &gpui::WeakEntity<KnotQApp>, cx: &mut gpui::AsyncAp
             let crdt_states = result.crdt_states.clone();
             let remaining_pending = result.remaining_pending;
             let local_workspace_changed = result.local_workspace_changed;
+            let media_downloaded = result.media_downloaded;
             let _ = weak.update(cx, |app, cx| {
                 for pushed in pushed {
                     app.state
@@ -179,6 +182,20 @@ async fn run_sync_once(weak: &gpui::WeakEntity<KnotQApp>, cx: &mut gpui::AsyncAp
                         .replace_workspace_from_sync(workspace, crdt_states);
                     app.service_bus.signal_save();
                     app.service_bus.signal_notifications();
+                    app.service_bus.signal_timeline();
+                }
+                if media_downloaded {
+                    if let Some((_, editor)) = app.scheme_editor.clone() {
+                        editor.update(cx, |_, cx| cx.notify());
+                    }
+                    for editor in app
+                        .daily_queue_editors
+                        .values()
+                        .cloned()
+                        .collect::<Vec<_>>()
+                    {
+                        editor.update(cx, |_, cx| cx.notify());
+                    }
                     app.service_bus.signal_timeline();
                 }
                 cx.notify();
@@ -311,8 +328,6 @@ fn sync_snapshot(snapshot: SyncSnapshot) -> Result<SyncRunResult> {
         WorkspaceCrdtDocuments::from_states(&workspace, snapshot.replica_id, &crdt_states)?;
     let mut pushed = Vec::new();
 
-    upload_local_media_assets(&client, &mut local_state, &workspace)?;
-
     // One batched pull syncs the whole workspace: the server returns the current
     // merged state of every document whose seq advanced past our cursor (and any
     // document created on another device). Applying it materializes the merged
@@ -340,7 +355,8 @@ fn sync_snapshot(snapshot: SyncSnapshot) -> Result<SyncRunResult> {
         )?;
     }
 
-    download_missing_media_assets(&client, &workspace)?;
+    upload_local_media_assets(&client, &mut local_state, &workspace, &pull.remote_latest)?;
+    let media_downloaded = download_missing_media_assets(&client, &workspace)?;
 
     // The CRDT documents are now final for this run (remote applied + repair). Capture
     // their merged state to hand back to the UI store and to persist on disk.
@@ -392,6 +408,7 @@ fn sync_snapshot(snapshot: SyncSnapshot) -> Result<SyncRunResult> {
         remote_updates_applied,
         remaining_pending: local_state.pending.len(),
         local_workspace_changed: local_workspace_changed || repaired_workspace_changed,
+        media_downloaded,
     })
 }
 
@@ -524,6 +541,7 @@ fn upload_local_media_assets(
     client: &SyncHttpClient,
     local_state: &mut LocalSyncState,
     workspace: &Workspace,
+    remote_latest: &HashMap<DocumentId, u64>,
 ) -> Result<()> {
     for media in workspace_media_assets(workspace) {
         let path = image_asset_path(media.asset, media.format.extension());
@@ -534,6 +552,9 @@ fn upload_local_media_assets(
             continue;
         }
         let byte_length = metadata.len();
+        if byte_length == 0 {
+            continue;
+        }
         if byte_length > MAX_SYNC_MEDIA_BYTES as u64 {
             return Err(anyhow!(
                 "image {} is {} bytes, above the {} byte sync limit",
@@ -553,7 +574,13 @@ fn upload_local_media_assets(
             ));
         }
         let sha256 = media_sha256(&bytes);
-        if local_state.media_upload_is_current(&image_name, media.document, byte_length, &sha256) {
+        if !local_state.should_upload_media_asset(
+            &image_name,
+            media.document,
+            byte_length,
+            &sha256,
+            remote_latest,
+        ) {
             continue;
         }
         client.upload_media_asset(media, &bytes)?;
@@ -562,10 +589,11 @@ fn upload_local_media_assets(
     Ok(())
 }
 
-fn download_missing_media_assets(client: &SyncHttpClient, workspace: &Workspace) -> Result<()> {
+fn download_missing_media_assets(client: &SyncHttpClient, workspace: &Workspace) -> Result<bool> {
+    let mut downloaded = false;
     for media in workspace_media_assets(workspace) {
         let path = image_asset_path(media.asset, media.format.extension());
-        if path.exists() {
+        if !media_asset_needs_download(&path)? {
             continue;
         }
         let image_name = media.image_name();
@@ -585,8 +613,22 @@ fn download_missing_media_assets(client: &SyncHttpClient, workspace: &Workspace)
             fs::create_dir_all(parent).with_context(|| format!("create {}", parent.display()))?;
         }
         fs::write(&path, bytes).with_context(|| format!("write {}", path.display()))?;
+        downloaded = true;
     }
-    Ok(())
+    Ok(downloaded)
+}
+
+fn media_asset_needs_download(path: &Path) -> Result<bool> {
+    match fs::metadata(path) {
+        Ok(metadata) if metadata.is_file() && metadata.len() > 0 => Ok(false),
+        Ok(metadata) if metadata.is_file() => Ok(true),
+        Ok(_) => Err(anyhow!(
+            "image asset path {} exists but is not a file",
+            path.display()
+        )),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(true),
+        Err(error) => Err(error).with_context(|| format!("stat {}", path.display())),
+    }
 }
 
 impl SyncTransport for SyncHttpClient {
@@ -733,7 +775,7 @@ fn is_secure_api_base(url: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{normalize_api_base, workspace_for_background_sync};
+    use super::{media_asset_needs_download, normalize_api_base, workspace_for_background_sync};
     use chrono::{NaiveDate, Utc};
     use knotq_model::{
         daily_queue_scheme_id, DocumentId, OperationId, ReplicaId, Scheme, SyncDocumentKind,
@@ -768,6 +810,20 @@ mod tests {
         assert!(normalize_api_base("http://sync.example.com").is_err());
         assert!(normalize_api_base("ftp://sync.example.com").is_err());
         assert!(normalize_api_base("").is_err());
+    }
+
+    #[test]
+    fn zero_byte_desktop_media_file_is_downloaded_again() {
+        let dir = unique_temp_dir("knotq-desktop-media");
+        let path = dir.join("asset.png");
+        fs::write(&path, []).unwrap();
+
+        assert!(media_asset_needs_download(&path).unwrap());
+
+        fs::write(&path, [1, 2, 3]).unwrap();
+        assert!(!media_asset_needs_download(&path).unwrap());
+
+        let _ = fs::remove_dir_all(dir);
     }
 
     #[test]
@@ -1062,12 +1118,14 @@ mod tests {
             kind: SyncDocumentKind::Scheme,
             update_v1: vec![2],
         });
+        state.mark_media_uploaded("asset.png".to_string(), document, 4, "hash".to_string());
 
         // A pre-recovery file (version 0) heals once: cursors are dropped so the
         // next sync re-pulls and re-merges from zero, and stale workspace-index
         // deltas are not allowed to re-push the corrupt index.
         assert!(state.heal_for_recovery_version());
         assert!(state.document_cursors.is_empty());
+        assert!(state.media_cursors.is_empty());
         assert_eq!(state.pending.len(), 1);
         assert_eq!(state.pending[0].kind, SyncDocumentKind::Scheme);
         assert_eq!(
