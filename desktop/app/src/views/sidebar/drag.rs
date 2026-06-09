@@ -108,10 +108,17 @@ impl KnotQApp {
                 }
             }
             NavigatorDragSource::Archive => match drag.node {
-                NodeRef::Folder(_) => false,
+                NodeRef::Folder(id) => {
+                    self.workspace.folder(id).is_some()
+                        && self.workspace.is_folder_deleted(id)
+                        && !self
+                            .workspace
+                            .is_node_in_deleted_folder_subtree(NodeRef::Folder(new_parent))
+                }
                 NodeRef::Scheme(id) => {
                     self.workspace.scheme(id).is_some()
                         && self.workspace.is_scheme_deleted(id)
+                        && !self.workspace.is_scheme_in_deleted_folder_subtree(id)
                         && self.is_valid_scheme_drop_folder(new_parent)
                 }
             },
@@ -140,19 +147,28 @@ impl KnotQApp {
                 new_parent,
                 position,
             },
-            NavigatorDragSource::Archive => {
-                let NodeRef::Scheme(id) = drag.node else {
-                    return;
-                };
-                let Some(scheme) = self.workspace.scheme(id).cloned() else {
-                    return;
-                };
-                Command::RestoreScheme {
-                    folder: new_parent,
-                    position,
-                    scheme,
+            NavigatorDragSource::Archive => match drag.node {
+                NodeRef::Folder(id) => {
+                    let Some(folder) = self.workspace.folder(id).cloned() else {
+                        return;
+                    };
+                    Command::RestoreFolder {
+                        parent: new_parent,
+                        position,
+                        folder,
+                    }
                 }
-            }
+                NodeRef::Scheme(id) => {
+                    let Some(scheme) = self.workspace.scheme(id).cloned() else {
+                        return;
+                    };
+                    Command::RestoreScheme {
+                        folder: new_parent,
+                        position,
+                        scheme,
+                    }
+                }
+            },
         };
         let cmd = if should_expand {
             Command::Batch(vec![

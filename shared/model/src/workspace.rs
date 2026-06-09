@@ -40,6 +40,16 @@ pub struct Workspace {
     pub recently_deleted: Vec<SchemeId>,
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
     pub deleted_scheme_origins: HashMap<SchemeId, DeletedSchemeOrigin>,
+    /// Top-level archived folders, newest-first like [`recently_deleted`]. The folder
+    /// (and its whole subtree) stays in [`folders`]/[`schemes`] — detached from
+    /// [`root`] — so the archive can show it as a folder and restore it as one unit.
+    /// Each scheme inside an archived folder subtree is also recorded in
+    /// [`recently_deleted`], so the existing per-scheme "is archived" checks
+    /// (calendar, sidebar, search) keep working unchanged.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub recently_deleted_folders: Vec<FolderId>,
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub deleted_folder_origins: HashMap<FolderId, DeletedFolderOrigin>,
 }
 
 impl Workspace {
@@ -68,6 +78,8 @@ impl Workspace {
             daily_queue: BTreeMap::new(),
             recently_deleted: Vec::new(),
             deleted_scheme_origins: HashMap::new(),
+            recently_deleted_folders: Vec::new(),
+            deleted_folder_origins: HashMap::new(),
         };
         workspace.ensure_sync_metadata();
         workspace
@@ -159,6 +171,177 @@ impl Workspace {
         self.deleted_scheme_origins.get(&id).copied()
     }
 
+    pub fn is_folder_deleted(&self, id: FolderId) -> bool {
+        self.recently_deleted_folders.contains(&id)
+    }
+
+    pub fn is_node_in_deleted_folder_subtree(&self, node: NodeRef) -> bool {
+        self.deleted_folder_ancestor(node).is_some()
+    }
+
+    pub fn is_scheme_in_deleted_folder_subtree(&self, id: SchemeId) -> bool {
+        self.is_node_in_deleted_folder_subtree(NodeRef::Scheme(id))
+    }
+
+    pub fn deleted_folder_ancestor(&self, node: NodeRef) -> Option<FolderId> {
+        for top in &self.recently_deleted_folders {
+            if self.subtree_contains_node(*top, node) {
+                return Some(*top);
+            }
+        }
+        None
+    }
+
+    /// The top-level archived folders, in archive order.
+    pub fn iter_deleted_folders(&self) -> impl Iterator<Item = &Folder> {
+        self.recently_deleted_folders
+            .iter()
+            .filter_map(|id| self.folders.get(id))
+    }
+
+    pub fn deleted_folder_origin(&self, id: FolderId) -> Option<DeletedFolderOrigin> {
+        self.deleted_folder_origins.get(&id).copied()
+    }
+
+    /// Archive a folder as one unit: it (and its whole subtree) is kept in
+    /// `folders`/`schemes` but detached from the sidebar, recorded as an archived
+    /// top-level folder, and every scheme inside the subtree is marked deleted so the
+    /// existing per-scheme archive checks still hold. The caller is responsible for
+    /// having removed the folder from its parent's `children`.
+    pub fn mark_folder_deleted_from(&mut self, id: FolderId, parent: FolderId, position: usize) {
+        self.mark_folder_deleted_at(id, 0, DeletedFolderOrigin { parent, position });
+    }
+
+    pub fn mark_folder_deleted_at(
+        &mut self,
+        id: FolderId,
+        position: usize,
+        origin: DeletedFolderOrigin,
+    ) {
+        self.recently_deleted_folders
+            .retain(|deleted| *deleted != id);
+        let position = position.min(self.recently_deleted_folders.len());
+        self.recently_deleted_folders.insert(position, id);
+        self.deleted_folder_origins.insert(id, origin);
+        for scheme in self.subtree_scheme_ids(id) {
+            self.mark_scheme_deleted(scheme);
+        }
+    }
+
+    pub fn unmark_folder_deleted_shallow(&mut self, id: FolderId) {
+        self.recently_deleted_folders.retain(|folder| *folder != id);
+        self.deleted_folder_origins.remove(&id);
+    }
+
+    pub fn remove_scheme_from_archive(&mut self, id: SchemeId) {
+        self.recently_deleted.retain(|deleted| *deleted != id);
+        self.deleted_scheme_origins.remove(&id);
+    }
+
+    pub fn remove_folder_from_archive(&mut self, id: FolderId) {
+        if !self.recently_deleted_folders.contains(&id) {
+            return;
+        }
+        self.unmark_folder_deleted_shallow(id);
+    }
+
+    /// Reverse [`mark_folder_deleted_from`]: clear the folder's archived state and
+    /// un-delete every scheme in its subtree. Re-attaching the folder to its parent
+    /// is the caller's responsibility.
+    pub fn unmark_folder_deleted(&mut self, id: FolderId) {
+        self.recently_deleted_folders.retain(|folder| *folder != id);
+        self.deleted_folder_origins.remove(&id);
+        for scheme in self.subtree_scheme_ids(id) {
+            self.unmark_scheme_deleted(scheme);
+        }
+    }
+
+    /// All scheme ids reachable under `folder` (inclusive of nested subfolders).
+    pub fn subtree_scheme_ids(&self, folder: FolderId) -> HashSet<SchemeId> {
+        let mut schemes = HashSet::new();
+        let mut stack = vec![folder];
+        let mut seen_folders = HashSet::new();
+        while let Some(current) = stack.pop() {
+            if !seen_folders.insert(current) {
+                continue;
+            }
+            if let Some(folder) = self.folders.get(&current) {
+                for child in &folder.children {
+                    match child {
+                        NodeRef::Scheme(id) => {
+                            schemes.insert(*id);
+                        }
+                        NodeRef::Folder(id) => stack.push(*id),
+                    }
+                }
+            }
+        }
+        schemes
+    }
+
+    pub fn subtree_folder_ids(&self, folder: FolderId) -> HashSet<FolderId> {
+        let mut folders = HashSet::new();
+        let mut stack = vec![folder];
+        while let Some(current) = stack.pop() {
+            if !folders.insert(current) {
+                continue;
+            }
+            if let Some(folder) = self.folders.get(&current) {
+                for child in &folder.children {
+                    if let NodeRef::Folder(id) = child {
+                        stack.push(*id);
+                    }
+                }
+            }
+        }
+        folders
+    }
+
+    fn subtree_contains_node(&self, folder: FolderId, target: NodeRef) -> bool {
+        if target == NodeRef::Folder(folder) {
+            return true;
+        }
+        let mut stack = vec![folder];
+        let mut seen_folders = HashSet::new();
+        while let Some(current) = stack.pop() {
+            if !seen_folders.insert(current) {
+                continue;
+            }
+            let Some(folder) = self.folders.get(&current) else {
+                continue;
+            };
+            for child in &folder.children {
+                if *child == target {
+                    return true;
+                }
+                if let NodeRef::Folder(id) = child {
+                    stack.push(*id);
+                }
+            }
+        }
+        false
+    }
+
+    /// All folder ids in archived subtrees (each archived top folder plus its nested
+    /// folders), so normalization retains them instead of pruning the detached tree.
+    fn archived_folder_subtree_ids(&self) -> HashSet<FolderId> {
+        let mut folders = HashSet::new();
+        let mut stack: Vec<FolderId> = self.recently_deleted_folders.clone();
+        while let Some(current) = stack.pop() {
+            if !folders.insert(current) {
+                continue;
+            }
+            if let Some(folder) = self.folders.get(&current) {
+                for child in &folder.children {
+                    if let NodeRef::Folder(id) = child {
+                        stack.push(*id);
+                    }
+                }
+            }
+        }
+        folders
+    }
+
     /// Walk root -> leaves, returning path from root to the node.
     pub fn path_to(&self, target: NodeRef) -> Vec<FolderId> {
         let mut out = Vec::new();
@@ -202,9 +385,40 @@ impl Workspace {
             &mut changed,
         );
 
+        // Archived folder subtrees are detached from root, so the root walk never
+        // visits them; retain them explicitly (and drop archive entries whose folder
+        // no longer exists) so an archived folder keeps its structure.
+        let deleted_folders_before = self.recently_deleted_folders.len();
+        self.recently_deleted_folders
+            .retain(|id| self.folders.contains_key(id));
+        if self.recently_deleted_folders.len() != deleted_folders_before {
+            changed = true;
+        }
+        let archived_folders = self.archived_folder_subtree_ids();
+        let archived_folder_ids: HashSet<FolderId> =
+            self.recently_deleted_folders.iter().copied().collect();
+        let folder_origins_before = self.deleted_folder_origins.len();
+        self.deleted_folder_origins
+            .retain(|id, _| archived_folder_ids.contains(id));
+        if self.deleted_folder_origins.len() != folder_origins_before {
+            changed = true;
+        }
+        // Schemes inside an archived subtree must stay marked deleted.
+        let mut archived_subtree_schemes: HashSet<SchemeId> = HashSet::new();
+        for id in &self.recently_deleted_folders {
+            archived_subtree_schemes.extend(self.subtree_scheme_ids(*id));
+        }
+        for id in &archived_subtree_schemes {
+            if self.schemes.contains_key(id) && !self.recently_deleted.contains(id) {
+                self.recently_deleted.push(*id);
+                changed = true;
+            }
+        }
+
         let before_folders = self.folders.len();
-        self.folders
-            .retain(|id, _| *id == self.root || visited_folders.contains(id));
+        self.folders.retain(|id, _| {
+            *id == self.root || visited_folders.contains(id) || archived_folders.contains(id)
+        });
         if self.folders.len() != before_folders {
             changed = true;
         }
@@ -231,6 +445,7 @@ impl Workspace {
             .copied()
             .chain(self.recently_deleted.iter().copied())
             .chain(daily_queue_ids.iter().copied())
+            .chain(archived_subtree_schemes.iter().copied())
             .collect();
         let before = self.schemes.len();
         self.schemes.retain(|id, _| retained_schemes.contains(id));
@@ -285,7 +500,9 @@ impl Workspace {
                     if id == self.root
                         || !self.folders.contains_key(&id)
                         || visited_folders.contains(&id)
+                        || self.recently_deleted_folders.contains(&id)
                     {
+                        // Archived folders are detached from the sidebar tree.
                         *changed = true;
                         continue;
                     }
@@ -541,6 +758,12 @@ impl Workspace {
                 changed = true;
             }
         }
+        for origin in self.deleted_folder_origins.values_mut() {
+            if origin.parent == old_root || merge_roots.contains(&origin.parent) {
+                origin.parent = expected_root;
+                changed = true;
+            }
+        }
         changed
     }
 
@@ -648,6 +871,13 @@ pub struct Folder {
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct DeletedSchemeOrigin {
     pub folder: FolderId,
+    pub position: usize,
+}
+
+/// Where an archived folder lived before deletion, so it restores to the same place.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct DeletedFolderOrigin {
+    pub parent: FolderId,
     pub position: usize,
 }
 

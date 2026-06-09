@@ -60,7 +60,7 @@ impl KnotQApp {
                     cx,
                 );
                 if let Some(receipt) = receipt {
-                    if let Command::DeleteFolder { id } = receipt.inverse {
+                    if let Some(id) = created_folder_id_from_inverse(receipt.inverse) {
                         self.start_renaming_node(NodeRef::Folder(id), window, cx);
                     }
                 }
@@ -229,6 +229,16 @@ impl KnotQApp {
             NewNodeKind::Scheme => "Untitled",
         }
         .to_string()
+    }
+}
+
+fn created_folder_id_from_inverse(command: Command) -> Option<FolderId> {
+    match command {
+        Command::DeleteFolder { id } => Some(id),
+        Command::Batch(commands) => commands
+            .into_iter()
+            .find_map(created_folder_id_from_inverse),
+        _ => None,
     }
 }
 

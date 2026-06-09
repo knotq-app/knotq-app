@@ -175,6 +175,27 @@ impl KnotQApp {
                     }),
                 ));
             }
+            SidebarContextTarget::DeletedFolder { folder_id } => {
+                items.push(sidebar_context_item(
+                    "sidebar-menu-restore-deleted-folder",
+                    "Restore",
+                    t,
+                    cx.listener(move |this, _: &ClickEvent, _window, cx| {
+                        this.close_sidebar_context_menu(cx);
+                        this.restore_deleted_folder(folder_id, cx);
+                    }),
+                ));
+                items.push(sidebar_context_separator(t));
+                items.push(sidebar_context_item(
+                    "sidebar-menu-permanently-delete-folder",
+                    "Permanently Delete",
+                    t,
+                    cx.listener(move |this, _: &ClickEvent, _window, cx| {
+                        this.close_sidebar_context_menu(cx);
+                        this.permanently_delete_folder(folder_id, cx);
+                    }),
+                ));
+            }
         }
         let viewport_width = px(f32::from(window.viewport_size().width));
         let viewport_height = px(f32::from(window.viewport_size().height));

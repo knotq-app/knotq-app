@@ -21,7 +21,7 @@ fn create_and_undo_folder() {
 }
 
 #[test]
-fn delete_folder_removes_child_schemes_and_undo_restores_them() {
+fn delete_folder_archives_subtree_and_undo_restores_it() {
     let mut workspace = Workspace::new();
     let root = workspace.root;
     let folder_id = create_folder(&mut workspace, root);
@@ -31,13 +31,22 @@ fn delete_folder_removes_child_schemes_and_undo_restores_them() {
         .apply(Command::DeleteFolder { id: folder_id })
         .unwrap();
 
-    assert!(!workspace.folders.contains_key(&folder_id));
+    assert!(workspace.folders.contains_key(&folder_id));
+    assert!(workspace.is_folder_deleted(folder_id));
     assert!(workspace.schemes.contains_key(&scheme_id));
     assert!(workspace.is_scheme_deleted(scheme_id));
+    assert_eq!(
+        workspace.folders[&folder_id].children,
+        vec![NodeRef::Scheme(scheme_id)]
+    );
+    assert!(!workspace.folders[&root]
+        .children
+        .contains(&NodeRef::Folder(folder_id)));
 
     workspace.apply(delete.inverse).unwrap();
 
     assert!(workspace.folders.contains_key(&folder_id));
+    assert!(!workspace.is_folder_deleted(folder_id));
     assert!(workspace.schemes.contains_key(&scheme_id));
     assert!(!workspace.is_scheme_deleted(scheme_id));
     assert_eq!(
@@ -47,7 +56,7 @@ fn delete_folder_removes_child_schemes_and_undo_restores_them() {
 }
 
 #[test]
-fn delete_folder_undo_redo_removes_restored_children() {
+fn delete_folder_undo_redo_rearchives_restored_children() {
     let mut workspace = Workspace::new();
     let root = workspace.root;
     let folder_id = create_folder(&mut workspace, root);
@@ -59,9 +68,14 @@ fn delete_folder_undo_redo_removes_restored_children() {
     let redo = workspace.apply(undo.inverse).unwrap();
     workspace.apply(redo.inverse).unwrap();
 
-    assert!(!workspace.folders.contains_key(&folder_id));
+    assert!(workspace.folders.contains_key(&folder_id));
+    assert!(workspace.is_folder_deleted(folder_id));
     assert!(workspace.schemes.contains_key(&scheme_id));
     assert!(workspace.is_scheme_deleted(scheme_id));
+    assert_eq!(
+        workspace.folders[&folder_id].children,
+        vec![NodeRef::Scheme(scheme_id)]
+    );
     assert!(!workspace.folders[&root]
         .children
         .contains(&NodeRef::Folder(folder_id)));
@@ -80,6 +94,13 @@ fn create_folder(
         .unwrap();
     match receipt.inverse {
         Command::DeleteFolder { id } => id,
+        Command::Batch(commands) => commands
+            .into_iter()
+            .find_map(|command| match command {
+                Command::DeleteFolder { id } => Some(id),
+                _ => None,
+            })
+            .unwrap(),
         _ => unreachable!(),
     }
 }

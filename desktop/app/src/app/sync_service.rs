@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::io::Read;
 use std::time::Duration as StdDuration;
@@ -13,8 +13,8 @@ use knotq_model::{
     SyncAccountStatus, Workspace, WorkspaceId,
 };
 use knotq_storage_json::{
-    image_asset_path, load_local_sync_state, load_workspace_with_options, save_local_sync_state,
-    save_workspace, workspace_path, WorkspaceLoadOptions,
+    image_asset_path, load_crdt_state, load_local_sync_state, load_workspace_with_options,
+    save_crdt_state, save_local_sync_state, save_workspace, workspace_path, WorkspaceLoadOptions,
 };
 use knotq_sync::{
     batch_pull_and_apply, batch_push_pending, queue_workspace_bootstrap_updates, BatchPullRequest,
@@ -39,11 +39,19 @@ struct SyncSnapshot {
     account: SyncAccountSettings,
     replica_id: ReplicaId,
     pending: Vec<PendingCrdtEdit>,
+    /// This device's current CRDT document state, so the background sync seeds its
+    /// CRDT from the UI store's latest local edits (with the same stable identity)
+    /// rather than from a possibly-staler on-disk copy.
+    crdt_states: HashMap<DocumentId, Vec<u8>>,
     notification_schedule: NotificationScheduleSnapshot,
 }
 
 struct SyncRunResult {
     workspace: Workspace,
+    /// The merged CRDT document state after applying remote updates, handed back so
+    /// the UI store adopts the canonical merged identity (never rebuilt from plain
+    /// data).
+    crdt_states: HashMap<DocumentId, Vec<u8>>,
     pushed: Vec<PushedDocument>,
     remote_updates_applied: usize,
     remaining_pending: usize,
@@ -117,6 +125,7 @@ async fn run_sync_once(weak: &gpui::WeakEntity<KnotQApp>, cx: &mut gpui::AsyncAp
             }
             app.state.sync_store_from_workspace();
             let pending = app.state.pending_crdt_edits();
+            let crdt_states = app.state.crdt_document_states();
             app.sync_run_status = SyncRunStatus::Running {
                 pending: pending.len(),
             };
@@ -132,6 +141,7 @@ async fn run_sync_once(weak: &gpui::WeakEntity<KnotQApp>, cx: &mut gpui::AsyncAp
                 account,
                 replica_id: app.settings.replica_id,
                 pending,
+                crdt_states,
                 notification_schedule,
             })
         })
@@ -152,6 +162,7 @@ async fn run_sync_once(weak: &gpui::WeakEntity<KnotQApp>, cx: &mut gpui::AsyncAp
             let remote_updates_applied = result.remote_updates_applied;
             let pushed = result.pushed.clone();
             let workspace = result.workspace.clone();
+            let crdt_states = result.crdt_states.clone();
             let remaining_pending = result.remaining_pending;
             let local_workspace_changed = result.local_workspace_changed;
             let _ = weak.update(cx, |app, cx| {
@@ -164,7 +175,8 @@ async fn run_sync_once(weak: &gpui::WeakEntity<KnotQApp>, cx: &mut gpui::AsyncAp
                 };
                 app.last_synced_at = Some(Utc::now());
                 if remote_updates_applied > 0 || local_workspace_changed {
-                    app.state.replace_workspace_from_sync(workspace);
+                    app.state
+                        .replace_workspace_from_sync(workspace, crdt_states);
                     app.service_bus.signal_save();
                     app.service_bus.signal_notifications();
                     app.service_bus.signal_timeline();
@@ -270,7 +282,6 @@ fn sync_snapshot(snapshot: SyncSnapshot) -> Result<SyncRunResult> {
     let local_workspace_changed =
         workspace.canonicalize_personal_sync_identity(server_workspace_id);
     workspace.ensure_sync_metadata();
-    let snapshot_pending_empty = snapshot.pending.is_empty();
 
     let mut local_state = load_local_sync_state(&path).unwrap_or_default();
     // One-time recovery: clear stale pull cursors so this sync re-pulls and
@@ -289,14 +300,15 @@ fn sync_snapshot(snapshot: SyncSnapshot) -> Result<SyncRunResult> {
         api_base: normalize_api_base(&snapshot.account.api_base)?,
         bearer_token: snapshot.account.bearer_token.clone(),
     };
-    let first_sync_without_local_pending = snapshot_pending_empty
-        && local_state.pending.is_empty()
-        && local_state.document_cursors.is_empty();
-    let mut crdt_docs = if first_sync_without_local_pending {
-        WorkspaceCrdtDocuments::empty(&workspace)
-    } else {
-        WorkspaceCrdtDocuments::try_new(&workspace)?
-    };
+    // Restore the long-lived CRDT documents from disk and overlay the UI store's
+    // latest states (the `snapshot`), so the sync's CRDT carries this device's stable
+    // deterministic identity plus its newest local edits — never rebuilt from plain
+    // data. Disk fills documents the in-memory store doesn't hold (e.g. archived /
+    // off-screen Daily Queue schemes loaded by `workspace_for_background_sync`).
+    let mut crdt_states = load_crdt_state(&path).unwrap_or_default();
+    crdt_states.extend(snapshot.crdt_states);
+    let mut crdt_docs =
+        WorkspaceCrdtDocuments::from_states(&workspace, snapshot.replica_id, &crdt_states)?;
     let mut pushed = Vec::new();
 
     upload_local_media_assets(&client, &mut local_state, &workspace)?;
@@ -330,23 +342,31 @@ fn sync_snapshot(snapshot: SyncSnapshot) -> Result<SyncRunResult> {
 
     download_missing_media_assets(&client, &workspace)?;
 
+    // The CRDT documents are now final for this run (remote applied + repair). Capture
+    // their merged state to hand back to the UI store and to persist on disk.
+    let merged_crdt_states = crdt_docs.document_states();
+
     // Persist the merged workspace BEFORE pushing. The durable pull cursors are
     // saved after the push regardless of its outcome, so the workspace must be on
     // disk first — otherwise a push failure would advance the cursor while
     // discarding the just-pulled remote schemes and archive (recently_deleted)
     // state, and the next sync (cursor already advanced) would never re-pull them.
     // That desync silently drops other devices' schemes and re-activates archived
-    // ones.
+    // ones. The CRDT state is saved in lockstep so a restart restores the same
+    // documents (with their stable identity).
     if remote_updates_applied > 0 || local_workspace_changed || repaired_workspace_changed {
         save_workspace(&path, &workspace)?;
+        save_crdt_state(&path, &merged_crdt_states)?;
     }
 
     let replica_id = local_state.replica_id.unwrap_or_default();
     // The server's per-document seq (our advanced pull cursor) tells the bootstrap
-    // which documents the server already has a base for; the rest get a full
-    // snapshot queued before their deltas.
+    // which documents the server already has a base for; the rest get a full snapshot
+    // from the persistent CRDT (so the re-seed shares identity with this device's
+    // diffs) queued before their deltas.
     queue_workspace_bootstrap_updates(
         &mut local_state,
+        &crdt_docs,
         &workspace,
         replica_id,
         &pull.remote_latest,
@@ -367,6 +387,7 @@ fn sync_snapshot(snapshot: SyncSnapshot) -> Result<SyncRunResult> {
 
     Ok(SyncRunResult {
         workspace,
+        crdt_states: merged_crdt_states,
         pushed,
         remote_updates_applied,
         remaining_pending: local_state.pending.len(),
@@ -850,6 +871,7 @@ mod tests {
 
         queue_workspace_bootstrap_updates(
             &mut state,
+            &WorkspaceCrdtDocuments::try_new(&workspace).unwrap(),
             &workspace,
             replica_id,
             &std::collections::HashMap::new(),
@@ -902,6 +924,7 @@ mod tests {
 
         queue_workspace_bootstrap_updates(
             &mut state,
+            &WorkspaceCrdtDocuments::try_new(&workspace).unwrap(),
             &workspace,
             replica_id,
             &std::collections::HashMap::new(),
@@ -945,6 +968,7 @@ mod tests {
         // No remote_latest entry for the orphan document → server has no base.
         queue_workspace_bootstrap_updates(
             &mut state,
+            &WorkspaceCrdtDocuments::try_new(&workspace).unwrap(),
             &workspace,
             replica_id,
             &std::collections::HashMap::new(),
@@ -987,6 +1011,7 @@ mod tests {
         // so the stale local cursor must not suppress a full snapshot bootstrap.
         queue_workspace_bootstrap_updates(
             &mut state,
+            &WorkspaceCrdtDocuments::try_new(&workspace).unwrap(),
             &workspace,
             replica_id,
             &std::collections::HashMap::new(),
@@ -1082,7 +1107,13 @@ mod tests {
 
         let mut remote_latest = std::collections::HashMap::new();
         remote_latest.insert(document, 7u64);
-        queue_workspace_bootstrap_updates(&mut state, &workspace, replica_id, &remote_latest);
+        queue_workspace_bootstrap_updates(
+            &mut state,
+            &WorkspaceCrdtDocuments::try_new(&workspace).unwrap(),
+            &workspace,
+            replica_id,
+            &remote_latest,
+        );
 
         assert!(
             state.pending.iter().any(|edit| edit.document == document),

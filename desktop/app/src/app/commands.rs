@@ -505,6 +505,8 @@ fn service_signals_for_command(cmd: &Command, workspace: &Workspace) -> Workspac
         | Command::DeleteScheme { .. }
         | Command::PermanentlyDeleteScheme { .. }
         | Command::RestoreFolder { .. }
+        | Command::RestoreDeletedFolder { .. }
+        | Command::PermanentlyDeleteFolder { .. }
         | Command::DeleteFolder { .. } => WorkspaceServiceSignals {
             notifications: NotificationServiceSignal::Recompute,
             timeline: true,

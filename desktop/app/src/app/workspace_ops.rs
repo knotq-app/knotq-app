@@ -108,12 +108,6 @@ impl KnotQApp {
         if folder_id == self.workspace.root {
             return;
         }
-        let had_schemes = self.workspace.folder(folder_id).is_some_and(|folder| {
-            folder
-                .children
-                .iter()
-                .any(|child| matches!(child, NodeRef::Scheme(_)))
-        });
         if self.workspace.folder(folder_id).is_none() {
             return;
         }
@@ -121,7 +115,7 @@ impl KnotQApp {
             .apply(Command::DeleteFolder { id: folder_id }, cx)
             .is_some()
         {
-            self.trash_expanded |= had_schemes;
+            self.trash_expanded = true;
             cx.notify();
         }
     }
@@ -228,16 +222,91 @@ impl KnotQApp {
         cx.notify();
     }
 
-    pub fn empty_archive(&mut self, cx: &mut Context<Self>) {
-        let deleted = self.workspace.recently_deleted.clone();
-        if deleted.is_empty() {
+    pub fn restore_deleted_folder(&mut self, folder_id: FolderId, cx: &mut Context<Self>) {
+        if !self.workspace.is_folder_deleted(folder_id) {
             return;
         }
-        let commands = deleted
+        let Some(folder) = self.workspace.folder(folder_id).cloned() else {
+            self.workspace.unmark_folder_deleted_shallow(folder_id);
+            self.state.mark_index_dirty();
+            self.service_bus.signal_save();
+            cx.notify();
+            return;
+        };
+        let (parent, position) = self.deleted_folder_restore_target(folder_id);
+        if self
+            .apply(
+                Command::RestoreFolder {
+                    parent,
+                    position,
+                    folder,
+                },
+                cx,
+            )
+            .is_some()
+        {
+            cx.notify();
+        }
+    }
+
+    pub fn permanently_delete_folder(&mut self, folder_id: FolderId, cx: &mut Context<Self>) {
+        if !self.workspace.is_folder_deleted(folder_id) {
+            return;
+        }
+        let removed_schemes = self
+            .workspace
+            .subtree_scheme_ids(folder_id)
+            .into_iter()
+            .collect::<Vec<_>>();
+        if self
+            .apply(Command::PermanentlyDeleteFolder { id: folder_id }, cx)
+            .is_none()
+        {
+            return;
+        }
+        for scheme_id in removed_schemes {
+            self.scheme_sessions.remove(&scheme_id);
+            if self
+                .scheme_editor
+                .as_ref()
+                .is_some_and(|(id, _)| *id == scheme_id)
+            {
+                self.scheme_editor = None;
+                self._editor_subscription = None;
+            }
+            if self.selection.scheme_id == Some(scheme_id) {
+                self.selection.scheme_id = None;
+                self.selection.focused_item_id = None;
+                if matches!(self.selection.view, View::Scheme) {
+                    self.open_union();
+                }
+            }
+        }
+        cx.notify();
+    }
+
+    pub fn empty_archive(&mut self, cx: &mut Context<Self>) {
+        let deleted_folders = self.workspace.recently_deleted_folders.clone();
+        let deleted = self.workspace.recently_deleted.clone();
+        let standalone_deleted = deleted
             .iter()
             .copied()
-            .map(|id| Command::PermanentlyDeleteScheme { id })
+            .filter(|id| !self.workspace.is_scheme_in_deleted_folder_subtree(*id))
             .collect::<Vec<_>>();
+        if deleted_folders.is_empty() && standalone_deleted.is_empty() {
+            return;
+        }
+        let mut commands = deleted_folders
+            .iter()
+            .copied()
+            .map(|id| Command::PermanentlyDeleteFolder { id })
+            .collect::<Vec<_>>();
+        commands.extend(
+            standalone_deleted
+                .iter()
+                .copied()
+                .map(|id| Command::PermanentlyDeleteScheme { id }),
+        );
         let Some(command) = Command::from_vec(commands) else {
             return;
         };
@@ -433,6 +502,27 @@ impl KnotQApp {
         (root, position)
     }
 
+    fn deleted_folder_restore_target(&self, folder_id: FolderId) -> (FolderId, usize) {
+        if let Some(origin) = self.workspace.deleted_folder_origin(folder_id) {
+            if self.is_valid_folder_restore_parent(origin.parent) {
+                let len = self
+                    .workspace
+                    .folder(origin.parent)
+                    .map(|folder| folder.children.len())
+                    .unwrap_or(0);
+                return (origin.parent, origin.position.min(len));
+            }
+        }
+
+        let root = self.workspace.root;
+        let position = self
+            .workspace
+            .folder(root)
+            .map(|folder| folder.children.len())
+            .unwrap_or(0);
+        (root, position)
+    }
+
     pub(crate) fn close_popovers_for_scheme(&mut self, scheme_id: SchemeId) {
         if self
             .event_popup
@@ -460,6 +550,13 @@ impl KnotQApp {
 
     fn is_valid_scheme_restore_folder(&self, folder_id: FolderId) -> bool {
         self.workspace.folder(folder_id).is_some()
+    }
+
+    fn is_valid_folder_restore_parent(&self, folder_id: FolderId) -> bool {
+        self.workspace.folder(folder_id).is_some()
+            && !self
+                .workspace
+                .is_node_in_deleted_folder_subtree(NodeRef::Folder(folder_id))
     }
 }
 

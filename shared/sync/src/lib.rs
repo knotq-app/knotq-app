@@ -71,7 +71,51 @@ mod base64_bytes_vec {
 
 pub const SYNC_API_VERSION: &str = "2026-06-08-crdt-sync-batched";
 pub const LOCAL_SYNC_STATE_FILE: &str = "sync-state.json";
+/// On-disk file holding each CRDT document's persisted `state_v1`. The CRDT
+/// documents are long-lived: drivers restore them from this file (with a stable,
+/// deterministic clientID) instead of rebuilding from plain data, so the Yjs
+/// identity survives restarts and the desktop UI↔background thread split.
+pub const LOCAL_CRDT_STATE_FILE: &str = "sync-crdt-state.json";
 pub const MAX_SYNC_MEDIA_BYTES: usize = 3 * 1024 * 1024;
+
+/// Serializable container for persisted per-document CRDT `state_v1` bytes
+/// (base64-encoded on the wire/at rest). Round-trips the map produced by
+/// [`WorkspaceCrdtDocuments::document_states`] and consumed by
+/// [`WorkspaceCrdtDocuments::from_states`].
+#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+pub struct PersistedCrdtState {
+    #[serde(default)]
+    pub documents: Vec<PersistedDocumentState>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct PersistedDocumentState {
+    pub document: DocumentId,
+    #[serde(with = "base64_bytes")]
+    pub state_v1: Vec<u8>,
+}
+
+impl PersistedCrdtState {
+    pub fn from_states(states: &HashMap<DocumentId, Vec<u8>>) -> Self {
+        let mut documents = states
+            .iter()
+            .map(|(document, state_v1)| PersistedDocumentState {
+                document: *document,
+                state_v1: state_v1.clone(),
+            })
+            .collect::<Vec<_>>();
+        // Stable order keeps the on-disk file diff-friendly and deterministic.
+        documents.sort_by(|a, b| a.document.0.cmp(&b.document.0));
+        Self { documents }
+    }
+
+    pub fn into_states(self) -> HashMap<DocumentId, Vec<u8>> {
+        self.documents
+            .into_iter()
+            .map(|entry| (entry.document, entry.state_v1))
+            .collect()
+    }
+}
 
 /// One-time local-state recovery generation. Bump this when a fixed sync bug could
 /// have left persisted `document_cursors` pointing past data that never made it
@@ -90,7 +134,13 @@ pub const MAX_SYNC_MEDIA_BYTES: usize = 3 * 1024 * 1024;
 /// Generation 4 canonicalizes account workspace root folders and Daily Queue
 /// scheme identities so independently-created devices do not merge duplicate
 /// roots or visible Daily Queue documents into the sidebar tree.
-pub const SYNC_STATE_RECOVERY_VERSION: u32 = 4;
+/// Generation 5 accompanies the persisted-CRDT / deterministic-clientID fix
+/// (2026-06-08): clients no longer rebuild the Yjs documents from plain data with a
+/// throwaway clientID on every sync, which had let renames lose to stale
+/// re-encodings and dropped cross-device schemes. Clearing cursors once forces a
+/// full re-pull so each device adopts the server's canonical document identities and
+/// re-converges; the persisted CRDT-state file then keeps that identity stable.
+pub const SYNC_STATE_RECOVERY_VERSION: u32 = 5;
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq, Serialize, Deserialize)]
 #[serde(transparent)]
@@ -603,6 +653,7 @@ impl LocalSyncState {
 
 pub fn queue_workspace_bootstrap_updates(
     sync_state: &mut LocalSyncState,
+    crdt: &WorkspaceCrdtDocuments,
     workspace: &Workspace,
     replica_id: ReplicaId,
     remote_latest: &HashMap<DocumentId, u64>,
@@ -615,7 +666,10 @@ pub fn queue_workspace_bootstrap_updates(
         .unwrap_or(0)
         + 1;
     let mut bootstrapped: HashSet<DocumentId> = HashSet::new();
-    for update in WorkspaceCrdtDocuments::snapshot_updates(workspace).updates {
+    // Re-seed full snapshots from the live, persistent documents so the base the
+    // server rebuilds shares clientID + clocks with this device's incremental diffs
+    // (a throwaway snapshot would carry a fresh identity that competes with them).
+    for update in crdt.full_snapshot_updates().updates {
         if remote_latest.get(&update.document).copied().unwrap_or(0) != 0 {
             continue;
         }

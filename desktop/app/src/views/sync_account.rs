@@ -4,7 +4,9 @@
 
 use chrono::{DateTime, Local, Utc};
 use gpui::prelude::*;
-use gpui::{div, px, ClickEvent, Context, FontWeight, IntoElement};
+use gpui::{div, px, ClickEvent, Context, FontWeight, IntoElement, Window};
+use gpui_component::tooltip::Tooltip;
+use gpui_component::{Icon, IconName, Sizable};
 use knotq_model::SyncAccountSettings;
 
 use crate::app::{KnotQApp, SyncAccountAction, SyncAuthStatus};
@@ -76,19 +78,30 @@ impl KnotQApp {
                 .child(
                     div()
                         .flex()
+                        .flex_wrap()
                         .items_center()
+                        .justify_between()
                         .gap(px(8.0))
-                        .child(check_account_status_button(in_progress, t, cx))
-                        .child(account_action_trigger(
-                            "sync-cancel-subscription",
-                            "Cancel subscription",
-                            SyncAccountAction::CancelSubscription,
-                            false,
-                            t,
-                            cx,
-                        )),
+                        .child(
+                            div()
+                                .flex()
+                                .flex_wrap()
+                                .items_center()
+                                .gap(px(6.0))
+                                .child(check_account_status_button(in_progress, t, cx))
+                                .child(account_action_trigger(
+                                    "sync-cancel-subscription",
+                                    Some("Cancel"),
+                                    "Cancel subscription",
+                                    IconName::CircleX,
+                                    SyncAccountAction::CancelSubscription,
+                                    false,
+                                    t,
+                                    cx,
+                                )),
+                        )
+                        .child(account_footer_actions(t, cx)),
                 )
-                .child(account_footer_actions(t, cx))
                 .into_any_element(),
             // Signed in but without sync: one Subscribe CTA with the account footer
             // (Delete / Sign out) on the same row to stay compact. Entitlement is
@@ -97,24 +110,12 @@ impl KnotQApp {
             // subscribed" button.
             None => div()
                 .flex()
-                .flex_col()
+                .flex_wrap()
+                .items_center()
+                .justify_between()
                 .gap(px(8.0))
-                .child(
-                    div()
-                        .text_size(px(11.0))
-                        .line_height(px(15.0))
-                        .text_color(token_hsla(t.text_soft))
-                        .child("Sync is turned off for this account."),
-                )
-                .child(
-                    div()
-                        .flex()
-                        .items_center()
-                        .justify_between()
-                        .gap(px(8.0))
-                        .child(subscribe_button(t, cx))
-                        .child(account_footer_actions(t, cx)),
-                )
+                .child(subscribe_button(t, cx))
+                .child(account_footer_actions(t, cx))
                 .into_any_element(),
         };
 
@@ -137,6 +138,7 @@ fn signed_out_entry(_t: Theme, cx: &mut Context<KnotQApp>) -> gpui::AnyElement {
         .flex()
         .items_center()
         .justify_center()
+        .gap(px(6.0))
         .px(px(10.0))
         .py(px(7.0))
         .rounded(px(6.0))
@@ -149,6 +151,11 @@ fn signed_out_entry(_t: Theme, cx: &mut Context<KnotQApp>) -> gpui::AnyElement {
         .on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
             this.open_sync_sign_in(window, cx);
         }))
+        .child(
+            Icon::new(IconName::User)
+                .with_size(px(13.0))
+                .text_color(token_hsla(0xffffffff)),
+        )
         .child("Sign in")
         .into_any_element()
 }
@@ -158,12 +165,15 @@ fn signed_out_entry(_t: Theme, cx: &mut Context<KnotQApp>) -> gpui::AnyElement {
 fn account_footer_actions(t: Theme, cx: &mut Context<KnotQApp>) -> gpui::AnyElement {
     div()
         .flex()
+        .flex_wrap()
         .items_center()
         .justify_end()
-        .gap(px(8.0))
+        .gap(px(6.0))
         .child(account_action_trigger(
             "sync-delete-account",
+            None,
             "Delete account",
+            IconName::Delete,
             SyncAccountAction::DeleteAccount,
             true,
             t,
@@ -174,79 +184,67 @@ fn account_footer_actions(t: Theme, cx: &mut Context<KnotQApp>) -> gpui::AnyElem
 }
 
 fn sign_out_button(t: Theme, cx: &mut Context<KnotQApp>) -> gpui::AnyElement {
-    div()
-        .id("sync-sign-out")
-        .px(px(10.0))
-        .py(px(5.0))
-        .rounded(px(5.0))
-        .bg(token_rgba(t.button_bg))
-        .text_size(px(12.0))
-        .text_color(token_hsla(t.text_primary))
-        .cursor_pointer()
-        .hover({
-            let c = t.button_hover;
-            move |s| s.bg(token_rgba(c))
-        })
-        .on_click(cx.listener(|this, _: &ClickEvent, _window, cx| {
+    account_icon_button(
+        "sync-sign-out",
+        Some("Sign out"),
+        "Sign out",
+        IconName::User,
+        false,
+        false,
+        false,
+        t,
+        cx,
+        |this, _window, cx| {
             this.sign_out_sync_account(cx);
-        }))
-        .child("Sign out")
-        .into_any_element()
+        },
+    )
 }
 
 /// A button that arms (but does not yet perform) a destructive account action;
 /// the actual call only happens after the confirmation row's "confirm" button.
 fn account_action_trigger(
     id: &'static str,
-    label: &'static str,
+    label: Option<&'static str>,
+    tooltip: &'static str,
+    icon: IconName,
     action: SyncAccountAction,
     destructive: bool,
     t: Theme,
     cx: &mut Context<KnotQApp>,
 ) -> gpui::AnyElement {
-    div()
-        .id(id)
-        .px(px(10.0))
-        .py(px(5.0))
-        .rounded(px(5.0))
-        .bg(token_rgba(t.button_bg))
-        .text_size(px(12.0))
-        .text_color(token_hsla(if destructive {
-            0xff5a53ff
-        } else {
-            t.text_primary
-        }))
-        .cursor_pointer()
-        .hover({
-            let c = t.button_hover;
-            move |s| s.bg(token_rgba(c))
-        })
-        .on_click(cx.listener(move |this, _: &ClickEvent, _window, cx| {
+    account_icon_button(
+        id,
+        label,
+        tooltip,
+        icon,
+        false,
+        destructive,
+        false,
+        t,
+        cx,
+        move |this, _window, cx| {
             this.prompt_sync_account_action(action, cx);
-        }))
-        .child(label)
-        .into_any_element()
+        },
+    )
 }
 
 /// Primary CTA shown when an account has no sync entitlement: opens the hosted
 /// subscription checkout in the browser.
 fn subscribe_button(_t: Theme, cx: &mut Context<KnotQApp>) -> gpui::AnyElement {
-    div()
-        .id("sync-subscribe")
-        .px(px(10.0))
-        .py(px(5.0))
-        .rounded(px(5.0))
-        .bg(token_rgba(sync_cta_bg()))
-        .text_size(px(12.0))
-        .font_weight(FontWeight::SEMIBOLD)
-        .text_color(token_hsla(0xffffffff))
-        .cursor_pointer()
-        .hover(|s| s.bg(token_rgba(sync_cta_hover_bg())))
-        .on_click(cx.listener(|this, _: &ClickEvent, _window, cx| {
+    account_icon_button(
+        "sync-subscribe",
+        Some("Subscribe"),
+        "Subscribe to enable sync",
+        IconName::ExternalLink,
+        true,
+        false,
+        false,
+        _t,
+        cx,
+        |this, _window, cx| {
             this.open_subscription_checkout(cx);
-        }))
-        .child("Subscribe to enable sync")
-        .into_any_element()
+        },
+    )
 }
 
 pub(crate) fn sync_cta_bg() -> u32 {
@@ -262,31 +260,110 @@ fn check_account_status_button(
     t: Theme,
     cx: &mut Context<KnotQApp>,
 ) -> gpui::AnyElement {
-    div()
-        .id("sync-check-account-status")
-        .px(px(10.0))
-        .py(px(5.0))
+    account_icon_button(
+        "sync-check-account-status",
+        None,
+        if in_progress {
+            "Refreshing account status"
+        } else {
+            "Check account status"
+        },
+        if in_progress {
+            IconName::LoaderCircle
+        } else {
+            IconName::Redo2
+        },
+        false,
+        false,
+        in_progress,
+        t,
+        cx,
+        |this, _window, cx| {
+            this.refresh_account_status(cx);
+        },
+    )
+}
+
+fn account_icon_button<F>(
+    id: &'static str,
+    label: Option<&'static str>,
+    tooltip: &'static str,
+    icon: IconName,
+    primary: bool,
+    destructive: bool,
+    disabled: bool,
+    t: Theme,
+    cx: &mut Context<KnotQApp>,
+    on_click: F,
+) -> gpui::AnyElement
+where
+    F: Fn(&mut KnotQApp, &mut Window, &mut Context<KnotQApp>) + 'static,
+{
+    let fg = if primary {
+        0xffffffff
+    } else if destructive {
+        0xff5a53ff
+    } else {
+        t.text_primary
+    };
+    let bg = if primary { sync_cta_bg() } else { t.button_bg };
+    let hover_bg = if primary {
+        sync_cta_hover_bg()
+    } else {
+        t.button_hover
+    };
+    let border = if primary {
+        sync_cta_bg()
+    } else {
+        t.border_main
+    };
+
+    let button = div()
+        .id(id)
+        .h(px(28.0))
+        .when(label.is_none(), |s| s.w(px(28.0)).justify_center())
+        .when(label.is_some(), |s| s.px(px(9.0)))
+        .flex()
+        .items_center()
+        .gap(px(5.0))
         .rounded(px(5.0))
-        .bg(token_rgba(t.button_bg))
+        .border_1()
+        .border_color(token_rgba(border))
+        .bg(token_rgba(bg))
         .text_size(px(12.0))
-        .text_color(token_hsla(t.text_primary))
-        .when(!in_progress, |s| {
+        .font_weight(if primary {
+            FontWeight::SEMIBOLD
+        } else {
+            FontWeight::MEDIUM
+        })
+        .text_color(token_hsla(fg))
+        .tooltip(move |window, cx| Tooltip::new(tooltip).build(window, cx))
+        .when(!disabled, |s| {
             s.cursor_pointer()
-                .hover({
-                    let c = t.button_hover;
-                    move |s| s.bg(token_rgba(c))
-                })
-                .on_click(cx.listener(|this, _: &ClickEvent, _window, cx| {
-                    this.refresh_account_status(cx);
+                .hover(move |s| s.bg(token_rgba(hover_bg)))
+                .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
+                    on_click(this, window, cx);
                 }))
         })
-        .when(in_progress, |s| s.opacity(0.65))
-        .child(if in_progress {
-            "Checking..."
-        } else {
-            "Check status"
-        })
-        .into_any_element()
+        .when(disabled, |s| s.opacity(0.62))
+        .child(
+            Icon::new(icon)
+                .with_size(px(13.0))
+                .text_color(token_hsla(fg)),
+        );
+
+    if let Some(label) = label {
+        button
+            .child(
+                div()
+                    .whitespace_nowrap()
+                    .text_color(token_hsla(fg))
+                    .child(label),
+            )
+            .into_any_element()
+    } else {
+        button.into_any_element()
+    }
 }
 
 /// The detail box of known entitlement facts. Returns `None` until a status has
@@ -299,7 +376,7 @@ fn account_status_panel(account: &SyncAccountSettings, t: Theme) -> Option<gpui:
     let subscribed = if status.subscribed {
         "Subscribed".to_string()
     } else {
-        "Not subscribed".to_string()
+        "Free".to_string()
     };
     let subscription_status = status
         .subscription_status
@@ -311,54 +388,104 @@ fn account_status_panel(account: &SyncAccountSettings, t: Theme) -> Option<gpui:
         .filter(|provider| !provider.trim().is_empty());
     let current_period_end = status.current_period_end.map(status_date_label);
     let checked_at = status.checked_at.map(status_timestamp_label);
+    let mut chips = vec![
+        account_status_chip(
+            "sync-account-plan-chip",
+            IconName::Star,
+            plan.clone(),
+            format!("Plan: {plan}"),
+            t,
+        ),
+        account_status_chip(
+            "sync-account-subscription-chip",
+            if status.subscribed {
+                IconName::CircleCheck
+            } else {
+                IconName::CircleX
+            },
+            subscribed.clone(),
+            format!("Subscription: {subscribed}"),
+            t,
+        ),
+    ];
+    if let Some(value) = subscription_status {
+        chips.push(account_status_chip(
+            "sync-account-status-chip",
+            IconName::Info,
+            value.clone(),
+            format!("Status: {value}"),
+            t,
+        ));
+    }
+    if let Some(value) = subscription_provider {
+        let label = account_level_label(&value);
+        chips.push(account_status_chip(
+            "sync-account-provider-chip",
+            IconName::Building2,
+            label.clone(),
+            format!("Provider: {label}"),
+            t,
+        ));
+    }
+    if let Some(value) = current_period_end {
+        chips.push(account_status_chip(
+            "sync-account-period-chip",
+            IconName::Calendar,
+            value.clone(),
+            format!("Current period ends: {value}"),
+            t,
+        ));
+    }
+    if let Some(value) = checked_at {
+        chips.push(account_status_chip(
+            "sync-account-checked-chip",
+            IconName::Redo2,
+            value.clone(),
+            format!("Checked: {value}"),
+            t,
+        ));
+    }
 
     Some(
         div()
-            .rounded(px(6.0))
-            .border_1()
-            .border_color(token_rgba(t.border_overlay))
-            .bg(token_rgba(t.button_bg))
-            .p(px(10.0))
             .flex()
-            .flex_col()
-            .gap(px(7.0))
-            .child(account_status_line("Plan", plan, t))
-            .child(account_status_line("Subscription", subscribed, t))
-            .when_some(subscription_status, |s, value| {
-                s.child(account_status_line("Status", value, t))
-            })
-            .when_some(subscription_provider, |s, value| {
-                s.child(account_status_line("Provider", value, t))
-            })
-            .when_some(current_period_end, |s, value| {
-                s.child(account_status_line("Current period ends", value, t))
-            })
-            .when_some(checked_at, |s, value| {
-                s.child(account_status_line("Checked", value, t))
-            })
+            .flex_wrap()
+            .gap(px(6.0))
+            .children(chips)
             .into_any_element(),
     )
 }
 
-fn account_status_line(label: &'static str, value: String, t: Theme) -> gpui::AnyElement {
+fn account_status_chip(
+    id: &'static str,
+    icon: IconName,
+    value: String,
+    tooltip: String,
+    t: Theme,
+) -> gpui::AnyElement {
     div()
+        .id(id)
+        .h(px(26.0))
+        .max_w(px(180.0))
+        .px(px(7.0))
         .flex()
-        .items_start()
-        .justify_between()
-        .gap(px(10.0))
+        .items_center()
+        .gap(px(5.0))
+        .rounded(px(99.0))
+        .border_1()
+        .border_color(token_rgba(t.border_overlay))
+        .bg(token_rgba(t.button_bg))
+        .tooltip(move |window, cx| Tooltip::new(tooltip.clone()).build(window, cx))
         .child(
-            div()
-                .flex_shrink_0()
-                .text_size(px(11.0))
-                .line_height(px(15.0))
-                .text_color(token_hsla(t.text_soft))
-                .child(label),
+            Icon::new(icon)
+                .with_size(px(12.0))
+                .text_color(token_hsla(t.text_soft)),
         )
         .child(
             div()
                 .min_w_0()
+                .truncate()
                 .text_size(px(11.0))
-                .line_height(px(15.0))
                 .text_color(token_hsla(t.text_primary))
                 .child(value),
         )

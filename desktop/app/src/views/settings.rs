@@ -5,9 +5,7 @@ use gpui_component::scroll::ScrollableElement as _;
 use knotq_model::{
     CalendarProvider, SchemeId, SchemeSource, DEFAULT_EVENT_NOTIFICATION_OFFSET_SECS,
 };
-use knotq_storage_json::{
-    CalendarViewMode, CalendarWeekRange, NotificationDefaults, ThemeMode, TimeFormat,
-};
+use knotq_storage_json::{CalendarViewMode, CalendarWeekRange, ThemeMode, TimeFormat};
 
 use crate::app::auto_update::AutoUpdateUiStatus;
 use crate::app::KnotQApp;
@@ -26,30 +24,34 @@ impl KnotQApp {
         let t = self.theme();
         let themes = all_themes();
 
-        let theme_rows = [
-            ("Dark", ThemeMode::Dark, themes[0]),
-            ("Light", ThemeMode::Light, themes[1]),
-            ("System", ThemeMode::System, self.theme()),
-        ]
-        .into_iter()
-        .enumerate()
-        .map(|(idx, (label, mode, theme))| {
-            let is_active = self.theme_mode == mode;
-            choice_row(
-                ("theme", idx),
-                label,
-                is_active,
-                theme_swatch(theme, t),
-                t,
-                cx,
-                move |this, cx| this.set_theme_mode(mode, cx),
-            )
-        })
-        .collect::<Vec<_>>();
+        let theme_rows = vec![settings_chip_group(
+            "Theme",
+            [
+                ("Dark", ThemeMode::Dark, themes[0]),
+                ("Light", ThemeMode::Light, themes[1]),
+                ("System", ThemeMode::System, self.theme()),
+            ]
+            .into_iter()
+            .enumerate()
+            .map(|(idx, (label, mode, theme))| {
+                let is_active = self.theme_mode == mode;
+                choice_chip(
+                    ("theme", idx),
+                    label,
+                    is_active,
+                    theme_swatch(theme, t),
+                    t,
+                    cx,
+                    move |this, cx| this.set_theme_mode(mode, cx),
+                )
+            })
+            .collect(),
+            t,
+        )];
 
         let mut calendar_rows = Vec::new();
-        calendar_rows.push(settings_subheading("View", t));
-        calendar_rows.extend(
+        calendar_rows.push(settings_chip_group(
+            "View",
             [
                 ("Week", CalendarViewMode::Week),
                 ("Month", CalendarViewMode::Month),
@@ -58,7 +60,7 @@ impl KnotQApp {
             .enumerate()
             .map(|(idx, (label, mode))| {
                 let is_active = self.calendar_view == mode;
-                choice_row(
+                choice_chip(
                     ("calendar-setting", idx),
                     label,
                     is_active,
@@ -68,10 +70,11 @@ impl KnotQApp {
                     move |this, cx| this.set_calendar_view(mode, cx),
                 )
             })
-            .collect::<Vec<_>>(),
-        );
-        calendar_rows.push(settings_subheading("Week Range", t));
-        calendar_rows.extend(
+            .collect(),
+            t,
+        ));
+        calendar_rows.push(settings_chip_group(
+            "Range",
             [
                 ("Rolling week", CalendarWeekRange::NextSevenDays),
                 ("Calendar week", CalendarWeekRange::CalendarWeek),
@@ -80,7 +83,7 @@ impl KnotQApp {
             .enumerate()
             .map(|(idx, (label, range))| {
                 let is_active = self.calendar_week_range == range;
-                choice_row(
+                choice_chip(
                     ("calendar-range-setting", idx),
                     label,
                     is_active,
@@ -90,78 +93,93 @@ impl KnotQApp {
                     move |this, cx| this.set_calendar_week_range(range, cx),
                 )
             })
-            .collect::<Vec<_>>(),
-        );
+            .collect(),
+            t,
+        ));
 
-        let time_rows = [
-            ("12-hour", TimeFormat::TwelveHour),
-            ("24-hour", TimeFormat::TwentyFourHour),
-        ]
-        .into_iter()
-        .enumerate()
-        .map(|(idx, (label, format))| {
-            let is_active = self.time_format == format;
-            choice_row(
-                ("time-format-setting", idx),
-                label,
-                is_active,
-                active_marker(is_active, t),
-                t,
-                cx,
-                move |this, cx| this.set_time_format(format, cx),
-            )
-        })
-        .collect::<Vec<_>>();
+        let time_rows = vec![settings_chip_group(
+            "Clock",
+            [
+                ("12-hour", TimeFormat::TwelveHour),
+                ("24-hour", TimeFormat::TwentyFourHour),
+            ]
+            .into_iter()
+            .enumerate()
+            .map(|(idx, (label, format))| {
+                let is_active = self.time_format == format;
+                choice_chip(
+                    ("time-format-setting", idx),
+                    label,
+                    is_active,
+                    active_marker(is_active, t),
+                    t,
+                    cx,
+                    move |this, cx| this.set_time_format(format, cx),
+                )
+            })
+            .collect(),
+            t,
+        )];
 
         let mut notification_rows: Vec<gpui::AnyElement> = Vec::new();
-        notification_rows.push(settings_subheading("Events", t));
-        for (idx, (label, offset_secs)) in [
-            ("At start", 0),
-            ("5 minutes before", 5 * 60),
-            ("10 minutes before", DEFAULT_EVENT_NOTIFICATION_OFFSET_SECS),
-            ("15 minutes before", 15 * 60),
-            ("30 minutes before", 30 * 60),
-            ("1 hour before", 60 * 60),
-        ]
-        .into_iter()
-        .enumerate()
-        {
-            let is_active = self.notification_defaults.event_offset_secs == offset_secs;
-            let mut defaults = self.notification_defaults;
-            defaults.event_offset_secs = offset_secs;
-            notification_rows.push(notification_choice_row(
-                ("event-notification-setting", idx),
-                label,
-                is_active,
-                defaults,
-                t,
-                cx,
-            ));
-        }
-        notification_rows.push(settings_subheading("Assignments", t));
-        for (idx, (label, offset_secs)) in [
-            ("At due time", 0),
-            ("1 hour before", 60 * 60),
-            ("2 hours before", 2 * 60 * 60),
-            ("6 hours before", 6 * 60 * 60),
-            ("1 day before", 24 * 60 * 60),
-            ("2 days before", 2 * 24 * 60 * 60),
-        ]
-        .into_iter()
-        .enumerate()
-        {
-            let is_active = self.notification_defaults.assignment_offset_secs == offset_secs;
-            let mut defaults = self.notification_defaults;
-            defaults.assignment_offset_secs = offset_secs;
-            notification_rows.push(notification_choice_row(
-                ("assignment-notification-setting", idx),
-                label,
-                is_active,
-                defaults,
-                t,
-                cx,
-            ));
-        }
+        notification_rows.push(settings_chip_group(
+            "Events",
+            [
+                ("At start", 0),
+                ("5 min", 5 * 60),
+                ("10 min", DEFAULT_EVENT_NOTIFICATION_OFFSET_SECS),
+                ("15 min", 15 * 60),
+                ("30 min", 30 * 60),
+                ("1 hr", 60 * 60),
+            ]
+            .into_iter()
+            .enumerate()
+            .map(|(idx, (label, offset_secs))| {
+                let is_active = self.notification_defaults.event_offset_secs == offset_secs;
+                let mut defaults = self.notification_defaults;
+                defaults.event_offset_secs = offset_secs;
+                choice_chip(
+                    ("event-notification-setting", idx),
+                    label,
+                    is_active,
+                    active_marker(is_active, t),
+                    t,
+                    cx,
+                    move |this, cx| this.set_notification_defaults(defaults, cx),
+                )
+            })
+            .collect(),
+            t,
+        ));
+        notification_rows.push(settings_chip_group(
+            "Assignments",
+            [
+                ("At due", 0),
+                ("1 hr", 60 * 60),
+                ("2 hr", 2 * 60 * 60),
+                ("6 hr", 6 * 60 * 60),
+                ("1 day", 24 * 60 * 60),
+                ("2 days", 2 * 24 * 60 * 60),
+            ]
+            .into_iter()
+            .enumerate()
+            .map(|(idx, (label, offset_secs))| {
+                let is_active = self.notification_defaults.assignment_offset_secs == offset_secs;
+                let mut defaults = self.notification_defaults;
+                defaults.assignment_offset_secs = offset_secs;
+                choice_chip(
+                    ("assignment-notification-setting", idx),
+                    label,
+                    is_active,
+                    active_marker(is_active, t),
+                    t,
+                    cx,
+                    move |this, cx| this.set_notification_defaults(defaults, cx),
+                )
+            })
+            .collect(),
+            t,
+        ));
         let update_rows = self.auto_update_rows(t, cx);
         let sync_panel = self.settings_sync_panel(t, cx);
         let google_rows = self.google_calendar_account_rows(t, cx);
@@ -175,13 +193,13 @@ impl KnotQApp {
                 div().w_full().flex().justify_center().child(
                     div()
                         .w_full()
-                        .max_w(px(560.0))
-                        .px(px(16.0))
-                        .pt(px(10.0))
-                        .pb(px(96.0))
+                        .max_w(px(620.0))
+                        .px(px(12.0))
+                        .pt(px(8.0))
+                        .pb(px(80.0))
                         .flex()
                         .flex_col()
-                        .gap(px(8.0))
+                        .gap(px(6.0))
                         .child(settings_header(t))
                         .child(sync_panel)
                         .child(settings_section("Appearance", theme_rows, t))
@@ -215,47 +233,46 @@ impl KnotQApp {
         let account = self.settings.sync_account.as_ref();
         let signed_in = account.is_some();
         let sync_enabled = account.is_some_and(|account| account.supports_sync);
-        let (badge, default_detail, badge_bg, badge_fg) =
-            settings_sync_panel_state(signed_in, sync_enabled, t);
-        // When signed in, the email is the most useful subtitle; the badge already
-        // says whether sync is on, so the generic status sentence is redundant.
-        let detail = account
-            .map(|account| account.email.clone())
-            .unwrap_or_else(|| default_detail.to_string());
+        let (badge, default_detail, badge_bg, badge_fg) = settings_sync_panel_state(
+            signed_in,
+            sync_enabled,
+            account.map(|account| account.email.as_str()),
+            t,
+        );
 
         div()
             .w_full()
-            .rounded(px(8.0))
+            .rounded(px(6.0))
             .border_1()
             .border_color(token_rgba(settings_sync_panel_border(t)))
             .bg(token_rgba(settings_sync_panel_bg(t)))
             .shadow_md()
-            .p(px(12.0))
+            .p(px(9.0))
             .flex()
             .flex_col()
-            .gap(px(11.0))
+            .gap(px(8.0))
             .child(
                 div()
                     .flex()
-                    .items_start()
+                    .items_center()
                     .justify_between()
-                    .gap(px(10.0))
+                    .gap(px(8.0))
                     .child(
                         div()
                             .min_w_0()
                             .flex()
-                            .items_start()
-                            .gap(px(9.0))
+                            .items_center()
+                            .gap(px(8.0))
                             .child(settings_sync_glyph(t))
                             .child(
                                 div()
                                     .min_w_0()
                                     .flex()
                                     .flex_col()
-                                    .gap(px(3.0))
+                                    .gap(px(1.0))
                                     .child(
                                         div()
-                                            .text_size(px(15.0))
+                                            .text_size(px(13.0))
                                             .font_weight(gpui::FontWeight::SEMIBOLD)
                                             .text_color(token_hsla(t.text_primary))
                                             .child("KnotQ Sync"),
@@ -263,9 +280,9 @@ impl KnotQApp {
                                     .child(
                                         div()
                                             .text_size(px(11.0))
-                                            .line_height(px(15.0))
+                                            .line_height(px(13.0))
                                             .text_color(token_hsla(t.text_soft))
-                                            .child(detail),
+                                            .child(default_detail),
                                     ),
                             ),
                     )
@@ -273,7 +290,7 @@ impl KnotQApp {
                         div()
                             .flex_shrink_0()
                             .px(px(7.0))
-                            .py(px(3.0))
+                            .py(px(2.0))
                             .rounded(px(99.0))
                             .bg(token_rgba(badge_bg))
                             .text_size(px(11.0))
@@ -321,9 +338,9 @@ impl KnotQApp {
                             .unwrap_or_else(|| account.account_id.clone());
                         let count = self.google_calendar_scheme_count_for_account(&account);
                         let detail = match count {
-                            0 => "No synced calendars use this local account.".to_string(),
-                            1 => "1 synced calendar uses this local account.".to_string(),
-                            count => format!("{count} synced calendars use this local account."),
+                            0 => "0 calendars".to_string(),
+                            1 => "1 calendar".to_string(),
+                            count => format!("{count} calendars"),
                         };
                         google_account_row(idx, account_id, title, detail, t, cx)
                     }),
@@ -333,7 +350,7 @@ impl KnotQApp {
         rows.push(settings_subheading("Calendars", t));
         if calendar_rows.is_empty() {
             rows.push(settings_message(
-                "No Google calendars imported into this workspace.".to_string(),
+                "No Google calendars imported.".to_string(),
                 false,
                 t,
             ));
@@ -369,7 +386,11 @@ impl KnotQApp {
                 let account_label = self
                     .imported_calendar_account_label(scheme)
                     .unwrap_or_else(|| source.account_id.clone());
-                let status = if connected { "Connected" } else { "Offline" };
+                let status = if connected {
+                    "On"
+                } else {
+                    "Not connected on this device"
+                };
                 let synced = source
                     .last_synced_at
                     .map(google_calendar_last_synced_label)
@@ -377,7 +398,7 @@ impl KnotQApp {
                 Some(GoogleCalendarSettingsRow {
                     scheme_id: scheme.id,
                     title: self.scheme_display_name(scheme),
-                    detail: format!("{status} as {account_label} - {synced}"),
+                    detail: format!("{status} - {account_label} - {synced}"),
                     connected,
                 })
             })
@@ -391,12 +412,13 @@ impl KnotQApp {
 fn settings_sync_panel_state(
     signed_in: bool,
     sync_enabled: bool,
+    email: Option<&str>,
     t: UiTheme,
-) -> (&'static str, &'static str, u32, u32) {
+) -> (&'static str, String, u32, u32) {
     if sync_enabled {
         return (
             "Enabled",
-            "Workspace sync is active for this account.",
+            email.unwrap_or("Sync on").to_string(),
             if t.is_dark { 0x30d15826 } else { 0x1f8f4d18 },
             if t.is_dark { 0x9af0b6ff } else { 0x176b38ff },
         );
@@ -405,7 +427,7 @@ fn settings_sync_panel_state(
     if signed_in {
         return (
             "Upgrade",
-            "Subscribe to keep this workspace available across devices.",
+            email.unwrap_or("Sync off").to_string(),
             if t.is_dark { 0xf59e0b28 } else { 0xd977061a },
             if t.is_dark { 0xf8d38dff } else { 0x9a4b00ff },
         );
@@ -413,7 +435,7 @@ fn settings_sync_panel_state(
 
     (
         "Available",
-        "Sign in to keep this workspace available across devices.",
+        "Sign in".to_string(),
         if t.is_dark { 0x3b82f628 } else { 0x2f67cf18 },
         if t.is_dark { 0x9bc2ffff } else { 0x235ebeff },
     )
@@ -439,15 +461,15 @@ fn settings_sync_panel_border(t: UiTheme) -> u32 {
 /// rather than a generic glyph.
 fn settings_sync_glyph(_t: UiTheme) -> gpui::AnyElement {
     div()
-        .w(px(34.0))
-        .h(px(34.0))
+        .w(px(30.0))
+        .h(px(30.0))
         .flex_shrink_0()
-        .rounded(px(7.0))
+        .rounded(px(6.0))
         .overflow_hidden()
         .child(
             gpui::img("app-icon/128x128.png")
-                .w(px(34.0))
-                .h(px(34.0))
+                .w(px(30.0))
+                .h(px(30.0))
                 .object_fit(gpui::ObjectFit::Cover),
         )
         .into_any_element()
@@ -456,12 +478,12 @@ fn settings_sync_glyph(_t: UiTheme) -> gpui::AnyElement {
 fn settings_header(t: UiTheme) -> gpui::AnyElement {
     div()
         .flex()
-        .flex_col()
-        .gap(px(2.0))
-        .pb(px(1.0))
+        .items_center()
+        .justify_between()
+        .pb(px(0.0))
         .child(
             div()
-                .text_size(px(18.0))
+                .text_size(px(17.0))
                 .font_weight(gpui::FontWeight::SEMIBOLD)
                 .text_color(token_hsla(t.text_primary))
                 .child("Settings"),
@@ -469,7 +491,6 @@ fn settings_header(t: UiTheme) -> gpui::AnyElement {
         .child(
             div()
                 .text_size(px(11.0))
-                .line_height(px(14.0))
                 .text_color(token_hsla(t.text_soft))
                 .child(format!("KnotQ {}", env!("CARGO_PKG_VERSION"))),
         )
@@ -485,11 +506,11 @@ fn settings_section(
         .w_full()
         .border_t_1()
         .border_color(token_rgba(t.divider_soft))
-        .pt(px(7.0))
+        .pt(px(5.0))
         .child(
-            div().px(px(2.0)).pb(px(5.0)).child(
+            div().px(px(2.0)).pb(px(4.0)).child(
                 div()
-                    .text_size(px(12.0))
+                    .text_size(px(11.0))
                     .font_weight(gpui::FontWeight::SEMIBOLD)
                     .text_color(token_hsla(t.text_soft))
                     .child(title),
@@ -502,6 +523,98 @@ fn settings_section(
                 .border_t_1()
                 .border_color(token_rgba(t.divider_tiny))
                 .children(rows),
+        )
+        .into_any_element()
+}
+
+fn settings_chip_group(
+    label: &'static str,
+    chips: Vec<gpui::AnyElement>,
+    t: UiTheme,
+) -> gpui::AnyElement {
+    div()
+        .px(px(8.0))
+        .py(px(5.0))
+        .min_h(px(34.0))
+        .flex()
+        .items_start()
+        .gap(px(8.0))
+        .border_b_1()
+        .border_color(token_rgba(t.divider_tiny))
+        .child(
+            div()
+                .w(px(86.0))
+                .flex_shrink_0()
+                .pt(px(4.0))
+                .text_size(px(11.0))
+                .font_weight(gpui::FontWeight::SEMIBOLD)
+                .text_color(token_hsla(t.text_dim))
+                .child(label),
+        )
+        .child(
+            div()
+                .min_w_0()
+                .flex_1()
+                .flex()
+                .flex_wrap()
+                .gap(px(6.0))
+                .children(chips),
+        )
+        .into_any_element()
+}
+
+fn choice_chip<F>(
+    id: (&'static str, usize),
+    label: &'static str,
+    is_active: bool,
+    marker: gpui::AnyElement,
+    t: UiTheme,
+    cx: &mut Context<KnotQApp>,
+    on_click: F,
+) -> gpui::AnyElement
+where
+    F: Fn(&mut KnotQApp, &mut Context<KnotQApp>) + 'static,
+{
+    div()
+        .id(id)
+        .min_h(px(26.0))
+        .px(px(7.0))
+        .py(px(3.0))
+        .flex()
+        .items_center()
+        .gap(px(5.0))
+        .rounded(px(4.0))
+        .border_1()
+        .border_color(token_rgba(if is_active {
+            settings_selection_accent(t)
+        } else {
+            t.border_main
+        }))
+        .bg(token_rgba(if is_active {
+            settings_selection_bg(t)
+        } else {
+            t.button_bg
+        }))
+        .cursor_pointer()
+        .hover({
+            let c = if is_active {
+                settings_selection_bg(t)
+            } else {
+                t.button_hover
+            };
+            move |h| h.bg(token_rgba(c))
+        })
+        .on_click(cx.listener(move |this, _: &ClickEvent, _w, cx| {
+            on_click(this, cx);
+        }))
+        .child(marker)
+        .child(
+            div()
+                .text_size(px(11.0))
+                .font_weight(gpui::FontWeight::SEMIBOLD)
+                .text_color(token_hsla(t.text_primary))
+                .whitespace_nowrap()
+                .child(label),
         )
         .into_any_element()
 }
@@ -521,8 +634,8 @@ where
     div()
         .id(id)
         .px(px(8.0))
-        .py(px(4.0))
-        .min_h(px(30.0))
+        .py(px(3.0))
+        .min_h(px(28.0))
         .flex()
         .items_center()
         .justify_between()
@@ -551,32 +664,13 @@ where
                 .child(
                     div()
                         .min_w_0()
-                        .text_size(px(12.0))
+                        .text_size(px(11.0))
                         .font_weight(gpui::FontWeight::SEMIBOLD)
                         .text_color(token_hsla(t.text_primary))
                         .child(label),
                 ),
         )
         .into_any_element()
-}
-
-fn notification_choice_row(
-    id: (&'static str, usize),
-    label: &'static str,
-    is_active: bool,
-    defaults: NotificationDefaults,
-    t: UiTheme,
-    cx: &mut Context<KnotQApp>,
-) -> gpui::AnyElement {
-    choice_row(
-        id,
-        label,
-        is_active,
-        active_marker(is_active, t),
-        t,
-        cx,
-        move |this, cx| this.set_notification_defaults(defaults, cx),
-    )
 }
 
 fn update_status_row(
@@ -614,7 +708,6 @@ fn update_status_row(
         AutoUpdateUiStatus::Ready { update } => {
             let button = match update.install_strategy {
                 knotq_auto_update::InstallStrategy::InstalledOnRestart => "Restart",
-                knotq_auto_update::InstallStrategy::OpenInstaller => "Open",
                 knotq_auto_update::InstallStrategy::RunInstallerAndQuit => "Install",
             };
             settings_action_row(
@@ -683,8 +776,8 @@ fn google_calendar_row(
     div()
         .id(("google-calendar-setting", idx))
         .px(px(8.0))
-        .py(px(5.0))
-        .min_h(px(42.0))
+        .py(px(4.0))
+        .min_h(px(36.0))
         .flex()
         .items_center()
         .justify_between()
@@ -706,7 +799,7 @@ fn google_calendar_row(
                         .gap(px(2.0))
                         .child(
                             div()
-                                .text_size(px(12.0))
+                                .text_size(px(11.0))
                                 .font_weight(gpui::FontWeight::SEMIBOLD)
                                 .text_color(token_hsla(t.text_primary))
                                 .child(row.title),
@@ -714,7 +807,7 @@ fn google_calendar_row(
                         .child(
                             div()
                                 .text_size(px(11.0))
-                                .line_height(px(14.0))
+                                .line_height(px(13.0))
                                 .text_color(token_hsla(t.text_soft))
                                 .child(row.detail),
                         ),
@@ -769,8 +862,8 @@ fn google_account_row(
     div()
         .id(("google-account-setting", idx))
         .px(px(8.0))
-        .py(px(5.0))
-        .min_h(px(38.0))
+        .py(px(4.0))
+        .min_h(px(34.0))
         .flex()
         .items_center()
         .justify_between()
@@ -785,7 +878,7 @@ fn google_account_row(
                 .gap(px(2.0))
                 .child(
                     div()
-                        .text_size(px(12.0))
+                        .text_size(px(11.0))
                         .font_weight(gpui::FontWeight::SEMIBOLD)
                         .text_color(token_hsla(t.text_primary))
                         .child(title),
@@ -793,7 +886,7 @@ fn google_account_row(
                 .child(
                     div()
                         .text_size(px(11.0))
-                        .line_height(px(14.0))
+                        .line_height(px(13.0))
                         .text_color(token_hsla(t.text_soft))
                         .child(detail),
                 ),
@@ -844,8 +937,8 @@ where
     div()
         .id(id)
         .px(px(8.0))
-        .py(px(5.0))
-        .min_h(px(38.0))
+        .py(px(4.0))
+        .min_h(px(34.0))
         .flex()
         .items_center()
         .justify_between()
@@ -860,7 +953,7 @@ where
                 .gap(px(2.0))
                 .child(
                     div()
-                        .text_size(px(12.0))
+                        .text_size(px(11.0))
                         .font_weight(gpui::FontWeight::SEMIBOLD)
                         .text_color(token_hsla(t.text_primary))
                         .child(title),
@@ -868,7 +961,7 @@ where
                 .child(
                     div()
                         .text_size(px(11.0))
-                        .line_height(px(14.0))
+                        .line_height(px(13.0))
                         .text_color(token_hsla(t.text_soft))
                         .child(detail),
                 ),
@@ -920,16 +1013,16 @@ fn checked_time_label(checked_at: DateTime<Utc>) -> String {
 
 fn google_calendar_last_synced_label(value: DateTime<Utc>) -> String {
     format!(
-        "Last synced {}",
-        value.with_timezone(&Local).format("%Y-%m-%d %H:%M")
+        "Synced {}",
+        value.with_timezone(&Local).format("%b %-d %H:%M")
     )
 }
 
 fn settings_subheading(label: &'static str, t: UiTheme) -> gpui::AnyElement {
     div()
         .px(px(8.0))
-        .pt(px(7.0))
-        .pb(px(3.0))
+        .pt(px(5.0))
+        .pb(px(2.0))
         .text_size(px(11.0))
         .font_weight(gpui::FontWeight::SEMIBOLD)
         .text_color(token_hsla(t.text_dim))
@@ -940,15 +1033,15 @@ fn settings_subheading(label: &'static str, t: UiTheme) -> gpui::AnyElement {
 fn settings_message(message: String, is_error: bool, t: UiTheme) -> gpui::AnyElement {
     div()
         .px(px(8.0))
-        .py(px(5.0))
-        .min_h(px(30.0))
+        .py(px(4.0))
+        .min_h(px(28.0))
         .border_b_1()
         .border_color(token_rgba(t.divider_tiny))
         .bg(token_rgba(if is_error { 0xde5b2524 } else { 0x00000000 }))
         .child(
             div()
                 .text_size(px(12.0))
-                .line_height(px(16.0))
+                .line_height(px(14.0))
                 .text_color(token_hsla(if is_error {
                     t.text_today
                 } else {

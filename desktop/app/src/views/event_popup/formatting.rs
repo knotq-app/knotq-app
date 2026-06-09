@@ -35,12 +35,34 @@ fn format_relative_datetime(time_format: TimeFormat, dt: DateTime<Local>) -> Str
     format!("{day} {}", format_time(time_format, dt))
 }
 
-pub(super) fn format_lead_time(offset_secs: i64) -> String {
+pub(super) fn format_lead_time(
+    time_format: TimeFormat,
+    offset_secs: i64,
+    trigger_at: Option<DateTime<Utc>>,
+) -> String {
     if offset_secs == 0 {
         return "At time".to_string();
     }
+    if offset_secs < 0 {
+        if let Some(trigger_at) = trigger_at {
+            let fire_at = trigger_at - Duration::seconds(offset_secs);
+            return format_relative_datetime(time_format, fire_at.with_timezone(&Local));
+        }
+    }
     let suffix = if offset_secs > 0 { "before" } else { "after" };
     format!("{} {suffix}", format_duration(offset_secs.abs()))
+}
+
+pub(super) fn notification_trigger_at(
+    kind: ItemKind,
+    start: Option<DateTime<Utc>>,
+    end: Option<DateTime<Utc>>,
+) -> Option<DateTime<Utc>> {
+    match kind {
+        ItemKind::Reminder | ItemKind::Event => start,
+        ItemKind::Assignment => end,
+        ItemKind::Procedure => None,
+    }
 }
 
 fn format_duration(seconds: i64) -> String {

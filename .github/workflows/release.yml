@@ -369,6 +369,43 @@ jobs:
       - name: Add Linux install script
         run: cp bundling/install.sh dist/install.sh
 
+      - name: Generate update manifest
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          version="${GITHUB_REF_NAME#v}"
+          base_url="https://github.com/${GITHUB_REPOSITORY}/releases/download/${GITHUB_REF_NAME}"
+          manifest="dist/latest.json"
+
+          asset_json() {
+            local os="$1"
+            local arch="$2"
+            local kind="$3"
+            local name="$4"
+            local comma="$5"
+            local path="dist/${name}"
+
+            test -f "$path"
+            local sha
+            sha="$(sha256sum "$path" | cut -d' ' -f1)"
+            printf '    {"os":"%s","arch":"%s","kind":"%s","name":"%s","url":"%s/%s","sha256":"%s"}%s\n' \
+              "$os" "$arch" "$kind" "$name" "$base_url" "$name" "$sha" "$comma"
+          }
+
+          {
+            printf '{\n'
+            printf '  "version": "%s",\n' "$version"
+            printf '  "notes_url": "https://github.com/%s/releases/tag/%s",\n' "$GITHUB_REPOSITORY" "$GITHUB_REF_NAME"
+            printf '  "assets": [\n'
+            asset_json "macos" "aarch64" "dmg" "KnotQ-${version}-macos-arm64.dmg" ","
+            asset_json "macos" "x86_64" "dmg" "KnotQ-${version}-macos-x86_64.dmg" ","
+            asset_json "linux" "x86_64" "tar.gz" "KnotQ-${version}-linux-x86_64.tar.gz" ","
+            asset_json "windows" "x86_64" "inno" "KnotQ-${version}-windows-x64-setup.exe" ""
+            printf '  ]\n'
+            printf '}\n'
+          } > "$manifest"
+
       - name: Generate checksums
         shell: bash
         run: |

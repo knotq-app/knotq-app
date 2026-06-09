@@ -3,10 +3,11 @@ use std::collections::{HashMap, HashSet};
 use anyhow::{anyhow, Context};
 use chrono::{DateTime, NaiveDate};
 use knotq_model::{
-    DeletedSchemeOrigin, DocumentId, Folder, FolderId, Item, ItemId, NodeRef, Scheme, SchemeId,
-    SchemeSource, SyncDocumentKind, SyncDocumentMeta, Workspace,
+    DeletedFolderOrigin, DeletedSchemeOrigin, DocumentId, Folder, FolderId, Item, ItemId, NodeRef,
+    ReplicaId, Scheme, SchemeId, SchemeSource, SyncDocumentKind, SyncDocumentMeta, Workspace,
 };
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use yrs::updates::{decoder::Decode, encoder::Encode};
 use yrs::{
     ClientID, Doc, GetString, Map, MapPrelim, MapRef, OffsetKind, Options, Out, ReadTxn,
@@ -80,6 +81,33 @@ impl WorkspaceCrdtApplyOutcome {
 pub struct WorkspaceCrdtDocuments {
     workspace: YrsJsonDocument,
     schemes: HashMap<SchemeId, YrsSchemeDocument>,
+    /// When set, every Yjs document this owns is built with a clientID derived
+    /// deterministically from `(replica_id, document_id)` (see [`stable_client_id`]),
+    /// so a document reconstructed from persisted state — across app restarts, the
+    /// desktop UI↔background split, or mobile reloads — keeps one stable Yjs identity.
+    /// `None` preserves the legacy random-clientID behavior used by the unit tests
+    /// that simulate two independent replicas from one process.
+    replica_id: Option<ReplicaId>,
+}
+
+/// Derive a stable 64-bit Yjs clientID for a document on a given replica. Two
+/// different replicas get different clientIDs (so their concurrent map writes are
+/// ordered deterministically by last-writer-wins); the same replica always gets the
+/// same clientID for a document, so re-encoding persisted state never aliases under a
+/// fresh identity. Per-document (not just per-replica) keeps independent documents
+/// from sharing an op space.
+pub fn stable_client_id(replica_id: ReplicaId, document_id: DocumentId) -> u64 {
+    let mut hasher = Sha256::new();
+    hasher.update(b"knotq.crdt.client_id.v1");
+    hasher.update(replica_id.0.as_bytes());
+    hasher.update(document_id.0.as_bytes());
+    let digest = hasher.finalize();
+    let mut bytes = [0u8; 8];
+    bytes.copy_from_slice(&digest[..8]);
+    // yrs/Yjs clientIDs are 53-bit (JS safe-integer) — mask to that range. `| 1`
+    // keeps it non-zero. The 53-bit space is ample for the handful of replicas on an
+    // account, so collisions are negligible.
+    (u64::from_le_bytes(bytes) & ((1u64 << 53) - 1)) | 1
 }
 
 pub fn validate_crdt_update_sequence<'a>(
@@ -120,6 +148,7 @@ impl WorkspaceCrdtDocuments {
                 workspace_client_id,
             ),
             schemes: HashMap::new(),
+            replica_id: None,
         };
         docs.sync_changes_with_scheme_factory(
             &workspace,
@@ -134,11 +163,26 @@ impl WorkspaceCrdtDocuments {
     }
 
     pub fn empty(workspace: &Workspace) -> Self {
+        Self::empty_inner(workspace, None)
+    }
+
+    /// Like [`empty`](Self::empty) but every document carries a stable, deterministic
+    /// clientID for `replica_id` (see [`stable_client_id`]).
+    pub fn empty_for_replica(workspace: &Workspace, replica_id: ReplicaId) -> Self {
+        Self::empty_inner(workspace, Some(replica_id))
+    }
+
+    fn empty_inner(workspace: &Workspace, replica_id: Option<ReplicaId>) -> Self {
         let mut workspace = workspace.clone();
         workspace.ensure_sync_metadata();
         Self {
-            workspace: YrsJsonDocument::new(workspace.sync.id, SyncDocumentKind::PersonalWorkspace),
+            workspace: YrsJsonDocument::for_replica(
+                workspace.sync.id,
+                SyncDocumentKind::PersonalWorkspace,
+                replica_id,
+            ),
             schemes: HashMap::new(),
+            replica_id,
         }
     }
 
@@ -148,19 +192,102 @@ impl WorkspaceCrdtDocuments {
         Ok(docs)
     }
 
+    /// Reconstruct the long-lived CRDT documents for `replica_id` from previously
+    /// persisted per-document `state_v1` bytes. Documents present in `states` are
+    /// restored exactly (preserving their Yjs identity and clocks). Documents absent
+    /// from `states` are created EMPTY — never seeded from the materialized workspace.
+    ///
+    /// Seeding a fresh base for an absent document is what corrupts sync: a device
+    /// that discovers another device's document (or a legacy server snapshot) would
+    /// mint its own competing base under its clientID, and a later delta would
+    /// tombstone the server's items while its replacements — built on that
+    /// never-pushed local base — buffer unintegrated, wiping the document. Instead,
+    /// an absent document is left empty here and populated either by the pull
+    /// (adopting the server's canonical identity) or, for genuinely local content, by
+    /// the store's reconcile, which force-emits a full snapshot establishing this
+    /// device as the creator. This is the single way the real drivers obtain their
+    /// CRDT: they never rebuild from plain data with a throwaway identity.
+    pub fn from_states(
+        workspace: &Workspace,
+        replica_id: ReplicaId,
+        states: &HashMap<DocumentId, Vec<u8>>,
+    ) -> anyhow::Result<Self> {
+        let mut workspace = workspace.clone();
+        workspace.ensure_sync_metadata();
+        let workspace_doc = YrsJsonDocument::for_replica(
+            workspace.sync.id,
+            SyncDocumentKind::PersonalWorkspace,
+            Some(replica_id),
+        );
+        if let Some(state) = states.get(&workspace.sync.id).filter(|s| !s.is_empty()) {
+            workspace_doc
+                .apply_update_v1(state)
+                .context("restore workspace CRDT state")?;
+        }
+        let mut schemes = HashMap::new();
+        for id in workspace.schemes.keys() {
+            let meta = scheme_meta(&workspace, *id)?;
+            let doc = YrsSchemeDocument::for_replica(meta.id, Some(replica_id));
+            if let Some(state) = states.get(&meta.id).filter(|s| !s.is_empty()) {
+                doc.apply_update_v1(state)
+                    .with_context(|| format!("restore scheme CRDT state {id}"))?;
+            }
+            schemes.insert(*id, doc);
+        }
+        Ok(Self {
+            workspace: workspace_doc,
+            schemes,
+            replica_id: Some(replica_id),
+        })
+    }
+
+    /// Snapshot every owned document's full `state_v1`, keyed by document id, for
+    /// durable persistence. Restoring these via [`from_states`](Self::from_states)
+    /// with the same `replica_id` round-trips the documents losslessly.
+    pub fn document_states(&self) -> HashMap<DocumentId, Vec<u8>> {
+        let mut out = HashMap::new();
+        out.insert(self.workspace.id, self.workspace.encode_state_v1());
+        for doc in self.schemes.values() {
+            out.insert(doc.id, doc.encode_state_v1());
+        }
+        out
+    }
+
+    /// A full-state update for every owned document, taken from the live documents
+    /// (so it carries their real clientID and clocks). Used to re-seed a server that
+    /// has no base for a document, so the re-seed shares identity with the device's
+    /// incremental diffs instead of competing with them under a throwaway identity.
+    pub fn full_snapshot_updates(&self) -> WorkspaceCrdtSyncOutcome {
+        let mut outcome = WorkspaceCrdtSyncOutcome::default();
+        outcome.updates.push(CrdtDocumentUpdate {
+            document: self.workspace.id,
+            kind: self.workspace.kind,
+            update_v1: self.workspace.encode_state_v1(),
+        });
+        for doc in self.schemes.values() {
+            outcome.updates.push(CrdtDocumentUpdate {
+                document: doc.id,
+                kind: SyncDocumentKind::Scheme,
+                update_v1: doc.encode_state_v1(),
+            });
+        }
+        outcome
+    }
+
     pub fn replace_all(&mut self, workspace: &Workspace) -> anyhow::Result<()> {
         let mut workspace = workspace.clone();
         workspace.ensure_sync_metadata();
         self.workspace
             .replace_snapshot(&workspace_document_snapshot(&workspace))?;
 
+        let replica_id = self.replica_id;
         self.schemes
             .retain(|id, _| workspace.schemes.contains_key(id));
         for (id, scheme) in &workspace.schemes {
             let meta = scheme_meta(&workspace, *id)?;
             self.schemes
                 .entry(*id)
-                .or_insert_with(|| YrsSchemeDocument::new(meta.id))
+                .or_insert_with(|| YrsSchemeDocument::for_replica(meta.id, replica_id))
                 .replace_scheme(scheme)
                 .with_context(|| format!("replace scheme CRDT {id}"))?;
         }
@@ -172,8 +299,9 @@ impl WorkspaceCrdtDocuments {
         workspace: &Workspace,
         changeset: &WorkspaceCrdtChangeSet,
     ) -> WorkspaceCrdtSyncOutcome {
-        self.sync_changes_with_scheme_factory(workspace, changeset, |_, document_id| {
-            YrsSchemeDocument::new(document_id)
+        let replica_id = self.replica_id;
+        self.sync_changes_with_scheme_factory(workspace, changeset, move |_, document_id| {
+            YrsSchemeDocument::for_replica(document_id, replica_id)
         })
     }
 
@@ -311,10 +439,11 @@ impl WorkspaceCrdtDocuments {
                 );
                 continue;
             };
+            let replica_id = self.replica_id;
             match self
                 .schemes
                 .entry(scheme_id)
-                .or_insert_with(|| YrsSchemeDocument::new(update.document))
+                .or_insert_with(|| YrsSchemeDocument::for_replica(update.document, replica_id))
                 .apply_update_v1(&update.update_v1)
             {
                 Ok(()) => {
@@ -377,6 +506,12 @@ impl WorkspaceCrdtDocuments {
                 .deleted_scheme_origins
                 .into_iter()
                 .map(|entry| (entry.scheme, entry.origin))
+                .collect(),
+            recently_deleted_folders: snapshot.recently_deleted_folders,
+            deleted_folder_origins: snapshot
+                .deleted_folder_origins
+                .into_iter()
+                .map(|entry| (entry.folder, entry.origin))
                 .collect(),
         };
 
@@ -637,6 +772,20 @@ impl YrsSchemeDocument {
         doc.get_or_insert_map("scheme_file");
         doc.get_or_insert_map("items_by_id");
         Self { id, doc }
+    }
+
+    /// Build a scheme document whose clientID is either deterministic for
+    /// `replica_id` (stable across reconstructions) or random when `None`.
+    fn for_replica(id: DocumentId, replica_id: Option<ReplicaId>) -> Self {
+        match replica_id {
+            Some(replica) => Self::new_with_client_id(id, stable_client_id(replica, id)),
+            None => Self::new(id),
+        }
+    }
+
+    /// Full document state as a v1 update, for durable persistence.
+    pub fn encode_state_v1(&self) -> Vec<u8> {
+        self.doc.transact().encode_diff_v1(&StateVector::default())
     }
 
     pub fn from_scheme(id: DocumentId, scheme: &Scheme) -> anyhow::Result<Self> {
@@ -1033,6 +1182,8 @@ impl YrsJsonDocument {
         doc.get_or_insert_map("daily_queue");
         doc.get_or_insert_map("recently_deleted");
         doc.get_or_insert_map("deleted_scheme_origins");
+        doc.get_or_insert_map("recently_deleted_folders");
+        doc.get_or_insert_map("deleted_folder_origins");
         Self { id, kind, doc }
     }
 
@@ -1048,7 +1199,23 @@ impl YrsJsonDocument {
         doc.get_or_insert_map("daily_queue");
         doc.get_or_insert_map("recently_deleted");
         doc.get_or_insert_map("deleted_scheme_origins");
+        doc.get_or_insert_map("recently_deleted_folders");
+        doc.get_or_insert_map("deleted_folder_origins");
         Self { id, kind, doc }
+    }
+
+    /// Build a workspace-index document whose clientID is either deterministic for
+    /// `replica_id` (stable across reconstructions) or random when `None`.
+    fn for_replica(id: DocumentId, kind: SyncDocumentKind, replica_id: Option<ReplicaId>) -> Self {
+        match replica_id {
+            Some(replica) => Self::new_with_client_id(id, kind, stable_client_id(replica, id)),
+            None => Self::new(id, kind),
+        }
+    }
+
+    /// Full document state as a v1 update, for durable persistence.
+    fn encode_state_v1(&self) -> Vec<u8> {
+        self.doc.transact().encode_diff_v1(&StateVector::default())
     }
 
     /// Reconcile the persistent workspace document to `snapshot` and return the
@@ -1100,12 +1267,17 @@ impl YrsJsonDocument {
         let daily_queue = self.doc.get_or_insert_map("daily_queue");
         let recently_deleted = self.doc.get_or_insert_map("recently_deleted");
         let deleted_origins = self.doc.get_or_insert_map("deleted_scheme_origins");
+        let recently_deleted_folders = self.doc.get_or_insert_map("recently_deleted_folders");
+        let deleted_folder_origins = self.doc.get_or_insert_map("deleted_folder_origins");
         let mut txn = self.doc.transact_mut();
 
         // Reuse positions already stored so an unchanged tree re-serializes to
         // byte-identical entries, producing no update.
         let stored_node_positions = node_positions(&nodes, &txn);
         let stored_deleted_positions = string_map_entries(&recently_deleted, &txn)
+            .into_iter()
+            .collect::<HashMap<_, _>>();
+        let stored_deleted_folder_positions = string_map_entries(&recently_deleted_folders, &txn)
             .into_iter()
             .collect::<HashMap<_, _>>();
 
@@ -1226,6 +1398,39 @@ impl YrsJsonDocument {
             ));
         }
 
+        // recently_deleted_folders is order-bearing too.
+        let deleted_folder_ids = snapshot
+            .recently_deleted_folders
+            .iter()
+            .map(|id| id.to_string())
+            .collect::<Vec<_>>();
+        let mut deleted_folder_positions: HashMap<String, String> = HashMap::new();
+        assign_fractional_positions(
+            &deleted_folder_ids,
+            &stored_deleted_folder_positions,
+            &mut deleted_folder_positions,
+        );
+        let recently_deleted_folder_entries = deleted_folder_ids
+            .iter()
+            .map(|id| {
+                (
+                    id.clone(),
+                    deleted_folder_positions
+                        .get(id)
+                        .cloned()
+                        .unwrap_or_default(),
+                )
+            })
+            .collect::<Vec<_>>();
+        let mut deleted_folder_origin_entries =
+            Vec::with_capacity(snapshot.deleted_folder_origins.len());
+        for entry in &snapshot.deleted_folder_origins {
+            deleted_folder_origin_entries.push((
+                entry.folder.to_string(),
+                serde_json::to_string(&entry.origin)?,
+            ));
+        }
+
         let mut changed = false;
         changed |= sync_string_map(
             &meta,
@@ -1243,6 +1448,16 @@ impl YrsJsonDocument {
         changed |= sync_string_map(&daily_queue, &mut txn, &daily_queue_entries);
         changed |= sync_string_map(&recently_deleted, &mut txn, &recently_deleted_entries);
         changed |= sync_string_map(&deleted_origins, &mut txn, &deleted_origin_entries);
+        changed |= sync_string_map(
+            &recently_deleted_folders,
+            &mut txn,
+            &recently_deleted_folder_entries,
+        );
+        changed |= sync_string_map(
+            &deleted_folder_origins,
+            &mut txn,
+            &deleted_folder_origin_entries,
+        );
         Ok(changed)
     }
 
@@ -1269,9 +1484,12 @@ impl YrsJsonDocument {
         let daily_queue_map = self.doc.get_or_insert_map("daily_queue");
         let recently_deleted_map = self.doc.get_or_insert_map("recently_deleted");
         let deleted_origins_map = self.doc.get_or_insert_map("deleted_scheme_origins");
+        let recently_deleted_folders_map = self.doc.get_or_insert_map("recently_deleted_folders");
+        let deleted_folder_origins_map = self.doc.get_or_insert_map("deleted_folder_origins");
         let txn = self.doc.transact();
         let raw_recently_deleted = string_map_entries(&recently_deleted_map, &txn);
         let raw_daily_queue = string_map_entries(&daily_queue_map, &txn);
+        let raw_recently_deleted_folders = string_map_entries(&recently_deleted_folders_map, &txn);
         let deleted_scheme_ids = raw_recently_deleted
             .iter()
             .map(|(id, _)| id.clone())
@@ -1279,6 +1497,13 @@ impl YrsJsonDocument {
         let daily_queue_scheme_ids = raw_daily_queue
             .iter()
             .map(|(_, scheme)| scheme.clone())
+            .collect::<HashSet<_>>();
+        // Top-level archived folders (and, by walking the node parent links below,
+        // their whole subtree). Archived folders are detached from the sidebar but
+        // keep their internal structure so the archive can show them as folders.
+        let archived_top_folder_ids = raw_recently_deleted_folders
+            .iter()
+            .map(|(id, _)| id.clone())
             .collect::<HashSet<_>>();
 
         let read_meta = |key: &str| -> anyhow::Result<String> {
@@ -1319,6 +1544,31 @@ impl YrsJsonDocument {
         }
 
         let root_key = root.to_string();
+
+        // Walk the node parent links to find every folder inside an archived subtree,
+        // starting from the archived top folders.
+        let mut children_of: HashMap<String, Vec<String>> = HashMap::new();
+        for (id_str, node) in &parsed {
+            if !node.parent.is_empty() {
+                children_of
+                    .entry(node.parent.clone())
+                    .or_default()
+                    .push(id_str.clone());
+            }
+        }
+        let mut archived_subtree_folders: HashSet<String> = HashSet::new();
+        let mut stack: Vec<String> = archived_top_folder_ids.iter().cloned().collect();
+        while let Some(current) = stack.pop() {
+            if !folder_ids.contains(&current) || !archived_subtree_folders.insert(current.clone()) {
+                continue;
+            }
+            for child in children_of.get(&current).into_iter().flatten() {
+                if folder_ids.contains(child) {
+                    stack.push(child.clone());
+                }
+            }
+        }
+
         // Each node's effective parent is an existing folder, else the root —
         // orphans re-home under root rather than vanishing.
         let mut children_by_parent: HashMap<String, Vec<(String, String)>> = HashMap::new();
@@ -1326,10 +1576,23 @@ impl YrsJsonDocument {
             if *id_str == root_key {
                 continue;
             }
-            if node.kind == NODE_KIND_SCHEME
-                && (deleted_scheme_ids.contains(id_str) || daily_queue_scheme_ids.contains(id_str))
-            {
+            // Archived top folders are detached from the sidebar: don't attach them to
+            // any parent. Their subtree is still rebuilt under them below.
+            if archived_top_folder_ids.contains(id_str) {
                 continue;
+            }
+            if node.kind == NODE_KIND_SCHEME {
+                let in_archived_subtree =
+                    !node.parent.is_empty() && archived_subtree_folders.contains(&node.parent);
+                // A deleted/daily scheme is kept out of the tree UNLESS it sits inside
+                // an archived folder, where it must stay so the archive shows the
+                // folder's contents.
+                if !in_archived_subtree
+                    && (deleted_scheme_ids.contains(id_str)
+                        || daily_queue_scheme_ids.contains(id_str))
+                {
+                    continue;
+                }
             }
             let parent = if !node.parent.is_empty() && folder_ids.contains(&node.parent) {
                 node.parent.clone()
@@ -1463,6 +1726,35 @@ impl YrsJsonDocument {
             .collect::<anyhow::Result<Vec<_>>>()?;
         folder_sync.sort_by_key(|entry| entry.folder.to_string());
 
+        let mut deleted_folders = raw_recently_deleted_folders
+            .into_iter()
+            .map(|(id, position)| {
+                let folder = id
+                    .parse::<FolderId>()
+                    .with_context(|| format!("recently deleted folder id invalid: {id}"))?;
+                Ok::<_, anyhow::Error>((position, id, folder))
+            })
+            .collect::<anyhow::Result<Vec<_>>>()?;
+        deleted_folders.sort_by(|(lp, lid, _), (rp, rid, _)| lp.cmp(rp).then_with(|| lid.cmp(rid)));
+        let recently_deleted_folders = deleted_folders
+            .into_iter()
+            .map(|(_, _, folder)| folder)
+            .collect();
+
+        let mut deleted_folder_origins = string_map_entries(&deleted_folder_origins_map, &txn)
+            .into_iter()
+            .map(|(folder, origin)| {
+                Ok::<_, anyhow::Error>(DeletedFolderOriginEntry {
+                    folder: folder
+                        .parse()
+                        .with_context(|| format!("deleted folder origin id invalid: {folder}"))?,
+                    origin: serde_json::from_str(&origin)
+                        .with_context(|| format!("deleted folder origin invalid: {folder}"))?,
+                })
+            })
+            .collect::<anyhow::Result<Vec<_>>>()?;
+        deleted_folder_origins.sort_by_key(|entry| entry.folder.to_string());
+
         Ok(WorkspaceDocumentSnapshot {
             schema: WORKSPACE_SCHEMA_V1.to_string(),
             id,
@@ -1473,6 +1765,8 @@ impl YrsJsonDocument {
             daily_queue,
             recently_deleted,
             deleted_scheme_origins,
+            recently_deleted_folders,
+            deleted_folder_origins,
             scheme_sync,
             folder_sync,
         })
@@ -1618,6 +1912,8 @@ struct WorkspaceDocumentSnapshot {
     daily_queue: Vec<DailyQueueEntry>,
     recently_deleted: Vec<SchemeId>,
     deleted_scheme_origins: Vec<DeletedSchemeOriginEntry>,
+    recently_deleted_folders: Vec<FolderId>,
+    deleted_folder_origins: Vec<DeletedFolderOriginEntry>,
     scheme_sync: Vec<SchemeSyncEntry>,
     folder_sync: Vec<FolderSyncEntry>,
 }
@@ -1641,6 +1937,12 @@ struct DailyQueueEntry {
 struct DeletedSchemeOriginEntry {
     scheme: SchemeId,
     origin: DeletedSchemeOrigin,
+}
+
+#[derive(Deserialize, Serialize)]
+struct DeletedFolderOriginEntry {
+    folder: FolderId,
+    origin: DeletedFolderOrigin,
 }
 
 #[derive(Deserialize, Serialize)]
@@ -1711,6 +2013,16 @@ fn workspace_document_snapshot(workspace: &Workspace) -> WorkspaceDocumentSnapsh
         .collect::<Vec<_>>();
     folder_sync.sort_by_key(|entry| entry.folder.to_string());
 
+    let mut deleted_folder_origins = workspace
+        .deleted_folder_origins
+        .iter()
+        .map(|(folder, origin)| DeletedFolderOriginEntry {
+            folder: *folder,
+            origin: *origin,
+        })
+        .collect::<Vec<_>>();
+    deleted_folder_origins.sort_by_key(|entry| entry.folder.to_string());
+
     WorkspaceDocumentSnapshot {
         schema: WORKSPACE_SCHEMA_V1.to_string(),
         id: workspace.id,
@@ -1721,6 +2033,8 @@ fn workspace_document_snapshot(workspace: &Workspace) -> WorkspaceDocumentSnapsh
         daily_queue,
         recently_deleted: workspace.recently_deleted.clone(),
         deleted_scheme_origins,
+        recently_deleted_folders: workspace.recently_deleted_folders.clone(),
+        deleted_folder_origins,
         scheme_sync,
         folder_sync,
     }

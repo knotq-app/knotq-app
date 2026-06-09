@@ -30,9 +30,11 @@ pub(crate) fn dispatch(
     match cmd {
         Command::CreateFolder { .. }
         | Command::RestoreFolder { .. }
+        | Command::RestoreDeletedFolder { .. }
         | Command::RenameFolder { .. }
         | Command::SetFolderExpanded { .. }
-        | Command::DeleteFolder { .. } => folder::apply_folder(workspace, cmd),
+        | Command::DeleteFolder { .. }
+        | Command::PermanentlyDeleteFolder { .. } => folder::apply_folder(workspace, cmd),
         Command::CreateScheme { .. }
         | Command::RestoreScheme { .. }
         | Command::RestoreDeletedScheme { .. }

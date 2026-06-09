@@ -1,8 +1,8 @@
 use anyhow::{anyhow, Result};
 use chrono::NaiveDate;
 use knotq_model::{
-    default_workspace_sync, DeletedSchemeOrigin, Folder, Scheme, SchemeId, SchemeSource,
-    SyncDocumentMeta, Workspace, WorkspaceId,
+    default_workspace_sync, DeletedFolderOrigin, DeletedSchemeOrigin, Folder, FolderId, Scheme,
+    SchemeId, SchemeSource, SyncDocumentMeta, Workspace, WorkspaceId,
 };
 use serde::{Deserialize, Serialize};
 use std::{
@@ -43,6 +43,10 @@ pub(crate) struct WorkspaceIndex {
     pub(crate) recently_deleted: Vec<SchemeId>,
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
     pub(crate) deleted_scheme_origins: HashMap<SchemeId, DeletedSchemeOrigin>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub(crate) recently_deleted_folders: Vec<FolderId>,
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub(crate) deleted_folder_origins: HashMap<FolderId, DeletedFolderOrigin>,
 }
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -114,6 +118,8 @@ impl WorkspaceIndex {
             daily_queue,
             recently_deleted: workspace.recently_deleted.clone(),
             deleted_scheme_origins: workspace.deleted_scheme_origins.clone(),
+            recently_deleted_folders: workspace.recently_deleted_folders.clone(),
+            deleted_folder_origins: workspace.deleted_folder_origins.clone(),
         }
     }
 
@@ -133,6 +139,8 @@ impl WorkspaceIndex {
             daily_queue: daily_queue_index,
             recently_deleted,
             deleted_scheme_origins,
+            recently_deleted_folders,
+            deleted_folder_origins,
         } = self;
         let mut schemes = HashMap::with_capacity(scheme_index.len() + daily_queue_index.len());
         for (id, index) in scheme_index {
@@ -185,6 +193,8 @@ impl WorkspaceIndex {
             daily_queue,
             recently_deleted,
             deleted_scheme_origins,
+            recently_deleted_folders,
+            deleted_folder_origins,
         };
         workspace.ensure_sync_metadata();
         Ok(workspace)

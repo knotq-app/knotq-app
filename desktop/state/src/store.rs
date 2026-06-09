@@ -1,4 +1,4 @@
-use std::collections::{HashSet, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 
 use chrono::{DateTime, Utc};
 use knotq_commands::{
@@ -63,7 +63,12 @@ pub struct WorkspaceStore {
 }
 
 impl WorkspaceStore {
-    pub fn new(workspace: Workspace, replica_id: ReplicaId, initial_dirty: bool) -> Self {
+    pub fn new(
+        workspace: Workspace,
+        replica_id: ReplicaId,
+        initial_dirty: bool,
+        crdt_states: HashMap<DocumentId, Vec<u8>>,
+    ) -> Self {
         let mut workspace = workspace;
         let sync_metadata_dirty = workspace.ensure_sync_metadata();
         let mut dirty = if initial_dirty {
@@ -73,7 +78,7 @@ impl WorkspaceStore {
         };
         dirty.index |= sync_metadata_dirty;
         let indexed = IndexedWorkspace::build(workspace.clone());
-        let crdt = new_workspace_crdt(&workspace);
+        let crdt = restored_workspace_crdt(&workspace, replica_id, &crdt_states);
         Self {
             workspace,
             indexed,
@@ -83,6 +88,12 @@ impl WorkspaceStore {
             pending_operations: VecDeque::new(),
             crdt,
         }
+    }
+
+    /// Snapshot the long-lived CRDT documents' state for durable persistence and to
+    /// seed the background sync's CRDT from this device's latest local edits.
+    pub fn crdt_document_states(&self) -> HashMap<DocumentId, Vec<u8>> {
+        self.crdt.document_states()
     }
 
     pub fn workspace(&self) -> &Workspace {
@@ -160,11 +171,30 @@ impl WorkspaceStore {
         cleared
     }
 
+    /// Replace the workspace while preserving the CRDT documents' stable Yjs identity
+    /// (clientID + clocks). The CRDT is reconstructed from its own current state, so a
+    /// direct (non-command) workspace mutation never mints a throwaway identity that
+    /// would diverge under sync.
     pub fn replace_workspace(
         &mut self,
         workspace: Workspace,
         dirty: WorkspaceDirtyState,
         clear_pending_operations: bool,
+    ) {
+        let states = self.crdt.document_states();
+        self.replace_workspace_with_crdt_states(workspace, dirty, clear_pending_operations, states);
+    }
+
+    /// Replace the workspace and rebuild the CRDT documents from the given persisted
+    /// `crdt_states` (deterministic clientID). Used after a sync merges remote state:
+    /// the store adopts the merged documents' canonical identity rather than
+    /// re-seeding its own.
+    pub fn replace_workspace_with_crdt_states(
+        &mut self,
+        workspace: Workspace,
+        dirty: WorkspaceDirtyState,
+        clear_pending_operations: bool,
+        crdt_states: HashMap<DocumentId, Vec<u8>>,
     ) {
         let mut workspace = workspace;
         let sync_metadata_dirty = workspace.ensure_sync_metadata();
@@ -172,7 +202,7 @@ impl WorkspaceStore {
         dirty.index |= sync_metadata_dirty;
         self.workspace = workspace.clone();
         self.indexed = IndexedWorkspace::build(workspace);
-        self.crdt = new_workspace_crdt(&self.workspace);
+        self.crdt = restored_workspace_crdt(&self.workspace, self.replica_id, &crdt_states);
         self.dirty = dirty;
         if clear_pending_operations {
             self.pending_operations.clear();
@@ -268,12 +298,21 @@ impl WorkspaceStore {
     }
 }
 
-fn new_workspace_crdt(workspace: &Workspace) -> WorkspaceCrdtDocuments {
-    match WorkspaceCrdtDocuments::try_new(workspace) {
+/// Restore the long-lived CRDT documents from persisted `crdt_states` with a stable,
+/// deterministic clientID for this replica. Documents absent from `crdt_states` are
+/// left empty and populated by the next sync (adopting the server's canonical
+/// identity) or force-emitted as a full snapshot on the next local edit — never
+/// rebuilt from plain data with a throwaway identity.
+fn restored_workspace_crdt(
+    workspace: &Workspace,
+    replica_id: ReplicaId,
+    crdt_states: &HashMap<DocumentId, Vec<u8>>,
+) -> WorkspaceCrdtDocuments {
+    match WorkspaceCrdtDocuments::from_states(workspace, replica_id, crdt_states) {
         Ok(crdt) => crdt,
         Err(err) => {
-            eprintln!("initial CRDT snapshot failed: {err:#}");
-            WorkspaceCrdtDocuments::empty(workspace)
+            eprintln!("restore CRDT documents failed: {err:#}");
+            WorkspaceCrdtDocuments::empty_for_replica(workspace, replica_id)
         }
     }
 }
@@ -291,6 +330,7 @@ fn collect_crdt_changes(command: &Command, out: &mut WorkspaceCrdtChangeSet) {
         | Command::RenameFolder { .. }
         | Command::SetFolderExpanded { .. }
         | Command::DeleteFolder { .. }
+        | Command::PermanentlyDeleteFolder { .. }
         | Command::CreateScheme { .. }
         | Command::RenameScheme { .. }
         | Command::SetSchemeColor { .. }
@@ -304,6 +344,12 @@ fn collect_crdt_changes(command: &Command, out: &mut WorkspaceCrdtChangeSet) {
         Command::RestoreScheme { scheme, .. } | Command::RestoreDeletedScheme { scheme, .. } => {
             out.workspace = true;
             out.schemes.insert(scheme.id);
+        }
+        Command::RestoreDeletedFolder { schemes, .. } => {
+            out.workspace = true;
+            for scheme in schemes {
+                out.schemes.insert(scheme.id);
+            }
         }
         Command::InsertItem { scheme, .. }
         | Command::UpdateItemText { scheme, .. }
@@ -352,6 +398,11 @@ pub(crate) fn collect_affected_schemes(cmd: &Command, out: &mut HashSet<SchemeId
         Command::RestoreScheme { scheme, .. } | Command::RestoreDeletedScheme { scheme, .. } => {
             out.insert(scheme.id);
         }
+        Command::RestoreDeletedFolder { schemes, .. } => {
+            for scheme in schemes {
+                out.insert(scheme.id);
+            }
+        }
         Command::Batch(cmds) => {
             for cmd in cmds {
                 collect_affected_schemes(cmd, out);
@@ -362,6 +413,7 @@ pub(crate) fn collect_affected_schemes(cmd: &Command, out: &mut HashSet<SchemeId
         | Command::RenameFolder { .. }
         | Command::SetFolderExpanded { .. }
         | Command::DeleteFolder { .. }
+        | Command::PermanentlyDeleteFolder { .. }
         | Command::CreateScheme { .. }
         | Command::MoveNode { .. } => {}
     }

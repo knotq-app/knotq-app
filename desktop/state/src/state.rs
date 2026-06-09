@@ -63,8 +63,9 @@ impl AppState {
         today: NaiveDate,
         loaded_start: NaiveDate,
         initial_dirty: bool,
+        crdt_states: HashMap<DocumentId, Vec<u8>>,
     ) -> Self {
-        let store = WorkspaceStore::new(workspace, settings.replica_id, initial_dirty);
+        let store = WorkspaceStore::new(workspace, settings.replica_id, initial_dirty, crdt_states);
         let indexed = store.indexed().clone();
         let daily_queue = DailyQueueState::new(today, loaded_start);
         let notifications = NotificationState {
@@ -174,6 +175,12 @@ impl AppState {
         self.store.pending_crdt_edits()
     }
 
+    /// Snapshot the long-lived CRDT documents' persisted state — for durable saving
+    /// and for seeding the background sync with this device's latest local edits.
+    pub fn crdt_document_states(&self) -> HashMap<DocumentId, Vec<u8>> {
+        self.store.crdt_document_states()
+    }
+
     pub fn clear_pushed_crdt_edits(
         &mut self,
         document: DocumentId,
@@ -242,9 +249,14 @@ impl AppState {
         self.daily_queue_loaded_calendar_months = daily_queue.loaded_calendar_months;
     }
 
-    pub fn replace_workspace_from_sync(&mut self, workspace: Workspace) {
+    pub fn replace_workspace_from_sync(
+        &mut self,
+        workspace: Workspace,
+        crdt_states: HashMap<DocumentId, Vec<u8>>,
+    ) {
         let dirty = WorkspaceDirtyState::all(&workspace);
-        self.store.replace_workspace(workspace, dirty, false);
+        self.store
+            .replace_workspace_with_crdt_states(workspace, dirty, false, crdt_states);
         self.sync_workspace_from_store();
         self.undo = UndoRedoStack::default();
         self.editor_undo_group = None;

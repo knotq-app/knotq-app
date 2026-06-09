@@ -3102,6 +3102,7 @@ dependencies = [
  "serde_json",
  "sha2",
  "ureq",
+ "walkdir",
 ]
 
 [[package]]
@@ -3268,6 +3269,7 @@ dependencies = [
  "knotq-model",
  "serde",
  "serde_json",
+ "sha2",
  "uuid",
  "yrs",
 ]

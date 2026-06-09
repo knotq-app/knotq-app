@@ -32,5 +32,6 @@ fn test_state() -> AppState {
         NaiveDate::from_ymd_opt(2026, 1, 1).unwrap(),
         NaiveDate::from_ymd_opt(2025, 12, 1).unwrap(),
         false,
+        Default::default(),
     )
 }

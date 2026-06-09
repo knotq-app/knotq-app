@@ -2,8 +2,8 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
 use knotq_model::{
-    DeletedSchemeOrigin, Folder, FolderId, Item, ItemId, ItemMarker, NodeRef, OccurrenceId,
-    Recurrence, Scheme, SchemeId, SchemeSource,
+    DeletedFolderOrigin, DeletedSchemeOrigin, Folder, FolderId, Item, ItemId, ItemMarker, NodeRef,
+    OccurrenceId, Recurrence, Scheme, SchemeId, SchemeSource,
 };
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -27,6 +27,13 @@ pub enum Command {
         position: usize,
         folder: Folder,
     },
+    RestoreDeletedFolder {
+        folder: FolderId,
+        position: usize,
+        folders: Vec<Folder>,
+        schemes: Vec<Scheme>,
+        origin: Option<DeletedFolderOrigin>,
+    },
     RenameFolder {
         id: FolderId,
         name: String,
@@ -36,6 +43,9 @@ pub enum Command {
         expanded: bool,
     },
     DeleteFolder {
+        id: FolderId,
+    },
+    PermanentlyDeleteFolder {
         id: FolderId,
     },
 

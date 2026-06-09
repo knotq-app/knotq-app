@@ -113,6 +113,13 @@ fn create_folder(workspace: &mut Workspace, parent: FolderId, name: &str) -> Fol
         .unwrap();
     match receipt.inverse {
         Command::DeleteFolder { id } => id,
+        Command::Batch(commands) => commands
+            .into_iter()
+            .find_map(|command| match command {
+                Command::DeleteFolder { id } => Some(id),
+                _ => None,
+            })
+            .unwrap(),
         _ => unreachable!(),
     }
 }

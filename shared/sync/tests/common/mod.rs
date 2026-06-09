@@ -14,8 +14,9 @@ use std::collections::{BTreeMap, HashMap};
 
 use chrono::Utc;
 use knotq_model::{
-    daily_queue_scheme_id, DocumentId, Folder, FolderId, Item, NodeRef, OperationId, ReplicaId,
-    Scheme, SchemeId, SyncDocumentKind, Workspace, WorkspaceId,
+    daily_queue_scheme_id, CalendarProvider, DocumentId, Folder, FolderId, ImportedCalendarSource,
+    Item, NodeRef, OperationId, ReplicaId, Scheme, SchemeId, SchemeSource, SyncDocumentKind,
+    Workspace, WorkspaceId,
 };
 use knotq_sync::{
     batch_pull_and_apply, batch_push_pending, queue_workspace_bootstrap_updates,
@@ -138,6 +139,47 @@ impl Harness {
 
     pub fn restore_scheme(&mut self, key: DeviceKey, scheme: SchemeId) {
         self.device_mut(key).restore_scheme(scheme);
+    }
+
+    pub fn import_calendar_scheme(
+        &mut self,
+        key: DeviceKey,
+        name: &str,
+        account_id: &str,
+        account_email: &str,
+        calendar_id: &str,
+        events: &[&str],
+    ) -> SchemeId {
+        self.device_mut(key).import_calendar_scheme(
+            name,
+            account_id,
+            account_email,
+            calendar_id,
+            events,
+        )
+    }
+
+    pub fn add_scheme_to_folder(
+        &mut self,
+        key: DeviceKey,
+        folder: FolderId,
+        name: &str,
+        lines: &[&str],
+    ) -> SchemeId {
+        self.device_mut(key)
+            .add_scheme_to_folder(folder, name, lines)
+    }
+
+    pub fn add_subfolder(&mut self, key: DeviceKey, parent: FolderId, name: &str) -> FolderId {
+        self.device_mut(key).add_subfolder(parent, name)
+    }
+
+    pub fn archive_folder(&mut self, key: DeviceKey, folder: FolderId) {
+        self.device_mut(key).archive_folder(folder);
+    }
+
+    pub fn restore_folder(&mut self, key: DeviceKey, folder: FolderId) {
+        self.device_mut(key).restore_folder(folder);
     }
 
     pub fn set_daily_queue(
@@ -267,6 +309,76 @@ impl Harness {
         expected.sort();
         assert_eq!(actual, expected);
     }
+
+    pub fn assert_scheme_name(&self, key: DeviceKey, scheme: SchemeId, expected: &str) {
+        let actual = self
+            .device(key)
+            .workspace
+            .schemes
+            .get(&scheme)
+            .map(|scheme| scheme.name.clone());
+        assert_eq!(
+            actual.as_deref(),
+            Some(expected),
+            "{key:?} scheme {scheme} name mismatch",
+        );
+    }
+
+    /// The scheme's imported-calendar source as materialized on `key`, if any.
+    pub fn imported_calendar_source(
+        &self,
+        key: DeviceKey,
+        scheme: SchemeId,
+    ) -> Option<ImportedCalendarSource> {
+        match self
+            .device(key)
+            .workspace
+            .schemes
+            .get(&scheme)?
+            .source
+            .clone()
+        {
+            SchemeSource::ImportedCalendar(source) => Some(source),
+            SchemeSource::Local => None,
+        }
+    }
+
+    /// A deleted folder must survive in the archive *as a folder*: it stays in the
+    /// folders map, is out of the sidebar tree, and still nests its scheme children.
+    pub fn assert_archived_folder_with_schemes(
+        &self,
+        key: DeviceKey,
+        folder: FolderId,
+        schemes: &[SchemeId],
+    ) {
+        let device = self.device(key);
+        let archived = device
+            .workspace
+            .folders
+            .get(&folder)
+            .unwrap_or_else(|| panic!("{key:?}: archived folder {folder} vanished entirely"));
+        let children: Vec<SchemeId> = archived
+            .children
+            .iter()
+            .filter_map(|child| match child {
+                NodeRef::Scheme(id) => Some(*id),
+                NodeRef::Folder(_) => None,
+            })
+            .collect();
+        for scheme in schemes {
+            assert!(
+                children.contains(scheme),
+                "{key:?}: archived folder {folder} lost scheme {scheme} (flattened?)",
+            );
+        }
+        assert!(
+            !device
+                .root_scheme_ids()
+                .iter()
+                .any(|id| schemes.contains(id)),
+            "{key:?}: archived folder's schemes leaked back into the sidebar root",
+        );
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -348,8 +460,15 @@ impl SyncTransport for TestServer {
                 chain.push(entry.state_v1.as_slice());
             }
             chain.extend(doc.updates.iter().map(|u| u.as_slice()));
-            validate_crdt_update_sequence(doc.kind, chain.iter().copied())
-                .expect("server rejected an invalid update chain");
+            if let Err(err) = validate_crdt_update_sequence(doc.kind, chain.iter().copied()) {
+                panic!(
+                    "server rejected an invalid update chain for {:?} {} (had_base={}, updates={}): {err:#}",
+                    doc.kind,
+                    doc.document,
+                    !entry.state_v1.is_empty(),
+                    doc.updates.len(),
+                );
+            }
             entry.state_v1 = merge_state(&entry.state_v1, &doc.updates);
             entry.seq += 1;
             out.push(PushedCrdtDocument {
@@ -374,7 +493,15 @@ pub struct TestDevice {
     account_workspace: WorkspaceId,
     replica_id: ReplicaId,
     pub workspace: Workspace,
-    crdt: WorkspaceCrdtDocuments,
+    // The long-lived CRDT documents that local edits diff against — the desktop
+    // `WorkspaceStore.crdt` / mobile `self.crdt`. Faithful to the fixed drivers, it
+    // is reconstructed from persisted per-document state with a deterministic
+    // clientID (`from_states`), never rebuilt-from-plain-data with a throwaway
+    // identity. `crdt_states` is the in-memory stand-in for the on-disk CRDT state
+    // file; round-tripping through it every sync exercises the persistence path the
+    // real drivers use to hand the documents between restarts and threads.
+    store_crdt: WorkspaceCrdtDocuments,
+    crdt_states: HashMap<DocumentId, Vec<u8>>,
     local_state: LocalSyncState,
     next_sequence: u64,
 }
@@ -383,8 +510,11 @@ impl TestDevice {
     fn from_base(base: &Workspace, account_workspace: WorkspaceId) -> Self {
         let mut workspace = base.clone();
         workspace.canonicalize_personal_sync_identity(account_workspace);
-        let crdt = WorkspaceCrdtDocuments::empty(&workspace);
         let replica_id = ReplicaId::new();
+        let store_crdt =
+            WorkspaceCrdtDocuments::from_states(&workspace, replica_id, &HashMap::new())
+                .expect("seed store crdt");
+        let crdt_states = store_crdt.document_states();
         let local_state = LocalSyncState {
             workspace_id: Some(workspace.id),
             replica_id: Some(replica_id),
@@ -394,7 +524,8 @@ impl TestDevice {
             account_workspace,
             replica_id,
             workspace,
-            crdt,
+            store_crdt,
+            crdt_states,
             local_state,
             next_sequence: 1,
         }
@@ -536,6 +667,152 @@ impl TestDevice {
         self.record_changes(WorkspaceCrdtChangeSet::default().workspace());
     }
 
+    pub fn import_calendar_scheme(
+        &mut self,
+        name: &str,
+        account_id: &str,
+        account_email: &str,
+        calendar_id: &str,
+        events: &[&str],
+    ) -> SchemeId {
+        let mut scheme = Scheme::new(name, 0);
+        scheme.gsync = true;
+        scheme.source = SchemeSource::ImportedCalendar(ImportedCalendarSource {
+            provider: CalendarProvider::Google,
+            account_id: account_id.to_string(),
+            account_email: Some(account_email.to_string()),
+            calendar_id: calendar_id.to_string(),
+            sync_token: Some("local-only-sync-token".to_string()),
+            read_only: true,
+            last_synced_at: None,
+        });
+        for event in events {
+            scheme.items.push(Item::new(*event));
+        }
+        let scheme_id = scheme.id;
+        self.workspace
+            .folders
+            .get_mut(&self.workspace.root)
+            .unwrap()
+            .children
+            .push(NodeRef::Scheme(scheme_id));
+        self.workspace.schemes.insert(scheme_id, scheme);
+        self.record_changes(
+            WorkspaceCrdtChangeSet::default()
+                .workspace()
+                .touch_scheme(scheme_id),
+        );
+        scheme_id
+    }
+
+    pub fn add_scheme_to_folder(
+        &mut self,
+        folder_id: FolderId,
+        name: &str,
+        lines: &[&str],
+    ) -> SchemeId {
+        let mut scheme = Scheme::new(name, 0);
+        for line in lines {
+            scheme.items.push(Item::new(*line));
+        }
+        let scheme_id = scheme.id;
+        self.workspace
+            .folders
+            .get_mut(&folder_id)
+            .expect("unknown folder")
+            .children
+            .push(NodeRef::Scheme(scheme_id));
+        self.workspace.schemes.insert(scheme_id, scheme);
+        self.record_changes(
+            WorkspaceCrdtChangeSet::default()
+                .workspace()
+                .touch_scheme(scheme_id),
+        );
+        scheme_id
+    }
+
+    pub fn add_subfolder(&mut self, parent: FolderId, name: &str) -> FolderId {
+        let folder = Folder {
+            id: FolderId::new(),
+            name: name.to_string(),
+            parent: Some(parent),
+            children: Vec::new(),
+            expanded: true,
+        };
+        let id = folder.id;
+        self.workspace
+            .folders
+            .get_mut(&parent)
+            .expect("unknown parent folder")
+            .children
+            .push(NodeRef::Folder(id));
+        self.workspace.folders.insert(id, folder);
+        self.record_changes(WorkspaceCrdtChangeSet::default().workspace());
+        id
+    }
+
+    /// Delete a folder as one archive unit: the top folder is detached from the
+    /// sidebar tree, but the folder subtree remains intact in the workspace maps.
+    pub fn archive_folder(&mut self, folder_id: FolderId) {
+        let parent = self
+            .workspace
+            .folders
+            .get(&folder_id)
+            .and_then(|folder| folder.parent);
+        let Some(parent) = parent else {
+            return;
+        };
+        let Some(position) = self.workspace.folders.get(&parent).and_then(|folder| {
+            folder
+                .children
+                .iter()
+                .position(|child| *child == NodeRef::Folder(folder_id))
+        }) else {
+            return;
+        };
+        if let Some(folder) = self.workspace.folders.get_mut(&parent) {
+            folder
+                .children
+                .retain(|child| *child != NodeRef::Folder(folder_id));
+        }
+        self.workspace
+            .mark_folder_deleted_from(folder_id, parent, position);
+        self.record_changes(WorkspaceCrdtChangeSet::default().workspace());
+    }
+
+    pub fn restore_folder(&mut self, folder_id: FolderId) {
+        // Mirrors restoring a folder unit: re-home it (and any surviving subtree)
+        // under root and clear archival on its schemes.
+        let root = self.workspace.root;
+        if !self.workspace.folders.contains_key(&folder_id) {
+            self.workspace.folders.insert(
+                folder_id,
+                Folder {
+                    id: folder_id,
+                    name: "Restored".to_string(),
+                    parent: Some(root),
+                    children: Vec::new(),
+                    expanded: true,
+                },
+            );
+        }
+        let already_present = self
+            .workspace
+            .folders
+            .values()
+            .any(|folder| folder.children.contains(&NodeRef::Folder(folder_id)));
+        if !already_present {
+            self.workspace
+                .folders
+                .get_mut(&root)
+                .unwrap()
+                .children
+                .push(NodeRef::Folder(folder_id));
+        }
+        self.workspace.unmark_folder_deleted(folder_id);
+        self.record_changes(WorkspaceCrdtChangeSet::default().workspace());
+    }
+
     pub fn set_daily_queue(&mut self, date: chrono::NaiveDate, lines: &[&str]) -> SchemeId {
         let daily_id = daily_queue_scheme_id(date);
         let mut scheme = Scheme::new("Daily", 0);
@@ -567,27 +844,36 @@ impl TestDevice {
             .canonicalize_personal_sync_identity(self.account_workspace);
         self.workspace.ensure_sync_metadata();
 
+        // The pull/apply path reconstructs the CRDT from persisted state with the
+        // device's deterministic clientID (`from_states`) — desktop
+        // `sync_service::crdt_docs` and mobile's `self.crdt`, now restored rather than
+        // rebuilt-from-plain-data. Because the clientID is stable, this instance and
+        // the store CRDT share one Yjs identity, so remote merged state integrates
+        // without competing re-encodings.
+        let mut apply_crdt = WorkspaceCrdtDocuments::from_states(
+            &self.workspace,
+            self.replica_id,
+            &self.crdt_states,
+        )
+        .expect("restore apply crdt");
         let workspace = self.workspace.clone();
         let pull = batch_pull_and_apply(
             server,
-            &mut self.crdt,
+            &mut apply_crdt,
             &mut self.local_state,
             workspace,
             self.replica_id,
         )
         .expect("pull/apply");
-        // `batch_pull_and_apply` already merged remote state into the persistent
-        // CRDT docs, so the materialized workspace is the source of truth. (The
-        // desktop driver discards a throwaway CRDT each run; mobile rebuilds from
-        // the workspace. The test keeps the engine-mutated docs, which is the
-        // simplest faithful model and keeps later local diffs against merged state.)
         self.workspace = pull.workspace;
         let mut repaired_workspace_changed = self
             .workspace
             .canonicalize_personal_sync_identity(self.account_workspace);
         repaired_workspace_changed |= self.workspace.normalize_one_level_folders();
         if repaired_workspace_changed {
-            let outcome = self.crdt.sync_changes(
+            // Repair deltas come from the same restored apply CRDT, mirroring
+            // `sync_service::queue_repair_crdt_updates` and mobile's repair path.
+            let outcome = apply_crdt.sync_changes(
                 &self.workspace,
                 &WorkspaceCrdtChangeSet::default().workspace(),
             );
@@ -609,6 +895,10 @@ impl TestDevice {
             }
         }
 
+        // Persist the merged CRDT state (remote applied + any repair). This is what
+        // the desktop background thread writes to disk and what the UI store reloads.
+        self.crdt_states = apply_crdt.document_states();
+
         let remote_latest: HashMap<DocumentId, u64> = self
             .local_state
             .document_cursors
@@ -617,6 +907,7 @@ impl TestDevice {
             .collect();
         queue_workspace_bootstrap_updates(
             &mut self.local_state,
+            &apply_crdt,
             &self.workspace,
             self.replica_id,
             &remote_latest,
@@ -632,14 +923,28 @@ impl TestDevice {
             &mut pushed,
         )
         .expect("push");
+
+        // Mirror desktop `replace_workspace_from_sync` / mobile reload: the store
+        // CRDT is reloaded from the persisted (merged) state — keeping its stable
+        // deterministic identity — so later local diffs chain from the merged state
+        // the server already has, instead of from a freshly minted clientID.
+        self.store_crdt = WorkspaceCrdtDocuments::from_states(
+            &self.workspace,
+            self.replica_id,
+            &self.crdt_states,
+        )
+        .expect("reload store crdt");
     }
 
     fn record_changes(&mut self, changes: WorkspaceCrdtChangeSet) {
         self.workspace
             .canonicalize_personal_sync_identity(self.account_workspace);
         self.workspace.ensure_sync_metadata();
-        let outcome = self.crdt.sync_changes(&self.workspace, &changes);
+        let outcome = self.store_crdt.sync_changes(&self.workspace, &changes);
         assert!(outcome.is_ok(), "{:?}", outcome.errors);
+        // Persist the store CRDT after every edit, as the desktop store does, so the
+        // next sync's restored apply CRDT sees the local edits' base state.
+        self.crdt_states = self.store_crdt.document_states();
         if outcome.updates.is_empty() {
             return;
         }
@@ -695,6 +1000,8 @@ impl TestDevice {
                 id: id.to_string(),
                 name: scheme.name.clone(),
                 archived: self.workspace.is_scheme_deleted(*id),
+                gsync: scheme.gsync,
+                source: scheme_source_label(&scheme.source),
                 items: scheme.items.iter().map(|item| item.text.clone()).collect(),
             })
             .collect::<Vec<_>>();
@@ -759,6 +1066,8 @@ struct SchemeSummary {
     id: String,
     name: String,
     archived: bool,
+    gsync: bool,
+    source: String,
     items: Vec<String>,
 }
 
@@ -766,6 +1075,23 @@ fn node_ref_label(node: &NodeRef) -> String {
     match node {
         NodeRef::Folder(id) => format!("folder:{id}"),
         NodeRef::Scheme(id) => format!("scheme:{id}"),
+    }
+}
+
+/// A stable label for a scheme's source so the convergence check catches a lost or
+/// diverged imported-calendar association (provider/account/calendar), not just the
+/// local-vs-imported distinction.
+fn scheme_source_label(source: &SchemeSource) -> String {
+    match source {
+        SchemeSource::Local => "local".to_string(),
+        SchemeSource::ImportedCalendar(source) => format!(
+            "imported:{:?}:{}:{}:{}:{}",
+            source.provider,
+            source.account_id,
+            source.account_email.as_deref().unwrap_or(""),
+            source.calendar_id,
+            source.read_only,
+        ),
     }
 }
 

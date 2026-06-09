@@ -41,6 +41,7 @@ impl KnotQApp {
         let notification_offset = popup
             .draft_notification_offset_secs
             .unwrap_or_else(|| default_notification_offset(kind, self.notification_defaults));
+        let notification_trigger = notification_trigger_at(kind, start, end);
         let repeats_summary = repeat_summary(popup.draft_repeats.as_ref(), self.time_format);
         let scheme_label = self.scheme_display_name(&scheme);
         let notification_menu_open = popup.notification_menu_open && editable;
@@ -244,7 +245,11 @@ impl KnotQApp {
                     .child(editable_detail_row(
                         "popup-notification-row",
                         "Notification",
-                        format_lead_time(notification_offset),
+                        format_lead_time(
+                            self.time_format,
+                            notification_offset,
+                            notification_trigger,
+                        ),
                         t,
                         editable,
                         cx.listener(move |this, _: &ClickEvent, _window, cx| {

@@ -53,9 +53,9 @@ pub use knotq_state::{
     EditorUndoGroup, EditorUndoKey, Selection, View, UNDO_DEPTH,
 };
 use knotq_storage_json::{
-    load_app_settings, load_daily_queue_scheme, load_daily_queue_schemes_for_calendar_range,
-    load_workspace_with_options, save_workspace, save_workspace_incremental, settings_path,
-    workspace_path, AppSettings, WorkspaceLoadOptions,
+    load_app_settings, load_crdt_state, load_daily_queue_scheme,
+    load_daily_queue_schemes_for_calendar_range, load_workspace_with_options, save_workspace,
+    save_workspace_incremental, settings_path, workspace_path, AppSettings, WorkspaceLoadOptions,
 };
 
 use auto_update::{spawn_auto_update_task, AutoUpdateSignal, AutoUpdateUiStatus};
@@ -194,6 +194,7 @@ pub enum SidebarContextTarget {
     Folder(FolderId),
     Scheme { scheme_id: SchemeId },
     DeletedScheme { scheme_id: SchemeId },
+    DeletedFolder { folder_id: FolderId },
 }
 
 #[derive(Clone, Debug)]
@@ -630,6 +631,10 @@ impl KnotQApp {
         });
         service_bus.workspace_changed();
 
+        // Restore the long-lived CRDT documents from disk so their stable Yjs
+        // identity survives this restart instead of being rebuilt from plain data.
+        let crdt_states = load_crdt_state(&workspace_path()).unwrap_or_default();
+
         Self {
             state: AppState::new(
                 workspace,
@@ -637,6 +642,7 @@ impl KnotQApp {
                 today,
                 daily_queue_initial_start(today),
                 initial_dirty,
+                crdt_states,
             ),
             undo_navigation_stack: VecDeque::new(),
             redo_navigation_stack: VecDeque::new(),

@@ -13,6 +13,8 @@ use crate::theme_gpui::{token_hsla, token_rgba, Theme};
 const SYNC_POPOVER_PRIORITY: usize = 20_000;
 const CARD_W: f32 = 256.0;
 const CARD_H: f32 = 150.0;
+const SYNC_NOW_BG: u32 = 0x2563ebff;
+const SYNC_NOW_HOVER_BG: u32 = 0x1d4ed8ff;
 
 /// What the popover should say about the current sync state.
 struct SyncStatusView {
@@ -58,11 +60,11 @@ impl KnotQApp {
 
         let mut actions = div().flex().items_center().gap(px(6.0));
         if signed_in && supports_sync {
-            actions = actions.child(popover_button(
+            actions = actions.child(popover_filled_button(
                 "sync-popover-sync-now",
                 "Sync now",
-                true,
-                t,
+                SYNC_NOW_BG,
+                SYNC_NOW_HOVER_BG,
                 cx,
                 |this, _window, cx| this.sync_now(cx),
             ));
@@ -184,7 +186,7 @@ impl KnotQApp {
         if !account.is_some_and(|account| account.supports_sync) {
             return SyncStatusView {
                 dot_color: STATUS_ERROR,
-                headline: "Sync is off".into(),
+                headline: "Sync disabled".into(),
                 detail: Some(
                     "This account doesn't have sync enabled. Manage it to subscribe.".into(),
                 ),
@@ -194,30 +196,26 @@ impl KnotQApp {
         match &self.sync_run_status {
             SyncRunStatus::Running { pending } => SyncStatusView {
                 dot_color: STATUS_SYNCING,
-                headline: if *pending > 0 {
-                    "Syncing…".into()
-                } else {
-                    "Checking sync…".into()
-                },
+                headline: "Sync".into(),
                 detail: Some(if *pending > 0 {
                     "Uploading changes.".into()
                 } else {
-                    "Checking for changes.".into()
+                    "Looking for changes.".into()
                 }),
             },
             SyncRunStatus::Error { message, .. } => SyncStatusView {
                 dot_color: STATUS_ERROR,
                 headline: "Sync error".into(),
                 detail: Some(SharedString::from(if pending > 0 {
-                    format!("Changes pending. {}", short_error(message))
+                    format!("Changes are waiting. {}", short_error(message))
                 } else {
                     short_error(message)
                 })),
             },
             _ if pending > 0 => SyncStatusView {
                 dot_color: STATUS_PENDING,
-                headline: "Pending changes".into(),
-                detail: Some("Will sync automatically in a moment.".into()),
+                headline: "Sync".into(),
+                detail: Some("Waiting for the next automatic run.".into()),
             },
             _ => SyncStatusView {
                 dot_color: STATUS_OK,
@@ -239,6 +237,10 @@ fn popover_button(
     cx: &mut Context<KnotQApp>,
     on_click: impl Fn(&mut KnotQApp, &mut Window, &mut Context<KnotQApp>) + 'static,
 ) -> gpui::AnyElement {
+    if primary {
+        return popover_filled_button(id, label, t.text_highlight, 0xe66f1fff, cx, on_click);
+    }
+
     let base = div()
         .id(id)
         .px(px(10.0))
@@ -251,20 +253,39 @@ fn popover_button(
             on_click(this, window, cx);
         }))
         .child(label);
-    if primary {
-        base.bg(token_rgba(t.text_highlight))
-            .text_color(token_hsla(0xffffffff))
-            .hover(|s| s.bg(token_rgba(0xe66f1fff)))
-            .into_any_element()
-    } else {
-        base.bg(token_rgba(t.button_bg))
-            .text_color(token_hsla(t.text_primary))
-            .hover({
-                let c = t.button_hover;
-                move |s| s.bg(token_rgba(c))
-            })
-            .into_any_element()
-    }
+    base.bg(token_rgba(t.button_bg))
+        .text_color(token_hsla(t.text_primary))
+        .hover({
+            let c = t.button_hover;
+            move |s| s.bg(token_rgba(c))
+        })
+        .into_any_element()
+}
+
+fn popover_filled_button(
+    id: &'static str,
+    label: &'static str,
+    bg: u32,
+    hover_bg: u32,
+    cx: &mut Context<KnotQApp>,
+    on_click: impl Fn(&mut KnotQApp, &mut Window, &mut Context<KnotQApp>) + 'static,
+) -> gpui::AnyElement {
+    div()
+        .id(id)
+        .px(px(10.0))
+        .py(px(5.0))
+        .rounded(px(5.0))
+        .text_size(px(12.0))
+        .font_weight(FontWeight::SEMIBOLD)
+        .cursor_pointer()
+        .bg(token_rgba(bg))
+        .text_color(token_hsla(0xffffffff))
+        .hover(move |s| s.bg(token_rgba(hover_bg)))
+        .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
+            on_click(this, window, cx);
+        }))
+        .child(label)
+        .into_any_element()
 }
 
 /// Trim a backend error to a short, single-line phrase for the popover.

@@ -319,15 +319,11 @@ impl KnotQApp {
             AutoUpdateUiStatus::Ready { update } => {
                 let label = match update.install_strategy {
                     knotq_auto_update::InstallStrategy::InstalledOnRestart => "Restart to update",
-                    knotq_auto_update::InstallStrategy::OpenInstaller => "Open update",
                     knotq_auto_update::InstallStrategy::RunInstallerAndQuit => "Install update",
                 };
                 let tooltip = match update.install_strategy {
                     knotq_auto_update::InstallStrategy::InstalledOnRestart => {
                         format!("Restart KnotQ to finish updating to {}.", update.version)
-                    }
-                    knotq_auto_update::InstallStrategy::OpenInstaller => {
-                        format!("Open the KnotQ {} installer.", update.version)
                     }
                     knotq_auto_update::InstallStrategy::RunInstallerAndQuit => {
                         format!("Run the KnotQ {} installer.", update.version)
@@ -418,6 +414,11 @@ impl KnotQApp {
         }
         let status = self.title_sync_status(t);
         let popover_open = self.sync_status_popover.is_some();
+        let sync_disabled = self
+            .settings
+            .sync_account
+            .as_ref()
+            .is_some_and(|account| !account.supports_sync);
 
         Some(
             div()
@@ -441,16 +442,17 @@ impl KnotQApp {
                     let c = t.button_hover;
                     move |s| s.bg(token_rgba(c))
                 })
-                .on_click(cx.listener(|this, event: &ClickEvent, _window, cx| {
-                    this.toggle_sync_status_popover(event.position(), cx);
+                .on_click(cx.listener(move |this, event: &ClickEvent, window, cx| {
+                    if sync_disabled {
+                        if this.selection.view != View::Settings {
+                            this.open_settings();
+                        }
+                        this.focus_app_root(window);
+                        cx.notify();
+                    } else {
+                        this.toggle_sync_status_popover(event.position(), cx);
+                    }
                 }))
-                .child(
-                    div()
-                        .w(px(7.0))
-                        .h(px(7.0))
-                        .rounded(px(4.0))
-                        .bg(token_rgba(status.dot_color)),
-                )
                 .child(
                     div()
                         .min_w_0()
@@ -459,6 +461,13 @@ impl KnotQApp {
                         .font_weight(gpui::FontWeight::NORMAL)
                         .text_color(token_hsla(t.text_dim))
                         .child(status.label),
+                )
+                .child(
+                    div()
+                        .w(px(7.0))
+                        .h(px(7.0))
+                        .rounded(px(4.0))
+                        .bg(token_rgba(status.dot_color)),
                 )
                 .into_any_element(),
         )
@@ -470,40 +479,40 @@ impl KnotQApp {
 
         if matches!(self.sync_auth_status, SyncAuthStatus::InProgress) {
             return TitleSyncStatus {
-                label: "Signing in".to_string(),
+                label: "Sync".to_string(),
                 dot_color: STATUS_SYNCING,
             };
         }
 
         if account.is_none() {
             return TitleSyncStatus {
-                label: "Sign in".to_string(),
+                label: "Sync".to_string(),
                 dot_color: t.text_muted,
             };
         }
 
         if account.is_some_and(|account| !account.supports_sync) {
             return TitleSyncStatus {
-                label: "Sync off".to_string(),
+                label: "Sync disabled".to_string(),
                 dot_color: STATUS_ERROR,
             };
         }
 
         match &self.sync_run_status {
-            SyncRunStatus::Running { pending } => TitleSyncStatus {
-                label: if *pending > 0 { "Syncing" } else { "Checking" }.to_string(),
+            SyncRunStatus::Running { .. } => TitleSyncStatus {
+                label: "Sync".to_string(),
                 dot_color: STATUS_SYNCING,
             },
             SyncRunStatus::Error { .. } => TitleSyncStatus {
-                label: "Sync error".to_string(),
+                label: "Sync".to_string(),
                 dot_color: STATUS_ERROR,
             },
             _ if pending > 0 => TitleSyncStatus {
-                label: "Pending".to_string(),
+                label: "Sync".to_string(),
                 dot_color: STATUS_PENDING,
             },
             _ => TitleSyncStatus {
-                label: "Synced".to_string(),
+                label: "Sync".to_string(),
                 dot_color: STATUS_OK,
             },
         }

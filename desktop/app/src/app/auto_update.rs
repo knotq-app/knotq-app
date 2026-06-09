@@ -5,9 +5,8 @@ use chrono::{DateTime, Utc};
 use futures::{pin_mut, select, FutureExt};
 use gpui::{Context, Task};
 use knotq_auto_update::{
-    check_latest_release, current_version, open_staged_installer, prepare_update,
-    run_windows_installer, AutoUpdateConfig, AvailableUpdate, InstallStrategy, LatestRelease,
-    StagedUpdate,
+    check_latest_release, current_version, install_staged_update, prepare_update, AutoUpdateConfig,
+    AvailableUpdate, InstallStrategy, LatestRelease, StagedUpdate,
 };
 use knotq_storage_json::data_dir;
 
@@ -186,23 +185,25 @@ impl KnotQApp {
         };
 
         match update.install_strategy {
-            InstallStrategy::InstalledOnRestart => {
-                self.flush_for_shutdown("auto update restart");
-                cx.restart();
-            }
-            InstallStrategy::OpenInstaller => match open_staged_installer(&update) {
-                Ok(()) => {}
+            InstallStrategy::InstalledOnRestart => match install_staged_update(&update) {
+                Ok(restart_path) => {
+                    if let Some(path) = restart_path {
+                        cx.set_restart_path(path);
+                    }
+                    self.flush_for_shutdown("auto update restart");
+                    cx.restart();
+                }
                 Err(err) => {
                     self.auto_update_status = AutoUpdateUiStatus::Errored {
-                        message: format!("Could not open update installer: {err:#}"),
+                        message: format!("Could not install update: {err:#}"),
                         checked_at: Utc::now(),
                         update: None,
                     };
                     cx.notify();
                 }
             },
-            InstallStrategy::RunInstallerAndQuit => match run_windows_installer(&update) {
-                Ok(()) => {
+            InstallStrategy::RunInstallerAndQuit => match install_staged_update(&update) {
+                Ok(_) => {
                     self.flush_for_shutdown("auto update installer");
                     cx.quit();
                 }
