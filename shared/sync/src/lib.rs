@@ -472,8 +472,6 @@ pub struct LocalSyncState {
     pub replica_id: Option<ReplicaId>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub server_url: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub bearer_token: Option<String>,
     #[serde(default)]
     pub document_cursors: HashMap<DocumentId, DocumentSyncCursor>,
     #[serde(default)]
@@ -494,10 +492,6 @@ impl LocalSyncState {
                 .server_url
                 .as_deref()
                 .is_some_and(|url| !url.is_empty())
-            && self
-                .bearer_token
-                .as_deref()
-                .is_some_and(|token| !token.is_empty())
     }
 
     pub fn replace_pending(&mut self, pending: impl IntoIterator<Item = PendingCrdtEdit>) {
@@ -1085,6 +1079,59 @@ mod tests {
         assert_eq!(json["update_v1"], serde_json::json!("AAEC/w=="));
         let round_tripped: CrdtDocumentUpdate = serde_json::from_value(json).unwrap();
         assert_eq!(round_tripped.update_v1, vec![0, 1, 2, 255]);
+    }
+
+    #[test]
+    fn batched_sync_requests_do_not_serialize_auth_credentials() {
+        let replica_id = ReplicaId::new();
+        let document = DocumentId::new();
+        let pull = BatchPullRequest {
+            replica_id,
+            cursors: HashMap::from([(document, 7)]),
+        };
+        let push = BatchPushRequest {
+            replica_id,
+            documents: vec![PushDocumentUpdates {
+                document,
+                kind: SyncDocumentKind::Scheme,
+                updates: vec![vec![1, 2, 3]],
+            }],
+            notification_schedule_changed: true,
+            notification_schedule: Some(NotificationScheduleSnapshot {
+                sequence: 3,
+                hash: "schedule-hash".to_string(),
+                window_start: Utc::now(),
+                window_end: Utc::now(),
+                occurrence_count: 1,
+            }),
+        };
+
+        let pull_json = serde_json::to_string(&pull).unwrap();
+        let push_json = serde_json::to_string(&push).unwrap();
+        for json in [pull_json, push_json] {
+            assert!(!json.contains("refresh_token"));
+            assert!(!json.contains("bearer_token"));
+            assert!(!json.contains("SYNC_REFRESH_SECRET"));
+            assert!(!json.contains("GOOGLE_REFRESH_SECRET"));
+        }
+    }
+
+    #[test]
+    fn local_sync_state_does_not_persist_legacy_bearer_token() {
+        let workspace_id = WorkspaceId::new();
+        let replica_id = ReplicaId::new();
+        let raw = serde_json::json!({
+            "workspace_id": workspace_id,
+            "replica_id": replica_id,
+            "server_url": "https://api.example.com",
+            "bearer_token": "LEGACY_BEARER_TOKEN"
+        });
+
+        let state: LocalSyncState = serde_json::from_value(raw).unwrap();
+        assert!(state.is_configured());
+        let serialized = serde_json::to_string(&state).unwrap();
+        assert!(!serialized.contains("bearer_token"));
+        assert!(!serialized.contains("LEGACY_BEARER_TOKEN"));
     }
 
     #[test]

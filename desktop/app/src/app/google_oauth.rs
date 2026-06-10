@@ -128,7 +128,8 @@ fn google_import_mode_label(mode: GoogleCalendarImportMode) -> &'static str {
 }
 
 fn is_terminal_google_refresh_error(err: &anyhow::Error) -> bool {
-    format!("{err:#}").contains("invalid_grant")
+    let message = format!("{err:#}");
+    message.contains("invalid_grant")
 }
 
 struct GoogleCalendarBackgroundSnapshot {
@@ -381,6 +382,7 @@ impl KnotQApp {
             Err(err) => {
                 eprintln!("Google Calendar import failed: {err:#}");
                 google_oauth_log(format!("import.disabled: {err:#}"));
+                self.show_google_calendar_error("Google Calendar import", format!("{err:#}"));
                 self.google_oauth_status = GoogleOAuthStatus::Error;
                 cx.notify();
                 return;
@@ -932,9 +934,12 @@ impl KnotQApp {
     fn upsert_google_accounts(&mut self, accounts: Vec<GoogleOAuthAccount>) -> bool {
         let mut changed = false;
         for account in accounts {
-            if let Some(existing) = self.settings.google_accounts.iter_mut().find(|existing| {
-                existing.client_id == account.client_id && existing.account_id == account.account_id
-            }) {
+            if let Some(existing) = self
+                .settings
+                .google_accounts
+                .iter_mut()
+                .find(|existing| existing.account_id == account.account_id)
+            {
                 if existing != &account {
                     *existing = account;
                     changed = true;
@@ -1108,25 +1113,19 @@ impl KnotQApp {
 }
 
 fn google_oauth_config_from_build() -> Result<GoogleOAuthConfig> {
-    let client_id = compiled_google_oauth_client_id().with_context(|| {
-        format!(
-            "set {GOOGLE_OAUTH_CLIENT_ID_ENV} at compile time to a Google Desktop OAuth client id"
-        )
-    })?;
+    let client_id = google_oauth_client_id_from_compiled(COMPILED_GOOGLE_OAUTH_CLIENT_ID)
+        .with_context(|| format!("{GOOGLE_OAUTH_CLIENT_ID_ENV} must be set at compile time"))?;
     Ok(GoogleOAuthConfig { client_id })
 }
 
 fn google_oauth_config_for_existing_accounts(
-    accounts: &[GoogleOAuthAccount],
+    _accounts: &[GoogleOAuthAccount],
 ) -> Result<GoogleOAuthConfig> {
-    let client_id = compiled_google_oauth_client_id()
-        .or_else(|| accounts.first().map(|account| account.client_id.clone()))
-        .with_context(|| format!("no stored Google account is available and {GOOGLE_OAUTH_CLIENT_ID_ENV} was not set at compile time"))?;
-    Ok(GoogleOAuthConfig { client_id })
+    google_oauth_config_from_build()
 }
 
-fn compiled_google_oauth_client_id() -> Option<String> {
-    COMPILED_GOOGLE_OAUTH_CLIENT_ID
+fn google_oauth_client_id_from_compiled(compiled: Option<&str>) -> Option<String> {
+    compiled
         .map(str::trim)
         .filter(|client_id| !client_id.is_empty())
         .map(ToOwned::to_owned)
@@ -1546,23 +1545,36 @@ fn exchange_auth_code(
     code: &str,
     code_verifier: &str,
 ) -> Result<GoogleTokenResponse> {
-    let form = vec![
-        ("client_id", config.client_id.as_str()),
-        ("code", code),
-        ("code_verifier", code_verifier),
-        ("grant_type", "authorization_code"),
-        ("redirect_uri", redirect_uri),
-    ];
+    let form = google_auth_code_exchange_form(config, redirect_uri, code, code_verifier);
+    let form_refs = form
+        .iter()
+        .map(|(key, value)| (*key, value.as_str()))
+        .collect::<Vec<_>>();
 
     ureq::post(GOOGLE_TOKEN_URL)
-        .send_form(&form)
+        .send_form(&form_refs)
         .map_err(google_http_error)?
         .into_json::<GoogleTokenResponse>()
         .context("parse Google OAuth token response")
 }
 
+fn google_auth_code_exchange_form(
+    config: &GoogleOAuthConfig,
+    redirect_uri: &str,
+    code: &str,
+    code_verifier: &str,
+) -> Vec<(&'static str, String)> {
+    vec![
+        ("client_id", config.client_id.clone()),
+        ("code", code.to_string()),
+        ("code_verifier", code_verifier.to_string()),
+        ("grant_type", "authorization_code".to_string()),
+        ("redirect_uri", redirect_uri.to_string()),
+    ]
+}
+
 fn refresh_google_access_token_if_needed(
-    _config: &GoogleOAuthConfig,
+    config: &GoogleOAuthConfig,
     account: &mut GoogleOAuthAccount,
 ) -> Result<()> {
     let still_valid = account
@@ -1577,34 +1589,16 @@ fn refresh_google_access_token_if_needed(
         account.scope
     ));
 
-    let form = vec![
-        ("client_id", account.client_id.as_str()),
-        ("grant_type", "refresh_token"),
-        ("refresh_token", account.refresh_token.as_str()),
-    ];
-
-    let token = match ureq::post(GOOGLE_TOKEN_URL)
-        .send_form(&form)
-        .map_err(google_http_error)
-    {
-        Ok(response) => response
-            .into_json::<GoogleTokenResponse>()
-            .context("parse Google OAuth refresh response")?,
-        Err(err) => {
-            google_oauth_log(format!("token.refresh failed account={label}: {err:#}"));
-            if is_terminal_google_refresh_error(&err) {
-                account.access_token.clear();
-                account.refresh_token.clear();
-                account.expires_at = None;
-                google_oauth_log(format!(
-                    "token.refresh cleared_local_credentials account={label}"
-                ));
-            }
-            return Err(err);
-        }
+    let client_id = google_oauth_client_id_for_refresh(config, account);
+    let token = match request_google_refresh_token(config, &account.refresh_token) {
+        Ok(token) => token,
+        Err(err) => return fail_google_refresh(err, account, &label),
     };
 
     account.access_token = token.access_token;
+    if account.client_id.trim() != client_id {
+        account.client_id = client_id;
+    }
     account.expires_at = token
         .expires_in
         .map(|seconds| Utc::now() + Duration::seconds(seconds));
@@ -1616,6 +1610,58 @@ fn refresh_google_access_token_if_needed(
         account.scope
     ));
     Ok(())
+}
+
+fn request_google_refresh_token(
+    config: &GoogleOAuthConfig,
+    refresh_token: &str,
+) -> Result<GoogleTokenResponse> {
+    let form = google_refresh_token_form(config, refresh_token);
+    let form_refs = form
+        .iter()
+        .map(|(key, value)| (*key, value.as_str()))
+        .collect::<Vec<_>>();
+
+    ureq::post(GOOGLE_TOKEN_URL)
+        .send_form(&form_refs)
+        .map_err(google_http_error)?
+        .into_json::<GoogleTokenResponse>()
+        .context("parse Google OAuth refresh response")
+}
+
+fn google_refresh_token_form(
+    config: &GoogleOAuthConfig,
+    refresh_token: &str,
+) -> Vec<(&'static str, String)> {
+    vec![
+        ("client_id", config.client_id.clone()),
+        ("grant_type", "refresh_token".to_string()),
+        ("refresh_token", refresh_token.to_string()),
+    ]
+}
+
+fn fail_google_refresh(
+    err: anyhow::Error,
+    account: &mut GoogleOAuthAccount,
+    label: &str,
+) -> Result<()> {
+    google_oauth_log(format!("token.refresh failed account={label}: {err:#}"));
+    if is_terminal_google_refresh_error(&err) {
+        account.access_token.clear();
+        account.refresh_token.clear();
+        account.expires_at = None;
+        google_oauth_log(format!(
+            "token.refresh cleared_local_credentials account={label}"
+        ));
+    }
+    Err(err)
+}
+
+fn google_oauth_client_id_for_refresh(
+    config: &GoogleOAuthConfig,
+    _account: &GoogleOAuthAccount,
+) -> String {
+    config.client_id.trim().to_string()
 }
 
 fn import_google_account_calendars(
@@ -2424,10 +2470,19 @@ fn google_http_error(err: ureq::Error) -> anyhow::Error {
     match err {
         ureq::Error::Status(status, response) => {
             let body = response.into_string().unwrap_or_default();
-            anyhow!("Google OAuth HTTP {status}: {body}")
+            anyhow!(format_google_http_error(status, &body))
         }
         ureq::Error::Transport(err) => anyhow!("Google OAuth request failed: {err}"),
     }
+}
+
+fn format_google_http_error(status: u16, body: &str) -> String {
+    if body.contains("client_secret is missing") {
+        return format!(
+            "Google OAuth HTTP {status}: {body}\n\nGoogle rejected the request because this OAuth client requires client_secret during token exchange. Use a public native/desktop client that supports PKCE-only token exchange, or move token exchange to a backend service."
+        );
+    }
+    format!("Google OAuth HTTP {status}: {body}")
 }
 
 fn write_http_response(stream: &mut TcpStream, body: &str) -> std::io::Result<()> {
@@ -2544,6 +2599,157 @@ mod tests {
             last_synced_at: None,
         });
         scheme
+    }
+
+    #[test]
+    fn google_oauth_client_id_comes_from_compile_time_env() {
+        assert_eq!(
+            google_oauth_client_id_from_compiled(Some(
+                " 419826075228-07g85tu69ug0hvkepfdi6qv4p12ulolv.apps.googleusercontent.com "
+            ))
+            .as_deref(),
+            Some("419826075228-07g85tu69ug0hvkepfdi6qv4p12ulolv.apps.googleusercontent.com")
+        );
+    }
+
+    #[test]
+    fn google_oauth_client_id_missing_compile_time_env_is_config_error() {
+        assert_eq!(google_oauth_client_id_from_compiled(None), None);
+    }
+
+    #[test]
+    fn google_auth_url_uses_s256_pkce_challenge() {
+        let url = google_auth_url(
+            "desktop-client",
+            "http://127.0.0.1:12345",
+            "openid email",
+            "state",
+            "challenge",
+        );
+        let params = query_params(&url).unwrap();
+
+        assert_eq!(
+            params.get("client_id").map(String::as_str),
+            Some("desktop-client")
+        );
+        assert_eq!(
+            params.get("code_challenge").map(String::as_str),
+            Some("challenge")
+        );
+        assert_eq!(
+            params.get("code_challenge_method").map(String::as_str),
+            Some("S256")
+        );
+        assert_eq!(
+            params.get("access_type").map(String::as_str),
+            Some("offline")
+        );
+        assert!(!params.contains_key("client_secret"));
+    }
+
+    #[test]
+    fn google_refresh_client_id_uses_configured_desktop_client_id() {
+        let config = GoogleOAuthConfig {
+            client_id: "compiled-client".to_string(),
+        };
+        let mut account = account();
+        account.client_id = "stored-client".to_string();
+
+        assert_eq!(
+            google_oauth_client_id_for_refresh(&config, &account),
+            "compiled-client"
+        );
+    }
+
+    #[test]
+    fn google_refresh_client_id_uses_configured_desktop_client_for_legacy_accounts() {
+        let config = GoogleOAuthConfig {
+            client_id: "compiled-client".to_string(),
+        };
+        let mut account = account();
+        account.client_id.clear();
+
+        assert_eq!(
+            google_oauth_client_id_for_refresh(&config, &account),
+            "compiled-client"
+        );
+    }
+
+    #[test]
+    fn google_auth_code_exchange_form_uses_pkce_and_desktop_client_id() {
+        let config = GoogleOAuthConfig {
+            client_id: "desktop-client".to_string(),
+        };
+        let form = google_auth_code_exchange_form(
+            &config,
+            "http://127.0.0.1:12345",
+            "auth-code",
+            "pkce-verifier",
+        )
+        .into_iter()
+        .collect::<std::collections::HashMap<_, _>>();
+
+        assert_eq!(
+            form.get("client_id").map(String::as_str),
+            Some("desktop-client")
+        );
+        assert!(!form.contains_key("client_secret"));
+        assert_eq!(
+            form.get("code_verifier").map(String::as_str),
+            Some("pkce-verifier")
+        );
+        assert_eq!(form.get("code").map(String::as_str), Some("auth-code"));
+        assert_eq!(
+            form.get("redirect_uri").map(String::as_str),
+            Some("http://127.0.0.1:12345")
+        );
+        assert_eq!(
+            form.get("grant_type").map(String::as_str),
+            Some("authorization_code")
+        );
+    }
+
+    #[test]
+    fn google_refresh_form_uses_desktop_client_id() {
+        let config = GoogleOAuthConfig {
+            client_id: "desktop-client".to_string(),
+        };
+        let form = google_refresh_token_form(&config, "refresh-token")
+            .into_iter()
+            .collect::<std::collections::HashMap<_, _>>();
+
+        assert_eq!(
+            form.get("client_id").map(String::as_str),
+            Some("desktop-client")
+        );
+        assert!(!form.contains_key("client_secret"));
+        assert_eq!(
+            form.get("grant_type").map(String::as_str),
+            Some("refresh_token")
+        );
+        assert_eq!(
+            form.get("refresh_token").map(String::as_str),
+            Some("refresh-token")
+        );
+    }
+
+    #[test]
+    fn google_invalid_grant_refresh_error_is_terminal() {
+        let err = anyhow!("invalid_grant");
+
+        assert!(is_terminal_google_refresh_error(&err));
+    }
+
+    #[test]
+    fn google_client_secret_missing_http_error_explains_public_client_requirement() {
+        let message = format_google_http_error(
+            400,
+            r#"{"error":"invalid_request","error_description":"client_secret is missing."}"#,
+        );
+
+        assert!(message.contains("requires a client secret"));
+        assert!(message.contains("public"));
+        assert!(message.contains("backend"));
     }
 
     #[test]

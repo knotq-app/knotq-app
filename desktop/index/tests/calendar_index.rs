@@ -20,15 +20,29 @@ fn calendar_query_returns_occurrences_with_origin_context() {
 }
 
 #[test]
-fn overdue_query_skips_assignments_older_than_seven_days() {
+fn overdue_query_includes_assignments_regardless_of_age() {
     let as_of = Utc.with_ymd_and_hms(2026, 1, 10, 12, 0, 0).unwrap();
-    let due = as_of - Duration::days(8);
-    let (workspace, _, _) = workspace_with_item(Item::new("Old essay").with_end(due));
+    let due = as_of - Duration::days(60);
+    let (workspace, _, item_id) = workspace_with_item(Item::new("Old essay").with_end(due));
     let indexed = IndexedWorkspace::build(workspace);
 
     let events = indexed.calendar_query().overdue(as_of);
 
-    assert!(events.is_empty());
+    assert_eq!(events.len(), 1);
+    assert_eq!(events[0].item_id, item_id);
+}
+
+#[test]
+fn overdue_query_includes_overdue_reminders() {
+    let as_of = Utc.with_ymd_and_hms(2026, 1, 10, 12, 0, 0).unwrap();
+    let trigger = as_of - Duration::days(30);
+    let (workspace, _, item_id) = workspace_with_item(Item::new("Call back").with_start(trigger));
+    let indexed = IndexedWorkspace::build(workspace);
+
+    let events = indexed.calendar_query().overdue(as_of);
+
+    assert_eq!(events.len(), 1);
+    assert_eq!(events[0].item_id, item_id);
 }
 
 #[test]

@@ -568,6 +568,15 @@ pub struct KnotQApp {
     pub sync_status_popover: Option<Point<Pixels>>,
     /// When the last sync completed successfully, for the "Last synced …" line.
     pub last_synced_at: Option<DateTime<Utc>>,
+    /// Last attempt to run the sync loop, even if it was skipped due auth/signal
+    /// issues. Used to avoid waking the sync backend while the app is
+    /// backgrounded.
+    pub last_sync_poll_at: Option<DateTime<Utc>>,
+    /// If the app became active while within the background resume delay window,
+    /// skip timer-driven sync attempts until this timestamp.
+    pub background_sync_gate_until: Option<DateTime<Utc>>,
+    /// Whether the application window is active (receiving input / key focus).
+    pub window_is_active: bool,
     pub(crate) scheme_sessions: HashMap<SchemeId, SchemeSessionState>,
     pub(crate) service_bus: AppServiceBus,
     pub(crate) workspace_save_blocked_reason: Option<String>,
@@ -584,6 +593,7 @@ pub struct KnotQApp {
     pub _sync_task: Task<()>,
     pub _google_calendar_sync_task: Task<()>,
     pub _auto_update_task: Task<()>,
+    pub _window_activation_subscription: Option<Subscription>,
     pub _editor_subscription: Option<Subscription>,
     pub _search_subscription: Option<Subscription>,
     pub _appearance_subscription: Option<Subscription>,
@@ -697,6 +707,9 @@ impl KnotQApp {
             sync_subscription_poll_task: None,
             sync_status_popover: None,
             last_synced_at: None,
+            last_sync_poll_at: None,
+            background_sync_gate_until: None,
+            window_is_active: false,
             scheme_sessions: HashMap::new(),
             service_bus,
             workspace_save_blocked_reason,
@@ -713,6 +726,7 @@ impl KnotQApp {
             _sync_task: sync_task,
             _google_calendar_sync_task: google_calendar_sync_task,
             _auto_update_task: auto_update_task,
+            _window_activation_subscription: None,
             _editor_subscription: None,
             _search_subscription: None,
             _appearance_subscription: None,

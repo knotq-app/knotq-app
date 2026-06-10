@@ -243,7 +243,7 @@ fn format_simple_repeat_annotation(repeat: &SimpleRecurrence, reference_year: i3
 fn repeat_end_suffix(end: &RepeatEnd, reference_year: i32) -> String {
     match end {
         RepeatEnd::Never => String::new(),
-        RepeatEnd::Count(count) => format!(" for {count} total occurrences"),
+        RepeatEnd::Count(count) => format!(" {count} times"),
         RepeatEnd::Until(until) => {
             let date = until.with_timezone(&Local).date_naive();
             format!(" until {}", format_contextual_date(date, reference_year))

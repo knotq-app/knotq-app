@@ -8,6 +8,7 @@ mod views;
 
 use std::borrow::Cow;
 
+use chrono::{Duration as ChronoDuration, Utc};
 use gpui::prelude::*;
 use gpui::{
     actions, div, px, App, Application, Context, InteractiveElement, IntoElement, KeyBinding, Menu,
@@ -57,6 +58,31 @@ impl Render for KnotQApp {
                 |this: &mut KnotQApp, window, cx| {
                     this.sync_system_theme(window);
                     cx.notify();
+                },
+            ));
+        }
+        if self._window_activation_subscription.is_none() {
+            self._window_activation_subscription = Some(cx.observe_window_activation(
+                window,
+                |this: &mut KnotQApp, window, _cx| {
+                    let now = Utc::now();
+                    let was_active = this.window_is_active;
+                    this.window_is_active = window.is_window_active();
+                    if !was_active && this.window_is_active {
+                        let should_sync_after_resume =
+                            this.last_sync_poll_at.is_none_or(|last_sync_poll_at| {
+                                now - last_sync_poll_at >= ChronoDuration::minutes(5)
+                            });
+                        if should_sync_after_resume {
+                            this.background_sync_gate_until = None;
+                            this.service_bus.signal_sync();
+                        } else if let Some(last_sync_poll_at) = this.last_sync_poll_at {
+                            this.background_sync_gate_until =
+                                Some(last_sync_poll_at + ChronoDuration::minutes(5));
+                        }
+                    } else if !this.window_is_active {
+                        this.background_sync_gate_until = None;
+                    }
                 },
             ));
         }

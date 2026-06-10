@@ -81,7 +81,7 @@ struct SyncHttpClient {
 pub(crate) fn spawn_sync_task(sync_rx: Receiver<()>, cx: &mut Context<KnotQApp>) -> Task<()> {
     cx.spawn(
         async move |weak: gpui::WeakEntity<KnotQApp>, cx: &mut gpui::AsyncApp| {
-            run_sync_once(&weak, cx).await;
+            run_sync_if_needed(&weak, cx, false).await;
             loop {
                 let timer = cx.background_executor().timer(SYNC_POLL_INTERVAL).fuse();
                 let signal = sync_rx.recv().fuse();
@@ -100,10 +100,40 @@ pub(crate) fn spawn_sync_task(sync_rx: Receiver<()>, cx: &mut Context<KnotQApp>)
                     cx.background_executor().timer(SYNC_DEBOUNCE).await;
                     while sync_rx.try_recv().is_ok() {}
                 }
-                run_sync_once(&weak, cx).await;
+                run_sync_if_needed(&weak, cx, signaled).await;
             }
         },
     )
+}
+
+async fn run_sync_if_needed(
+    weak: &gpui::WeakEntity<KnotQApp>,
+    cx: &mut gpui::AsyncApp,
+    force: bool,
+) {
+    let now = Utc::now();
+    let should_run = weak
+        .update(cx, |app, _cx| {
+            if !app.window_is_active {
+                return false;
+            }
+            if let Some(gate_until) = app.background_sync_gate_until {
+                if !force && now < gate_until {
+                    return false;
+                }
+            }
+            app.background_sync_gate_until = None;
+            app.last_sync_poll_at = Some(now);
+            true
+        })
+        .ok()
+        .unwrap_or(false);
+
+    if !should_run {
+        return;
+    }
+
+    run_sync_once(&weak, cx).await;
 }
 
 async fn run_sync_once(weak: &gpui::WeakEntity<KnotQApp>, cx: &mut gpui::AsyncApp) {
@@ -490,7 +520,6 @@ fn configure_local_state(
     local_state.workspace_id = Some(sync_workspace_id(account, workspace_id));
     local_state.replica_id = Some(replica_id);
     local_state.server_url = Some(account.api_base.clone());
-    local_state.bearer_token = Some(account.bearer_token.clone());
 }
 
 fn sync_workspace_id(account: &SyncAccountSettings, fallback: WorkspaceId) -> WorkspaceId {
