@@ -53,12 +53,12 @@ jobs:
       - name: Verify Google OAuth client ID
         run: test -n "$KNOTQ_GOOGLE_OAUTH_CLIENT_ID"
         env:
-          KNOTQ_GOOGLE_OAUTH_CLIENT_ID: ${{ secrets.KNOTQ_GOOGLE_OAUTH_CLIENT_ID }}
+          KNOTQ_GOOGLE_OAUTH_CLIENT_ID: ${{ secrets.KNOTQ_GOOGLE_CLIENT_ID }}
 
       - name: Bundle app
         run: cargo bundle --package knotq-app --release --target ${{ matrix.target }}
         env:
-          KNOTQ_GOOGLE_OAUTH_CLIENT_ID: ${{ secrets.KNOTQ_GOOGLE_OAUTH_CLIENT_ID }}
+          KNOTQ_GOOGLE_OAUTH_CLIENT_ID: ${{ secrets.KNOTQ_GOOGLE_CLIENT_ID }}
 
       - name: Upload unsigned app bundle
         run: |
@@ -195,12 +195,12 @@ jobs:
         shell: bash
         run: test -n "$KNOTQ_GOOGLE_OAUTH_CLIENT_ID"
         env:
-          KNOTQ_GOOGLE_OAUTH_CLIENT_ID: ${{ secrets.KNOTQ_GOOGLE_OAUTH_CLIENT_ID }}
+          KNOTQ_GOOGLE_OAUTH_CLIENT_ID: ${{ secrets.KNOTQ_GOOGLE_CLIENT_ID }}
 
       - name: Build
         run: cargo build --package knotq-app --release --target x86_64-pc-windows-msvc
         env:
-          KNOTQ_GOOGLE_OAUTH_CLIENT_ID: ${{ secrets.KNOTQ_GOOGLE_OAUTH_CLIENT_ID }}
+          KNOTQ_GOOGLE_OAUTH_CLIENT_ID: ${{ secrets.KNOTQ_GOOGLE_CLIENT_ID }}
 
       - name: Azure login
         uses: azure/login@v3
@@ -326,12 +326,12 @@ jobs:
       - name: Verify Google OAuth client ID
         run: test -n "$KNOTQ_GOOGLE_OAUTH_CLIENT_ID"
         env:
-          KNOTQ_GOOGLE_OAUTH_CLIENT_ID: ${{ secrets.KNOTQ_GOOGLE_OAUTH_CLIENT_ID }}
+          KNOTQ_GOOGLE_OAUTH_CLIENT_ID: ${{ secrets.KNOTQ_GOOGLE_CLIENT_ID }}
 
       - name: Build
         run: cargo build --package knotq-app --release --target x86_64-unknown-linux-gnu
         env:
-          KNOTQ_GOOGLE_OAUTH_CLIENT_ID: ${{ secrets.KNOTQ_GOOGLE_OAUTH_CLIENT_ID }}
+          KNOTQ_GOOGLE_OAUTH_CLIENT_ID: ${{ secrets.KNOTQ_GOOGLE_CLIENT_ID }}
 
       - name: Package
         run: |
