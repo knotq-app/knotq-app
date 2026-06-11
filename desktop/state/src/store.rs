@@ -189,7 +189,45 @@ impl WorkspaceStore {
         clear_pending_operations: bool,
     ) {
         let states = self.crdt.document_states();
+        let direct_changes = WorkspaceCrdtChangeSet {
+            workspace: dirty.index,
+            schemes: dirty.schemes.clone(),
+        };
         self.replace_workspace_with_crdt_states(workspace, dirty, clear_pending_operations, states);
+        self.record_direct_crdt_changes(direct_changes);
+    }
+
+    /// Direct (non-command) workspace mutations — e.g. creating today's Daily Queue
+    /// scheme — reach the store only through [`replace_workspace`](Self::replace_workspace).
+    /// The rebuilt CRDT preserves prior document state, so the mutation itself is
+    /// not yet in any document; sync the dirty change set into the CRDT and queue
+    /// the resulting updates exactly as a command would. Without this, a brand-new
+    /// scheme's document stays empty and its first push is rejected as
+    /// `crdt_schema_invalid`, wedging the sync queue. Changes already recorded by
+    /// the command path diff to nothing here, so this only emits genuinely
+    /// unrecorded edits.
+    fn record_direct_crdt_changes(&mut self, changes: WorkspaceCrdtChangeSet) {
+        if !changes.workspace && changes.schemes.is_empty() {
+            return;
+        }
+        let outcome = self.crdt.sync_changes(&self.workspace, &changes);
+        for error in &outcome.errors {
+            eprintln!("CRDT direct sync update failed: {error}");
+        }
+        if outcome.updates.is_empty() {
+            return;
+        }
+        self.pending_operations.push_back(StoreOperation {
+            id: OperationId::new(),
+            workspace_id: self.workspace.id,
+            replica_id: self.replica_id,
+            sequence: self.next_sequence,
+            origin: CommandOrigin::User,
+            created_at: Utc::now(),
+            command: Command::Batch(Vec::new()),
+            crdt_updates: outcome.updates,
+        });
+        self.next_sequence += 1;
     }
 
     /// Replace the workspace and rebuild the CRDT documents from the given persisted

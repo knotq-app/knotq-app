@@ -523,8 +523,27 @@ fn sync_snapshot(snapshot: SyncSnapshot) -> Result<SyncRunResult> {
     upload_local_media_assets(&client, &mut local_state, &workspace, &pull.remote_latest)?;
     let media_downloaded = download_missing_media_assets(&client, &workspace)?;
 
-    // The CRDT documents are now final for this run (remote applied + repair). Capture
-    // their merged state to hand back to the UI store and to persist on disk.
+    let replica_id = local_state.replica_id.unwrap_or_default();
+    // The server's per-document seq (our advanced pull cursor) tells the bootstrap
+    // which documents the server already has a base for; the rest get a full snapshot
+    // from the persistent CRDT (so the re-seed shares identity with this device's
+    // diffs) queued before their deltas. The bootstrap also repairs schema-less
+    // documents (a scheme created by a direct workspace mutation that never reached
+    // the CRDT) by repopulating them from the workspace before snapshotting.
+    let healed_documents = queue_workspace_bootstrap_updates(
+        &mut local_state,
+        &mut crdt_docs,
+        &workspace,
+        replica_id,
+        &pull.remote_latest,
+    );
+    for document in &healed_documents {
+        eprintln!("sync: repopulated schema-less CRDT document {document} before bootstrap");
+    }
+
+    // The CRDT documents are now final for this run (remote applied + repair +
+    // bootstrap heal). Capture their merged state to hand back to the UI store and
+    // to persist on disk.
     let merged_crdt_states = crdt_docs.document_states();
 
     // Persist the merged workspace BEFORE pushing. The durable pull cursors are
@@ -534,24 +553,17 @@ fn sync_snapshot(snapshot: SyncSnapshot) -> Result<SyncRunResult> {
     // state, and the next sync (cursor already advanced) would never re-pull them.
     // That desync silently drops other devices' schemes and re-activates archived
     // ones. The CRDT state is saved in lockstep so a restart restores the same
-    // documents (with their stable identity).
-    if remote_updates_applied > 0 || local_workspace_changed || repaired_workspace_changed {
+    // documents (with their stable identity) — including any bootstrap-healed
+    // documents, whose pushed snapshots must share identity with future local diffs.
+    if remote_updates_applied > 0
+        || local_workspace_changed
+        || repaired_workspace_changed
+        || !healed_documents.is_empty()
+    {
         save_workspace(&path, &workspace)?;
         save_crdt_state(&path, &merged_crdt_states)?;
     }
 
-    let replica_id = local_state.replica_id.unwrap_or_default();
-    // The server's per-document seq (our advanced pull cursor) tells the bootstrap
-    // which documents the server already has a base for; the rest get a full snapshot
-    // from the persistent CRDT (so the re-seed shares identity with this device's
-    // diffs) queued before their deltas.
-    queue_workspace_bootstrap_updates(
-        &mut local_state,
-        &crdt_docs,
-        &workspace,
-        replica_id,
-        &pull.remote_latest,
-    );
     // Persist pull cursors, dropped orphans, and per-document push acks even if the
     // push below fails partway, so a transient push error never forces the next
     // sync to re-download every document from sequence zero. The merged workspace
@@ -562,10 +574,20 @@ fn sync_snapshot(snapshot: SyncSnapshot) -> Result<SyncRunResult> {
         replica_id,
         &snapshot.notification_schedule,
         &mut pushed,
-        &crdt_docs,
+        &mut crdt_docs,
         &workspace,
     );
     save_local_sync_state(&path, &local_state)?;
+    // The push's own self-heal may have repopulated a schema-less document after
+    // the capture above; persist the healed state so this device's future diffs
+    // share its identity instead of re-minting the same clientID from clock zero.
+    let merged_crdt_states = {
+        let post_push_states = crdt_docs.document_states();
+        if post_push_states != merged_crdt_states {
+            save_crdt_state(&path, &post_push_states)?;
+        }
+        post_push_states
+    };
     push_result?;
 
     Ok(SyncRunResult {
@@ -1103,7 +1125,7 @@ mod tests {
 
         queue_workspace_bootstrap_updates(
             &mut state,
-            &WorkspaceCrdtDocuments::try_new(&workspace).unwrap(),
+            &mut WorkspaceCrdtDocuments::try_new(&workspace).unwrap(),
             &workspace,
             replica_id,
             &std::collections::HashMap::new(),
@@ -1156,7 +1178,7 @@ mod tests {
 
         queue_workspace_bootstrap_updates(
             &mut state,
-            &WorkspaceCrdtDocuments::try_new(&workspace).unwrap(),
+            &mut WorkspaceCrdtDocuments::try_new(&workspace).unwrap(),
             &workspace,
             replica_id,
             &std::collections::HashMap::new(),
@@ -1200,7 +1222,7 @@ mod tests {
         // No remote_latest entry for the orphan document → server has no base.
         queue_workspace_bootstrap_updates(
             &mut state,
-            &WorkspaceCrdtDocuments::try_new(&workspace).unwrap(),
+            &mut WorkspaceCrdtDocuments::try_new(&workspace).unwrap(),
             &workspace,
             replica_id,
             &std::collections::HashMap::new(),
@@ -1243,7 +1265,7 @@ mod tests {
         // so the stale local cursor must not suppress a full snapshot bootstrap.
         queue_workspace_bootstrap_updates(
             &mut state,
-            &WorkspaceCrdtDocuments::try_new(&workspace).unwrap(),
+            &mut WorkspaceCrdtDocuments::try_new(&workspace).unwrap(),
             &workspace,
             replica_id,
             &std::collections::HashMap::new(),
@@ -1343,7 +1365,7 @@ mod tests {
         remote_latest.insert(document, 7u64);
         queue_workspace_bootstrap_updates(
             &mut state,
-            &WorkspaceCrdtDocuments::try_new(&workspace).unwrap(),
+            &mut WorkspaceCrdtDocuments::try_new(&workspace).unwrap(),
             &workspace,
             replica_id,
             &remote_latest,

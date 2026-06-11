@@ -378,6 +378,51 @@ pub fn scenario_g_daily_queue_conflicts(h: &mut Harness) {
 }
 
 // ---------------------------------------------------------------------------
+// Scenario g2 — Daily Queue created by direct workspace mutation
+// ---------------------------------------------------------------------------
+
+/// Reproduces the production `crdt_schema_invalid` wedge of 2026-06-11: the
+/// desktop creates today's Daily Queue scheme by mutating the workspace directly
+/// (no command), so the scheme's CRDT document exists but is EMPTY — no `schema`
+/// root. The bootstrap used to snapshot that empty doc into the push queue; the
+/// server rejected the whole atomic batch (the workspace-index delta rides
+/// along), and the push self-heal reseeded the same empty snapshot forever. The
+/// bootstrap must repair the document from the materialized workspace before
+/// snapshotting.
+pub fn scenario_g2_daily_queue_direct_creation(h: &mut Harness) {
+    h.login_all();
+    let today = NaiveDate::from_ymd_opt(2026, 6, 11).unwrap();
+
+    // Phase 1: an ordinary synced workspace, so the workspace document has a
+    // server base (the daily-queue entry below is a delta, as in production).
+    h.add_scheme(D0, "Notes", &["seed"]);
+    h.settle();
+
+    // Phase 2: D0 creates today's Daily Queue directly — scheme content never
+    // reaches the CRDT; only the workspace-index delta is recorded.
+    let daily =
+        h.set_daily_queue_without_crdt_content(D0, today, &["wedge task", "second task"]);
+    h.record_workspace_change_pub(D0);
+
+    // Phase 3: sync must succeed (the bootstrap heals the schema-less document)
+    // and every device must converge on the daily scheme's real content.
+    h.settle();
+    h.assert_all_converged();
+    for key in h.device_keys() {
+        assert_eq!(
+            h.device(key).workspace.daily_queue_scheme_id(today),
+            Some(daily),
+            "{key:?}: daily queue entry missing"
+        );
+        h.assert_scheme_items(key, daily, &["wedge task", "second task"]);
+    }
+    assert!(
+        h.device(D0).is_fully_pushed(),
+        "D0 push queue must drain after the heal"
+    );
+}
+
+// ---------------------------------------------------------------------------
 // Scenario h — Calendar import lifecycle
 // ---------------------------------------------------------------------------
 

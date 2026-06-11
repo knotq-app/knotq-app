@@ -371,6 +371,25 @@ impl Harness {
         self.device_mut(key).set_daily_queue(date, lines)
     }
 
+    /// Direct (non-command) Daily Queue creation that leaves the scheme's CRDT
+    /// document empty — see [`TestDevice::set_daily_queue_without_crdt_content`].
+    pub fn set_daily_queue_without_crdt_content(
+        &mut self,
+        key: DeviceKey,
+        date: chrono::NaiveDate,
+        lines: &[&str],
+    ) -> SchemeId {
+        self.device_mut(key)
+            .set_daily_queue_without_crdt_content(date, lines)
+    }
+
+    /// Record a workspace-index change on a device (e.g. the `daily_queue` map
+    /// entry a direct Daily Queue creation adds).
+    pub fn record_workspace_change_pub(&mut self, key: DeviceKey) {
+        self.device_mut(key)
+            .record_changes(WorkspaceCrdtChangeSet::default().workspace());
+    }
+
     pub fn sync(&mut self, key: DeviceKey) {
         self.try_sync(key).expect("sync");
     }
@@ -1547,6 +1566,71 @@ impl TestDevice {
         daily_id
     }
 
+    /// Simulate the desktop's direct (non-command) Daily Queue creation as the
+    /// store behaved before it recorded direct CRDT changes: the scheme is
+    /// inserted into the workspace and the store CRDT is rebuilt from the
+    /// persisted states (mirroring `WorkspaceStore::replace_workspace`), leaving
+    /// the new scheme's CRDT document EMPTY — no `schema` root, no items. This
+    /// is the on-disk state that wedged production pushes with
+    /// `crdt_schema_invalid` on 2026-06-11.
+    pub fn set_daily_queue_without_crdt_content(
+        &mut self,
+        date: chrono::NaiveDate,
+        lines: &[&str],
+    ) -> SchemeId {
+        let daily_id = daily_queue_scheme_id(date);
+        let mut scheme = Scheme::new("Daily", 0);
+        scheme.id = daily_id;
+        for line in lines {
+            scheme.items.push(Item::new(*line));
+        }
+        self.workspace.schemes.insert(daily_id, scheme);
+        self.workspace.daily_queue.insert(date, daily_id);
+        self.workspace
+            .canonicalize_personal_sync_identity(self.account_workspace);
+        self.workspace.ensure_sync_metadata();
+        self.store_crdt = WorkspaceCrdtDocuments::from_states(
+            &self.workspace,
+            self.replica_id,
+            &self.crdt_states,
+        )
+        .expect("rebuild store crdt");
+        self.crdt_states = self.store_crdt.document_states();
+        daily_id
+    }
+
+    /// The sync document id backing `scheme_id`.
+    pub fn scheme_document_id(&self, scheme_id: SchemeId) -> DocumentId {
+        self.workspace
+            .scheme_sync
+            .get(&scheme_id)
+            .expect("scheme sync metadata")
+            .id
+    }
+
+    /// Queue a raw pending edit, bypassing the CRDT — test surgery for
+    /// reproducing exact on-disk pending-queue states (e.g. the 2-byte empty
+    /// Yjs update a schema-less document snapshot produces).
+    pub fn push_raw_pending_edit(
+        &mut self,
+        document: DocumentId,
+        kind: SyncDocumentKind,
+        update_v1: Vec<u8>,
+    ) {
+        let local_sequence = self.next_sequence;
+        self.next_sequence += 1;
+        self.local_state.push_pending(PendingCrdtEdit {
+            operation_id: OperationId::new(),
+            workspace_id: self.workspace.id,
+            replica_id: self.replica_id,
+            local_sequence,
+            created_at: Utc::now(),
+            document,
+            kind,
+            update_v1,
+        });
+    }
+
     /// Archive and then permanently delete a scheme, mirroring
     /// `PermanentlyDeleteScheme`.  After this call, `workspace.schemes` no longer
     /// contains the scheme, and `ensure_sync_metadata` will drop its `scheme_sync`
@@ -1905,10 +1989,6 @@ impl TestDevice {
             }
         }
 
-        // Persist the merged CRDT state (remote applied + any repair). This is what
-        // the desktop background thread writes to disk and what the UI store reloads.
-        self.crdt_states = apply_crdt.document_states();
-
         let remote_latest: HashMap<DocumentId, u64> = self
             .local_state
             .document_cursors
@@ -1917,26 +1997,35 @@ impl TestDevice {
             .collect();
         queue_workspace_bootstrap_updates(
             &mut self.local_state,
-            &apply_crdt,
+            &mut apply_crdt,
             &self.workspace,
             self.replica_id,
             &remote_latest,
         );
+
+        // Persist the merged CRDT state (remote applied + repair + bootstrap heal).
+        // This is what the desktop background thread writes to disk and what the UI
+        // store reloads.
+        self.crdt_states = apply_crdt.document_states();
 
         let schedule = test_notification_schedule();
         let mut pushed = Vec::new();
         // Propagate push errors to the caller instead of panicking — this is the
         // key harness change: the real transport returns Err on crdt_schema_invalid
         // and so should the test harness.
-        batch_push_pending(
+        let push_result = batch_push_pending(
             server,
             &mut self.local_state,
             self.replica_id,
             &schedule,
             &mut pushed,
-            &apply_crdt,
+            &mut apply_crdt,
             &self.workspace,
-        )?;
+        );
+        // Mirror desktop: the push's self-heal may repopulate a schema-less
+        // document; persist the healed identity.
+        self.crdt_states = apply_crdt.document_states();
+        push_result?;
 
         // Mirror desktop `replace_workspace_from_sync` / mobile reload: the store
         // CRDT is reloaded from the persisted (merged) state — keeping its stable
@@ -2004,7 +2093,6 @@ impl TestDevice {
                 });
             }
         }
-        self.crdt_states = apply_crdt.document_states();
         let remote_latest: HashMap<DocumentId, u64> = self
             .local_state
             .document_cursors
@@ -2013,22 +2101,25 @@ impl TestDevice {
             .collect();
         queue_workspace_bootstrap_updates(
             &mut self.local_state,
-            &apply_crdt,
+            &mut apply_crdt,
             &self.workspace,
             self.replica_id,
             &remote_latest,
         );
+        self.crdt_states = apply_crdt.document_states();
         let schedule = test_notification_schedule();
         let mut pushed = Vec::new();
-        batch_push_pending(
+        let push_result = batch_push_pending(
             transport,
             &mut self.local_state,
             self.replica_id,
             &schedule,
             &mut pushed,
-            &apply_crdt,
+            &mut apply_crdt,
             &self.workspace,
-        )?;
+        );
+        self.crdt_states = apply_crdt.document_states();
+        push_result?;
         self.store_crdt = WorkspaceCrdtDocuments::from_states(
             &self.workspace,
             self.replica_id,

@@ -235,7 +235,7 @@ pub fn batch_push_pending(
     replica_id: ReplicaId,
     notification_schedule: &NotificationScheduleSnapshot,
     pushed: &mut Vec<PushedDocument>,
-    crdt_docs: &WorkspaceCrdtDocuments,
+    crdt_docs: &mut WorkspaceCrdtDocuments,
     workspace: &Workspace,
 ) -> Result<()> {
     // Track which documents we've already reseeded this call; a second rejection
@@ -297,6 +297,16 @@ pub fn batch_push_pending(
                     + 1;
                 let mut seq = next_seq;
                 let mut any_reseeded = false;
+                // A reseed only helps if the snapshot itself validates. Repair any
+                // rejected document whose local doc is schema-less (e.g. a scheme
+                // created by a direct workspace mutation that never reached the
+                // CRDT) before snapshotting it.
+                let rejected: HashSet<DocumentId> = acks.iter().map(|a| a.document).collect();
+                for document in
+                    crdt_docs.heal_schema_invalid_documents(workspace, |id| rejected.contains(&id))
+                {
+                    eprintln!("sync push self-heal: repopulated schema-less document {document}");
+                }
                 for ack in &acks {
                     if reseeded.contains(&ack.document) {
                         // Already reseeded this document — give up.

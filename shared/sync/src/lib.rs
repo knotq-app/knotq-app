@@ -722,11 +722,21 @@ impl LocalSyncState {
 
 pub fn queue_workspace_bootstrap_updates(
     sync_state: &mut LocalSyncState,
-    crdt: &WorkspaceCrdtDocuments,
+    crdt: &mut WorkspaceCrdtDocuments,
     workspace: &Workspace,
     replica_id: ReplicaId,
     remote_latest: &HashMap<DocumentId, u64>,
-) {
+) -> Vec<DocumentId> {
+    // Before snapshotting, repair any document whose full state would fail the
+    // server's schema validation — a scheme added to the workspace outside the
+    // command path (e.g. desktop's direct Daily Queue creation) leaves an empty
+    // Yjs doc whose snapshot the server rejects as `crdt_schema_invalid`, wedging
+    // the whole push batch. Only documents the server has no base for are
+    // eligible, so a heal never competes with un-pulled server content.
+    let healed = crdt.heal_schema_invalid_documents(workspace, |document| {
+        remote_latest.get(&document).copied().unwrap_or(0) == 0
+    });
+    let healed_set: HashSet<DocumentId> = healed.iter().copied().collect();
     let mut next_sequence = sync_state
         .pending
         .iter()
@@ -742,7 +752,12 @@ pub fn queue_workspace_bootstrap_updates(
         if remote_latest.get(&update.document).copied().unwrap_or(0) != 0 {
             continue;
         }
-        if sync_state.pending_document_sequence_is_valid(update.document, update.kind) {
+        // A just-healed document's queued edits predate the heal (they are the
+        // schema-less updates the server rejected) — replace them with the healed
+        // snapshot instead of trusting them.
+        if !healed_set.contains(&update.document)
+            && sync_state.pending_document_sequence_is_valid(update.document, update.kind)
+        {
             bootstrapped.insert(update.document);
             continue;
         }
@@ -777,6 +792,8 @@ pub fn queue_workspace_bootstrap_updates(
         bootstrapped.contains(&edit.document)
             || remote_latest.get(&edit.document).copied().unwrap_or(0) != 0
     });
+
+    healed
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]

@@ -84,6 +84,12 @@ fn scenario_g_daily_queue_conflicts() {
     scenarios::scenario_g_daily_queue_conflicts(&mut h);
 }
 
+#[test]
+fn scenario_g2_daily_queue_direct_creation() {
+    let mut h = Harness::new(2);
+    scenarios::scenario_g2_daily_queue_direct_creation(&mut h);
+}
+
 // ---------------------------------------------------------------------------
 // Scenario h — Calendar import lifecycle
 // ---------------------------------------------------------------------------

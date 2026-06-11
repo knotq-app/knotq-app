@@ -531,3 +531,56 @@ fn image_media_syncs_between_devices() {
     }
     let _ = over_name;
 }
+
+// ---------------------------------------------------------------------------
+// Bug 3 — Daily Queue created by direct workspace mutation (2026-06-11 wedge)
+// ---------------------------------------------------------------------------
+
+/// Replays the exact on-disk state of the 2026-06-11 production wedge: the
+/// desktop created today's Daily Queue scheme by direct workspace mutation, so
+/// the scheme's CRDT document existed but was EMPTY (no `schema` root), and the
+/// pending queue held a workspace-index delta plus the scheme's 2-byte empty
+/// "snapshot". The server rejected the atomic batch as `crdt_schema_invalid`,
+/// and the push self-heal reseeded the same empty snapshot forever.
+///
+/// The bootstrap must repair the schema-less document from the materialized
+/// workspace, replace the bad pending edit with the healed full snapshot, and
+/// converge both devices on the daily scheme's real content.
+#[test]
+fn wedged_empty_daily_snapshot_self_heals() {
+    use knotq_model::SyncDocumentKind;
+
+    let mut h = Harness::new(2);
+    h.login_all();
+
+    // An ordinary synced workspace, so the workspace document already has a
+    // server base (as in production).
+    h.add_scheme(D0, "Notes", &["seed"]);
+    h.settle();
+
+    let today = chrono::NaiveDate::from_ymd_opt(2026, 6, 11).unwrap();
+    let daily = h.set_daily_queue_without_crdt_content(D0, today, &["recovered task"]);
+    // The workspace-index delta (the daily_queue map entry) rides in the same
+    // push batch as the broken scheme snapshot, exactly as observed.
+    h.record_workspace_change_pub(D0);
+    // The empty doc's "snapshot" — a 2-byte Yjs update with no schema root — is
+    // already queued, as captured from the wedged client's sync-state.json.
+    let document = h.device(D0).scheme_document_id(daily);
+    h.device_mut_for_surgery(D0)
+        .push_raw_pending_edit(document, SyncDocumentKind::Scheme, vec![0, 0]);
+
+    h.settle();
+    h.assert_all_converged();
+    for key in h.device_keys() {
+        h.assert_scheme_items(key, daily, &["recovered task"]);
+        assert_eq!(
+            h.device(key).workspace.daily_queue_scheme_id(today),
+            Some(daily),
+            "{key:?}: daily queue entry missing"
+        );
+    }
+    assert!(
+        h.device(D0).is_fully_pushed(),
+        "pending queue must drain after the heal"
+    );
+}

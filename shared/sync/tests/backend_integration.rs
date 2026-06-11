@@ -576,6 +576,15 @@ fn http_scenario_g_daily_queue_conflicts() {
     common::scenarios::scenario_g_daily_queue_conflicts(&mut h);
 }
 
+#[test]
+fn http_scenario_g2_daily_queue_direct_creation() {
+    let Some(base_url) = backend_url() else {
+        return;
+    };
+    let mut h = bootstrap_harness(&base_url, "g2-daily-direct", 2);
+    common::scenarios::scenario_g2_daily_queue_direct_creation(&mut h);
+}
+
 // ---------------------------------------------------------------------------
 // Scenario h — Calendar import lifecycle (HTTP)
 // ---------------------------------------------------------------------------

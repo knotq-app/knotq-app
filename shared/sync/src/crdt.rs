@@ -335,6 +335,58 @@ impl WorkspaceCrdtDocuments {
         outcome
     }
 
+    /// Rewrite any owned document whose current full state would fail the server's
+    /// schema validation — i.e. an empty document with no schema root — by
+    /// repopulating it from the materialized `workspace`. Such documents exist when
+    /// a scheme is added to the workspace outside the command path (e.g. the
+    /// desktop's direct Daily Queue creation): [`from_states`](Self::from_states)
+    /// leaves it empty awaiting a pull, but if the server has no base for it either,
+    /// its bootstrap snapshot is rejected as `crdt_schema_invalid` and wedges the
+    /// whole push batch.
+    ///
+    /// `should_heal` gates which documents may be rewritten — callers restrict it to
+    /// documents the server holds no base for (or has just rejected), so a heal
+    /// never mints a base that competes with un-pulled server content. Returns the
+    /// healed document ids.
+    pub fn heal_schema_invalid_documents(
+        &mut self,
+        workspace: &Workspace,
+        mut should_heal: impl FnMut(DocumentId) -> bool,
+    ) -> Vec<DocumentId> {
+        let mut workspace = workspace.clone();
+        workspace.ensure_sync_metadata();
+        let mut healed = Vec::new();
+        let state_is_invalid = |kind: SyncDocumentKind, state: Vec<u8>| {
+            validate_crdt_update_sequence(kind, [state.as_slice()]).is_err()
+        };
+        if should_heal(self.workspace.id)
+            && state_is_invalid(self.workspace.kind, self.workspace.encode_state_v1())
+        {
+            match self
+                .workspace
+                .sync_snapshot(&workspace_document_snapshot(&workspace), true)
+            {
+                Ok(_) => healed.push(self.workspace.id),
+                Err(err) => eprintln!("heal workspace CRDT document failed: {err:#}"),
+            }
+        }
+        for (scheme_id, doc) in &self.schemes {
+            if !should_heal(doc.id)
+                || !state_is_invalid(SyncDocumentKind::Scheme, doc.encode_state_v1())
+            {
+                continue;
+            }
+            let Some(scheme) = workspace.schemes.get(scheme_id) else {
+                continue;
+            };
+            match doc.replace_scheme(scheme) {
+                Ok(()) => healed.push(doc.id),
+                Err(err) => eprintln!("heal scheme CRDT document {scheme_id} failed: {err:#}"),
+            }
+        }
+        healed
+    }
+
     pub fn replace_all(&mut self, workspace: &Workspace) -> anyhow::Result<()> {
         let mut workspace = workspace.clone();
         workspace.ensure_sync_metadata();
@@ -897,7 +949,7 @@ impl YrsSchemeDocument {
         let before = self.state_vector_v1();
         self.replace_scheme(scheme)?;
         let update_v1 = self.encode_update_v1(&before)?;
-        if update_v1.is_empty() {
+        if update_v1_is_empty(&update_v1) {
             return Ok(None);
         }
         Ok(Some(CrdtDocumentUpdate {
@@ -1255,6 +1307,15 @@ fn serde_json_string_value(value: &impl Serialize) -> anyhow::Result<String> {
     Ok(value.as_str().unwrap_or_default().to_string())
 }
 
+/// True when `update_v1` carries no operations. A no-op Yjs diff is not
+/// zero-length: it encodes as the canonical 2-byte update `[0, 0]` (zero struct
+/// clients, zero delete-set clients). Treating it as a real update queues no-op
+/// pushes — and for a brand-new empty document it is the *only* update, which the
+/// backend rejects as `crdt_schema_invalid`.
+fn update_v1_is_empty(update_v1: &[u8]) -> bool {
+    update_v1.is_empty() || update_v1 == [0, 0]
+}
+
 fn yrs_doc_options(id: DocumentId, client_id: u64, offset_kind: OffsetKind) -> Options {
     let mut options =
         Options::with_guid_and_client_id(id.0.to_string().into(), ClientID::new(client_id));
@@ -1348,7 +1409,7 @@ impl YrsJsonDocument {
             before
         };
         let update_v1 = self.doc.transact().encode_diff_v1(&base);
-        if update_v1.is_empty() {
+        if update_v1_is_empty(&update_v1) {
             return Ok(None);
         }
         Ok(Some(CrdtDocumentUpdate {
