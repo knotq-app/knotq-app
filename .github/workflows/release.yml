@@ -50,15 +50,17 @@ jobs:
         env:
           KNOTQ_VERSION: ${{ steps.version.outputs.version }}
 
-      - name: Verify Google OAuth client ID
-        run: test -n "$KNOTQ_GOOGLE_OAUTH_CLIENT_ID"
+      - name: Verify Google OAuth credentials
+        run: test -n "$KNOTQ_GOOGLE_OAUTH_CLIENT_ID" && test -n "$KNOTQ_GOOGLE_OAUTH_CLIENT_SECRET"
         env:
-          KNOTQ_GOOGLE_OAUTH_CLIENT_ID: ${{ secrets.KNOTQ_GOOGLE_CLIENT_ID }}
+          KNOTQ_GOOGLE_OAUTH_CLIENT_ID: ${{ secrets.KNOTQ_GOOGLE_OAUTH_CLIENT_ID }}
+          KNOTQ_GOOGLE_OAUTH_CLIENT_SECRET: ${{ secrets.KNOTQ_GOOGLE_OAUTH_CLIENT_SECRET }}
 
       - name: Bundle app
         run: cargo bundle --package knotq-app --release --target ${{ matrix.target }}
         env:
-          KNOTQ_GOOGLE_OAUTH_CLIENT_ID: ${{ secrets.KNOTQ_GOOGLE_CLIENT_ID }}
+          KNOTQ_GOOGLE_OAUTH_CLIENT_ID: ${{ secrets.KNOTQ_GOOGLE_OAUTH_CLIENT_ID }}
+          KNOTQ_GOOGLE_OAUTH_CLIENT_SECRET: ${{ secrets.KNOTQ_GOOGLE_OAUTH_CLIENT_SECRET }}
 
       - name: Upload unsigned app bundle
         run: |
@@ -191,16 +193,18 @@ jobs:
         env:
           KNOTQ_VERSION: ${{ steps.version.outputs.version }}
 
-      - name: Verify Google OAuth client ID
+      - name: Verify Google OAuth credentials
         shell: bash
-        run: test -n "$KNOTQ_GOOGLE_OAUTH_CLIENT_ID"
+        run: test -n "$KNOTQ_GOOGLE_OAUTH_CLIENT_ID" && test -n "$KNOTQ_GOOGLE_OAUTH_CLIENT_SECRET"
         env:
-          KNOTQ_GOOGLE_OAUTH_CLIENT_ID: ${{ secrets.KNOTQ_GOOGLE_CLIENT_ID }}
+          KNOTQ_GOOGLE_OAUTH_CLIENT_ID: ${{ secrets.KNOTQ_GOOGLE_OAUTH_CLIENT_ID }}
+          KNOTQ_GOOGLE_OAUTH_CLIENT_SECRET: ${{ secrets.KNOTQ_GOOGLE_OAUTH_CLIENT_SECRET }}
 
       - name: Build
         run: cargo build --package knotq-app --release --target x86_64-pc-windows-msvc
         env:
-          KNOTQ_GOOGLE_OAUTH_CLIENT_ID: ${{ secrets.KNOTQ_GOOGLE_CLIENT_ID }}
+          KNOTQ_GOOGLE_OAUTH_CLIENT_ID: ${{ secrets.KNOTQ_GOOGLE_OAUTH_CLIENT_ID }}
+          KNOTQ_GOOGLE_OAUTH_CLIENT_SECRET: ${{ secrets.KNOTQ_GOOGLE_OAUTH_CLIENT_SECRET }}
 
       - name: Azure login
         uses: azure/login@v3
@@ -323,15 +327,17 @@ jobs:
         env:
           KNOTQ_VERSION: ${{ steps.version.outputs.version }}
 
-      - name: Verify Google OAuth client ID
-        run: test -n "$KNOTQ_GOOGLE_OAUTH_CLIENT_ID"
+      - name: Verify Google OAuth credentials
+        run: test -n "$KNOTQ_GOOGLE_OAUTH_CLIENT_ID" && test -n "$KNOTQ_GOOGLE_OAUTH_CLIENT_SECRET"
         env:
-          KNOTQ_GOOGLE_OAUTH_CLIENT_ID: ${{ secrets.KNOTQ_GOOGLE_CLIENT_ID }}
+          KNOTQ_GOOGLE_OAUTH_CLIENT_ID: ${{ secrets.KNOTQ_GOOGLE_OAUTH_CLIENT_ID }}
+          KNOTQ_GOOGLE_OAUTH_CLIENT_SECRET: ${{ secrets.KNOTQ_GOOGLE_OAUTH_CLIENT_SECRET }}
 
       - name: Build
         run: cargo build --package knotq-app --release --target x86_64-unknown-linux-gnu
         env:
-          KNOTQ_GOOGLE_OAUTH_CLIENT_ID: ${{ secrets.KNOTQ_GOOGLE_CLIENT_ID }}
+          KNOTQ_GOOGLE_OAUTH_CLIENT_ID: ${{ secrets.KNOTQ_GOOGLE_OAUTH_CLIENT_ID }}
+          KNOTQ_GOOGLE_OAUTH_CLIENT_SECRET: ${{ secrets.KNOTQ_GOOGLE_OAUTH_CLIENT_SECRET }}
 
       - name: Package
         run: |
