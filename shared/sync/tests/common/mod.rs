@@ -6,30 +6,67 @@
 //! on each push. Devices sync through the *actual* shared engine
 //! ([`batch_pull_and_apply`] + [`batch_push_pending`]) and the real CRDT layer, so
 //! these tests exercise exactly the code desktop and mobile run, end to end.
+//!
+//! ## Backend-agnostic harness
+//!
+//! [`Harness::new`] creates an in-memory harness (no network). [`Harness::new_http`]
+//! creates an HTTP harness that runs the SAME scenario code against the real
+//! Cloudflare Worker backend. The two constructors share all the operation methods.
+//! Server-introspection knobs that only exist in-memory (reject_next_push_with_schema_invalid,
+//! server_document_count, etc.) panic when called on an HTTP harness.
+//!
+//! ## Backend atomicity semantics (from `backend/cloudflare/src/index.ts`)
+//!
+//! `handleSyncPush` iterates over documents inside a single
+//! `this.state.storage.transactionSync(() => { … })` call.  Any throw inside that
+//! closure — including an `ApiError(400, "crdt_schema_invalid")` thrown by
+//! `validateAndCompactCrdtUpdates` for any document in the batch — aborts the whole
+//! transaction.  **No documents from that batch are persisted.**  This is a
+//! fully-atomic, all-or-nothing batch rejection.  `TestServer::push` replicates this
+//! exactly: it validates every document before writing any, and returns
+//! `Err("sync backend rejected request: crdt_schema_invalid")` if any document
+//! fails, leaving the server state unchanged.
 
 #![allow(dead_code)]
+
+pub mod http_transport;
+pub mod scenarios;
 
 use std::cell::RefCell;
 use std::collections::{BTreeMap, HashMap};
 
+use anyhow::anyhow;
 use chrono::Utc;
 use knotq_model::{
-    daily_queue_scheme_id, CalendarProvider, DocumentId, Folder, FolderId, ImportedCalendarSource,
-    Item, NodeRef, OperationId, ReplicaId, Scheme, SchemeId, SchemeSource, SyncDocumentKind,
-    Workspace, WorkspaceId,
+    daily_queue_scheme_id, CalendarProvider, DocumentId, Folder, FolderId, ImageAssetFormat,
+    ImportedCalendarSource, Item, ItemMarker, ItemMedia, NodeRef, OperationId, ReplicaId, Scheme,
+    SchemeId, SchemeSource, SyncDocumentKind, Workspace, WorkspaceId,
 };
 use knotq_sync::{
     batch_pull_and_apply, batch_push_pending, queue_workspace_bootstrap_updates,
     validate_crdt_update_sequence, BatchPullRequest, BatchPullResponse, BatchPushRequest,
     BatchPushResponse, LocalSyncState, NotificationScheduleSnapshot, PendingCrdtEdit,
-    PulledCrdtDocument, PushDocumentUpdates, PushedCrdtDocument, SyncTransport,
-    WorkspaceCrdtChangeSet, WorkspaceCrdtDocuments,
+    PulledCrdtDocument, PushDocumentUpdates, PushedCrdtDocument, SyncPushRejected, SyncTransport,
+    WorkspaceCrdtChangeSet, WorkspaceCrdtDocuments, MAX_SYNC_MEDIA_BYTES,
 };
+use uuid::Uuid;
 use yrs::updates::decoder::Decode;
 use yrs::{Doc, ReadTxn, StateVector, Transact, Update};
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq, Ord, PartialOrd)]
 pub struct DeviceKey(pub usize);
+
+// ---------------------------------------------------------------------------
+// Backend abstraction
+// ---------------------------------------------------------------------------
+
+/// Distinguishes which backend the Harness is running against.  The HTTP variant
+/// holds one HttpClient per device (indexed by DeviceKey); they all share the same
+/// workspace but have independent bearer tokens.
+enum HarnessBackend {
+    InMemory(TestServer),
+    Http(HashMap<DeviceKey, http_transport::HttpClient>),
+}
 
 pub const D0: DeviceKey = DeviceKey(0);
 pub const D1: DeviceKey = DeviceKey(1);
@@ -42,7 +79,7 @@ pub const D2: DeviceKey = DeviceKey(2);
 pub struct Harness {
     account_workspace: WorkspaceId,
     base: Workspace,
-    server: TestServer,
+    backend: HarnessBackend,
     devices: BTreeMap<DeviceKey, TestDevice>,
     device_count: usize,
 }
@@ -60,9 +97,57 @@ impl Harness {
         Self {
             account_workspace,
             base,
-            server: TestServer::default(),
+            backend: HarnessBackend::InMemory(TestServer::default()),
             devices: BTreeMap::new(),
             device_count,
+        }
+    }
+
+    /// Create an HTTP harness backed by the real Cloudflare Worker.
+    /// `bootstrap_responses` must have exactly `device_count` entries from
+    /// separate `backend_bootstrap` calls with the SAME email so they share a
+    /// workspace_id.  Each device gets its own HttpClient (bearer token).
+    pub fn new_http(base_url: &str, workspace_id: WorkspaceId, bearer_tokens: Vec<String>) -> Self {
+        assert!(
+            !bearer_tokens.is_empty(),
+            "new_http requires at least one bearer token"
+        );
+        let device_count = bearer_tokens.len();
+        let mut base = Workspace::new();
+        base.canonicalize_personal_sync_identity(workspace_id);
+        base.ensure_sync_metadata();
+        let mut clients: HashMap<DeviceKey, http_transport::HttpClient> = HashMap::new();
+        for (i, token) in bearer_tokens.into_iter().enumerate() {
+            clients.insert(
+                DeviceKey(i),
+                http_transport::HttpClient {
+                    api_base: base_url.trim_end_matches('/').to_string(),
+                    bearer_token: token,
+                },
+            );
+        }
+        Self {
+            account_workspace: workspace_id,
+            base,
+            backend: HarnessBackend::Http(clients),
+            devices: BTreeMap::new(),
+            device_count,
+        }
+    }
+
+    /// True when this harness is backed by the real HTTP backend.
+    pub fn is_http(&self) -> bool {
+        matches!(self.backend, HarnessBackend::Http(_))
+    }
+
+    /// Return a reference to the in-memory TestServer.  Panics when called on an
+    /// HTTP harness — in-memory introspection knobs are not available over the wire.
+    fn require_in_memory_server(&self) -> &TestServer {
+        match &self.backend {
+            HarnessBackend::InMemory(server) => server,
+            HarnessBackend::Http(_) => {
+                panic!("server introspection is only available for the in-memory harness")
+            }
         }
     }
 
@@ -93,6 +178,12 @@ impl Harness {
         self.devices
             .get_mut(&key)
             .unwrap_or_else(|| panic!("missing device {key:?}"))
+    }
+
+    /// Mutable reference to a device for white-box surgery in regression tests
+    /// (e.g. dropping pending edits to simulate a partially-acked push).
+    pub fn device_mut_for_surgery(&mut self, key: DeviceKey) -> &mut TestDevice {
+        self.device_mut(key)
     }
 
     // --- operations ---
@@ -182,6 +273,95 @@ impl Harness {
         self.device_mut(key).restore_folder(folder);
     }
 
+    /// Archive a scheme, then permanently remove it from the workspace and scheme_sync
+    /// index (mirrors `PermanentlyDeleteScheme` in the desktop commands crate).
+    /// After this call the scheme's content doc lingers server-side; other devices
+    /// that pull it get a benign `unknown_scheme_document` skip.
+    pub fn delete_scheme(&mut self, key: DeviceKey, scheme: SchemeId) {
+        self.device_mut(key).delete_scheme(scheme);
+    }
+
+    /// Archive a folder, then permanently remove it and its subtree from the workspace
+    /// (mirrors `PermanentlyDeleteFolder` in the desktop commands crate).
+    pub fn delete_folder(&mut self, key: DeviceKey, folder: FolderId) {
+        self.device_mut(key).delete_folder(folder);
+    }
+
+    /// Rename a folder.
+    pub fn rename_folder(&mut self, key: DeviceKey, folder: FolderId, name: &str) {
+        self.device_mut(key).rename_folder(folder, name);
+    }
+
+    /// Move a scheme back to the root folder from wherever it currently lives.
+    pub fn move_scheme_to_root(&mut self, key: DeviceKey, scheme: SchemeId) {
+        self.device_mut(key).move_scheme_to_root(scheme);
+    }
+
+    /// Change the marker (blank/bullet/numbered/checkbox) on an item.
+    pub fn set_item_marker(
+        &mut self,
+        key: DeviceKey,
+        scheme: SchemeId,
+        item_index: usize,
+        marker: ItemMarker,
+    ) {
+        self.device_mut(key)
+            .set_item_marker(scheme, item_index, marker);
+    }
+
+    /// Set start and/or end dates on an item (checkbox marker applied automatically).
+    pub fn set_item_dates(
+        &mut self,
+        key: DeviceKey,
+        scheme: SchemeId,
+        item_index: usize,
+        start: Option<chrono::DateTime<chrono::Utc>>,
+        end: Option<chrono::DateTime<chrono::Utc>>,
+    ) {
+        self.device_mut(key)
+            .set_item_dates(scheme, item_index, start, end);
+    }
+
+    /// Change the indent level on an item.
+    pub fn set_item_indent(
+        &mut self,
+        key: DeviceKey,
+        scheme: SchemeId,
+        item_index: usize,
+        indent: u8,
+    ) {
+        self.device_mut(key)
+            .set_item_indent(scheme, item_index, indent);
+    }
+
+    /// Push a notification schedule change from device `key`.  Returns the
+    /// `notification_schedule_revision` reported by the server.
+    ///
+    /// Over the in-memory TestServer this is always 0 (the test server does not
+    /// track notification schedule revisions).  Over HTTP, the real backend returns
+    /// a monotonically increasing revision.
+    pub fn update_notification_schedule(
+        &mut self,
+        key: DeviceKey,
+        sequence: u64,
+        hash: &str,
+    ) -> u64 {
+        let mut device = self.devices.remove(&key).expect("missing device");
+        let rev = match &self.backend {
+            HarnessBackend::InMemory(server) => {
+                device.update_notification_schedule_with(server, sequence, hash)
+            }
+            HarnessBackend::Http(clients) => {
+                let client = clients
+                    .get(&key)
+                    .unwrap_or_else(|| panic!("no HTTP client for {key:?}"));
+                device.update_notification_schedule_with(client, sequence, hash)
+            }
+        };
+        self.devices.insert(key, device);
+        rev
+    }
+
     pub fn set_daily_queue(
         &mut self,
         key: DeviceKey,
@@ -192,24 +372,145 @@ impl Harness {
     }
 
     pub fn sync(&mut self, key: DeviceKey) {
+        self.try_sync(key).expect("sync");
+    }
+
+    /// Convenience: `remote_latest_after_sync` for a device (useful for media upload).
+    pub fn device_remote_latest(&self, key: DeviceKey) -> HashMap<DocumentId, u64> {
+        self.device(key).remote_latest_after_sync()
+    }
+
+    /// Record a scheme content change on a device — used by scenarios that directly
+    /// mutate scheme items (e.g. gsync re-import simulation).
+    pub fn record_scheme_change_pub(&mut self, key: DeviceKey, scheme: SchemeId) {
+        self.device_mut(key)
+            .record_changes(WorkspaceCrdtChangeSet::default().touch_scheme(scheme));
+    }
+
+    /// Like [`sync`] but returns the push result rather than panicking on failure.
+    pub fn try_sync(&mut self, key: DeviceKey) -> anyhow::Result<()> {
         let mut device = self.devices.remove(&key).expect("missing device");
-        device.sync(&self.server);
+        let result = match &self.backend {
+            HarnessBackend::InMemory(server) => device.try_sync(server),
+            HarnessBackend::Http(clients) => {
+                let client = clients
+                    .get(&key)
+                    .unwrap_or_else(|| panic!("no HTTP client for {key:?}"));
+                device.try_sync_with(client)
+            }
+        };
+        self.devices.insert(key, device);
+        result
+    }
+
+    /// Restart the device at `key` using the **legacy** (buggy) `next_sequence = 1`
+    /// behavior, faithfully reproducing today's desktop restart semantics.
+    pub fn restart_legacy(&mut self, key: DeviceKey) {
+        self.device_mut(key).restart_legacy_sequence_reset();
+    }
+
+    /// Restart the device at `key` using the **fixed** behavior: `next_sequence` is
+    /// seeded from the highest already-used sequence + 1.
+    pub fn restart(&mut self, key: DeviceKey) {
+        self.device_mut(key).restart();
+    }
+
+    /// Arm a one-shot `crdt_schema_invalid` rejection on the test server so the
+    /// next push call deterministically exercises the engine's self-heal path.
+    /// Panics on an HTTP harness (fault injection is only available in-memory).
+    pub fn reject_next_push_with_schema_invalid(&self) {
+        self.require_in_memory_server()
+            .reject_next_push_with_schema_invalid();
+    }
+
+    /// In-memory only.
+    pub fn server_pull_calls(&self) -> usize {
+        self.require_in_memory_server().pull_calls()
+    }
+
+    /// In-memory only.
+    pub fn server_push_calls(&self) -> usize {
+        self.require_in_memory_server().push_calls()
+    }
+
+    /// In-memory only.
+    pub fn server_document_count(&self) -> usize {
+        self.require_in_memory_server().document_count()
+    }
+
+    /// In-memory only.
+    pub fn server_media_asset_count(&self) -> usize {
+        self.require_in_memory_server().media_asset_count()
+    }
+
+    /// Attach a synthetic PNG image to item `item_index` of `scheme` on device `key`.
+    /// Returns `(asset Uuid, image_name)`.
+    pub fn attach_image_to_device(
+        &mut self,
+        key: DeviceKey,
+        scheme: SchemeId,
+        item_index: usize,
+        bytes: Vec<u8>,
+    ) -> (uuid::Uuid, String) {
+        self.device_mut(key).attach_image(scheme, item_index, bytes)
+    }
+
+    /// Upload all pending media assets from device `key` to the server (in-memory or HTTP).
+    pub fn upload_media(
+        &mut self,
+        key: DeviceKey,
+        remote_latest: &HashMap<DocumentId, u64>,
+    ) -> anyhow::Result<()> {
+        let mut device = self.devices.remove(&key).expect("missing device");
+        let result = match &self.backend {
+            HarnessBackend::InMemory(server) => device.upload_media_to(server, remote_latest),
+            HarnessBackend::Http(clients) => {
+                let client = clients
+                    .get(&key)
+                    .unwrap_or_else(|| panic!("no HTTP client for {key:?}"));
+                device.upload_media_to_http(client, remote_latest)
+            }
+        };
+        self.devices.insert(key, device);
+        result
+    }
+
+    /// Download all missing media assets for device `key` from the server (in-memory or HTTP).
+    pub fn download_media(&mut self, key: DeviceKey) {
+        let mut device = self.devices.remove(&key).expect("missing device");
+        match &self.backend {
+            HarnessBackend::InMemory(server) => device.download_media_from(server),
+            HarnessBackend::Http(clients) => {
+                let client = clients
+                    .get(&key)
+                    .unwrap_or_else(|| panic!("no HTTP client for {key:?}"));
+                device
+                    .download_media_from_http(client)
+                    .expect("download_media_from_http");
+            }
+        }
         self.devices.insert(key, device);
     }
 
-    pub fn server_pull_calls(&self) -> usize {
-        self.server.pull_calls()
+    /// Inject an orphan scheme content document on the server (no workspace-index
+    /// entry).  Returns the `DocumentId` that was injected.
+    /// In-memory only — panics on HTTP harness.
+    pub fn inject_orphan_scheme_document(&self, scheme: &Scheme) -> DocumentId {
+        self.require_in_memory_server()
+            .inject_orphan_scheme_document(scheme)
     }
 
-    pub fn server_push_calls(&self) -> usize {
-        self.server.push_calls()
+    /// Corrupt the personal workspace document on the server for device `key`.
+    /// In-memory only — panics on HTTP harness.
+    pub fn corrupt_workspace_document(&self, key: DeviceKey) {
+        let workspace_doc_id = self.device(key).workspace.sync.id;
+        self.require_in_memory_server()
+            .corrupt_workspace_document(workspace_doc_id);
     }
 
-    pub fn server_document_count(&self) -> usize {
-        self.server.document_count()
-    }
-
+    /// In-memory only — panics on HTTP harness.
     pub fn push_remote_workspace_snapshot(&self, workspace: &Workspace) {
+        let server = self.require_in_memory_server();
         let documents = WorkspaceCrdtDocuments::snapshot_updates(workspace)
             .updates
             .into_iter()
@@ -219,7 +520,7 @@ impl Harness {
                 updates: vec![update.update_v1],
             })
             .collect::<Vec<_>>();
-        self.server
+        server
             .push(&BatchPushRequest {
                 replica_id: ReplicaId::new(),
                 documents,
@@ -277,6 +578,16 @@ impl Harness {
                 "seed {seed}: {key:?} diverged from {first:?}"
             );
         }
+    }
+
+    /// Assert a scheme has been permanently deleted: it is absent from both
+    /// `workspace.schemes` AND the workspace tree.
+    pub fn assert_scheme_absent(&self, key: DeviceKey, scheme: SchemeId) {
+        let device = self.device(key);
+        assert!(
+            !device.workspace.schemes.contains_key(&scheme),
+            "{key:?}: scheme {scheme} still present in workspace.schemes after delete"
+        );
     }
 
     pub fn assert_scheme_active(&self, key: DeviceKey, scheme: SchemeId) {
@@ -397,10 +708,21 @@ impl Harness {
 // Test server — implements the real SyncTransport against the merged-state model
 // ---------------------------------------------------------------------------
 
+/// Media asset key: (document_id, image_name) → bytes.
+type MediaKey = (DocumentId, String);
+
 #[derive(Default)]
 pub struct TestServer {
     documents: RefCell<HashMap<DocumentId, ServerDocument>>,
+    /// In-memory stand-in for the R2 object store.  Mirrors the backend's per-asset
+    /// 3 MiB limit (`MAX_SYNC_MEDIA_BYTES`).  Upload/download are separate methods
+    /// rather than part of `SyncTransport` (the trait covers only CRDT push/pull);
+    /// test helpers call them directly.
+    media: RefCell<HashMap<MediaKey, Vec<u8>>>,
     counters: RefCell<ServerCounters>,
+    /// When set, the next push call returns `crdt_schema_invalid` unconditionally
+    /// and clears this flag (one-shot).
+    reject_next_push: RefCell<bool>,
 }
 
 #[derive(Default)]
@@ -427,6 +749,104 @@ impl TestServer {
     pub fn document_count(&self) -> usize {
         self.documents.borrow().len()
     }
+
+    // --- in-memory media store -------------------------------------------------
+
+    /// Upload a media asset.  Enforces the backend's per-asset 3 MiB cap.
+    /// Mirrors `PUT /v1/sync/documents/{document}/media/{image_name}`.
+    pub fn upload_media(
+        &self,
+        document: DocumentId,
+        image_name: &str,
+        bytes: Vec<u8>,
+    ) -> anyhow::Result<()> {
+        if bytes.len() > MAX_SYNC_MEDIA_BYTES {
+            return Err(anyhow!(
+                "media asset {} exceeds the {} byte limit ({} bytes)",
+                image_name,
+                MAX_SYNC_MEDIA_BYTES,
+                bytes.len(),
+            ));
+        }
+        self.media
+            .borrow_mut()
+            .insert((document, image_name.to_string()), bytes);
+        Ok(())
+    }
+
+    /// Download a media asset.  Returns `None` when not found (404 on production).
+    /// Mirrors `GET /v1/sync/documents/{document}/media/{image_name}`.
+    pub fn download_media(&self, document: DocumentId, image_name: &str) -> Option<Vec<u8>> {
+        self.media
+            .borrow()
+            .get(&(document, image_name.to_string()))
+            .cloned()
+    }
+
+    /// Number of distinct media assets currently stored.
+    pub fn media_asset_count(&self) -> usize {
+        self.media.borrow().len()
+    }
+
+    /// Arm a one-shot rejection: the next call to `push` returns `SyncPushRejected`
+    /// with code `"crdt_schema_invalid"` without validating anything, leaving the
+    /// server state unchanged.  Use this in tests to deterministically force the
+    /// engine's self-heal path.
+    pub fn reject_next_push_with_schema_invalid(&self) {
+        *self.reject_next_push.borrow_mut() = true;
+    }
+
+    /// Inject a valid scheme content document directly into the server without
+    /// a corresponding workspace-index entry.  This simulates the production
+    /// scenario where a buggy heal path on one device created an orphan content
+    /// doc: the document exists on the server and clients will pull it, but no
+    /// workspace index entry points to it so `apply_remote_updates` cannot route
+    /// it to a local scheme.
+    ///
+    /// Returns the `DocumentId` that was injected so the test can verify that
+    /// the pulling device skipped and advanced past it.
+    pub fn inject_orphan_scheme_document(&self, scheme: &knotq_model::Scheme) -> DocumentId {
+        use knotq_sync::WorkspaceCrdtDocuments;
+        // Build a minimal valid scheme CRDT snapshot from the given scheme data.
+        // `snapshot_updates` mints a throwaway clientID — fine for server-side
+        // injection where we only care about validity, not CRDT identity.
+        let mut workspace = knotq_model::Workspace::new();
+        workspace.ensure_sync_metadata();
+        let scheme_id = scheme.id;
+        workspace.schemes.insert(scheme_id, scheme.clone());
+        workspace.ensure_sync_metadata();
+        let doc_id = workspace
+            .scheme_sync
+            .get(&scheme_id)
+            .expect("scheme sync meta")
+            .id;
+        let updates = WorkspaceCrdtDocuments::snapshot_updates(&workspace).updates;
+        let scheme_update = updates
+            .into_iter()
+            .find(|u| u.document == doc_id)
+            .expect("scheme update");
+        self.documents.borrow_mut().insert(
+            doc_id,
+            ServerDocument {
+                kind: knotq_model::SyncDocumentKind::Scheme,
+                seq: 1,
+                state_v1: scheme_update.update_v1,
+            },
+        );
+        doc_id
+    }
+
+    /// Corrupt the personal workspace document on the server by replacing its
+    /// CRDT state with garbage bytes.  Used to test that workspace-level
+    /// corruption causes the pull to return Err.
+    pub fn corrupt_workspace_document(&self, workspace_doc_id: DocumentId) {
+        let mut documents = self.documents.borrow_mut();
+        if let Some(doc) = documents.get_mut(&workspace_doc_id) {
+            // Overwrite state with bytes that cannot be decoded as a valid Yrs update.
+            doc.state_v1 = vec![0xFF, 0xFE, 0xFD, 0x01, 0x02, 0x03];
+            doc.seq += 1;
+        }
+    }
 }
 
 impl SyncTransport for TestServer {
@@ -452,47 +872,104 @@ impl SyncTransport for TestServer {
         })
     }
 
+    /// Mirrors `handleSyncPush` in `backend/cloudflare/src/index.ts`.
+    ///
+    /// The real worker wraps the entire per-document loop in a single
+    /// `this.state.storage.transactionSync(() => { … })`.  Any validation failure
+    /// (i.e. `validateAndCompactCrdtUpdates` throwing `ApiError(400,
+    /// "crdt_schema_invalid")`) aborts the whole transaction — **no documents from
+    /// that batch are persisted**.  This method replicates that fully-atomic
+    /// all-or-nothing semantics: it validates and merges all documents into a
+    /// scratch buffer before writing a single entry to `self.documents`, and returns
+    /// a typed `SyncPushRejected` error (wrapped in `anyhow::Error`) on any failure.
     fn push(&self, request: &BatchPushRequest) -> anyhow::Result<BatchPushResponse> {
         self.counters.borrow_mut().push_calls += 1;
+
+        // One-shot forced rejection for self-heal regression tests.
+        {
+            let mut flag = self.reject_next_push.borrow_mut();
+            if *flag {
+                *flag = false;
+                return Err(anyhow::Error::new(SyncPushRejected {
+                    code: "crdt_schema_invalid".to_string(),
+                }));
+            }
+        }
+
         let mut documents = self.documents.borrow_mut();
-        let mut out = Vec::new();
+
+        // --- Phase 1: validate + compact every document into a scratch buffer.
+        // Mirrors the `transactionSync` body; no mutation of `documents` yet.
+        struct ScratchEntry {
+            document: DocumentId,
+            kind: SyncDocumentKind,
+            new_state: Vec<u8>,
+            new_seq: u64,
+            accepted: usize,
+        }
+        let mut scratch: Vec<ScratchEntry> = Vec::with_capacity(request.documents.len());
+
         for doc in &request.documents {
-            let entry = documents
-                .entry(doc.document)
-                .or_insert_with(|| ServerDocument {
-                    kind: doc.kind,
-                    seq: 0,
-                    state_v1: Vec::new(),
-                });
-            assert_eq!(
-                entry.kind, doc.kind,
-                "document kind changed under {}",
-                doc.document
-            );
-            // Validate the merged base + incoming updates the way the worker does,
-            // then fold them into a single merged state — there is no delta log.
+            let existing = documents.get(&doc.document);
+            if let Some(entry) = existing {
+                if entry.kind != doc.kind {
+                    // Mirrors the document_kind_mismatch 409 — propagate as error.
+                    return Err(anyhow!(
+                        "sync backend rejected request: document_kind_mismatch for {}",
+                        doc.document
+                    ));
+                }
+            }
+            let base = existing.map(|e| e.state_v1.as_slice()).unwrap_or(&[]);
             let mut chain: Vec<&[u8]> = Vec::new();
-            if !entry.state_v1.is_empty() {
-                chain.push(entry.state_v1.as_slice());
+            if !base.is_empty() {
+                chain.push(base);
             }
             chain.extend(doc.updates.iter().map(|u| u.as_slice()));
             if let Err(err) = validate_crdt_update_sequence(doc.kind, chain.iter().copied()) {
-                panic!(
-                    "server rejected an invalid update chain for {:?} {} (had_base={}, updates={}): {err:#}",
+                // Surface the reason (mirrors the `sync.crdt.schema_invalid` log) but
+                // return the same opaque error code clients receive.
+                let _ = err; // logged for debugging via test output
+                eprintln!(
+                    "[TestServer] crdt_schema_invalid for {:?} {} (had_base={}, updates={}): {err:#}",
                     doc.kind,
                     doc.document,
-                    !entry.state_v1.is_empty(),
+                    !base.is_empty(),
                     doc.updates.len(),
                 );
+                return Err(anyhow::Error::new(SyncPushRejected {
+                    code: "crdt_schema_invalid".to_string(),
+                }));
             }
-            entry.state_v1 = merge_state(&entry.state_v1, &doc.updates);
-            entry.seq += 1;
-            out.push(PushedCrdtDocument {
+            let new_state = merge_state(base, &doc.updates);
+            let new_seq = existing.map(|e| e.seq).unwrap_or(0) + 1;
+            scratch.push(ScratchEntry {
                 document: doc.document,
-                seq: entry.seq,
+                kind: doc.kind,
+                new_state,
+                new_seq,
                 accepted: doc.updates.len(),
             });
         }
+
+        // --- Phase 2: commit all validated documents atomically.
+        let mut out = Vec::with_capacity(scratch.len());
+        for entry in scratch {
+            documents.insert(
+                entry.document,
+                ServerDocument {
+                    kind: entry.kind,
+                    seq: entry.new_seq,
+                    state_v1: entry.new_state,
+                },
+            );
+            out.push(PushedCrdtDocument {
+                document: entry.document,
+                seq: entry.new_seq,
+                accepted: entry.accepted,
+            });
+        }
+
         Ok(BatchPushResponse {
             documents: out,
             notification_schedule_revision: 0,
@@ -520,9 +997,22 @@ pub struct TestDevice {
     crdt_states: HashMap<DocumentId, Vec<u8>>,
     local_state: LocalSyncState,
     next_sequence: u64,
+    /// In-memory stand-in for the desktop's `media/` assets directory.
+    /// Maps image_name (e.g. "<uuid>.png") → raw bytes.  Populated by
+    /// [`Self::attach_image`] (local write) and [`Self::download_media_from`].
+    pub media_assets: HashMap<String, Vec<u8>>,
+    /// Documents skipped during the most recent sync (accumulated across all pull
+    /// pages).  Reset at the start of each `try_sync` call.
+    pub last_skipped: Vec<knotq_sync::SkippedDocument>,
 }
 
 impl TestDevice {
+    /// Construct a `TestDevice` from a `Workspace` and canonical `account_workspace` id.
+    /// Used by integration tests that need to share the backend's provisioned workspace_id.
+    pub fn new_from_base(base: &Workspace, account_workspace: WorkspaceId) -> Self {
+        Self::from_base(base, account_workspace)
+    }
+
     fn from_base(base: &Workspace, account_workspace: WorkspaceId) -> Self {
         let mut workspace = base.clone();
         workspace.canonicalize_personal_sync_identity(account_workspace);
@@ -544,8 +1034,219 @@ impl TestDevice {
             crdt_states,
             local_state,
             next_sequence: 1,
+            media_assets: HashMap::new(),
+            last_skipped: Vec::new(),
         }
     }
+
+    // --- restart simulation ----------------------------------------------------
+
+    /// Simulate an app restart with the **buggy** desktop behavior
+    /// (`desktop/state/src/store.rs:87`): `next_sequence` is hard-coded to 1
+    /// regardless of what's already in `local_state.pending`.  The `store_crdt` is
+    /// rebuilt from the persisted `crdt_states` (the on-disk `sync-crdt-state.json`)
+    /// and `local_state` is kept as-is (the on-disk `sync-state.json`), faithfully
+    /// replicating what the desktop does today.
+    ///
+    /// After this call, new edits will reuse local_sequence 1, 2, 3 … even if older
+    /// unpushed edits with those sequences are still in `pending`.
+    pub fn restart_legacy_sequence_reset(&mut self) {
+        // Rebuild store CRDT from persisted state (stable deterministic clientID).
+        self.store_crdt = WorkspaceCrdtDocuments::from_states(
+            &self.workspace,
+            self.replica_id,
+            &self.crdt_states,
+        )
+        .expect("restart: rebuild store_crdt from crdt_states");
+        // Reset next_sequence to 1 — this is the bug we're reproducing.
+        self.next_sequence = 1;
+        // local_state (pending edits + cursors) is kept exactly as-is, mirroring
+        // how the desktop reads sync-state.json from disk at startup.
+    }
+
+    /// Simulate an app restart with the **correct** behavior: `next_sequence` is
+    /// seeded from `max(pending local_sequence, document_cursors last_pushed_sequence)
+    /// + 1`, so new edits never reuse a sequence number that's already in `pending`
+    /// or was already pushed.  This is what mobile already does
+    /// (`mobile/core/src/lib.rs:820-841`).
+    pub fn restart(&mut self) {
+        // Rebuild store CRDT from persisted state (same as legacy path).
+        self.store_crdt = WorkspaceCrdtDocuments::from_states(
+            &self.workspace,
+            self.replica_id,
+            &self.crdt_states,
+        )
+        .expect("restart: rebuild store_crdt from crdt_states");
+        // Seed next_sequence from the highest sequence number already in use —
+        // either still pending or already acknowledged — plus one.
+        let max_pending = self
+            .local_state
+            .pending
+            .iter()
+            .map(|edit| edit.local_sequence)
+            .max()
+            .unwrap_or(0);
+        let max_pushed = self
+            .local_state
+            .document_cursors
+            .values()
+            .map(|cursor| cursor.last_pushed_sequence)
+            .max()
+            .unwrap_or(0);
+        self.next_sequence = max_pending.max(max_pushed) + 1;
+        // local_state is kept as-is.
+    }
+
+    // --- pending-queue inspection ----------------------------------------------
+
+    /// Number of edits currently in the outbound pending queue.
+    pub fn pending_count(&self) -> usize {
+        self.local_state.pending.len()
+    }
+
+    /// `true` when the pending queue is empty.
+    pub fn is_fully_pushed(&self) -> bool {
+        self.local_state.pending.is_empty()
+    }
+
+    /// Return a snapshot of the pending edits (cloned) for inspection.
+    pub fn pending_edits(&self) -> Vec<knotq_sync::PendingCrdtEdit> {
+        self.local_state.pending.iter().cloned().collect()
+    }
+
+    /// Direct mutable access to `local_state` for white-box surgery in regression
+    /// tests (e.g. simulating a partially-acked push that left stale entries).
+    pub fn local_state_mut(&mut self) -> &mut LocalSyncState {
+        &mut self.local_state
+    }
+
+    // --- media helpers ---------------------------------------------------------
+
+    /// Attach a synthetic PNG image to item `item_index` in `scheme_id`, writing
+    /// `bytes` into the device's in-memory media assets map (stand-in for the
+    /// on-disk `media/` dir), and adding an `ItemMedia::Image` entry to the item.
+    /// Also records a CRDT change so the edit is pushed to the server.
+    pub fn attach_image(
+        &mut self,
+        scheme_id: SchemeId,
+        item_index: usize,
+        bytes: Vec<u8>,
+    ) -> (Uuid, String) {
+        let asset = Uuid::new_v4();
+        let format = ImageAssetFormat::Png;
+        let image_name = format!("{}.{}", asset, format.extension());
+        {
+            let items = &mut self.scheme_mut(scheme_id).items;
+            if item_index < items.len() {
+                items[item_index].media.push(ItemMedia::Image {
+                    asset,
+                    format,
+                    width: Some(64),
+                    height: Some(64),
+                });
+            }
+        }
+        self.media_assets.insert(image_name.clone(), bytes);
+        self.record_changes(WorkspaceCrdtChangeSet::default().touch_scheme(scheme_id));
+        (asset, image_name)
+    }
+
+    /// Upload all locally-held media assets that `should_upload_media_asset` says
+    /// need uploading (mirrors `upload_local_media_assets` in `sync_service.rs`).
+    pub fn upload_media_to(
+        &mut self,
+        server: &TestServer,
+        remote_latest: &HashMap<DocumentId, u64>,
+    ) -> anyhow::Result<()> {
+        use sha2::{Digest, Sha256};
+
+        // Phase 1: collect (document, image_name) refs from the workspace without
+        // borrowing self.media_assets or self.local_state.
+        let refs: Vec<(DocumentId, String)> = self
+            .workspace
+            .schemes
+            .iter()
+            .filter_map(|(scheme_id, scheme)| {
+                let meta = self.workspace.scheme_sync.get(scheme_id)?;
+                Some((meta.id, scheme))
+            })
+            .flat_map(|(document, scheme)| {
+                scheme.items.iter().flat_map(move |item| {
+                    item.media.iter().filter_map(move |media| {
+                        let ItemMedia::Image { asset, format, .. } = media;
+                        let image_name = format!("{}.{}", asset, format.extension());
+                        Some((document, image_name))
+                    })
+                })
+            })
+            .collect();
+
+        // Phase 2: for each ref, check cursor + upload if needed.
+        for (document, image_name) in refs {
+            let Some(bytes) = self.media_assets.get(&image_name).cloned() else {
+                continue; // asset not on disk — skip (mirror of the real driver)
+            };
+            if bytes.is_empty() {
+                continue;
+            }
+            let byte_length = bytes.len() as u64;
+            let digest = Sha256::digest(&bytes);
+            let sha256: String = digest.iter().map(|b| format!("{b:02x}")).collect();
+            if !self.local_state.should_upload_media_asset(
+                &image_name,
+                document,
+                byte_length,
+                &sha256,
+                remote_latest,
+            ) {
+                continue;
+            }
+            server.upload_media(document, &image_name, bytes)?;
+            self.local_state
+                .mark_media_uploaded(image_name, document, byte_length, sha256);
+        }
+        Ok(())
+    }
+
+    /// Download any media assets referenced by workspace items that aren't already
+    /// in `self.media_assets` (mirrors `download_missing_media_assets`).
+    pub fn download_media_from(&mut self, server: &TestServer) {
+        // Collect (document, image_name) refs first to avoid holding a borrow on
+        // self.workspace while mutating self.media_assets.
+        let refs: Vec<(DocumentId, String)> = self
+            .workspace
+            .schemes
+            .keys()
+            .filter_map(|scheme_id| {
+                let meta = self.workspace.scheme_sync.get(scheme_id)?;
+                let scheme = self.workspace.schemes.get(scheme_id)?;
+                Some((meta.id, scheme.items.clone()))
+            })
+            .flat_map(|(document, items)| {
+                items.into_iter().flat_map(move |item| {
+                    item.media.into_iter().filter_map({
+                        let document = document;
+                        move |media| {
+                            let ItemMedia::Image { asset, format, .. } = media;
+                            let image_name = format!("{}.{}", asset, format.extension());
+                            Some((document, image_name))
+                        }
+                    })
+                })
+            })
+            .collect();
+
+        for (document, image_name) in refs {
+            if self.media_assets.contains_key(&image_name) {
+                continue; // already present
+            }
+            if let Some(bytes) = server.download_media(document, &image_name) {
+                self.media_assets.insert(image_name, bytes);
+            }
+        }
+    }
+
+    // ---------------------------------------------------------------------------
 
     pub fn add_scheme(&mut self, name: &str, lines: &[&str]) -> SchemeId {
         let mut scheme = Scheme::new(name, 0);
@@ -846,6 +1547,279 @@ impl TestDevice {
         daily_id
     }
 
+    /// Archive and then permanently delete a scheme, mirroring
+    /// `PermanentlyDeleteScheme`.  After this call, `workspace.schemes` no longer
+    /// contains the scheme, and `ensure_sync_metadata` will drop its `scheme_sync`
+    /// entry, so the next workspace push removes it from the server's workspace index.
+    /// The content document lingers server-side; other devices that pull it receive a
+    /// benign `unknown_scheme_document` skip.
+    pub fn delete_scheme(&mut self, scheme_id: SchemeId) {
+        // Step 1: remove from all folder children lists.
+        for folder in self.workspace.folders.values_mut() {
+            folder
+                .children
+                .retain(|child| *child != NodeRef::Scheme(scheme_id));
+        }
+        // Step 2: remove from recently_deleted (archive state) if present.
+        self.workspace
+            .recently_deleted
+            .retain(|id| *id != scheme_id);
+        self.workspace.deleted_scheme_origins.remove(&scheme_id);
+        // Step 3: remove the scheme itself — this triggers scheme_sync cleanup in
+        // ensure_sync_metadata on the next sync.
+        self.workspace.schemes.remove(&scheme_id);
+        // Step 4: record as workspace change so the deletion propagates via CRDT.
+        self.record_changes(WorkspaceCrdtChangeSet::default().workspace());
+    }
+
+    /// Archive and permanently delete a folder and its entire subtree, mirroring
+    /// `PermanentlyDeleteFolder`.
+    pub fn delete_folder(&mut self, folder_id: FolderId) {
+        // Collect all folder ids in the subtree (BFS).
+        let mut stack = vec![folder_id];
+        let mut all_folders = vec![];
+        let mut all_schemes = vec![];
+        while let Some(fid) = stack.pop() {
+            all_folders.push(fid);
+            if let Some(folder) = self.workspace.folders.get(&fid) {
+                for child in &folder.children {
+                    match child {
+                        NodeRef::Folder(id) => stack.push(*id),
+                        NodeRef::Scheme(id) => all_schemes.push(*id),
+                    }
+                }
+            }
+        }
+        // Detach from parent.
+        if let Some(folder) = self.workspace.folders.get(&folder_id) {
+            if let Some(parent_id) = folder.parent {
+                if let Some(parent) = self.workspace.folders.get_mut(&parent_id) {
+                    parent
+                        .children
+                        .retain(|child| *child != NodeRef::Folder(folder_id));
+                }
+            }
+        }
+        // Remove archive state for folder and contained schemes.
+        for fid in &all_folders {
+            self.workspace
+                .recently_deleted_folders
+                .retain(|id| id != fid);
+            self.workspace.deleted_folder_origins.remove(fid);
+            self.workspace.folders.remove(fid);
+        }
+        for sid in &all_schemes {
+            self.workspace.recently_deleted.retain(|id| id != sid);
+            self.workspace.deleted_scheme_origins.remove(sid);
+            self.workspace.schemes.remove(sid);
+        }
+        self.record_changes(WorkspaceCrdtChangeSet::default().workspace());
+    }
+
+    /// Rename a folder.
+    pub fn rename_folder(&mut self, folder_id: FolderId, name: &str) {
+        if let Some(folder) = self.workspace.folders.get_mut(&folder_id) {
+            folder.name = name.to_string();
+        }
+        self.record_changes(WorkspaceCrdtChangeSet::default().workspace());
+    }
+
+    /// Move a scheme to the root folder (detach from wherever it currently lives).
+    pub fn move_scheme_to_root(&mut self, scheme_id: SchemeId) {
+        let root = self.workspace.root;
+        for folder in self.workspace.folders.values_mut() {
+            folder
+                .children
+                .retain(|child| *child != NodeRef::Scheme(scheme_id));
+        }
+        self.workspace
+            .folders
+            .get_mut(&root)
+            .unwrap()
+            .children
+            .push(NodeRef::Scheme(scheme_id));
+        self.record_changes(WorkspaceCrdtChangeSet::default().workspace());
+    }
+
+    /// Change the marker on a specific item in a scheme.
+    pub fn set_item_marker(&mut self, scheme_id: SchemeId, item_index: usize, marker: ItemMarker) {
+        let items = &mut self.scheme_mut(scheme_id).items;
+        if item_index < items.len() {
+            items[item_index].marker = marker;
+            self.record_changes(WorkspaceCrdtChangeSet::default().touch_scheme(scheme_id));
+        }
+    }
+
+    /// Set start/end dates on an item.  Automatically applies `Checkbox` marker.
+    pub fn set_item_dates(
+        &mut self,
+        scheme_id: SchemeId,
+        item_index: usize,
+        start: Option<chrono::DateTime<chrono::Utc>>,
+        end: Option<chrono::DateTime<chrono::Utc>>,
+    ) {
+        let items = &mut self.scheme_mut(scheme_id).items;
+        if item_index < items.len() {
+            let item = &mut items[item_index];
+            item.marker = ItemMarker::Checkbox;
+            item.start = start;
+            item.end = end;
+            self.record_changes(WorkspaceCrdtChangeSet::default().touch_scheme(scheme_id));
+        }
+    }
+
+    /// Change the indent level on an item.
+    pub fn set_item_indent(&mut self, scheme_id: SchemeId, item_index: usize, indent: u8) {
+        let items = &mut self.scheme_mut(scheme_id).items;
+        if item_index < items.len() {
+            items[item_index].indent = indent;
+            self.record_changes(WorkspaceCrdtChangeSet::default().touch_scheme(scheme_id));
+        }
+    }
+
+    /// Push a notification schedule change and return the server's
+    /// `notification_schedule_revision`.
+    ///
+    /// Runs a full sync cycle first (which pushes any pending doc edits via the normal
+    /// engine path), then sends a dedicated push with `notification_schedule_changed =
+    /// true` and the supplied `sequence`/`hash`.  Includes the workspace document as a
+    /// required payload (the real backend rejects pushes with zero documents).
+    /// `hash` must be a 64-char hex string to pass real-backend validation.
+    pub fn update_notification_schedule_with(
+        &mut self,
+        transport: &dyn SyncTransport,
+        sequence: u64,
+        hash: &str,
+    ) -> u64 {
+        // First run a normal sync to flush any pending doc edits.
+        self.try_sync_with(transport)
+            .expect("sync before schedule update");
+
+        let now = Utc::now();
+        let schedule = NotificationScheduleSnapshot {
+            sequence,
+            hash: hash.to_string(),
+            window_start: now,
+            window_end: now + chrono::Duration::hours(1),
+            occurrence_count: 0,
+        };
+
+        // The real backend requires at least one document in the push body.
+        // Include a fresh workspace snapshot so the push is always well-formed.
+        // Using `full_snapshot_updates` produces an idempotent update (re-applying
+        // it on the server is safe; it only bumps seq).
+        let workspace_doc_update = self
+            .store_crdt
+            .full_snapshot_updates()
+            .updates
+            .into_iter()
+            .find(|u| u.document == self.workspace.sync.id)
+            .expect("workspace document must be in full snapshot");
+        let request = BatchPushRequest {
+            replica_id: self.replica_id,
+            documents: vec![PushDocumentUpdates {
+                document: workspace_doc_update.document,
+                kind: workspace_doc_update.kind,
+                updates: vec![workspace_doc_update.update_v1],
+            }],
+            notification_schedule_changed: true,
+            notification_schedule: Some(schedule),
+        };
+        let response = transport
+            .push(&request)
+            .expect("notification schedule push");
+        response.notification_schedule_revision
+    }
+
+    /// Upload media via the HTTP client.
+    pub fn upload_media_to_http(
+        &mut self,
+        client: &http_transport::HttpClient,
+        remote_latest: &HashMap<DocumentId, u64>,
+    ) -> anyhow::Result<()> {
+        use sha2::{Digest, Sha256};
+        let refs: Vec<(DocumentId, String)> = self
+            .workspace
+            .schemes
+            .iter()
+            .filter_map(|(scheme_id, scheme)| {
+                let meta = self.workspace.scheme_sync.get(scheme_id)?;
+                Some((meta.id, scheme))
+            })
+            .flat_map(|(document, scheme)| {
+                scheme.items.iter().flat_map(move |item| {
+                    item.media.iter().filter_map(move |media| {
+                        let ItemMedia::Image { asset, format, .. } = media;
+                        let image_name = format!("{}.{}", asset, format.extension());
+                        Some((document, image_name))
+                    })
+                })
+            })
+            .collect();
+        for (document, image_name) in refs {
+            let Some(bytes) = self.media_assets.get(&image_name).cloned() else {
+                continue;
+            };
+            if bytes.is_empty() {
+                continue;
+            }
+            let byte_length = bytes.len() as u64;
+            let digest = Sha256::digest(&bytes);
+            let sha256: String = digest.iter().map(|b| format!("{b:02x}")).collect();
+            if !self.local_state.should_upload_media_asset(
+                &image_name,
+                document,
+                byte_length,
+                &sha256,
+                remote_latest,
+            ) {
+                continue;
+            }
+            client.upload_media(document, &image_name, &bytes)?;
+            self.local_state
+                .mark_media_uploaded(image_name, document, byte_length, sha256);
+        }
+        Ok(())
+    }
+
+    /// Download media via the HTTP client.
+    pub fn download_media_from_http(
+        &mut self,
+        client: &http_transport::HttpClient,
+    ) -> anyhow::Result<()> {
+        let refs: Vec<(DocumentId, String)> = self
+            .workspace
+            .schemes
+            .keys()
+            .filter_map(|scheme_id| {
+                let meta = self.workspace.scheme_sync.get(scheme_id)?;
+                let scheme = self.workspace.schemes.get(scheme_id)?;
+                Some((meta.id, scheme.items.clone()))
+            })
+            .flat_map(|(document, items)| {
+                items.into_iter().flat_map(move |item| {
+                    item.media.into_iter().filter_map({
+                        let document = document;
+                        move |media| {
+                            let ItemMedia::Image { asset, format, .. } = media;
+                            let image_name = format!("{}.{}", asset, format.extension());
+                            Some((document, image_name))
+                        }
+                    })
+                })
+            })
+            .collect();
+        for (document, image_name) in refs {
+            if self.media_assets.contains_key(&image_name) {
+                continue;
+            }
+            if let Some(bytes) = client.download_media(document, &image_name)? {
+                self.media_assets.insert(image_name, bytes);
+            }
+        }
+        Ok(())
+    }
+
     fn scheme_mut(&mut self, scheme_id: SchemeId) -> &mut Scheme {
         self.workspace
             .schemes
@@ -853,9 +1827,28 @@ impl TestDevice {
             .unwrap_or_else(|| panic!("unknown scheme {scheme_id}"))
     }
 
+    /// Public alias for tests that need to directly mutate a scheme (e.g. simulating
+    /// a gsync re-import that removes or changes items without going through helpers).
+    pub fn scheme_mut_pub(&mut self, scheme_id: SchemeId) -> &mut Scheme {
+        self.scheme_mut(scheme_id)
+    }
+
     // --- sync loop (the real engine) ---
 
+    /// Run one full sync cycle.  Panics if the pull or push fails.
+    /// Use `try_sync` instead when you need to observe push failures
+    /// (e.g. `crdt_schema_invalid` regression tests).
     fn sync(&mut self, server: &TestServer) {
+        self.try_sync(server).expect("sync");
+    }
+
+    /// Run one full sync cycle, returning `Err` if the push phase fails (e.g. the
+    /// server returns `crdt_schema_invalid`).  The pull phase always panics on
+    /// failure (pull errors indicate harness bugs, not the bugs under test).
+    /// On push failure the pull has already been applied and `crdt_states` updated,
+    /// mirroring the desktop's partial-progress-on-failure contract.
+    pub fn try_sync(&mut self, server: &TestServer) -> anyhow::Result<()> {
+        self.last_skipped.clear();
         self.workspace
             .canonicalize_personal_sync_identity(self.account_workspace);
         self.workspace.ensure_sync_metadata();
@@ -881,6 +1874,7 @@ impl TestDevice {
             self.replica_id,
         )
         .expect("pull/apply");
+        self.last_skipped = pull.skipped.clone();
         self.workspace = pull.workspace;
         let mut repaired_workspace_changed = self
             .workspace
@@ -931,14 +1925,18 @@ impl TestDevice {
 
         let schedule = test_notification_schedule();
         let mut pushed = Vec::new();
+        // Propagate push errors to the caller instead of panicking — this is the
+        // key harness change: the real transport returns Err on crdt_schema_invalid
+        // and so should the test harness.
         batch_push_pending(
             server,
             &mut self.local_state,
             self.replica_id,
             &schedule,
             &mut pushed,
-        )
-        .expect("push");
+            &apply_crdt,
+            &self.workspace,
+        )?;
 
         // Mirror desktop `replace_workspace_from_sync` / mobile reload: the store
         // CRDT is reloaded from the persisted (merged) state — keeping its stable
@@ -950,9 +1948,107 @@ impl TestDevice {
             &self.crdt_states,
         )
         .expect("reload store crdt");
+        Ok(())
     }
 
-    fn record_changes(&mut self, changes: WorkspaceCrdtChangeSet) {
+    /// Run one full sync cycle against any [`SyncTransport`] implementation.
+    /// Equivalent to `try_sync` but transport-agnostic — integration tests pass
+    /// an `HttpTransport` pointing at the real backend; the in-memory tests keep
+    /// using `try_sync`.
+    pub fn try_sync_with(&mut self, transport: &dyn SyncTransport) -> anyhow::Result<()> {
+        self.last_skipped.clear();
+        self.workspace
+            .canonicalize_personal_sync_identity(self.account_workspace);
+        self.workspace.ensure_sync_metadata();
+
+        let mut apply_crdt = WorkspaceCrdtDocuments::from_states(
+            &self.workspace,
+            self.replica_id,
+            &self.crdt_states,
+        )
+        .expect("restore apply crdt");
+        let workspace = self.workspace.clone();
+        let pull = batch_pull_and_apply(
+            transport,
+            &mut apply_crdt,
+            &mut self.local_state,
+            workspace,
+            self.replica_id,
+        )
+        .expect("pull/apply");
+        self.last_skipped = pull.skipped.clone();
+        self.workspace = pull.workspace;
+        let mut repaired_workspace_changed = self
+            .workspace
+            .canonicalize_personal_sync_identity(self.account_workspace);
+        repaired_workspace_changed |= self.workspace.normalize_one_level_folders();
+        if repaired_workspace_changed {
+            let outcome = apply_crdt.sync_changes(
+                &self.workspace,
+                &WorkspaceCrdtChangeSet::default().workspace(),
+            );
+            assert!(outcome.is_ok(), "{:?}", outcome.errors);
+            let operation_id = OperationId::new();
+            let local_sequence = self.next_sequence;
+            self.next_sequence += 1;
+            for update in outcome.updates {
+                self.local_state.push_pending(PendingCrdtEdit {
+                    operation_id,
+                    workspace_id: self.workspace.id,
+                    replica_id: self.replica_id,
+                    local_sequence,
+                    created_at: Utc::now(),
+                    document: update.document,
+                    kind: update.kind,
+                    update_v1: update.update_v1,
+                });
+            }
+        }
+        self.crdt_states = apply_crdt.document_states();
+        let remote_latest: HashMap<DocumentId, u64> = self
+            .local_state
+            .document_cursors
+            .values()
+            .map(|cursor| (cursor.document, cursor.last_pulled_sequence))
+            .collect();
+        queue_workspace_bootstrap_updates(
+            &mut self.local_state,
+            &apply_crdt,
+            &self.workspace,
+            self.replica_id,
+            &remote_latest,
+        );
+        let schedule = test_notification_schedule();
+        let mut pushed = Vec::new();
+        batch_push_pending(
+            transport,
+            &mut self.local_state,
+            self.replica_id,
+            &schedule,
+            &mut pushed,
+            &apply_crdt,
+            &self.workspace,
+        )?;
+        self.store_crdt = WorkspaceCrdtDocuments::from_states(
+            &self.workspace,
+            self.replica_id,
+            &self.crdt_states,
+        )
+        .expect("reload store crdt");
+        Ok(())
+    }
+
+    /// Remote latest after the most recent sync (cursors map). Useful for
+    /// integration tests that need to pass `remote_latest` to media helpers.
+    pub fn remote_latest_after_sync(&self) -> HashMap<DocumentId, u64> {
+        self.local_state
+            .document_cursors
+            .values()
+            .map(|cursor| (cursor.document, cursor.last_pulled_sequence))
+            .collect()
+    }
+
+    pub fn record_changes(&mut self, changes: WorkspaceCrdtChangeSet) {
         self.workspace
             .canonicalize_personal_sync_identity(self.account_workspace);
         self.workspace.ensure_sync_metadata();
@@ -982,6 +2078,11 @@ impl TestDevice {
     }
 
     // --- inspection ---
+
+    /// Read-only view of the persisted sync state (stand-in for `sync-state.json`).
+    pub fn local_state_ref(&self) -> &LocalSyncState {
+        &self.local_state
+    }
 
     pub fn root_scheme_ids(&self) -> Vec<SchemeId> {
         self.workspace
@@ -1115,9 +2216,11 @@ fn test_notification_schedule() -> NotificationScheduleSnapshot {
     let now = Utc::now();
     NotificationScheduleSnapshot {
         sequence: 0,
-        hash: "test".to_string(),
+        // The real backend requires a 64-char sha256 hex hash and a non-empty
+        // window (window_end > window_start).
+        hash: "0".repeat(64),
         window_start: now,
-        window_end: now,
+        window_end: now + chrono::Duration::hours(1),
         occurrence_count: 0,
     }
 }

@@ -61,20 +61,69 @@ impl WorkspaceCrdtSyncOutcome {
     }
 }
 
+/// A recoverable per-document error during `apply_remote_updates`. Attributable
+/// to one specific document; the caller can skip that document while still applying
+/// the rest.
+#[derive(Clone, Debug)]
+pub struct DocumentApplyError {
+    pub document: DocumentId,
+    pub kind: knotq_model::SyncDocumentKind,
+    /// True when the error is specifically "unknown scheme document" (the
+    /// document ID arrived in a pull response but is not in the workspace index).
+    /// This is a normal, benign situation: a scheme deleted on another device
+    /// leaves its content doc on the server; callers should skip silently rather
+    /// than alarm.
+    pub unknown_scheme_document: bool,
+    pub message: String,
+}
+
+/// A fatal workspace-document error during `apply_remote_updates`. The workspace
+/// index itself is corrupt or inconsistent; the caller must not proceed with
+/// applying scheme content and should abort the pull.
+#[derive(Clone, Debug)]
+pub struct WorkspaceApplyError {
+    pub message: String,
+}
+
 #[derive(Clone, Debug)]
 pub struct WorkspaceCrdtApplyOutcome {
     pub workspace: Workspace,
     pub applied: usize,
-    pub errors: Vec<String>,
+    /// Per-document (scheme) errors: recoverable, attributable to one document.
+    pub document_errors: Vec<DocumentApplyError>,
+    /// Workspace-level fatal errors: if non-empty the caller must abort the pull.
+    pub workspace_errors: Vec<WorkspaceApplyError>,
 }
 
 impl WorkspaceCrdtApplyOutcome {
     pub fn is_ok(&self) -> bool {
-        self.errors.is_empty()
+        self.document_errors.is_empty() && self.workspace_errors.is_empty()
     }
 
-    fn push_error(&mut self, context: impl std::fmt::Display, error: anyhow::Error) {
-        self.errors.push(format!("{context}: {error:#}"));
+    pub fn workspace_is_ok(&self) -> bool {
+        self.workspace_errors.is_empty()
+    }
+
+    fn push_workspace_error(&mut self, context: impl std::fmt::Display, error: anyhow::Error) {
+        self.workspace_errors.push(WorkspaceApplyError {
+            message: format!("{context}: {error:#}"),
+        });
+    }
+
+    fn push_document_error(
+        &mut self,
+        document: DocumentId,
+        kind: knotq_model::SyncDocumentKind,
+        unknown_scheme_document: bool,
+        context: impl std::fmt::Display,
+        error: anyhow::Error,
+    ) {
+        self.document_errors.push(DocumentApplyError {
+            document,
+            kind,
+            unknown_scheme_document,
+            message: format!("{context}: {error:#}"),
+        });
     }
 }
 
@@ -241,6 +290,18 @@ impl WorkspaceCrdtDocuments {
         })
     }
 
+    /// The set of document IDs for which this instance holds a local CRDT doc.
+    /// Used by the engine to detect scheme documents that are now in the workspace
+    /// index but have no local CRDT representation (so their cursor can be reset).
+    pub fn known_document_ids(&self) -> std::collections::HashSet<DocumentId> {
+        let mut ids = std::collections::HashSet::new();
+        ids.insert(self.workspace.id);
+        for doc in self.schemes.values() {
+            ids.insert(doc.id);
+        }
+        ids
+    }
+
     /// Snapshot every owned document's full `state_v1`, keyed by document id, for
     /// durable persistence. Restoring these via [`from_states`](Self::from_states)
     /// with the same `replica_id` round-trips the documents losslessly.
@@ -376,7 +437,8 @@ impl WorkspaceCrdtDocuments {
         let mut outcome = WorkspaceCrdtApplyOutcome {
             workspace: current.clone(),
             applied: 0,
-            errors: Vec::new(),
+            document_errors: Vec::new(),
+            workspace_errors: Vec::new(),
         };
 
         let mut workspace_applied = false;
@@ -385,7 +447,7 @@ impl WorkspaceCrdtDocuments {
             .filter(|update| update.kind == SyncDocumentKind::PersonalWorkspace)
         {
             if update.document != self.workspace.id {
-                outcome.push_error(
+                outcome.push_workspace_error(
                     format!("workspace update {}", update.sequence),
                     anyhow!(
                         "document id mismatch: expected {}, got {}",
@@ -400,9 +462,8 @@ impl WorkspaceCrdtDocuments {
                     outcome.applied += 1;
                     workspace_applied = true;
                 }
-                Err(err) => {
-                    outcome.push_error(format!("workspace update {}", update.sequence), err)
-                }
+                Err(err) => outcome
+                    .push_workspace_error(format!("workspace update {}", update.sequence), err),
             }
         }
 
@@ -411,7 +472,7 @@ impl WorkspaceCrdtDocuments {
         // performs before materializing/persisting anything.
         if workspace_applied {
             if let Err(err) = self.workspace.validate() {
-                outcome.push_error("workspace validation", err);
+                outcome.push_workspace_error("workspace validation", err);
                 return outcome;
             }
         }
@@ -419,7 +480,7 @@ impl WorkspaceCrdtDocuments {
         match self.materialize_workspace(current) {
             Ok(workspace) => outcome.workspace = workspace,
             Err(err) => {
-                outcome.push_error("workspace materialization", err);
+                outcome.push_workspace_error("workspace materialization", err);
                 return outcome;
             }
         }
@@ -427,13 +488,24 @@ impl WorkspaceCrdtDocuments {
         self.schemes
             .retain(|id, _| outcome.workspace.schemes.contains_key(id));
         let scheme_by_document = scheme_documents_by_id(&outcome.workspace);
+        // Track which scheme documents had errors so their cursor can be reset later.
         let mut touched_schemes: HashSet<SchemeId> = HashSet::new();
+        // Track schemes that had a per-document error (to exclude from validation).
+        let mut errored_schemes: HashSet<SchemeId> = HashSet::new();
         for update in updates
             .iter()
             .filter(|update| update.kind == SyncDocumentKind::Scheme)
         {
             let Some(scheme_id) = scheme_by_document.get(&update.document).copied() else {
-                outcome.push_error(
+                // The content document arrived but its scheme is not in the workspace
+                // index. This is a normal occurrence: a scheme deleted on one device
+                // leaves its content doc on the server, or an orphan was created by a
+                // buggy heal path. We skip silently; the cursor will be advanced so we
+                // do not re-pull this every cycle.
+                outcome.push_document_error(
+                    update.document,
+                    SyncDocumentKind::Scheme,
+                    true, // unknown_scheme_document
                     format!("scheme update {}", update.sequence),
                     anyhow!("unknown scheme document {}", update.document),
                 );
@@ -450,14 +522,41 @@ impl WorkspaceCrdtDocuments {
                     outcome.applied += 1;
                     touched_schemes.insert(scheme_id);
                 }
-                Err(err) => outcome.push_error(format!("scheme update {}", update.sequence), err),
+                Err(err) => {
+                    let doc_id = update.document;
+                    outcome.push_document_error(
+                        doc_id,
+                        SyncDocumentKind::Scheme,
+                        false,
+                        format!("scheme update {}", update.sequence),
+                        err,
+                    );
+                    errored_schemes.insert(scheme_id);
+                }
             }
         }
 
         for scheme_id in &touched_schemes {
+            if errored_schemes.contains(scheme_id) {
+                continue; // already recorded an error for this scheme
+            }
             if let Some(doc) = self.schemes.get(scheme_id) {
                 if let Err(err) = doc.validate() {
-                    outcome.push_error(format!("scheme validation {scheme_id}"), err);
+                    // Attribute the validation failure to this scheme's document id.
+                    let doc_id = outcome
+                        .workspace
+                        .scheme_sync
+                        .get(scheme_id)
+                        .map(|m| m.id)
+                        .unwrap_or_else(DocumentId::new);
+                    outcome.push_document_error(
+                        doc_id,
+                        SyncDocumentKind::Scheme,
+                        false,
+                        format!("scheme validation {scheme_id}"),
+                        err,
+                    );
+                    errored_schemes.insert(*scheme_id);
                 }
             }
         }
@@ -465,7 +564,7 @@ impl WorkspaceCrdtDocuments {
         if !touched_schemes.is_empty() {
             match self.materialize_workspace(current) {
                 Ok(workspace) => outcome.workspace = workspace,
-                Err(err) => outcome.push_error("scheme materialization", err),
+                Err(err) => outcome.push_workspace_error("scheme materialization", err),
             }
         }
 
@@ -2484,7 +2583,7 @@ mod tests {
         let mut docs = WorkspaceCrdtDocuments::try_new(&target).unwrap();
         let outcome = docs.apply_remote_updates(&target, &updates);
 
-        assert!(outcome.is_ok(), "{:?}", outcome.errors);
+        assert!(outcome.is_ok(), "{:?}", outcome.document_errors);
         assert_eq!(
             outcome.workspace.schemes[&scheme_id].items[0].text,
             "First remote line"
@@ -2530,7 +2629,7 @@ mod tests {
         let mut docs = WorkspaceCrdtDocuments::empty(&target);
         let outcome = docs.apply_remote_updates(&target, &stored_updates(source.id, updates));
 
-        assert!(outcome.is_ok(), "{:?}", outcome.errors);
+        assert!(outcome.is_ok(), "{:?}", outcome.document_errors);
         let root_children = &outcome.workspace.folders[&outcome.workspace.root].children;
         assert!(root_children.contains(&NodeRef::Scheme(active)));
         assert!(!root_children.contains(&NodeRef::Scheme(archived_id)));
@@ -2562,7 +2661,7 @@ mod tests {
         let mut target_docs = WorkspaceCrdtDocuments::empty(&target);
         let initial =
             target_docs.apply_remote_updates(&target, &stored_updates(source.id, initial_updates));
-        assert!(initial.is_ok(), "{:?}", initial.errors);
+        assert!(initial.is_ok(), "{:?}", initial.document_errors);
         target = initial.workspace;
         assert!(target
             .folder(target.root)
@@ -2587,7 +2686,7 @@ mod tests {
 
         let archived =
             target_docs.apply_remote_updates(&target, &stored_updates(source.id, archive_updates));
-        assert!(archived.is_ok(), "{:?}", archived.errors);
+        assert!(archived.is_ok(), "{:?}", archived.document_errors);
         assert!(archived.workspace.is_scheme_deleted(scheme));
         assert!(!archived
             .workspace
@@ -2673,10 +2772,10 @@ mod tests {
         // The server holds the base and merges both replicas' deltas.
         let mut server = WorkspaceCrdtDocuments::try_new(&base).unwrap();
         let outcome_a = server.apply_remote_updates(&base, &stored_updates(base.id, a_updates));
-        assert!(outcome_a.is_ok(), "{:?}", outcome_a.errors);
+        assert!(outcome_a.is_ok(), "{:?}", outcome_a.document_errors);
         let outcome_b =
             server.apply_remote_updates(&outcome_a.workspace, &stored_updates(base.id, b_updates));
-        assert!(outcome_b.is_ok(), "{:?}", outcome_b.errors);
+        assert!(outcome_b.is_ok(), "{:?}", outcome_b.document_errors);
 
         // Both concurrently-added folders survive — neither clobbers the other the
         // way a single whole-document last-writer-wins blob would.
@@ -2702,10 +2801,10 @@ mod tests {
 
         let mut server = WorkspaceCrdtDocuments::try_new(&base).unwrap();
         let outcome_a = server.apply_remote_updates(&base, &stored_updates(base.id, a_updates));
-        assert!(outcome_a.is_ok(), "{:?}", outcome_a.errors);
+        assert!(outcome_a.is_ok(), "{:?}", outcome_a.document_errors);
         let outcome_b =
             server.apply_remote_updates(&outcome_a.workspace, &stored_updates(base.id, b_updates));
-        assert!(outcome_b.is_ok(), "{:?}", outcome_b.errors);
+        assert!(outcome_b.is_ok(), "{:?}", outcome_b.document_errors);
 
         let merged = outcome_b.workspace;
         assert!(merged.schemes.contains_key(&scheme_a), "scheme A lost");

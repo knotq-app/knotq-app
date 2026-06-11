@@ -64,8 +64,15 @@ impl AppState {
         loaded_start: NaiveDate,
         initial_dirty: bool,
         crdt_states: HashMap<DocumentId, Vec<u8>>,
+        initial_sequence: u64,
     ) -> Self {
-        let store = WorkspaceStore::new(workspace, settings.replica_id, initial_dirty, crdt_states);
+        let store = WorkspaceStore::new(
+            workspace,
+            settings.replica_id,
+            initial_dirty,
+            crdt_states,
+            initial_sequence,
+        );
         let indexed = store.indexed().clone();
         let daily_queue = DailyQueueState::new(today, loaded_start);
         let notifications = NotificationState {
@@ -173,6 +180,10 @@ impl AppState {
 
     pub fn pending_crdt_edits(&self) -> Vec<PendingCrdtEdit> {
         self.store.pending_crdt_edits()
+    }
+
+    pub fn has_pending_crdt_edits(&self) -> bool {
+        self.store.has_pending_crdt_edits()
     }
 
     /// Snapshot the long-lived CRDT documents' persisted state — for durable saving

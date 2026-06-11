@@ -54,8 +54,9 @@ pub use knotq_state::{
 };
 use knotq_storage_json::{
     load_app_settings, load_crdt_state, load_daily_queue_scheme,
-    load_daily_queue_schemes_for_calendar_range, load_workspace_with_options, save_workspace,
-    save_workspace_incremental, settings_path, workspace_path, AppSettings, WorkspaceLoadOptions,
+    load_daily_queue_schemes_for_calendar_range, load_local_sync_state,
+    load_workspace_with_options, save_workspace, save_workspace_incremental, settings_path,
+    workspace_path, AppSettings, WorkspaceLoadOptions,
 };
 
 use auto_update::{spawn_auto_update_task, AutoUpdateSignal, AutoUpdateUiStatus};
@@ -568,15 +569,17 @@ pub struct KnotQApp {
     pub sync_status_popover: Option<Point<Pixels>>,
     /// When the last sync completed successfully, for the "Last synced …" line.
     pub last_synced_at: Option<DateTime<Utc>>,
-    /// Last attempt to run the sync loop, even if it was skipped due auth/signal
-    /// issues. Used to avoid waking the sync backend while the app is
-    /// backgrounded.
+    /// Last attempt to run the sync loop.
     pub last_sync_poll_at: Option<DateTime<Utc>>,
-    /// If the app became active while within the background resume delay window,
-    /// skip timer-driven sync attempts until this timestamp.
-    pub background_sync_gate_until: Option<DateTime<Utc>>,
     /// Whether the application window is active (receiving input / key focus).
     pub window_is_active: bool,
+    /// Whether the last sync run failed at the transport level (offline).
+    pub sync_offline: bool,
+    /// Whether the last sync run failed with a server rejection (non-transport error).
+    pub sync_server_rejecting: bool,
+    /// Remaining pending count from the last sync run result; persisted so the
+    /// poll-interval logic can see pending edits even between runs.
+    pub sync_pending_hint: usize,
     pub(crate) scheme_sessions: HashMap<SchemeId, SchemeSessionState>,
     pub(crate) service_bus: AppServiceBus,
     pub(crate) workspace_save_blocked_reason: Option<String>,
@@ -657,6 +660,26 @@ impl KnotQApp {
         // identity survives this restart instead of being rebuilt from plain data.
         let crdt_states = load_crdt_state(&workspace_path()).unwrap_or_default();
 
+        // Seed next_sequence from persisted sync state so post-restart edits never
+        // reuse sequence numbers still present in the pending queue (Bug 1 fix).
+        // Mirrors mobile/core/src/lib.rs:820-841.
+        let initial_sequence = {
+            let sync_state = load_local_sync_state(&workspace_path()).unwrap_or_default();
+            let max_pending = sync_state
+                .pending
+                .iter()
+                .map(|e| e.local_sequence)
+                .max()
+                .unwrap_or(0);
+            let max_pushed = sync_state
+                .document_cursors
+                .values()
+                .map(|c| c.last_pushed_sequence)
+                .max()
+                .unwrap_or(0);
+            max_pending.max(max_pushed) + 1
+        };
+
         Self {
             state: AppState::new(
                 workspace,
@@ -665,6 +688,7 @@ impl KnotQApp {
                 daily_queue_initial_start(today),
                 initial_dirty,
                 crdt_states,
+                initial_sequence,
             ),
             undo_navigation_stack: VecDeque::new(),
             redo_navigation_stack: VecDeque::new(),
@@ -708,8 +732,10 @@ impl KnotQApp {
             sync_status_popover: None,
             last_synced_at: None,
             last_sync_poll_at: None,
-            background_sync_gate_until: None,
             window_is_active: false,
+            sync_offline: false,
+            sync_server_rejecting: false,
+            sync_pending_hint: 0,
             scheme_sessions: HashMap::new(),
             service_bus,
             workspace_save_blocked_reason,

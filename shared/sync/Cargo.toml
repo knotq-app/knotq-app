@@ -13,3 +13,14 @@ serde_json = { workspace = true }
 sha2 = { workspace = true }
 uuid = { workspace = true }
 yrs = { workspace = true }
+
+[dev-dependencies]
+# ureq is already a workspace dependency (desktop uses it for sync HTTP calls).
+# We reuse it here for the backend_integration tests rather than adding a new dep.
+# All other test dependencies (anyhow, serde, uuid, chrono, yrs) are already in
+# [dependencies] and are accessible from integration tests in tests/.
+ureq = { workspace = true }
+
+[[test]]
+name = "backend_integration"
+path = "tests/backend_integration.rs"

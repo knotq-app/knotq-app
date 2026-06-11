@@ -24,15 +24,60 @@ use knotq_sync::{
     WorkspaceCrdtChangeSet, WorkspaceCrdtDocuments, MAX_SYNC_MEDIA_BYTES,
 };
 use sha2::{Digest, Sha256};
+use std::fmt;
 
 use super::sync_auth::{refresh_sync_backend, RefreshError};
 use super::{KnotQApp, SyncAuthStatus, SyncRunStatus};
 
+// ── Sync scheduling constants ─────────────────────────────────────────────
+//
+// Signal debounces (how long to wait after a signal before running):
+//   Immediate  → 2 s  (sign-in, manual "Sync now", window activation)
+//   LocalChange → 30 s (every local edit; timer runs from the *first* change in
+//                        a burst so rapid typing doesn't postpone the run forever)
+//
+// Poll cadences (timer used when no signal has fired):
+//   Pending edits AND server not rejecting → 30 s  (retry-after-offline)
+//   Offline (last run failed at transport) → 20 min (back off while unreachable)
+//   Window active                          → 2 min  (foreground poll)
+//   Window inactive                        → 30 min (background poll)
+//
+// Server-rejection exception: when the server is online but refuses pushes
+// (non-transport error), retrying every 30 s would hammer the backend; fall
+// back to the foreground/background cadence instead.
 const SYNC_DEBOUNCE: StdDuration = StdDuration::from_secs(2);
-const SYNC_POLL_INTERVAL: StdDuration = StdDuration::from_secs(30);
+const SYNC_LOCAL_CHANGE_DEBOUNCE: StdDuration = StdDuration::from_secs(30);
+const SYNC_PENDING_RETRY: StdDuration = StdDuration::from_secs(30);
+const SYNC_POLL_FOREGROUND: StdDuration = StdDuration::from_secs(120);
+const SYNC_POLL_BACKGROUND: StdDuration = StdDuration::from_secs(30 * 60);
+const SYNC_POLL_OFFLINE: StdDuration = StdDuration::from_secs(20 * 60);
 // Refresh the access token this many seconds before it expires, so a sync run
 // never starts with a token that could lapse mid-flight.
 const ACCESS_REFRESH_SKEW_SECS: i64 = 120;
+
+/// Payload sent over the sync signal channel.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum SyncSignal {
+    /// Run after a 2 s debounce: sign-in completion, manual "Sync now", window
+    /// activation.
+    Immediate,
+    /// Run after a 30 s debounce (from the first change in a burst): every local
+    /// workspace edit.
+    LocalChange,
+}
+
+/// Marker error attached to transport-level failures so the scheduler can
+/// detect "offline" vs "server rejection" without parsing error strings.
+#[derive(Debug)]
+struct SyncNetworkUnreachable;
+
+impl fmt::Display for SyncNetworkUnreachable {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("network unreachable")
+    }
+}
+
+impl std::error::Error for SyncNetworkUnreachable {}
 
 #[derive(Clone)]
 struct SyncSnapshot {
@@ -78,62 +123,124 @@ struct SyncHttpClient {
     bearer_token: String,
 }
 
-pub(crate) fn spawn_sync_task(sync_rx: Receiver<()>, cx: &mut Context<KnotQApp>) -> Task<()> {
+pub(crate) fn spawn_sync_task(
+    sync_rx: Receiver<SyncSignal>,
+    cx: &mut Context<KnotQApp>,
+) -> Task<()> {
     cx.spawn(
         async move |weak: gpui::WeakEntity<KnotQApp>, cx: &mut gpui::AsyncApp| {
-            run_sync_if_needed(&weak, cx, false).await;
+            // Run once at startup (immediate, no debounce).
+            record_poll_at(&weak, cx);
+            run_sync_once(&weak, cx).await;
             loop {
-                let timer = cx.background_executor().timer(SYNC_POLL_INTERVAL).fuse();
+                // Choose the timer interval based on current app state.
+                let interval = poll_interval(&weak, cx);
+                let timer = cx.background_executor().timer(interval).fuse();
                 let signal = sync_rx.recv().fuse();
                 pin_mut!(timer, signal);
-                let mut signaled = false;
+                let mut received_signal: Option<SyncSignal> = None;
                 select! {
                     _ = timer => {}
                     result = signal => {
-                        if result.is_err() {
-                            break;
+                        match result {
+                            Ok(sig) => received_signal = Some(sig),
+                            Err(_) => break,
                         }
-                        signaled = true;
                     }
                 }
-                if signaled {
-                    cx.background_executor().timer(SYNC_DEBOUNCE).await;
+
+                if let Some(first_signal) = received_signal {
+                    // Debounce: LocalChange waits 30 s from the *first* signal;
+                    // Immediate waits 2 s. During the wait keep listening — an
+                    // Immediate mid-wait shortens the deadline to now+2 s (only
+                    // if that is sooner than the current deadline), further
+                    // LocalChanges do not extend the 30 s deadline.
+                    let debounce = match first_signal {
+                        SyncSignal::Immediate => SYNC_DEBOUNCE,
+                        SyncSignal::LocalChange => SYNC_LOCAL_CHANGE_DEBOUNCE,
+                    };
+                    let mut debounce_end = std::time::Instant::now() + debounce;
+                    loop {
+                        let remaining = debounce_end
+                            .checked_duration_since(std::time::Instant::now())
+                            .unwrap_or(StdDuration::ZERO);
+                        if remaining.is_zero() {
+                            break;
+                        }
+                        let timer = cx.background_executor().timer(remaining).fuse();
+                        let signal = sync_rx.recv().fuse();
+                        pin_mut!(timer, signal);
+                        select! {
+                            _ = timer => break,
+                            result = signal => {
+                                match result {
+                                    Ok(SyncSignal::Immediate) => {
+                                        // Shorten the deadline to 2 s from now, but
+                                        // only if that is sooner than the current end.
+                                        let shortened =
+                                            std::time::Instant::now() + SYNC_DEBOUNCE;
+                                        if shortened < debounce_end {
+                                            debounce_end = shortened;
+                                        }
+                                    }
+                                    Ok(SyncSignal::LocalChange) => {
+                                        // Additional local changes don't extend the wait.
+                                    }
+                                    Err(_) => return,
+                                }
+                            }
+                        }
+                    }
+                    // Drain any remaining queued signals.
                     while sync_rx.try_recv().is_ok() {}
                 }
-                run_sync_if_needed(&weak, cx, signaled).await;
+
+                record_poll_at(&weak, cx);
+                run_sync_once(&weak, cx).await;
             }
         },
     )
 }
 
-async fn run_sync_if_needed(
-    weak: &gpui::WeakEntity<KnotQApp>,
-    cx: &mut gpui::AsyncApp,
-    force: bool,
-) {
-    let now = Utc::now();
-    let should_run = weak
-        .update(cx, |app, _cx| {
-            if !app.window_is_active {
-                return false;
-            }
-            if let Some(gate_until) = app.background_sync_gate_until {
-                if !force && now < gate_until {
-                    return false;
-                }
-            }
-            app.background_sync_gate_until = None;
-            app.last_sync_poll_at = Some(now);
-            true
-        })
-        .ok()
-        .unwrap_or(false);
-
-    if !should_run {
-        return;
+/// Compute the poll-timer interval from the current app state.
+///
+/// This is a pure function of (has_pending, offline, server_rejecting,
+/// window_active) exposed as a separate free function so it can be unit-tested.
+pub(crate) fn sync_poll_interval(
+    has_pending: bool,
+    offline: bool,
+    server_rejecting: bool,
+    window_active: bool,
+) -> StdDuration {
+    if has_pending && !server_rejecting {
+        // Pending edits exist and the server hasn't rejected them (i.e. either
+        // we're offline or haven't tried yet): retry aggressively.
+        SYNC_PENDING_RETRY
+    } else if offline {
+        SYNC_POLL_OFFLINE
+    } else if window_active {
+        SYNC_POLL_FOREGROUND
+    } else {
+        SYNC_POLL_BACKGROUND
     }
+}
 
-    run_sync_once(&weak, cx).await;
+fn poll_interval(weak: &gpui::WeakEntity<KnotQApp>, cx: &mut gpui::AsyncApp) -> StdDuration {
+    weak.update(cx, |app, _cx| {
+        let has_pending = app.state.has_pending_crdt_edits() || app.sync_pending_hint > 0;
+        let offline = app.sync_offline;
+        let server_rejecting = app.sync_server_rejecting;
+        let window_active = app.window_is_active;
+        sync_poll_interval(has_pending, offline, server_rejecting, window_active)
+    })
+    .unwrap_or(SYNC_POLL_FOREGROUND)
+}
+
+fn record_poll_at(weak: &gpui::WeakEntity<KnotQApp>, cx: &mut gpui::AsyncApp) {
+    let now = Utc::now();
+    let _ = weak.update(cx, |app, _cx| {
+        app.last_sync_poll_at = Some(now);
+    });
 }
 
 async fn run_sync_once(weak: &gpui::WeakEntity<KnotQApp>, cx: &mut gpui::AsyncApp) {
@@ -206,6 +313,9 @@ async fn run_sync_once(weak: &gpui::WeakEntity<KnotQApp>, cx: &mut gpui::AsyncAp
                 app.sync_run_status = SyncRunStatus::Synced {
                     pending: remaining_pending,
                 };
+                app.sync_pending_hint = remaining_pending;
+                app.sync_offline = false;
+                app.sync_server_rejecting = false;
                 app.last_synced_at = Some(Utc::now());
                 if remote_updates_applied > 0 || local_workspace_changed {
                     app.state
@@ -233,11 +343,22 @@ async fn run_sync_once(weak: &gpui::WeakEntity<KnotQApp>, cx: &mut gpui::AsyncAp
         }
         Err(err) => {
             eprintln!("sync failed: {err:#}");
+            let is_offline = err.downcast_ref::<SyncNetworkUnreachable>().is_some();
             let message = format!("{err:#}");
+            // The store queue alone undercounts after a restart, when unpushed
+            // edits live only in the persisted sync state — and the poll cadence
+            // keys off pending-ness, so count both.
+            let disk_pending = load_local_sync_state(&workspace_path())
+                .map(|state| state.pending.len())
+                .unwrap_or(0);
             let _ = weak.update(cx, |app, cx| {
+                let pending_len = app.state.pending_crdt_edits().len().max(disk_pending);
+                app.sync_pending_hint = pending_len;
+                app.sync_offline = is_offline;
+                app.sync_server_rejecting = !is_offline;
                 app.sync_run_status = SyncRunStatus::Error {
                     message,
-                    pending: app.state.pending_crdt_edits().len(),
+                    pending: pending_len,
                 };
                 cx.notify();
             });
@@ -370,6 +491,20 @@ fn sync_snapshot(snapshot: SyncSnapshot) -> Result<SyncRunResult> {
         workspace,
         snapshot.replica_id,
     )?;
+    // Log skipped documents (per-document errors that did not block the pull).
+    for skipped in &pull.skipped {
+        if skipped.unknown_scheme_document {
+            eprintln!(
+                "sync: ignored orphan document {} (no workspace index entry)",
+                skipped.document
+            );
+        } else {
+            eprintln!(
+                "sync: skipped document {}: {}",
+                skipped.document, skipped.reason
+            );
+        }
+    }
     let mut workspace = pull.workspace;
     let remote_updates_applied = pull.remote_updates_applied;
     let mut repaired_workspace_changed =
@@ -427,6 +562,8 @@ fn sync_snapshot(snapshot: SyncSnapshot) -> Result<SyncRunResult> {
         replica_id,
         &snapshot.notification_schedule,
         &mut pushed,
+        &crdt_docs,
+        &workspace,
     );
     save_local_sync_state(&path, &local_state)?;
     push_result?;
@@ -737,8 +874,11 @@ impl SyncHttpClient {
     }
 
     fn authorized(&self, request: ureq::Request) -> ureq::Request {
+        // Individual HTTP requests are given 30 s to complete regardless of the
+        // current poll cadence.
+        const HTTP_TIMEOUT: StdDuration = StdDuration::from_secs(30);
         request
-            .timeout(SYNC_POLL_INTERVAL)
+            .timeout(HTTP_TIMEOUT)
             .set("authorization", &format!("Bearer {}", self.bearer_token))
     }
 }
@@ -769,7 +909,10 @@ fn sync_http_error(error: ureq::Error) -> anyhow::Error {
                 .unwrap_or_else(|_| status.to_string());
             anyhow!("sync backend rejected request: {code}")
         }
-        error => anyhow!("sync backend request failed: {error}"),
+        // Transport / connection failures: attach SyncNetworkUnreachable so the
+        // scheduler can detect "offline" via downcast_ref.
+        error => anyhow::Error::new(SyncNetworkUnreachable)
+            .context(format!("sync backend request failed: {error}")),
     }
 }
 
@@ -804,7 +947,11 @@ fn is_secure_api_base(url: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{media_asset_needs_download, normalize_api_base, workspace_for_background_sync};
+    use super::{
+        media_asset_needs_download, normalize_api_base, sync_poll_interval,
+        workspace_for_background_sync, SyncNetworkUnreachable, SYNC_PENDING_RETRY,
+        SYNC_POLL_BACKGROUND, SYNC_POLL_FOREGROUND, SYNC_POLL_OFFLINE,
+    };
     use chrono::{NaiveDate, Utc};
     use knotq_model::{
         daily_queue_scheme_id, DocumentId, OperationId, ReplicaId, Scheme, SyncDocumentKind,
@@ -1220,5 +1367,83 @@ mod tests {
         ));
         fs::create_dir_all(&path).unwrap();
         path
+    }
+
+    // ── sync_poll_interval tests ───────────────────────────────────────────
+
+    #[test]
+    fn poll_interval_pending_no_server_rejection_is_pending_retry() {
+        assert_eq!(
+            sync_poll_interval(true, false, false, true),
+            SYNC_PENDING_RETRY
+        );
+        // Offline with pending edits also uses PENDING_RETRY (cheap local failure).
+        assert_eq!(
+            sync_poll_interval(true, true, false, true),
+            SYNC_PENDING_RETRY
+        );
+    }
+
+    #[test]
+    fn poll_interval_pending_server_rejecting_falls_back_to_foreground() {
+        // Server rejection: don't hammer the backend; use foreground cadence.
+        assert_eq!(
+            sync_poll_interval(true, false, true, true),
+            SYNC_POLL_FOREGROUND
+        );
+    }
+
+    #[test]
+    fn poll_interval_pending_server_rejecting_background_uses_background() {
+        assert_eq!(
+            sync_poll_interval(true, false, true, false),
+            SYNC_POLL_BACKGROUND
+        );
+    }
+
+    #[test]
+    fn poll_interval_offline_no_pending_is_offline() {
+        assert_eq!(
+            sync_poll_interval(false, true, false, true),
+            SYNC_POLL_OFFLINE
+        );
+        assert_eq!(
+            sync_poll_interval(false, true, false, false),
+            SYNC_POLL_OFFLINE
+        );
+    }
+
+    #[test]
+    fn poll_interval_foreground_active() {
+        assert_eq!(
+            sync_poll_interval(false, false, false, true),
+            SYNC_POLL_FOREGROUND
+        );
+    }
+
+    #[test]
+    fn poll_interval_background_inactive() {
+        assert_eq!(
+            sync_poll_interval(false, false, false, false),
+            SYNC_POLL_BACKGROUND
+        );
+    }
+
+    // ── SyncNetworkUnreachable downcast test ───────────────────────────────
+
+    #[test]
+    fn sync_network_unreachable_downcasts_through_anyhow_context() {
+        let err = anyhow::Error::new(SyncNetworkUnreachable)
+            .context("sync backend request failed: some io error");
+        assert!(
+            err.downcast_ref::<SyncNetworkUnreachable>().is_some(),
+            "downcast_ref should find SyncNetworkUnreachable through context chain"
+        );
+    }
+
+    #[test]
+    fn non_network_error_does_not_downcast_to_unreachable() {
+        let err = anyhow::anyhow!("sync backend rejected request: forbidden");
+        assert!(err.downcast_ref::<SyncNetworkUnreachable>().is_none());
     }
 }

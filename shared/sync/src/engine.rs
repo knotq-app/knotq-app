@@ -15,12 +15,29 @@ use std::collections::{HashMap, HashSet};
 
 use anyhow::{anyhow, Result};
 use chrono::Utc;
-use knotq_model::{DocumentId, ReplicaId, SyncDocumentKind, Workspace, WorkspaceId};
+use knotq_model::{DocumentId, OperationId, ReplicaId, SyncDocumentKind, Workspace, WorkspaceId};
 
 use crate::{
     BatchPullRequest, BatchPushRequest, LocalSyncState, NotificationScheduleSnapshot,
-    PulledCrdtDocument, PushDocumentUpdates, StoredCrdtUpdate, WorkspaceCrdtDocuments,
+    PendingCrdtEdit, PulledCrdtDocument, PushDocumentUpdates, StoredCrdtUpdate,
+    WorkspaceCrdtDocuments,
 };
+
+/// A document that was included in a pull response but could not be applied
+/// locally. Its pull cursor was still advanced so we do not re-fetch it every
+/// cycle (the merged-state protocol guarantees a future update will re-deliver
+/// the full merged state when the document changes). The caller may log or
+/// surface these for diagnostics; they are never fatal to the pull.
+#[derive(Clone, Debug)]
+pub struct SkippedDocument {
+    pub document: DocumentId,
+    pub kind: SyncDocumentKind,
+    /// True when the skip is benign: the document is not in the local workspace
+    /// index (orphan or deleted-scheme content doc). Callers can suppress noisy
+    /// logging for these — they are expected in normal operation.
+    pub unknown_scheme_document: bool,
+    pub reason: String,
+}
 
 /// Upper bound on documents the client packs into one batched push. Comfortably
 /// under the server's `MAX_SYNC_PUSH_DOCUMENTS`; remaining dirty documents go in the
@@ -37,12 +54,31 @@ pub trait SyncTransport {
     fn push(&self, request: &BatchPushRequest) -> Result<crate::BatchPushResponse>;
 }
 
+/// Typed error returned (wrapped in `anyhow::Error`) when the server rejects a push
+/// with a 4xx status code. The `code` field carries the machine-readable error code
+/// from the backend (e.g. `"crdt_schema_invalid"`).
+#[derive(Debug)]
+pub struct SyncPushRejected {
+    pub code: String,
+}
+
+impl std::fmt::Display for SyncPushRejected {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "sync backend rejected request: {}", self.code)
+    }
+}
+
+impl std::error::Error for SyncPushRejected {}
+
 /// Result of [`batch_pull_and_apply`]: the workspace after merging remote state and
 /// how many remote document states were applied.
 pub struct PullOutcome {
     pub workspace: Workspace,
     pub remote_updates_applied: usize,
     pub remote_latest: HashMap<DocumentId, u64>,
+    /// Documents that arrived in the pull response but could not be applied
+    /// locally. Their cursors were advanced anyway — see [`SkippedDocument`].
+    pub skipped: Vec<SkippedDocument>,
 }
 
 /// A document whose pending edits the server accepted, with the local sequence the
@@ -70,6 +106,7 @@ pub fn batch_pull_and_apply(
     let mut workspace = workspace;
     let mut remote_updates_applied = 0;
     let mut authoritative_remote_latest: Option<HashMap<DocumentId, u64>> = None;
+    let mut all_skipped: Vec<SkippedDocument> = Vec::new();
     loop {
         let request = BatchPullRequest {
             replica_id,
@@ -97,14 +134,71 @@ pub fn batch_pull_and_apply(
         // workspace-index entry and scheme document arrive in the same response — is
         // routed correctly even though this replica had never seen it.
         let outcome = crdt_docs.apply_remote_updates(&workspace, &updates);
-        if !outcome.is_ok() {
-            return Err(anyhow!("CRDT apply failed: {:?}", outcome.errors));
+        // Workspace-level errors (corrupt index, materialization failure) are fatal:
+        // we cannot trust the resulting workspace or any scheme content.
+        if !outcome.workspace_is_ok() {
+            return Err(anyhow!(
+                "CRDT workspace apply failed: {:?}",
+                outcome
+                    .workspace_errors
+                    .iter()
+                    .map(|e| e.message.as_str())
+                    .collect::<Vec<_>>()
+            ));
         }
         remote_updates_applied += outcome.applied;
         workspace = outcome.workspace;
+
+        // Build a set of document ids that had per-document errors so we can
+        // still advance their cursors (the server will re-deliver full merged
+        // state on the next bump; we do not want to re-pull indefinitely).
+        let errored_document_ids: HashMap<DocumentId, &crate::DocumentApplyError> = outcome
+            .document_errors
+            .iter()
+            .map(|e| (e.document, e))
+            .collect();
+
         for doc in &response.documents {
+            // Always advance the cursor — including for skipped documents.
+            // Advancing past a failed document is safe because the merged-state
+            // protocol re-delivers the *full* merged state whenever the server
+            // sequence advances, so we lose nothing permanently. We only skip
+            // our local application; the content is still on the server and
+            // will be re-pulled the next time that document is touched.
             local_state.mark_pulled(doc.document, doc.kind, doc.seq);
+
+            if let Some(err) = errored_document_ids.get(&doc.document) {
+                all_skipped.push(SkippedDocument {
+                    document: doc.document,
+                    kind: doc.kind,
+                    unknown_scheme_document: err.unknown_scheme_document,
+                    reason: err.message.clone(),
+                });
+            }
         }
+
+        // Re-convergence: after applying workspace updates, any scheme that is
+        // now in the workspace index but whose local CRDT doc is missing (or was
+        // in this pull's skipped set) needs its pull cursor reset to 0 so the
+        // next poll fetches its full merged state from sequence zero. This is
+        // safe — we only reset, we never loop within this call — and ensures
+        // that an orphan-then-index-added sequence eventually converges.
+        let skipped_document_ids: std::collections::HashSet<DocumentId> =
+            errored_document_ids.keys().copied().collect();
+        let local_crdt_doc_ids = crdt_docs.known_document_ids();
+        for (scheme_id, meta) in &workspace.scheme_sync {
+            if meta.kind != SyncDocumentKind::Scheme {
+                continue;
+            }
+            let missing_locally = !local_crdt_doc_ids.contains(&meta.id);
+            let was_skipped = skipped_document_ids.contains(&meta.id);
+            if missing_locally || was_skipped {
+                // Reset so the next poll re-pulls from seq 0 for this document.
+                local_state.reset_pull_cursor(meta.id);
+            }
+            let _ = scheme_id; // used via meta
+        }
+
         if !response.has_more {
             break;
         }
@@ -120,6 +214,7 @@ pub fn batch_pull_and_apply(
         workspace,
         remote_updates_applied,
         remote_latest,
+        skipped: all_skipped,
     })
 }
 
@@ -129,50 +224,139 @@ pub fn batch_pull_and_apply(
 /// later request failing still leaves earlier progress recorded — the caller can
 /// persist `local_state` and clear the already-pushed edits before propagating the
 /// error (mirroring the durable-cursor-on-partial-failure contract).
+///
+/// When the server returns `crdt_schema_invalid`, the engine self-heals: it drops
+/// the bad pending edits for affected documents and re-queues a full snapshot from
+/// `crdt_docs`, then retries once.  Each document is reseeded at most once per call
+/// — a second rejection for a reseeded document is returned as an error.
 pub fn batch_push_pending(
     transport: &dyn SyncTransport,
     local_state: &mut LocalSyncState,
     replica_id: ReplicaId,
     notification_schedule: &NotificationScheduleSnapshot,
     pushed: &mut Vec<PushedDocument>,
+    crdt_docs: &WorkspaceCrdtDocuments,
+    workspace: &Workspace,
 ) -> Result<()> {
+    // Track which documents we've already reseeded this call; a second rejection
+    // after reseed means something is deeply wrong — propagate that error.
+    let mut reseeded: HashSet<DocumentId> = HashSet::new();
     loop {
         let Some((request, acks)) =
             build_push_request(local_state, replica_id, notification_schedule)
         else {
             return Ok(());
         };
-        let response = transport.push(&request)?;
-        let accepted_by_document: HashMap<DocumentId, usize> = response
-            .documents
-            .iter()
-            .map(|doc| (doc.document, doc.accepted))
-            .collect();
-        for (sent, ack) in request.documents.iter().zip(acks.iter()) {
-            let accepted = accepted_by_document.get(&ack.document).copied();
-            if accepted != Some(sent.updates.len()) {
-                return Err(anyhow!(
-                    "sync backend accepted {:?}/{} updates for {}",
-                    accepted,
-                    sent.updates.len(),
-                    ack.document
-                ));
+        let push_result = transport.push(&request);
+        match push_result {
+            Ok(response) => {
+                let accepted_by_document: HashMap<DocumentId, usize> = response
+                    .documents
+                    .iter()
+                    .map(|doc| (doc.document, doc.accepted))
+                    .collect();
+                for (sent, ack) in request.documents.iter().zip(acks.iter()) {
+                    let accepted = accepted_by_document.get(&ack.document).copied();
+                    if accepted != Some(sent.updates.len()) {
+                        return Err(anyhow!(
+                            "sync backend accepted {:?}/{} updates for {}",
+                            accepted,
+                            sent.updates.len(),
+                            ack.document
+                        ));
+                    }
+                    // Use exact edit-ID clearing so duplicate-sequence edits from a
+                    // legacy restart are not silently dropped.
+                    local_state.mark_pushed_edits(ack.document, &ack.sent_edits);
+                    pushed.push(PushedDocument {
+                        document: ack.document,
+                        through_local_sequence: ack.through_local_sequence,
+                    });
+                }
             }
-            local_state.mark_pushed(ack.document, ack.through_local_sequence);
-            pushed.push(*ack);
+            Err(err) => {
+                // Check if this is a crdt_schema_invalid rejection we can self-heal.
+                let is_schema_invalid = err
+                    .downcast_ref::<SyncPushRejected>()
+                    .is_some_and(|e| e.code == "crdt_schema_invalid")
+                    || err.to_string().contains("crdt_schema_invalid");
+
+                if !is_schema_invalid {
+                    return Err(err);
+                }
+
+                // Identify which documents were in the rejected batch and haven't been
+                // reseeded yet.  For each, drop all pending edits and re-queue a full
+                // snapshot from the live CRDT so the server can re-converge.
+                let next_seq = local_state
+                    .pending
+                    .iter()
+                    .map(|e| e.local_sequence)
+                    .max()
+                    .unwrap_or(0)
+                    + 1;
+                let mut seq = next_seq;
+                let mut any_reseeded = false;
+                for ack in &acks {
+                    if reseeded.contains(&ack.document) {
+                        // Already reseeded this document — give up.
+                        return Err(err);
+                    }
+                    reseeded.insert(ack.document);
+                    any_reseeded = true;
+
+                    // Drop all pending edits for this document.
+                    local_state.pending.retain(|e| e.document != ack.document);
+
+                    // Re-queue a full snapshot from the persistent CRDT documents so
+                    // the reseed shares identity (clientID + clocks) with this
+                    // device's incremental diffs — same rationale as
+                    // queue_workspace_bootstrap_updates.
+                    let snapshot_updates = crdt_docs.full_snapshot_updates();
+                    for update in snapshot_updates.updates {
+                        if update.document != ack.document {
+                            continue;
+                        }
+                        local_state.push_pending(PendingCrdtEdit {
+                            operation_id: OperationId::new(),
+                            workspace_id: workspace.id,
+                            replica_id,
+                            local_sequence: seq,
+                            created_at: Utc::now(),
+                            document: update.document,
+                            kind: update.kind,
+                            update_v1: update.update_v1,
+                        });
+                        seq += 1;
+                    }
+                }
+
+                if !any_reseeded {
+                    return Err(err);
+                }
+                // Loop continues — retry with the reseeded snapshot.
+            }
         }
     }
+}
+
+// Per-document ack that includes the exact (operation_id, local_sequence) pairs
+// that were sent, so `mark_pushed_edits` can clear precisely those entries.
+struct DocumentAck {
+    document: DocumentId,
+    through_local_sequence: u64,
+    sent_edits: Vec<(knotq_model::OperationId, u64)>,
 }
 
 // Build one batched push request from the head of the pending queue, plus the acks
 // the caller applies once the server confirms acceptance. Returns `None` when there
 // is nothing pending. Each iteration of the caller's loop removes the documents it
-// covered (via `mark_pushed`), so the queue strictly shrinks and the loop ends.
+// covered (via `mark_pushed_edits`), so the queue strictly shrinks and the loop ends.
 fn build_push_request(
     local_state: &LocalSyncState,
     fallback_replica_id: ReplicaId,
     notification_schedule: &NotificationScheduleSnapshot,
-) -> Option<(BatchPushRequest, Vec<PushedDocument>)> {
+) -> Option<(BatchPushRequest, Vec<DocumentAck>)> {
     let mut documents = Vec::new();
     let mut acks = Vec::new();
     let mut max_through = 0;
@@ -186,14 +370,19 @@ fn build_push_request(
             continue;
         };
         max_through = max_through.max(through);
+        let sent_edits: Vec<(OperationId, u64)> = edits
+            .iter()
+            .map(|e| (e.operation_id, e.local_sequence))
+            .collect();
         documents.push(PushDocumentUpdates {
             document,
             kind,
             updates: edits.into_iter().map(|edit| edit.update_v1).collect(),
         });
-        acks.push(PushedDocument {
+        acks.push(DocumentAck {
             document,
             through_local_sequence: through,
+            sent_edits,
         });
     }
     if documents.is_empty() {

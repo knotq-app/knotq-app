@@ -10,6 +10,7 @@ use knotq_rrule::ItemOccurrenceExt;
 use knotq_storage_json::{save_crdt_state, save_pending_crdt_edits, NotificationDefaults};
 
 use super::{save_workspace, save_workspace_incremental, workspace_path, KnotQApp};
+use crate::app::sync_service::SyncSignal;
 
 const SAVE_DEBOUNCE: StdDuration = StdDuration::from_secs(2);
 const NOTIFICATION_DEBOUNCE: StdDuration = StdDuration::from_secs(4);
@@ -22,7 +23,7 @@ pub(crate) struct AppServiceBus {
     save_tx: Sender<()>,
     notification_tx: Sender<NotificationSignal>,
     timeline_tx: Sender<()>,
-    sync_tx: Sender<()>,
+    sync_tx: Sender<SyncSignal>,
     notification_recompute_pending: std::sync::Arc<std::sync::atomic::AtomicBool>,
 }
 
@@ -30,7 +31,7 @@ pub(crate) struct AppServiceReceivers {
     pub(crate) save_rx: Receiver<()>,
     pub(crate) notification_rx: Receiver<NotificationSignal>,
     pub(crate) timeline_rx: Receiver<()>,
-    pub(crate) sync_rx: Receiver<()>,
+    pub(crate) sync_rx: Receiver<SyncSignal>,
 }
 
 #[derive(Clone)]
@@ -53,7 +54,10 @@ impl AppServiceBus {
         let (save_tx, save_rx) = async_channel::bounded(1);
         let (notification_tx, notification_rx) = async_channel::unbounded();
         let (timeline_tx, timeline_rx) = async_channel::bounded(1);
-        let (sync_tx, sync_rx) = async_channel::bounded(1);
+        // Unbounded so Immediate is never dropped when the channel already holds a
+        // LocalChange. Signals are drained before each run, so the queue stays tiny
+        // in practice (at most a handful of entries between ticks).
+        let (sync_tx, sync_rx) = async_channel::unbounded();
         (
             Self {
                 save_tx,
@@ -77,7 +81,7 @@ impl AppServiceBus {
         self.signal_save();
         self.signal_notifications();
         self.signal_timeline();
-        self.signal_sync();
+        self.signal_sync_local_change();
     }
 
     pub(crate) fn signal_save(&self) {
@@ -135,7 +139,11 @@ impl AppServiceBus {
     }
 
     pub(crate) fn signal_sync(&self) {
-        let _ = self.sync_tx.try_send(());
+        let _ = self.sync_tx.try_send(SyncSignal::Immediate);
+    }
+
+    pub(crate) fn signal_sync_local_change(&self) {
+        let _ = self.sync_tx.try_send(SyncSignal::LocalChange);
     }
 
     fn signal_notification_action(&self) -> bool {

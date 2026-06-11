@@ -68,6 +68,7 @@ impl WorkspaceStore {
         replica_id: ReplicaId,
         initial_dirty: bool,
         crdt_states: HashMap<DocumentId, Vec<u8>>,
+        initial_sequence: u64,
     ) -> Self {
         let mut workspace = workspace;
         let sync_metadata_dirty = workspace.ensure_sync_metadata();
@@ -84,7 +85,7 @@ impl WorkspaceStore {
             indexed,
             dirty,
             replica_id,
-            next_sequence: 1,
+            next_sequence: initial_sequence.max(1),
             pending_operations: VecDeque::new(),
             crdt,
         }
@@ -114,6 +115,12 @@ impl WorkspaceStore {
 
     pub fn pending_operations(&self) -> &VecDeque<StoreOperation> {
         &self.pending_operations
+    }
+
+    pub fn has_pending_crdt_edits(&self) -> bool {
+        self.pending_operations
+            .iter()
+            .any(|op| !op.crdt_updates.is_empty())
     }
 
     pub fn pending_crdt_edits(&self) -> Vec<PendingCrdtEdit> {

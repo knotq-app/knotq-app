@@ -8,7 +8,7 @@ fn local_commands_are_recorded_as_pending_store_operations() {
     let workspace_id = workspace.id;
     let root = workspace.root;
     let replica_id = ReplicaId::new();
-    let mut store = WorkspaceStore::new(workspace, replica_id, false, Default::default());
+    let mut store = WorkspaceStore::new(workspace, replica_id, false, Default::default(), 1);
 
     let receipt = store
         .apply_local(
@@ -48,7 +48,7 @@ fn acknowledged_store_operations_are_removed_in_order() {
     let workspace = Workspace::new();
     let root = workspace.root;
     let replica_id = ReplicaId::new();
-    let mut store = WorkspaceStore::new(workspace, replica_id, false, Default::default());
+    let mut store = WorkspaceStore::new(workspace, replica_id, false, Default::default(), 1);
 
     for name in ["A", "B"] {
         store

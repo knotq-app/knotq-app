@@ -12,12 +12,13 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 pub use crdt::{
-    validate_crdt_update_sequence, WorkspaceCrdtApplyOutcome, WorkspaceCrdtChangeSet,
-    WorkspaceCrdtDocuments, WorkspaceCrdtSyncOutcome, YrsSchemeDocument,
+    validate_crdt_update_sequence, DocumentApplyError, WorkspaceApplyError,
+    WorkspaceCrdtApplyOutcome, WorkspaceCrdtChangeSet, WorkspaceCrdtDocuments,
+    WorkspaceCrdtSyncOutcome, YrsSchemeDocument,
 };
 pub use engine::{
-    batch_pull_and_apply, batch_push_pending, PullOutcome, PushedDocument, SyncTransport,
-    PUSH_MAX_DOCUMENTS_PER_REQUEST, PUSH_MAX_UPDATES_PER_DOCUMENT,
+    batch_pull_and_apply, batch_push_pending, PullOutcome, PushedDocument, SkippedDocument,
+    SyncPushRejected, SyncTransport, PUSH_MAX_DOCUMENTS_PER_REQUEST, PUSH_MAX_UPDATES_PER_DOCUMENT,
 };
 
 /// Serde codec that represents CRDT update bytes as a base64 string rather than
@@ -570,12 +571,24 @@ impl LocalSyncState {
         })
     }
 
+    /// Clear the **first contiguous prefix** of pending edits for `document` whose
+    /// sequences are <= `through_local_sequence`, stopping after the first edit that
+    /// has `local_sequence == through_local_sequence`.  Edits that appear later in
+    /// the deque with the same sequence numbers (from a legacy restart that reset
+    /// `next_sequence` to 1) are left intact because they were never sent.
     pub fn mark_pushed(&mut self, document: DocumentId, through_local_sequence: u64) -> usize {
         let before = self.pending.len();
         let mut kind = None;
+        let mut done = false;
         self.pending.retain(|edit| {
+            if done {
+                return true;
+            }
             if edit.document == document && edit.local_sequence <= through_local_sequence {
                 kind = Some(edit.kind);
+                if edit.local_sequence == through_local_sequence {
+                    done = true;
+                }
                 false
             } else {
                 true
@@ -594,6 +607,40 @@ impl LocalSyncState {
             cursor.last_pushed_sequence = cursor.last_pushed_sequence.max(through_local_sequence);
         }
         before - self.pending.len()
+    }
+
+    /// Clear exactly the pending edits identified by `(operation_id, local_sequence)` pairs
+    /// for `document`, advancing the pushed cursor to `max(existing, max sent seq)`.
+    /// Used by the engine to clear precisely the edits a server-acknowledged batch contained,
+    /// even when duplicate sequences are present.
+    pub fn mark_pushed_edits(&mut self, document: DocumentId, edits: &[(OperationId, u64)]) {
+        if edits.is_empty() {
+            return;
+        }
+        let sent: HashSet<(OperationId, u64)> = edits.iter().copied().collect();
+        let max_seq = edits.iter().map(|(_, seq)| *seq).max().unwrap_or(0);
+        let mut kind = None;
+        self.pending.retain(|edit| {
+            if edit.document == document && sent.contains(&(edit.operation_id, edit.local_sequence))
+            {
+                kind = Some(edit.kind);
+                false
+            } else {
+                true
+            }
+        });
+        if let Some(kind) = kind {
+            let cursor = self
+                .document_cursors
+                .entry(document)
+                .or_insert(DocumentSyncCursor {
+                    document,
+                    kind,
+                    last_pulled_sequence: 0,
+                    last_pushed_sequence: 0,
+                });
+            cursor.last_pushed_sequence = cursor.last_pushed_sequence.max(max_seq);
+        }
     }
 
     pub fn mark_pulled(
@@ -639,6 +686,18 @@ impl LocalSyncState {
     ) -> bool {
         remote_latest.get(&document).copied().unwrap_or(0) == 0
             || !self.media_upload_is_current(image_name, document, byte_length, sha256)
+    }
+
+    /// Reset the pull cursor for `document` to 0, forcing a full re-pull next
+    /// cycle. Used after the workspace index is updated to include a scheme whose
+    /// content document was previously skipped (cursor advanced past content we
+    /// could not apply). Resetting forces re-convergence without infinite-looping
+    /// within the current call: we only reset; the next poll re-pulls.
+    pub fn reset_pull_cursor(&mut self, document: DocumentId) {
+        if let Some(cursor) = self.document_cursors.get_mut(&document) {
+            cursor.last_pulled_sequence = 0;
+        }
+        // If there is no cursor yet the next pull will already fetch from seq 0.
     }
 
     pub fn mark_media_uploaded(

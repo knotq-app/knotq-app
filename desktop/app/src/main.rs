@@ -69,19 +69,14 @@ impl Render for KnotQApp {
                     let was_active = this.window_is_active;
                     this.window_is_active = window.is_window_active();
                     if !was_active && this.window_is_active {
-                        let should_sync_after_resume =
-                            this.last_sync_poll_at.is_none_or(|last_sync_poll_at| {
-                                now - last_sync_poll_at >= ChronoDuration::minutes(5)
-                            });
-                        if should_sync_after_resume {
-                            this.background_sync_gate_until = None;
+                        // Signal an immediate sync on resume if the last poll was
+                        // more than 2 minutes ago (or never ran).
+                        let should_sync = this
+                            .last_sync_poll_at
+                            .is_none_or(|last| now - last >= ChronoDuration::minutes(2));
+                        if should_sync {
                             this.service_bus.signal_sync();
-                        } else if let Some(last_sync_poll_at) = this.last_sync_poll_at {
-                            this.background_sync_gate_until =
-                                Some(last_sync_poll_at + ChronoDuration::minutes(5));
                         }
-                    } else if !this.window_is_active {
-                        this.background_sync_gate_until = None;
                     }
                 },
             ));
