@@ -6,6 +6,8 @@ use std::{
 
 fn main() {
     println!("cargo:rerun-if-changed=assets/app-icon/windows.ico");
+    println!("cargo:rerun-if-env-changed=KNOTQ_GOOGLE_OAUTH_CLIENT_ID");
+    println!("cargo:rerun-if-env-changed=KNOTQ_GOOGLE_OAUTH_CLIENT_SECRET");
 
     if env::var("CARGO_CFG_TARGET_OS").as_deref() != Ok("windows") {
         return;

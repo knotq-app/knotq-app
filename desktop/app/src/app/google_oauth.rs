@@ -44,11 +44,15 @@ const GOOGLE_OAUTH_LOG_FILE: &str = "knotq-google.log";
 const IMPORTED_GOOGLE_CALENDAR_SCHEME_NAME: &str = "Google Calendar";
 const GOOGLE_CALENDAR_BACKGROUND_SYNC_INTERVAL_SECS: u64 = 10 * 60;
 const GOOGLE_OAUTH_CLIENT_ID_ENV: &str = "KNOTQ_GOOGLE_OAUTH_CLIENT_ID";
+const GOOGLE_OAUTH_CLIENT_SECRET_ENV: &str = "KNOTQ_GOOGLE_OAUTH_CLIENT_SECRET";
 const COMPILED_GOOGLE_OAUTH_CLIENT_ID: Option<&str> = option_env!("KNOTQ_GOOGLE_OAUTH_CLIENT_ID");
+const COMPILED_GOOGLE_OAUTH_CLIENT_SECRET: Option<&str> =
+    option_env!("KNOTQ_GOOGLE_OAUTH_CLIENT_SECRET");
 
 #[derive(Clone)]
 struct GoogleOAuthConfig {
     client_id: String,
+    client_secret: String,
 }
 
 #[derive(Clone)]
@@ -1115,7 +1119,15 @@ impl KnotQApp {
 fn google_oauth_config_from_build() -> Result<GoogleOAuthConfig> {
     let client_id = google_oauth_client_id_from_compiled(COMPILED_GOOGLE_OAUTH_CLIENT_ID)
         .with_context(|| format!("{GOOGLE_OAUTH_CLIENT_ID_ENV} must be set at compile time"))?;
-    Ok(GoogleOAuthConfig { client_id })
+    let client_secret =
+        google_oauth_client_secret_from_compiled(COMPILED_GOOGLE_OAUTH_CLIENT_SECRET)
+            .with_context(|| {
+                format!("{GOOGLE_OAUTH_CLIENT_SECRET_ENV} must be set at compile time")
+            })?;
+    Ok(GoogleOAuthConfig {
+        client_id,
+        client_secret,
+    })
 }
 
 fn google_oauth_config_for_existing_accounts(
@@ -1128,6 +1140,13 @@ fn google_oauth_client_id_from_compiled(compiled: Option<&str>) -> Option<String
     compiled
         .map(str::trim)
         .filter(|client_id| !client_id.is_empty())
+        .map(ToOwned::to_owned)
+}
+
+fn google_oauth_client_secret_from_compiled(compiled: Option<&str>) -> Option<String> {
+    compiled
+        .map(str::trim)
+        .filter(|client_secret| !client_secret.is_empty())
         .map(ToOwned::to_owned)
 }
 
@@ -1566,6 +1585,7 @@ fn google_auth_code_exchange_form(
 ) -> Vec<(&'static str, String)> {
     vec![
         ("client_id", config.client_id.clone()),
+        google_desktop_client_secret_form_field(config),
         ("code", code.to_string()),
         ("code_verifier", code_verifier.to_string()),
         ("grant_type", "authorization_code".to_string()),
@@ -1635,9 +1655,19 @@ fn google_refresh_token_form(
 ) -> Vec<(&'static str, String)> {
     vec![
         ("client_id", config.client_id.clone()),
+        google_desktop_client_secret_form_field(config),
         ("grant_type", "refresh_token".to_string()),
         ("refresh_token", refresh_token.to_string()),
     ]
+}
+
+fn google_desktop_client_secret_form_field(config: &GoogleOAuthConfig) -> (&'static str, String) {
+    // Google Desktop OAuth clients can require client_secret at the token endpoint even
+    // with PKCE. In a shipped desktop app this is not confidential; it is the
+    // installed-app credential Google expects us to send.
+    // https://discuss.google.dev/t/is-it-ok-to-put-a-client-secret-in-a-desktop-app/296820/6
+    // https://developers.google.com/identity/protocols/oauth2/native-app
+    ("client_secret", config.client_secret.clone())
 }
 
 fn fail_google_refresh(
@@ -2479,7 +2509,7 @@ fn google_http_error(err: ureq::Error) -> anyhow::Error {
 fn format_google_http_error(status: u16, body: &str) -> String {
     if body.contains("client_secret is missing") {
         return format!(
-            "Google OAuth HTTP {status}: {body}\n\nGoogle rejected the request because this OAuth client requires client_secret during token exchange. Use a public native/desktop client that supports PKCE-only token exchange, or move token exchange to a backend service."
+            "Google OAuth HTTP {status}: {body}\n\nGoogle rejected the request because client_secret was missing. KnotQ expects {GOOGLE_OAUTH_CLIENT_SECRET_ENV} to be set at compile time and sends it with Google Desktop OAuth token requests."
         );
     }
     format!("Google OAuth HTTP {status}: {body}")
@@ -2556,6 +2586,13 @@ mod tests {
         }
     }
 
+    fn google_config() -> GoogleOAuthConfig {
+        GoogleOAuthConfig {
+            client_id: "desktop-client".to_string(),
+            client_secret: "desktop-secret".to_string(),
+        }
+    }
+
     fn dt(raw: &str) -> DateTime<Utc> {
         DateTime::parse_from_rfc3339(raw)
             .unwrap()
@@ -2618,6 +2655,19 @@ mod tests {
     }
 
     #[test]
+    fn google_oauth_client_secret_comes_from_compile_time_env() {
+        assert_eq!(
+            google_oauth_client_secret_from_compiled(Some(" desktop-secret ")).as_deref(),
+            Some("desktop-secret")
+        );
+    }
+
+    #[test]
+    fn google_oauth_client_secret_missing_compile_time_env_is_config_error() {
+        assert_eq!(google_oauth_client_secret_from_compiled(None), None);
+    }
+
+    #[test]
     fn google_auth_url_uses_s256_pkce_challenge() {
         let url = google_auth_url(
             "desktop-client",
@@ -2649,9 +2699,8 @@ mod tests {
 
     #[test]
     fn google_refresh_client_id_uses_configured_desktop_client_id() {
-        let config = GoogleOAuthConfig {
-            client_id: "compiled-client".to_string(),
-        };
+        let mut config = google_config();
+        config.client_id = "compiled-client".to_string();
         let mut account = account();
         account.client_id = "stored-client".to_string();
 
@@ -2663,9 +2712,8 @@ mod tests {
 
     #[test]
     fn google_refresh_client_id_uses_configured_desktop_client_for_legacy_accounts() {
-        let config = GoogleOAuthConfig {
-            client_id: "compiled-client".to_string(),
-        };
+        let mut config = google_config();
+        config.client_id = "compiled-client".to_string();
         let mut account = account();
         account.client_id.clear();
 
@@ -2677,9 +2725,7 @@ mod tests {
 
     #[test]
     fn google_auth_code_exchange_form_uses_pkce_and_desktop_client_id() {
-        let config = GoogleOAuthConfig {
-            client_id: "desktop-client".to_string(),
-        };
+        let config = google_config();
         let form = google_auth_code_exchange_form(
             &config,
             "http://127.0.0.1:12345",
@@ -2693,7 +2739,10 @@ mod tests {
             form.get("client_id").map(String::as_str),
             Some("desktop-client")
         );
-        assert!(!form.contains_key("client_secret"));
+        assert_eq!(
+            form.get("client_secret").map(String::as_str),
+            Some("desktop-secret")
+        );
         assert_eq!(
             form.get("code_verifier").map(String::as_str),
             Some("pkce-verifier")
@@ -2711,9 +2760,7 @@ mod tests {
 
     #[test]
     fn google_refresh_form_uses_desktop_client_id() {
-        let config = GoogleOAuthConfig {
-            client_id: "desktop-client".to_string(),
-        };
+        let config = google_config();
         let form = google_refresh_token_form(&config, "refresh-token")
             .into_iter()
             .collect::<std::collections::HashMap<_, _>>();
@@ -2722,7 +2769,10 @@ mod tests {
             form.get("client_id").map(String::as_str),
             Some("desktop-client")
         );
-        assert!(!form.contains_key("client_secret"));
+        assert_eq!(
+            form.get("client_secret").map(String::as_str),
+            Some("desktop-secret")
+        );
         assert_eq!(
             form.get("grant_type").map(String::as_str),
             Some("refresh_token")
@@ -2741,15 +2791,15 @@ mod tests {
     }
 
     #[test]
-    fn google_client_secret_missing_http_error_explains_public_client_requirement() {
+    fn google_client_secret_missing_http_error_explains_compile_time_secret_requirement() {
         let message = format_google_http_error(
             400,
             r#"{"error":"invalid_request","error_description":"client_secret is missing."}"#,
         );
 
-        assert!(message.contains("requires a client secret"));
-        assert!(message.contains("public"));
-        assert!(message.contains("backend"));
+        assert!(message.contains("client_secret was missing"));
+        assert!(message.contains(GOOGLE_OAUTH_CLIENT_SECRET_ENV));
+        assert!(message.contains("compile time"));
     }
 
     #[test]
