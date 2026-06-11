@@ -342,6 +342,10 @@ impl KnotQApp {
 
     fn signal_workspace_services(&self, signals: WorkspaceServiceSignals) {
         self.service_bus.signal_save();
+        // Every applied command is a local workspace change the sync scheduler
+        // should hear about (30 s debounce); without this, edits only reach the
+        // server at the next poll tick (up to 30 min in the background).
+        self.service_bus.signal_sync_local_change();
         match signals.notifications {
             NotificationServiceSignal::None => {}
             NotificationServiceSignal::Recompute => self.service_bus.signal_notifications(),
