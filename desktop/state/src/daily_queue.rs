@@ -157,26 +157,31 @@ fn insert_root_scheme(workspace: &mut Workspace, scheme: Scheme) {
 }
 
 fn make_start_here_scheme(today: NaiveDate) -> Scheme {
-    let mut scheme = Scheme::new("Example Plan", 0);
+    let mut scheme = Scheme::new("Coursework", 0);
     scheme.items = vec![
-        Item::new("Launch Notes"),
-        Item::new("Use schemes as outlines that can also hold real work")
+        Item::new("History Paper"),
+        Item::new("Thesis: compare the economic causes of two revolutions")
             .with_marker(ItemMarker::Bullet),
-        Item::new("Plan the announcement")
+        Item::new("Submit final draft")
             .with_marker(ItemMarker::Checkbox)
             .with_end(local_dt(today + Duration::days(2), 17, 0)),
-        Item::new("Draft the launch checklist")
+        Item::new("Finish source notes")
             .with_marker(ItemMarker::Checkbox)
             .done(),
-        Item::new("Polish screenshots")
+        Item::new("Add two quotes from chapter 4")
             .with_marker(ItemMarker::Checkbox)
             .with_indent(1),
-        Item::new("Add nested notes below tasks when you need context")
-            .with_marker(ItemMarker::Bullet),
-        Item::new("Use Daily for the concrete list you want to work through today")
-            .with_marker(ItemMarker::Bullet),
-        Item::new("Search and Upcoming pull dated work from every scheme")
-            .with_marker(ItemMarker::Bullet),
+        Item::new("Ask about citation format after class")
+            .with_marker(ItemMarker::Checkbox)
+            .with_start(local_dt(today + Duration::days(1), 15, 30)),
+        Item::new("Exam Prep"),
+        Item::new("Review lecture notes from weeks 3 and 4").with_marker(ItemMarker::Checkbox),
+        Item::new("Make flashcards for key terms").with_marker(ItemMarker::Checkbox),
+        Item::new("Schedule a study session")
+            .with_marker(ItemMarker::Checkbox)
+            .with_start(local_dt(today + Duration::days(1), 19, 0))
+            .with_end(local_dt(today + Duration::days(1), 20, 30)),
+        Item::new("Questions for office hours").with_marker(ItemMarker::Bullet),
     ];
     scheme
 }
