@@ -345,12 +345,14 @@ impl KnotQApp {
                 .copied()
                 .collect();
 
-            let mut prior: Vec<Vec<ScheduleChunk>> = Vec::new();
-            let event_chunks = build_chunks_for_kind(&events_in_col, &prior);
-            prior.push(event_chunks.clone());
-            let reminder_chunks = build_chunks_for_kind(&reminders_in_col, &prior);
-            prior.push(reminder_chunks.clone());
-            let assignment_chunks = build_chunks_for_kind(&assignments_in_col, &prior);
+            let mut event_chunks = build_chunks_for_kind(&events_in_col, &[]);
+            let mut reminder_chunks = build_chunks_for_kind(&reminders_in_col, &[]);
+            let mut assignment_chunks = build_chunks_for_kind(&assignments_in_col, &[]);
+            assign_calendar_chunk_lanes(
+                &mut event_chunks,
+                &mut reminder_chunks,
+                &mut assignment_chunks,
+            );
             let pill_render = PillChunkRender {
                 t,
                 block_stroke,
