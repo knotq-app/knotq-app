@@ -1,6 +1,6 @@
 use chrono::{DateTime, Local, Utc};
 use gpui::prelude::*;
-use gpui::{div, px, ClickEvent, Context, IntoElement};
+use gpui::{deferred, div, px, ClickEvent, Context, IntoElement};
 use gpui_component::scroll::ScrollableElement as _;
 use gpui_component::{Icon, IconName, Sizable};
 use knotq_model::{
@@ -558,6 +558,7 @@ where
             div()
                 .min_w_0()
                 .flex_1()
+                .relative()
                 .flex()
                 .flex_col()
                 .gap(px(4.0))
@@ -611,8 +612,12 @@ where
                         ),
                 )
                 .when(is_open, |s| {
-                    s.child(
+                    s.child(deferred(
                         div()
+                            .absolute()
+                            .top(px(32.0))
+                            .left_0()
+                            .w_full()
                             .max_w(px(240.0))
                             .p(px(3.0))
                             .rounded(px(5.0))
@@ -624,7 +629,7 @@ where
                             .flex_col()
                             .gap(px(2.0))
                             .children(option_rows),
-                    )
+                    ))
                 }),
         )
         .into_any_element()

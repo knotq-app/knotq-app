@@ -100,7 +100,9 @@ fn restore_scheme(
     // Detach from any current parent (e.g. an archived folder's retained subtree)
     // so restoring lands it only at the target folder, mirroring `restore_folder`.
     for folder in workspace.folders.values_mut() {
-        folder.children.retain(|child| *child != NodeRef::Scheme(id));
+        folder
+            .children
+            .retain(|child| *child != NodeRef::Scheme(id));
     }
     workspace
         .folders

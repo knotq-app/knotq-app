@@ -111,7 +111,7 @@ pub fn make_default_workspace() -> Workspace {
 
 pub fn make_default_workspace_for_date(today: NaiveDate) -> Workspace {
     let mut workspace = Workspace::new();
-    insert_root_scheme(&mut workspace, make_start_here_scheme());
+    insert_root_scheme(&mut workspace, make_start_here_scheme(today));
     insert_root_scheme(&mut workspace, make_scheduling_scheme(today));
     insert_root_scheme(&mut workspace, make_projects_scheme(today));
 
@@ -156,17 +156,26 @@ fn insert_root_scheme(workspace: &mut Workspace, scheme: Scheme) {
     }
 }
 
-fn make_start_here_scheme() -> Scheme {
-    let mut scheme = Scheme::new("Start Here", 0);
+fn make_start_here_scheme(today: NaiveDate) -> Scheme {
+    let mut scheme = Scheme::new("Example Plan", 0);
     scheme.items = vec![
-        Item::new("KnotQ combines an outline editor with a calendar"),
-        Item::new("Write normal notes, tasks, and project plans in schemes")
+        Item::new("Launch Notes"),
+        Item::new("Use schemes as outlines that can also hold real work")
             .with_marker(ItemMarker::Bullet),
-        Item::new("Add dates to a line when it needs to appear on the calendar")
+        Item::new("Plan the announcement")
+            .with_marker(ItemMarker::Checkbox)
+            .with_end(local_dt(today + Duration::days(2), 17, 0)),
+        Item::new("Draft the launch checklist")
+            .with_marker(ItemMarker::Checkbox)
+            .done(),
+        Item::new("Polish screenshots")
+            .with_marker(ItemMarker::Checkbox)
+            .with_indent(1),
+        Item::new("Add nested notes below tasks when you need context")
             .with_marker(ItemMarker::Bullet),
         Item::new("Use Daily for the concrete list you want to work through today")
             .with_marker(ItemMarker::Bullet),
-        Item::new("Search and Upcoming help you find what needs attention")
+        Item::new("Search and Upcoming pull dated work from every scheme")
             .with_marker(ItemMarker::Bullet),
     ];
     scheme
@@ -175,24 +184,28 @@ fn make_start_here_scheme() -> Scheme {
 fn make_scheduling_scheme(today: NaiveDate) -> Scheme {
     let mut scheme = Scheme::new("Scheduling", 5);
     scheme.items = vec![
-        Item::new("Any line can become a calendar item"),
+        Item::new("Four ways a task can relate to time"),
         Item::new("Event: focus block")
             .with_marker(ItemMarker::Checkbox)
             .with_start(local_dt(today, 10, 0))
             .with_end(local_dt(today, 11, 0)),
-        Item::new("Start + end makes a time block")
+        Item::new("Start + end gives you an event with a duration on the calendar")
             .with_marker(ItemMarker::Bullet)
             .with_indent(1),
         Item::new("Assignment: submit first draft")
             .with_marker(ItemMarker::Checkbox)
             .with_end(local_dt(today + Duration::days(1), 17, 0)),
-        Item::new("Only an end date makes a deadline")
+        Item::new("No start + end gives you a deadline")
             .with_marker(ItemMarker::Bullet)
             .with_indent(1),
         Item::new("Reminder: message the team")
             .with_marker(ItemMarker::Checkbox)
             .with_start(local_dt(today, 16, 0)),
-        Item::new("Only a start date makes a reminder")
+        Item::new("Start + no end gives you a reminder at a specific time")
+            .with_marker(ItemMarker::Bullet)
+            .with_indent(1),
+        Item::new("Backlog: choose next experiment").with_marker(ItemMarker::Checkbox),
+        Item::new("No start + no end gives you a normal task that stays out of the calendar")
             .with_marker(ItemMarker::Bullet)
             .with_indent(1),
     ];
