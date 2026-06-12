@@ -205,6 +205,8 @@ pub(crate) fn validate_workspace_version(version: u32) -> Result<()> {
 }
 
 pub(crate) fn write_atomic(path: &Path, contents: &[u8]) -> Result<()> {
+    use std::io::Write;
+
     if let Some(dir) = path.parent() {
         fs::create_dir_all(dir).with_context(|| format!("create {}", dir.display()))?;
     }
@@ -212,7 +214,17 @@ pub(crate) fn write_atomic(path: &Path, contents: &[u8]) -> Result<()> {
         Some(ext) => path.with_extension(format!("{ext}.tmp")),
         None => path.with_extension("tmp"),
     };
-    fs::write(&tmp, contents).with_context(|| format!("write {}", tmp.display()))?;
+    {
+        let mut file =
+            fs::File::create(&tmp).with_context(|| format!("create {}", tmp.display()))?;
+        file.write_all(contents)
+            .with_context(|| format!("write {}", tmp.display()))?;
+        // Flush to disk before the rename publishes the file: without this a
+        // crash or I/O stall can land the rename ahead of the data and leave
+        // a zero-length "complete" file behind.
+        file.sync_all()
+            .with_context(|| format!("sync {}", tmp.display()))?;
+    }
     fs::rename(&tmp, path).with_context(|| format!("rename {}", path.display()))?;
     Ok(())
 }
