@@ -190,66 +190,70 @@ impl KnotQApp {
         let sync_enabled = account.is_some_and(|account| account.supports_sync);
         let (badge, default_detail, badge_bg, badge_fg) =
             settings_sync_panel_state(signed_in, sync_enabled, t);
+        // Signed in, the subtitle identifies the account; the badge carries state.
+        let detail = account
+            .map(|account| account.email.clone())
+            .unwrap_or(default_detail);
+
+        // Mirrors the mobile sync card: [icon] [title + email, growing] [badge].
+        // The text column takes `flex_1` so it gets a definite width instead of
+        // min-content collapse.
+        let header = div()
+            .w_full()
+            .flex()
+            .flex_row()
+            .items_start()
+            .gap(px(9.0))
+            .child(settings_sync_glyph(t))
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .flex()
+                    .flex_col()
+                    .gap(px(2.0))
+                    .child(
+                        div()
+                            .text_size(px(15.0))
+                            .font_weight(gpui::FontWeight::SEMIBOLD)
+                            .text_color(token_hsla(t.text_primary))
+                            .child("KnotQ Sync"),
+                    )
+                    .child(
+                        div()
+                            .min_w_0()
+                            .text_size(px(11.0))
+                            .line_height(px(15.0))
+                            .line_clamp(2)
+                            .text_color(token_hsla(t.text_soft))
+                            .child(detail),
+                    ),
+            )
+            .child(
+                div()
+                    .flex_shrink_0()
+                    .px(px(7.0))
+                    .py(px(3.0))
+                    .rounded(px(99.0))
+                    .bg(token_rgba(badge_bg))
+                    .text_size(px(11.0))
+                    .font_weight(gpui::FontWeight::SEMIBOLD)
+                    .text_color(token_hsla(badge_fg))
+                    .child(badge),
+            );
 
         div()
             .w_full()
-            .rounded(px(6.0))
+            .rounded(px(8.0))
             .border_1()
             .border_color(token_rgba(settings_sync_panel_border(t)))
             .bg(token_rgba(settings_sync_panel_bg(t)))
             .shadow_md()
-            .p(px(9.0))
+            .p(px(12.0))
             .flex()
             .flex_col()
-            .gap(px(8.0))
-            .child(
-                div()
-                    .flex()
-                    .items_center()
-                    .justify_between()
-                    .gap(px(8.0))
-                    .child(
-                        div()
-                            .min_w_0()
-                            .flex()
-                            .items_center()
-                            .gap(px(8.0))
-                            .child(settings_sync_glyph(t))
-                            .child(
-                                div()
-                                    .min_w_0()
-                                    .flex()
-                                    .flex_col()
-                                    .gap(px(1.0))
-                                    .child(
-                                        div()
-                                            .text_size(px(13.0))
-                                            .font_weight(gpui::FontWeight::SEMIBOLD)
-                                            .text_color(token_hsla(t.text_primary))
-                                            .child("KnotQ Sync"),
-                                    )
-                                    .child(
-                                        div()
-                                            .text_size(px(11.0))
-                                            .line_height(px(13.0))
-                                            .text_color(token_hsla(t.text_soft))
-                                            .child(default_detail),
-                                    ),
-                            ),
-                    )
-                    .child(
-                        div()
-                            .flex_shrink_0()
-                            .px(px(7.0))
-                            .py(px(2.0))
-                            .rounded(px(99.0))
-                            .bg(token_rgba(badge_bg))
-                            .text_size(px(11.0))
-                            .font_weight(gpui::FontWeight::SEMIBOLD)
-                            .text_color(token_hsla(badge_fg))
-                            .child(badge),
-                    ),
-            )
+            .gap(px(10.0))
+            .child(header)
             .child(self.sync_account_management_section(t, cx))
             .into_any_element()
     }
@@ -368,7 +372,7 @@ fn settings_sync_panel_state(
     if sync_enabled {
         return (
             "Enabled",
-            "Sync is active on this device.".to_string(),
+            "Workspace sync is active for this account.".to_string(),
             if t.is_dark { 0x30d15826 } else { 0x1f8f4d18 },
             if t.is_dark { 0x9af0b6ff } else { 0x176b38ff },
         );
@@ -377,7 +381,7 @@ fn settings_sync_panel_state(
     if signed_in {
         return (
             "Upgrade",
-            "Signed in. Subscribe to enable cross-device sync.".to_string(),
+            "Subscribe to keep this workspace available across devices.".to_string(),
             if t.is_dark { 0xf59e0b28 } else { 0xd977061a },
             if t.is_dark { 0xf8d38dff } else { 0x9a4b00ff },
         );
@@ -385,7 +389,7 @@ fn settings_sync_panel_state(
 
     (
         "Available",
-        "Sign up for cross-device notes and notifications.".to_string(),
+        "Sign in to keep this workspace available across devices.".to_string(),
         if t.is_dark { 0x3b82f628 } else { 0x2f67cf18 },
         if t.is_dark { 0x9bc2ffff } else { 0x235ebeff },
     )
@@ -411,15 +415,15 @@ fn settings_sync_panel_border(t: UiTheme) -> u32 {
 /// rather than a generic glyph.
 fn settings_sync_glyph(_t: UiTheme) -> gpui::AnyElement {
     div()
-        .w(px(30.0))
-        .h(px(30.0))
+        .w(px(34.0))
+        .h(px(34.0))
         .flex_shrink_0()
-        .rounded(px(6.0))
+        .rounded(px(7.0))
         .overflow_hidden()
         .child(
             gpui::img("app-icon/128x128.png")
-                .w(px(30.0))
-                .h(px(30.0))
+                .w(px(34.0))
+                .h(px(34.0))
                 .object_fit(gpui::ObjectFit::Cover),
         )
         .into_any_element()
@@ -788,6 +792,13 @@ fn google_calendar_row(
     cx: &mut Context<KnotQApp>,
 ) -> gpui::AnyElement {
     let scheme_id = row.scheme_id;
+    let connected = row.connected;
+    let button_id = if connected {
+        "google-calendar-unlink"
+    } else {
+        "google-calendar-link"
+    };
+    let button_label = if connected { "Unlink" } else { "Link" };
 
     div()
         .id(("google-calendar-setting", idx))
@@ -831,7 +842,7 @@ fn google_calendar_row(
         )
         .child(
             div()
-                .id(("google-calendar-unlink", idx))
+                .id((button_id, idx))
                 .flex_shrink_0()
                 .px(px(7.0))
                 .py(px(3.0))
@@ -848,9 +859,13 @@ fn google_calendar_row(
                 .font_weight(gpui::FontWeight::SEMIBOLD)
                 .text_color(token_hsla(t.text_primary))
                 .on_click(cx.listener(move |this, _: &ClickEvent, _window, cx| {
-                    this.request_delete_scheme(scheme_id, cx);
+                    if connected {
+                        this.request_delete_scheme(scheme_id, cx);
+                    } else {
+                        this.start_google_calendar_scheme_reconnect(scheme_id, cx);
+                    }
                 }))
-                .child("Unlink"),
+                .child(button_label),
         )
         .into_any_element()
 }

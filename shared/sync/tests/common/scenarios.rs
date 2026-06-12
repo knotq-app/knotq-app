@@ -400,8 +400,7 @@ pub fn scenario_g2_daily_queue_direct_creation(h: &mut Harness) {
 
     // Phase 2: D0 creates today's Daily Queue directly — scheme content never
     // reaches the CRDT; only the workspace-index delta is recorded.
-    let daily =
-        h.set_daily_queue_without_crdt_content(D0, today, &["wedge task", "second task"]);
+    let daily = h.set_daily_queue_without_crdt_content(D0, today, &["wedge task", "second task"]);
     h.record_workspace_change_pub(D0);
 
     // Phase 3: sync must succeed (the bootstrap heals the schema-less document)

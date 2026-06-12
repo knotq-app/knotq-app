@@ -260,6 +260,42 @@ impl AppState {
         self.daily_queue_loaded_calendar_months = daily_queue.loaded_calendar_months;
     }
 
+    /// Watermark for detecting local edits made while a background sync run is
+    /// in flight. Capture it when the run snapshots the workspace and pass it to
+    /// [`has_local_edits_since`](Self::has_local_edits_since) when the run lands.
+    pub fn local_edit_watermark(&self) -> u64 {
+        self.store.local_sequence_watermark()
+    }
+
+    pub fn has_local_edits_since(&self, watermark: u64) -> bool {
+        self.direct_workspace_dirty || self.store.local_sequence_watermark() != watermark
+    }
+
+    /// Merge a sync run's result into the live workspace, preserving edits
+    /// applied while the run was in flight (see
+    /// [`WorkspaceStore::merge_sync_crdt_states`]). Unlike
+    /// [`replace_workspace_from_sync`](Self::replace_workspace_from_sync) the
+    /// undo history survives — the local operations it refers to are still in
+    /// the merged workspace. Returns false when the merge isn't possible and
+    /// the caller must fall back to the replace path.
+    pub fn merge_workspace_from_sync(
+        &mut self,
+        sync_workspace: &Workspace,
+        crdt_states: &HashMap<DocumentId, Vec<u8>>,
+    ) -> bool {
+        // Flush direct (non-command) workspace mutations into the store first so
+        // the merge materializes from documents that already carry them.
+        self.sync_store_from_workspace();
+        if !self
+            .store
+            .merge_sync_crdt_states(sync_workspace, crdt_states)
+        {
+            return false;
+        }
+        self.sync_workspace_from_store();
+        true
+    }
+
     pub fn replace_workspace_from_sync(
         &mut self,
         workspace: Workspace,

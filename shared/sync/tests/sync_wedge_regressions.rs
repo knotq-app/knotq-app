@@ -566,8 +566,11 @@ fn wedged_empty_daily_snapshot_self_heals() {
     // The empty doc's "snapshot" — a 2-byte Yjs update with no schema root — is
     // already queued, as captured from the wedged client's sync-state.json.
     let document = h.device(D0).scheme_document_id(daily);
-    h.device_mut_for_surgery(D0)
-        .push_raw_pending_edit(document, SyncDocumentKind::Scheme, vec![0, 0]);
+    h.device_mut_for_surgery(D0).push_raw_pending_edit(
+        document,
+        SyncDocumentKind::Scheme,
+        vec![0, 0],
+    );
 
     h.settle();
     h.assert_all_converged();

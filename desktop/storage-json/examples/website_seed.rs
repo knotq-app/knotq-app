@@ -1,7 +1,7 @@
 use chrono::{Datelike, Duration, Local, LocalResult, NaiveDate, TimeZone, Utc};
 use knotq_model::{
-    AppSettings, CalendarViewMode, Folder, FolderId, Item, ItemMarker, NodeRef,
-    SavedWindowPosition, SavedWindowSize, Scheme, ThemeMode, Workspace,
+    AppSettings, CalendarViewMode, Item, ItemMarker, NodeRef, SavedWindowPosition, SavedWindowSize,
+    Scheme, ThemeMode, Workspace,
 };
 use knotq_storage_json::{save_app_settings, save_workspace};
 use std::{env, path::PathBuf};
@@ -16,7 +16,7 @@ fn main() -> anyhow::Result<()> {
     std::fs::create_dir_all(&workspace_dir)?;
 
     let mut settings = AppSettings::default();
-    settings.theme_mode = ThemeMode::Light;
+    settings.theme_mode = ThemeMode::Dark;
     settings.calendar_view = CalendarViewMode::Week;
     settings.onboarding_completed = true;
     settings.window_size = Some(SavedWindowSize {
@@ -27,156 +27,127 @@ fn main() -> anyhow::Result<()> {
     save_app_settings(&data_dir.join("settings.json"), &settings)?;
 
     let today = Local::now().date_naive();
-    let yesterday = today - Duration::days(1);
     let tomorrow = today + Duration::days(1);
     let next = today + Duration::days(2);
     let plus3 = today + Duration::days(3);
-    let plus4 = today + Duration::days(4);
 
     let mut workspace = Workspace::new();
     let root = workspace.root;
 
-    let launch_folder = add_folder(&mut workspace, root, "Launch");
-    let planning_folder = add_folder(&mut workspace, root, "Planning");
-    let life_folder = add_folder(&mut workspace, root, "Life");
-
-    let mut launch = Scheme::new("KnotQ Launch", 1);
-    launch.items = vec![
-        checkbox("Ship landing page with real screenshots"),
-        child("Hero: one sentence for why documents and calendars belong together"),
-        event("Launch planning", yesterday, 9, 30, yesterday, 10, 15),
-        event(
-            "App walkthrough capture",
-            yesterday,
-            14,
-            0,
-            yesterday,
-            15,
-            0,
-        ),
-        event("Design review", today, 9, 0, today, 10, 0),
-        event(
-            "Pricing and positioning review",
-            today,
-            10,
-            30,
-            today,
-            11,
-            15,
-        ),
-        child("Decide whether to lead with Daily, Calendar, or Schemes"),
-        event("Beta install debugging", today, 11, 45, today, 12, 30),
-        event("Release checklist pass", today, 13, 30, today, 14, 15),
-        assignment("Publish beta notes", today, 16, 0),
-        reminder("Follow up with beta users", tomorrow, 9, 0),
-        event("Website copy pass", tomorrow, 10, 15, tomorrow, 11, 0),
-        event("Release notes edit", plus3, 10, 0, plus3, 11, 0),
-        assignment("Cut onboarding demo", tomorrow, 17, 30),
+    let mut roadmap = Scheme::new("Product Roadmap", 3);
+    roadmap.items = vec![
+        heading("# Quarterly Product Roadmap"),
+        plain("Planning doc for Q3 launch milestones"),
+        plain(""),
+        heading("## Schedule from individual lines"),
+        plain("Every scheduled entry below is just a line in this document:"),
+        event("Prototype review with design", today, 10, 0, today, 10, 45),
+        assignment("Send revised launch brief", today, 17, 0),
+        reminder("Ping Sam about onboarding copy", tomorrow, 9, 0),
+        plain(""),
+        heading("## Current design"),
+        checkbox("Finalize dashboard wireframe").done(),
+        checkbox("Review searchable timeline behavior").done(),
+        checkbox("Build onboarding flow prototype"),
+        child("Show schedule controls on the exact line being edited"),
+        checkbox("Draft calendar handoff notes"),
+        plain(""),
+        heading("## Launch beta"),
+        bullet("Sprint 1: line scheduling polish"),
+        bullet("Sprint 2: editor performance pass"),
+        bullet("Sprint 3: calendar import QA"),
+        event("Product walkthrough", tomorrow, 13, 0, tomorrow, 14, 0),
         assignment("Tag beta release", plus3, 14, 30),
-        checkbox("Record 45-second walkthrough clip"),
     ];
-    let launch_id = add_scheme(&mut workspace, launch_folder, launch);
+    let roadmap_id = add_root_scheme(&mut workspace, root, roadmap);
 
-    let mut week = Scheme::new("Week Plan", 4);
-    week.items = vec![
-        bullet("Monday"),
-        event("Weekly review", yesterday, 8, 30, yesterday, 9, 15).with_indent(1),
-        checkbox("Move loose notes into launch plan").with_indent(1),
-        bullet("Tuesday"),
-        event("Customer interview", today, 14, 0, today, 14, 45).with_indent(1),
-        event("Calendar density review", today, 15, 15, today, 16, 0).with_indent(1),
-        bullet("Wednesday"),
-        event("Product walkthrough", tomorrow, 13, 0, tomorrow, 14, 30).with_indent(1),
-        event("Implementation block", next, 9, 0, next, 11, 30).with_indent(1),
-        event("Open source cleanup", next, 12, 30, next, 13, 30).with_indent(1),
-        assignment("Send weekly update", next, 15, 30).with_indent(1),
-        bullet("Friday"),
-        event("Website QA sweep", plus3, 9, 0, plus3, 10, 0).with_indent(1),
-        event("Beta feedback triage", plus3, 13, 0, plus3, 14, 0).with_indent(1),
+    let mut meetings = Scheme::new("Meeting Notes", 2);
+    meetings.items = vec![
+        heading("# Meeting Notes"),
+        event("Roadmap review", today, 11, 30, today, 12, 0),
+        checkbox("Capture decisions from design review"),
+        assignment("Send weekly status update", next, 17, 0),
     ];
-    let week_id = add_scheme(&mut workspace, planning_folder, week);
+    let meetings_id = add_root_scheme(&mut workspace, root, meetings);
 
-    let mut research = Scheme::new("Research Notes", 2);
-    research.items = vec![
-        bullet("Why most task apps split attention"),
-        child("Tasks live in one place, calendar commitments live somewhere else"),
-        child("A line should be able to carry context and time at once"),
-        checkbox("Compare agenda flows in Things, Notion, and Calendar"),
-        event("Competitor notes sweep", today, 12, 45, today, 13, 30),
-        event("Positioning research", tomorrow, 15, 0, tomorrow, 16, 0),
-        reminder("Capture onboarding feedback", next, 10, 0),
-        assignment("Summarize interview patterns", next, 18, 0),
-        event("Essay on line-first planning", plus4, 11, 0, plus4, 12, 30),
+    let mut personal = Scheme::new("Personal", 5);
+    personal.items = vec![
+        reminder("Pick up dry cleaning", tomorrow, 16, 30),
+        event("Dinner with Sam", next, 18, 30, next, 20, 0),
+        checkbox("Book train ticket"),
     ];
-    let research_id = add_scheme(&mut workspace, planning_folder, research);
+    let personal_id = add_root_scheme(&mut workspace, root, personal);
 
-    let mut life = Scheme::new("Personal", 3);
-    life.items = vec![
-        reminder("Pack returns", today, 8, 30),
-        event("Dinner with Sam", tomorrow, 18, 30, tomorrow, 20, 0),
-        event("Gym", next, 7, 30, next, 8, 30),
-        event("Errands loop", plus3, 16, 0, plus3, 17, 0),
-        event("Coffee with Mira", plus4, 9, 30, plus4, 10, 30),
-        assignment("Renew domain", next, 12, 0),
-        checkbox("Laundry"),
-        child("Move to tonight if the afternoon slips"),
+    let mut reading = Scheme::new("Reading List", 1);
+    reading.items = vec![
+        checkbox("Line-first planning notes"),
+        checkbox("Calendar UX references"),
+        assignment("Read scheduling API doc", tomorrow, 11, 0),
     ];
-    let life_id = add_scheme(&mut workspace, life_folder, life);
+    let reading_id = add_root_scheme(&mut workspace, root, reading);
+
+    let mut ideas = Scheme::new("Ideas", 4);
+    ideas.items = vec![
+        bullet("Inline schedule preview"),
+        bullet("Drag a document line into the week view"),
+        reminder("Sketch launch card concepts", plus3, 9, 30),
+    ];
+    let ideas_id = add_root_scheme(&mut workspace, root, ideas);
+
+    let mut work = Scheme::new("Work", 0);
+    work.items = vec![
+        assignment("Performance reviews", today, 17, 0),
+        event("Customer interview", tomorrow, 15, 0, tomorrow, 15, 45),
+        checkbox("Prep sprint board"),
+    ];
+    let work_id = add_root_scheme(&mut workspace, root, work);
 
     let mut daily = Scheme::new("Daily", knotq_model::DAILY_QUEUE_COLOR_INDEX);
     daily.items = vec![
         checkbox("Make the website answer: why KnotQ?"),
-        child("A document is the source of truth; the calendar is a view"),
+        child("Each scheduled item still starts as a document line"),
         checkbox("Take product screenshots from a seeded workspace"),
-        checkbox("Reply to beta feedback without duplicating calendar events"),
         checkbox("Tighten the download call to action"),
-        child("Keep the calendar dense, but make each block readable"),
         checkbox("Write release copy"),
     ];
     let daily_id = daily.id;
     workspace.daily_queue.insert(today, daily_id);
     workspace.schemes.insert(daily_id, daily);
 
-    workspace.folders.get_mut(&root).unwrap().children.extend([
-        NodeRef::Folder(launch_folder),
-        NodeRef::Folder(planning_folder),
-        NodeRef::Folder(life_folder),
-    ]);
-
-    let _ = (launch_id, week_id, research_id, life_id);
+    let _ = (
+        roadmap_id,
+        meetings_id,
+        personal_id,
+        reading_id,
+        ideas_id,
+        work_id,
+    );
     save_workspace(&workspace_dir.join("workspace.json"), &workspace)?;
     Ok(())
 }
 
-fn add_folder(workspace: &mut Workspace, parent: FolderId, name: &str) -> FolderId {
-    let id = FolderId::new();
-    workspace.folders.insert(
-        id,
-        Folder {
-            id,
-            name: name.to_string(),
-            parent: Some(parent),
-            children: Vec::new(),
-            expanded: true,
-        },
-    );
-    id
-}
-
-fn add_scheme(
+fn add_root_scheme(
     workspace: &mut Workspace,
-    folder: FolderId,
+    root: knotq_model::FolderId,
     scheme: Scheme,
 ) -> knotq_model::SchemeId {
     let id = scheme.id;
     workspace.schemes.insert(id, scheme);
     workspace
         .folders
-        .get_mut(&folder)
+        .get_mut(&root)
         .unwrap()
         .children
         .push(NodeRef::Scheme(id));
     id
+}
+
+fn heading(text: &str) -> Item {
+    Item::new(text)
+}
+
+fn plain(text: &str) -> Item {
+    Item::new(text)
 }
 
 fn checkbox(text: &str) -> Item {

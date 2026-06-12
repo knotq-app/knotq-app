@@ -3,17 +3,17 @@
 //! and modal route here via "Manage account".
 
 use gpui::prelude::*;
-use gpui::{div, px, ClickEvent, Context, FontWeight, IntoElement, Window};
+use gpui::{deferred, div, px, ClickEvent, Context, FontWeight, IntoElement, Window};
 use gpui_component::tooltip::Tooltip;
 use gpui_component::{Icon, IconName, Sizable};
-use knotq_model::SyncAccountSettings;
 
-use crate::app::{KnotQApp, SyncAccountAction, SyncAuthStatus};
+use crate::app::{KnotQApp, SettingsDropdown, SyncAccountAction, SyncAuthStatus};
 use crate::theme_gpui::{token_hsla, token_rgba, Theme};
 
 impl KnotQApp {
-    /// Settings → Sync body. Signed-in accounts start with a compact summary and
-    /// a single Manage affordance; account and billing actions live one layer down.
+    /// Settings → Sync body. The card header already identifies the account
+    /// (email) and state (badge), so the body stays focused on short actions.
+    /// Destructive actions confirm in a dedicated modal (`render_sync_account_confirm`).
     pub(crate) fn sync_account_management_section(
         &mut self,
         t: Theme,
@@ -23,47 +23,73 @@ impl KnotQApp {
             return signed_out_entry(t, cx);
         };
         let in_progress = matches!(self.sync_auth_status, SyncAuthStatus::InProgress);
-        let supports_sync = account.supports_sync;
+        let manage_open = self.settings_dropdown == Some(SettingsDropdown::SyncAccountManage);
+        signed_in_account_actions(account.supports_sync, manage_open, in_progress, t, cx)
+    }
 
-        let body: gpui::AnyElement = match self.sync_account_action {
-            Some(SyncAccountAction::CancelSubscription) => div()
-                .flex()
-                .flex_col()
-                .gap(px(8.0))
-                .child(
-                    div()
-                        .text_size(px(12.0))
-                        .line_height(px(17.0))
-                        .text_color(token_hsla(t.text_soft))
-                        .child(
-                            "Cancel the subscription for this account? Your local workspace stays \
-                             on this device. Paid sync may remain available until the current \
-                             billing period ends.",
-                        ),
-                )
-                .child(account_confirm_actions(
-                    "Cancel subscription",
-                    in_progress,
-                    t,
-                    cx,
-                ))
-                .into_any_element(),
-            _ => signed_in_account_actions(
-                supports_sync,
-                self.sync_account_manage_open,
-                in_progress,
-                t,
-                cx,
+    /// Centered confirmation modal for destructive sync-account actions, in the
+    /// same style as the workspace delete confirmation.
+    pub(crate) fn render_sync_account_confirm(
+        &mut self,
+        cx: &mut Context<Self>,
+    ) -> Option<gpui::AnyElement> {
+        let action = self.sync_account_action?;
+        let t = self.theme();
+        let in_progress = matches!(self.sync_auth_status, SyncAuthStatus::InProgress);
+
+        let (title, message, confirm_label) = match action {
+            SyncAccountAction::CancelSubscription => (
+                "Cancel subscription?",
+                "Sync stays available until the current billing period ends, and your \
+                 workspace stays on this device.",
+                "Cancel subscription",
             ),
         };
 
-        div()
-            .flex()
-            .flex_col()
-            .gap(px(8.0))
-            .child(sync_account_summary(&account, t))
-            .child(body)
-            .into_any_element()
+        Some(
+            div()
+                .id("sync-account-confirm-scrim")
+                .absolute()
+                .inset_0()
+                .bg(token_rgba(t.overlay_scrim))
+                .flex()
+                .items_center()
+                .justify_center()
+                .on_click(cx.listener(|this, _: &ClickEvent, _window, cx| {
+                    this.dismiss_sync_account_action(cx);
+                }))
+                .child(
+                    div()
+                        .id("sync-account-confirm-modal")
+                        .w(px(340.0))
+                        .bg(token_hsla(t.bg_modal))
+                        .border_1()
+                        .border_color(token_rgba(t.border_overlay))
+                        .rounded(px(8.0))
+                        .shadow_lg()
+                        .p(px(14.0))
+                        .flex()
+                        .flex_col()
+                        .gap(px(12.0))
+                        .on_click(|_: &ClickEvent, _window, cx| cx.stop_propagation())
+                        .child(
+                            div()
+                                .text_size(px(14.0))
+                                .font_weight(FontWeight::SEMIBOLD)
+                                .text_color(token_hsla(t.text_primary))
+                                .child(title),
+                        )
+                        .child(
+                            div()
+                                .text_size(px(12.0))
+                                .line_height(px(18.0))
+                                .text_color(token_hsla(t.text_muted))
+                                .child(message),
+                        )
+                        .child(account_confirm_actions(confirm_label, in_progress, t, cx)),
+                )
+                .into_any_element(),
+        )
     }
 }
 
@@ -107,6 +133,7 @@ fn sign_out_button(t: Theme, cx: &mut Context<KnotQApp>) -> gpui::AnyElement {
         false,
         false,
         false,
+        false,
         t,
         cx,
         |this, _window, cx| {
@@ -122,90 +149,40 @@ fn signed_in_account_actions(
     t: Theme,
     cx: &mut Context<KnotQApp>,
 ) -> gpui::AnyElement {
-    let mut panel = div()
+    div()
+        .w_full()
+        .relative()
         .flex()
-        .flex_col()
-        .gap(px(8.0))
-        .child(manage_account_button(manage_open, t, cx));
-
-    if manage_open {
-        let mut actions = div()
-            .flex()
-            .flex_wrap()
-            .items_center()
-            .gap(px(6.0))
-            .child(check_account_status_button(in_progress, t, cx));
-
-        if supports_sync {
-            actions = actions.child(account_action_trigger(
-                "sync-cancel-subscription",
-                Some("Cancel sync"),
-                "Cancel sync subscription",
-                IconName::CircleX,
-                SyncAccountAction::CancelSubscription,
-                false,
+        .justify_end()
+        .child(
+            div()
+                .flex()
+                .items_center()
+                .gap(px(6.0))
+                .child(sign_out_button(t, cx))
+                .child(manage_account_button(manage_open, t, cx)),
+        )
+        .when(manage_open, |s| {
+            s.child(deferred(manage_account_menu(
+                supports_sync,
+                in_progress,
                 t,
                 cx,
-            ));
-        } else {
-            actions = actions.child(subscribe_button(t, cx));
-        }
-
-        panel = panel
-            .child(
-                actions
-                    .child(online_account_button(t, cx))
-                    .child(sign_out_button(t, cx)),
-            )
-            .child(
-                div()
-                    .flex()
-                    .items_center()
-                    .justify_between()
-                    .gap(px(8.0))
-                    .p(px(8.0))
-                    .rounded(px(5.0))
-                    .border_1()
-                    .border_color(token_rgba(if t.is_dark { 0xff5a5338 } else { 0xd6484030 }))
-                    .bg(token_rgba(if t.is_dark { 0xff5a5314 } else { 0xff5a530c }))
-                    .child(
-                        div()
-                            .min_w_0()
-                            .flex()
-                            .flex_col()
-                            .gap(px(2.0))
-                            .child(
-                                div()
-                                    .text_size(px(11.0))
-                                    .font_weight(FontWeight::SEMIBOLD)
-                                    .text_color(token_hsla(t.text_primary))
-                                    .child("Delete account"),
-                            )
-                            .child(
-                                div()
-                                    .text_size(px(11.0))
-                                    .line_height(px(14.0))
-                                    .text_color(token_hsla(t.text_soft))
-                                    .child("Account deletion is handled on knotq.com."),
-                            ),
-                    )
-                    .child(delete_online_button(t, cx)),
-            );
-    }
-
-    panel.into_any_element()
+            )))
+        })
+        .into_any_element()
 }
 
-fn manage_account_button(is_open: bool, t: Theme, cx: &mut Context<KnotQApp>) -> gpui::AnyElement {
+fn manage_account_button(
+    manage_open: bool,
+    t: Theme,
+    cx: &mut Context<KnotQApp>,
+) -> gpui::AnyElement {
     account_icon_button(
         "sync-manage-account",
-        Some(if is_open { "Hide" } else { "Manage" }),
-        if is_open {
-            "Hide account actions"
-        } else {
-            "Manage sync account"
-        },
-        if is_open {
+        Some("Manage"),
+        "Manage sync account",
+        if manage_open {
             IconName::ChevronUp
         } else {
             IconName::ChevronDown
@@ -213,95 +190,114 @@ fn manage_account_button(is_open: bool, t: Theme, cx: &mut Context<KnotQApp>) ->
         false,
         false,
         false,
+        false,
         t,
         cx,
         |this, _window, cx| {
-            this.sync_account_manage_open = !this.sync_account_manage_open;
+            this.settings_dropdown =
+                if this.settings_dropdown == Some(SettingsDropdown::SyncAccountManage) {
+                    None
+                } else {
+                    Some(SettingsDropdown::SyncAccountManage)
+                };
             this.sync_account_action = None;
             cx.notify();
         },
     )
 }
 
-fn online_account_button(t: Theme, cx: &mut Context<KnotQApp>) -> gpui::AnyElement {
-    account_icon_button(
-        "sync-online-account",
-        Some("Account page"),
-        "Open account management on knotq.com",
-        IconName::ExternalLink,
-        false,
-        false,
-        false,
-        t,
-        cx,
-        |this, _window, cx| {
-            this.open_online_account_management(cx);
-        },
-    )
-}
-
-fn delete_online_button(t: Theme, cx: &mut Context<KnotQApp>) -> gpui::AnyElement {
-    account_icon_button(
-        "sync-delete-online",
-        Some("Open page"),
-        "Open account deletion on knotq.com",
-        IconName::ExternalLink,
-        false,
-        true,
-        false,
-        t,
-        cx,
-        |this, _window, cx| {
-            this.open_online_account_management(cx);
-        },
-    )
-}
-
-/// A button that arms (but does not yet perform) a destructive account action;
-/// the actual call only happens after the confirmation row's "confirm" button.
-fn account_action_trigger(
-    id: &'static str,
-    label: Option<&'static str>,
-    tooltip: &'static str,
-    icon: IconName,
-    action: SyncAccountAction,
-    destructive: bool,
+fn manage_account_menu(
+    supports_sync: bool,
+    in_progress: bool,
     t: Theme,
     cx: &mut Context<KnotQApp>,
 ) -> gpui::AnyElement {
-    account_icon_button(
-        id,
-        label,
-        tooltip,
-        icon,
+    let mut rows = Vec::new();
+
+    if !supports_sync {
+        rows.push(manage_menu_row(
+            ("sync-manage-subscribe", 0),
+            "Subscribe",
+            "Enable sync for this workspace",
+            IconName::ExternalLink,
+            false,
+            in_progress,
+            t,
+            cx,
+            |this, _window, cx| {
+                this.open_subscription_checkout(cx);
+            },
+        ));
+    }
+
+    rows.push(manage_menu_row(
+        ("sync-manage-check-status", 0),
+        if supports_sync {
+            "Check status"
+        } else {
+            "I've subscribed"
+        },
+        if supports_sync {
+            "Refresh account entitlement"
+        } else {
+            "Look for an active subscription"
+        },
+        IconName::Redo2,
         false,
-        destructive,
+        in_progress,
+        t,
+        cx,
+        |this, _window, cx| {
+            this.refresh_account_status(cx);
+        },
+    ));
+
+    rows.push(manage_menu_row(
+        ("sync-manage-account-page", 0),
+        "Manage account on website",
+        "Delete account requires password",
+        IconName::ExternalLink,
+        false,
         false,
         t,
         cx,
-        move |this, _window, cx| {
-            this.prompt_sync_account_action(action, cx);
-        },
-    )
-}
-
-/// Primary CTA shown when an account has no sync entitlement: opens the hosted
-/// subscription checkout in the browser.
-fn subscribe_button(_t: Theme, cx: &mut Context<KnotQApp>) -> gpui::AnyElement {
-    account_icon_button(
-        "sync-subscribe",
-        Some("Subscribe"),
-        "Subscribe to enable sync",
-        IconName::ExternalLink,
-        true,
-        false,
-        false,
-        _t,
-        cx,
         |this, _window, cx| {
-            this.open_subscription_checkout(cx);
+            this.open_online_account_management(cx);
         },
-    )
+    ));
+
+    if supports_sync {
+        rows.push(manage_menu_row(
+            ("sync-manage-cancel-sync", 0),
+            "Cancel sync",
+            "Cancel subscription",
+            IconName::CircleX,
+            true,
+            in_progress,
+            t,
+            cx,
+            |this, _window, cx| {
+                this.prompt_sync_account_action(SyncAccountAction::CancelSubscription, cx);
+            },
+        ));
+    }
+
+    div()
+        .absolute()
+        .top(px(34.0))
+        .right_0()
+        .w(px(236.0))
+        .p(px(4.0))
+        .rounded(px(6.0))
+        .border_1()
+        .border_color(token_rgba(t.border_main))
+        .bg(token_rgba(t.bg_modal))
+        .shadow_md()
+        .flex()
+        .flex_col()
+        .gap(px(2.0))
+        .children(rows)
+        .into_any_element()
 }
 
 pub(crate) fn sync_cta_bg() -> u32 {
@@ -312,33 +308,76 @@ pub(crate) fn sync_cta_hover_bg() -> u32 {
     0x1d4ed8ff
 }
 
-fn check_account_status_button(
-    in_progress: bool,
+fn manage_menu_row<F>(
+    id: (&'static str, usize),
+    label: &'static str,
+    detail: &'static str,
+    icon: IconName,
+    destructive: bool,
+    disabled: bool,
     t: Theme,
     cx: &mut Context<KnotQApp>,
-) -> gpui::AnyElement {
-    account_icon_button(
-        "sync-check-account-status",
-        Some("Refresh"),
-        if in_progress {
-            "Refreshing account status"
-        } else {
-            "Check account status"
-        },
-        if in_progress {
-            IconName::LoaderCircle
-        } else {
-            IconName::Redo2
-        },
-        false,
-        false,
-        in_progress,
-        t,
-        cx,
-        |this, _window, cx| {
-            this.refresh_account_status(cx);
-        },
-    )
+    on_click: F,
+) -> gpui::AnyElement
+where
+    F: Fn(&mut KnotQApp, &mut Window, &mut Context<KnotQApp>) + 'static,
+{
+    let fg = if destructive {
+        0xff5a53ff
+    } else {
+        t.text_primary
+    };
+
+    div()
+        .id(id)
+        .w_full()
+        .min_h(px(36.0))
+        .px(px(8.0))
+        .py(px(5.0))
+        .flex()
+        .items_center()
+        .gap(px(8.0))
+        .rounded(px(5.0))
+        .text_color(token_hsla(fg))
+        .when(!disabled, |s| {
+            s.cursor_pointer()
+                .hover({
+                    let c = t.button_hover;
+                    move |h| h.bg(token_rgba(c))
+                })
+                .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
+                    this.settings_dropdown = None;
+                    on_click(this, window, cx);
+                }))
+        })
+        .when(disabled, |s| s.opacity(0.55))
+        .child(
+            Icon::new(icon)
+                .with_size(px(14.0))
+                .text_color(token_hsla(fg)),
+        )
+        .child(
+            div()
+                .min_w_0()
+                .flex()
+                .flex_col()
+                .gap(px(1.0))
+                .child(
+                    div()
+                        .text_size(px(12.0))
+                        .font_weight(FontWeight::SEMIBOLD)
+                        .text_color(token_hsla(fg))
+                        .child(label),
+                )
+                .child(
+                    div()
+                        .text_size(px(11.0))
+                        .line_height(px(14.0))
+                        .text_color(token_hsla(t.text_soft))
+                        .child(detail),
+                ),
+        )
+        .into_any_element()
 }
 
 fn account_icon_button<F>(
@@ -349,6 +388,7 @@ fn account_icon_button<F>(
     primary: bool,
     destructive: bool,
     disabled: bool,
+    full_width: bool,
     t: Theme,
     cx: &mut Context<KnotQApp>,
     on_click: F,
@@ -377,12 +417,15 @@ where
 
     let button = div()
         .id(id)
-        .h(px(28.0))
-        .when(label.is_none(), |s| s.w(px(28.0)).justify_center())
-        .when(label.is_some(), |s| s.px(px(9.0)))
+        .h(px(30.0))
+        .when(full_width, |s| s.w_full().justify_center())
+        .when(label.is_none() && !full_width, |s| {
+            s.w(px(30.0)).justify_center()
+        })
+        .when(label.is_some() || full_width, |s| s.px(px(10.0)))
         .flex()
         .items_center()
-        .gap(px(5.0))
+        .gap(px(6.0))
         .rounded(px(5.0))
         .border_1()
         .border_color(token_rgba(border))
@@ -405,7 +448,7 @@ where
         .when(disabled, |s| s.opacity(0.62))
         .child(
             Icon::new(icon)
-                .with_size(px(13.0))
+                .with_size(px(13.5))
                 .text_color(token_hsla(fg)),
         );
 
@@ -421,56 +464,6 @@ where
     } else {
         button.into_any_element()
     }
-}
-
-fn sync_account_summary(account: &SyncAccountSettings, t: Theme) -> gpui::AnyElement {
-    let (icon, icon_color, title, detail) = if account.supports_sync {
-        (
-            IconName::CircleCheck,
-            if t.is_dark { 0x9af0b6ff } else { 0x176b38ff },
-            "Sync is on",
-            "Notes and notifications sync automatically across your devices.",
-        )
-    } else {
-        (
-            IconName::Info,
-            if t.is_dark { 0xf8d38dff } else { 0x9a4b00ff },
-            "Sync is not enabled",
-            "Subscribe to sync notes and notifications across devices.",
-        )
-    };
-
-    div()
-        .flex()
-        .items_start()
-        .gap(px(8.0))
-        .child(
-            Icon::new(icon)
-                .with_size(px(14.0))
-                .text_color(token_hsla(icon_color)),
-        )
-        .child(
-            div()
-                .min_w_0()
-                .flex()
-                .flex_col()
-                .gap(px(1.0))
-                .child(
-                    div()
-                        .text_size(px(12.0))
-                        .font_weight(FontWeight::SEMIBOLD)
-                        .text_color(token_hsla(t.text_primary))
-                        .child(title),
-                )
-                .child(
-                    div()
-                        .text_size(px(11.0))
-                        .line_height(px(15.0))
-                        .text_color(token_hsla(t.text_soft))
-                        .child(detail),
-                ),
-        )
-        .into_any_element()
 }
 
 /// The "are you sure?" row shown once a destructive account action is armed:
@@ -503,7 +496,7 @@ fn account_confirm_actions(
                 .on_click(cx.listener(|this, _: &ClickEvent, _window, cx| {
                     this.dismiss_sync_account_action(cx);
                 }))
-                .child("Keep"),
+                .child("Keep subscription"),
         )
         .child(
             div()

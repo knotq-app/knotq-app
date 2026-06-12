@@ -6,9 +6,12 @@ use knotq_commands::{
     WorkspaceCommandExt,
 };
 use knotq_index::{IndexChangeSet, IndexedWorkspace};
-use knotq_model::{DocumentId, OperationId, ReplicaId, SchemeId, Workspace, WorkspaceId};
+use knotq_model::{
+    DocumentId, OperationId, ReplicaId, SchemeId, SyncDocumentKind, Workspace, WorkspaceId,
+};
 use knotq_sync::{
-    CrdtDocumentUpdate, PendingCrdtEdit, WorkspaceCrdtChangeSet, WorkspaceCrdtDocuments,
+    validate_crdt_update_sequence, CrdtDocumentUpdate, PendingCrdtEdit, StoredCrdtUpdate,
+    WorkspaceCrdtChangeSet, WorkspaceCrdtDocuments,
 };
 use serde::{Deserialize, Serialize};
 
@@ -252,6 +255,79 @@ impl WorkspaceStore {
         if clear_pending_operations {
             self.pending_operations.clear();
         }
+    }
+
+    /// Monotonic watermark of locally applied operations. Capture it when a
+    /// background sync run snapshots the workspace and compare on completion to
+    /// detect edits applied while the run's network round trip was in flight.
+    pub fn local_sequence_watermark(&self) -> u64 {
+        self.next_sequence
+    }
+
+    /// Merge a completed sync run's final document states into the live CRDT
+    /// documents instead of replacing them. The run worked on a copy seeded from
+    /// a snapshot taken when it started, so its result lacks any edit applied
+    /// while its network round trip was in flight; a wholesale replace would
+    /// roll those edits back and dismiss UI anchored to them (e.g. an event
+    /// popup whose just-created item vanishes from the workspace). Full Yjs
+    /// states are valid updates, so applying them to the live documents yields
+    /// the union of the remote changes and the in-flight local edits.
+    ///
+    /// Returns false — leaving the documents for the caller's replace fallback —
+    /// when the merged workspace fails validation or a document reports a
+    /// non-benign apply error.
+    pub fn merge_sync_crdt_states(
+        &mut self,
+        sync_workspace: &Workspace,
+        crdt_states: &HashMap<DocumentId, Vec<u8>>,
+    ) -> bool {
+        let received_at = Utc::now();
+        let updates = crdt_states
+            .iter()
+            .filter_map(|(document, state)| {
+                let kind = if *document == sync_workspace.sync.id {
+                    SyncDocumentKind::PersonalWorkspace
+                } else {
+                    SyncDocumentKind::Scheme
+                };
+                // A schema-less state is an empty document (e.g. a scheme that
+                // was never edited or pulled on either side); it contributes
+                // nothing and applying it would only trip post-apply schema
+                // validation, so skip it.
+                validate_crdt_update_sequence(kind, [state.as_slice()]).ok()?;
+                Some(StoredCrdtUpdate {
+                    workspace_id: sync_workspace.id,
+                    document: *document,
+                    kind,
+                    replica_id: self.replica_id,
+                    sequence: 0,
+                    received_at,
+                    update_v1: state.clone(),
+                })
+            })
+            .collect::<Vec<_>>();
+        let outcome = self.crdt.apply_remote_updates(&self.workspace, &updates);
+        for error in &outcome.workspace_errors {
+            eprintln!("sync merge workspace error: {}", error.message);
+        }
+        let mut mergeable = outcome.workspace_is_ok();
+        for error in &outcome.document_errors {
+            // "Unknown scheme document" is benign here: the run's result still
+            // carries a content document for a scheme deleted locally mid-run;
+            // the merged index (where the local delete won) routes nothing to it.
+            if error.unknown_scheme_document {
+                continue;
+            }
+            eprintln!("sync merge document error: {}", error.message);
+            mergeable = false;
+        }
+        if !mergeable {
+            return false;
+        }
+        self.workspace = outcome.workspace.clone();
+        self.indexed = IndexedWorkspace::build(outcome.workspace);
+        self.dirty = WorkspaceDirtyState::all(&self.workspace);
+        true
     }
 
     pub fn mark_dirty_from_command(&mut self, cmd: &Command) {

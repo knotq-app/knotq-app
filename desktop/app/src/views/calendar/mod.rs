@@ -26,6 +26,7 @@ pub(super) const TIME_Y_OFFSET: f32 = 12.0;
 
 // Overlap/layout heuristics (ported from knotqv1 CalendarView.swift).
 // Hours are converted to pixels via HOUR_H.
+pub(super) const OVERLAP_OFFSET: f32 = 15.0;
 pub(super) const BASE_HEIGHT_HOURS: f32 = 0.125;
 pub(super) const RUN_LINE_HOURS: f32 = 0.4;
 pub(super) const TIME_HEADER_HOURS: f32 = 0.3;
@@ -85,9 +86,8 @@ impl CalendarPopupTarget {
 pub(super) struct ScheduleChunk<'a> {
     equal_groups: Vec<Vec<&'a CalendarTask>>,
     show_time: bool,
+    offset: f32,
     lane: usize,
-    lane_span: usize,
-    lane_count: usize,
 }
 
 mod layout;

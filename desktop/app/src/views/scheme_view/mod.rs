@@ -1,7 +1,10 @@
 use crate::app::KnotQApp;
 use crate::theme_gpui::{token_hsla, token_rgba, Theme, FONT_MONO, FONT_UI};
 use gpui::prelude::*;
-use gpui::{div, px, App, ClickEvent, Context, Entity, IntoElement, MouseButton, Window};
+use gpui::{
+    div, point, px, App, ClickEvent, Context, Entity, IntoElement, MouseButton, Pixels, Point,
+    ScrollHandle, Window,
+};
 use gpui_component::scroll::Scrollbar;
 use gpui_component::tooltip::Tooltip;
 use gpui_component::{Icon, IconName, Sizable};
@@ -62,6 +65,7 @@ impl KnotQApp {
             });
         }
         let toolbar = self.render_scheme_toolbar(&scheme, editor.clone(), cx);
+        self.restore_scheme_scroll_after_sync_if_needed(scheme.id, window);
 
         div()
             .relative()
@@ -99,6 +103,43 @@ impl KnotQApp {
             .child(toolbar)
             .into_any_element()
     }
+
+    fn restore_scheme_scroll_after_sync_if_needed(
+        &mut self,
+        scheme_id: knotq_model::SchemeId,
+        window: &mut Window,
+    ) {
+        let Some((pending_scheme_id, offset)) = self.scheme_scroll_restore_after_sync.take() else {
+            return;
+        };
+        if pending_scheme_id != scheme_id {
+            return;
+        }
+        schedule_scroll_offset_restore(self.scheme_scroll_handle.clone(), offset, window);
+    }
+}
+
+fn schedule_scroll_offset_restore(
+    scroll_handle: ScrollHandle,
+    offset: Point<Pixels>,
+    window: &mut Window,
+) {
+    window.on_next_frame(move |window, _cx| {
+        restore_scroll_offset(&scroll_handle, offset);
+        window.refresh();
+
+        let scroll_handle = scroll_handle.clone();
+        window.on_next_frame(move |window, _cx| {
+            restore_scroll_offset(&scroll_handle, offset);
+            window.refresh();
+        });
+    });
+}
+
+fn restore_scroll_offset(scroll_handle: &ScrollHandle, offset: Point<Pixels>) {
+    let max_y = scroll_handle.max_offset().height;
+    let y = offset.y.clamp(-max_y, Pixels::ZERO);
+    scroll_handle.set_offset(point(offset.x, y));
 }
 
 mod controls;

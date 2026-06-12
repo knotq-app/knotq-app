@@ -2,7 +2,8 @@ use std::collections::{HashMap, HashSet};
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::process::Command;
-use std::sync::mpsc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{mpsc, Arc};
 use std::time::{Duration as StdDuration, Instant};
 
 use anyhow::{anyhow, bail, Context as _, Result};
@@ -43,6 +44,9 @@ const GOOGLE_OAUTH_SCOPES: &[&str] = &[
 const GOOGLE_OAUTH_LOG_FILE: &str = "knotq-google.log";
 const IMPORTED_GOOGLE_CALENDAR_SCHEME_NAME: &str = "Google Calendar";
 const GOOGLE_CALENDAR_BACKGROUND_SYNC_INTERVAL_SECS: u64 = 10 * 60;
+const GOOGLE_OAUTH_CALLBACK_TIMEOUT: &str = "Google OAuth timed out waiting for browser callback";
+const GOOGLE_OAUTH_CALLBACK_CANCELLED: &str = "Google OAuth browser callback cancelled";
+const GOOGLE_OAUTH_ACCESS_DENIED: &str = "Google OAuth error: access_denied";
 const GOOGLE_OAUTH_CLIENT_ID_ENV: &str = "KNOTQ_GOOGLE_OAUTH_CLIENT_ID";
 const GOOGLE_OAUTH_CLIENT_SECRET_ENV: &str = "KNOTQ_GOOGLE_OAUTH_CLIENT_SECRET";
 const COMPILED_GOOGLE_OAUTH_CLIENT_ID: Option<&str> = option_env!("KNOTQ_GOOGLE_OAUTH_CLIENT_ID");
@@ -114,6 +118,12 @@ fn google_oauth_log(message: impl AsRef<str>) {
             message.as_ref()
         );
     }
+}
+
+fn is_google_oauth_browser_cancel_or_timeout(err: &str) -> bool {
+    err.contains(GOOGLE_OAUTH_CALLBACK_CANCELLED)
+        || err.contains(GOOGLE_OAUTH_CALLBACK_TIMEOUT)
+        || err.contains(GOOGLE_OAUTH_ACCESS_DENIED)
 }
 
 fn google_account_label(account: &GoogleOAuthAccount) -> &str {
@@ -226,6 +236,38 @@ impl std::fmt::Display for GoogleApiError {
 impl std::error::Error for GoogleApiError {}
 
 impl KnotQApp {
+    fn begin_google_oauth_browser_flow(&mut self) -> Arc<AtomicBool> {
+        self.cancel_google_oauth_browser_flow();
+        let cancel_token = Arc::new(AtomicBool::new(false));
+        self.google_oauth_cancel_token = Some(cancel_token.clone());
+        cancel_token
+    }
+
+    fn cancel_google_oauth_browser_flow(&mut self) {
+        if let Some(cancel_token) = self.google_oauth_cancel_token.take() {
+            google_oauth_log("oauth.cancel requested");
+            cancel_token.store(true, Ordering::SeqCst);
+            self.google_oauth_task = None;
+        }
+    }
+
+    fn finish_google_oauth_task(&mut self, cancel_token: Option<&Arc<AtomicBool>>) -> bool {
+        if let Some(cancel_token) = cancel_token {
+            match self.google_oauth_cancel_token.as_ref() {
+                Some(current) if Arc::ptr_eq(current, cancel_token) => {
+                    self.google_oauth_cancel_token = None;
+                }
+                _ => {
+                    google_oauth_log("oauth.finish stale ignored");
+                    return false;
+                }
+            }
+        }
+
+        self.google_oauth_task = None;
+        true
+    }
+
     pub(crate) fn open_google_calendar_picker(
         &mut self,
         parent: FolderId,
@@ -377,7 +419,9 @@ impl KnotQApp {
         parent: FolderId,
         cx: &mut Context<Self>,
     ) {
-        if matches!(self.google_oauth_status, GoogleOAuthStatus::InProgress) {
+        if matches!(self.google_oauth_status, GoogleOAuthStatus::InProgress)
+            && self.google_oauth_cancel_token.is_none()
+        {
             return;
         }
 
@@ -400,14 +444,18 @@ impl KnotQApp {
             sources.len()
         ));
 
+        let cancel_token = self.begin_google_oauth_browser_flow();
         self.google_oauth_status = GoogleOAuthStatus::InProgress;
         let task = cx.spawn(
             async move |weak: gpui::WeakEntity<Self>, cx: &mut gpui::AsyncApp| {
                 let (tx, rx) = mpsc::channel();
+                let worker_cancel_token = cancel_token.clone();
+                let finish_cancel_token = cancel_token.clone();
                 std::thread::spawn(move || {
                     google_oauth_log("import.worker start");
-                    let result = run_google_calendar_import(config, accounts, sources)
-                        .map_err(|err| format!("{err:#}"));
+                    let result =
+                        run_google_calendar_import(config, accounts, sources, worker_cancel_token)
+                            .map_err(|err| format!("{err:#}"));
                     let _ = tx.send(result);
                 });
 
@@ -415,7 +463,12 @@ impl KnotQApp {
                     match rx.try_recv() {
                         Ok(result) => {
                             let _ = weak.update(cx, |app, cx| {
-                                app.finish_google_calendar_import(parent, result, cx);
+                                app.finish_google_calendar_import(
+                                    parent,
+                                    result,
+                                    Some(finish_cancel_token.clone()),
+                                    cx,
+                                );
                             });
                             break;
                         }
@@ -429,6 +482,7 @@ impl KnotQApp {
                                 app.finish_google_calendar_import(
                                     parent,
                                     Err("Google OAuth worker stopped".to_string()),
+                                    Some(finish_cancel_token.clone()),
                                     cx,
                                 );
                             });
@@ -524,7 +578,7 @@ impl KnotQApp {
                     match rx.try_recv() {
                         Ok(result) => {
                             let _ = weak.update(cx, |app, cx| {
-                                app.finish_google_calendar_import(parent, result, cx);
+                                app.finish_google_calendar_import(parent, result, None, cx);
                             });
                             break;
                         }
@@ -538,6 +592,7 @@ impl KnotQApp {
                                 app.finish_google_calendar_import(
                                     parent,
                                     Err("Google Calendar import worker stopped".to_string()),
+                                    None,
                                     cx,
                                 );
                             });
@@ -621,7 +676,7 @@ impl KnotQApp {
                     match rx.try_recv() {
                         Ok(result) => {
                             let _ = weak.update(cx, |app, cx| {
-                                app.finish_google_calendar_scheme_refresh(result, cx);
+                                app.finish_google_calendar_scheme_refresh(result, None, cx);
                             });
                             break;
                         }
@@ -634,6 +689,7 @@ impl KnotQApp {
                             let _ = weak.update(cx, |app, cx| {
                                 app.finish_google_calendar_scheme_refresh(
                                     Err("Google Calendar refresh worker stopped".to_string()),
+                                    None,
                                     cx,
                                 );
                             });
@@ -652,7 +708,9 @@ impl KnotQApp {
         scheme_id: knotq_model::SchemeId,
         cx: &mut Context<Self>,
     ) {
-        if matches!(self.google_oauth_status, GoogleOAuthStatus::InProgress) {
+        if matches!(self.google_oauth_status, GoogleOAuthStatus::InProgress)
+            && self.google_oauth_cancel_token.is_none()
+        {
             return;
         }
 
@@ -682,14 +740,18 @@ impl KnotQApp {
             source.calendar_id
         ));
 
+        let cancel_token = self.begin_google_oauth_browser_flow();
         self.google_oauth_status = GoogleOAuthStatus::InProgress;
         let task = cx.spawn(
             async move |weak: gpui::WeakEntity<Self>, cx: &mut gpui::AsyncApp| {
                 let (tx, rx) = mpsc::channel();
+                let worker_cancel_token = cancel_token.clone();
+                let finish_cancel_token = cancel_token.clone();
                 std::thread::spawn(move || {
                     google_oauth_log("reconnect.worker start");
-                    let result = run_google_calendar_scheme_reconnect(config, source)
-                        .map_err(|err| format!("{err:#}"));
+                    let result =
+                        run_google_calendar_scheme_reconnect(config, source, worker_cancel_token)
+                            .map_err(|err| format!("{err:#}"));
                     let _ = tx.send(result);
                 });
 
@@ -697,7 +759,11 @@ impl KnotQApp {
                     match rx.try_recv() {
                         Ok(result) => {
                             let _ = weak.update(cx, |app, cx| {
-                                app.finish_google_calendar_scheme_refresh(result, cx);
+                                app.finish_google_calendar_scheme_refresh(
+                                    result,
+                                    Some(finish_cancel_token.clone()),
+                                    cx,
+                                );
                             });
                             break;
                         }
@@ -710,6 +776,7 @@ impl KnotQApp {
                             let _ = weak.update(cx, |app, cx| {
                                 app.finish_google_calendar_scheme_refresh(
                                     Err("Google Calendar reconnect worker stopped".to_string()),
+                                    Some(finish_cancel_token.clone()),
                                     cx,
                                 );
                             });
@@ -767,9 +834,12 @@ impl KnotQApp {
         &mut self,
         parent: FolderId,
         result: std::result::Result<GoogleCalendarImportResult, String>,
+        cancel_token: Option<Arc<AtomicBool>>,
         cx: &mut Context<Self>,
     ) {
-        self.google_oauth_task = None;
+        if !self.finish_google_oauth_task(cancel_token.as_ref()) {
+            return;
+        }
         self.finish_google_sync_result(result, parent, true, true, true, "import", cx);
     }
 
@@ -825,9 +895,12 @@ impl KnotQApp {
     fn finish_google_calendar_scheme_refresh(
         &mut self,
         result: std::result::Result<GoogleCalendarImportResult, String>,
+        cancel_token: Option<Arc<AtomicBool>>,
         cx: &mut Context<Self>,
     ) {
-        self.google_oauth_task = None;
+        if !self.finish_google_oauth_task(cancel_token.as_ref()) {
+            return;
+        }
         self.finish_google_sync_result(
             result,
             self.workspace.root,
@@ -916,11 +989,15 @@ impl KnotQApp {
                 eprintln!("Google Calendar {label} failed: {err}");
                 google_oauth_log(format!("{label}.finish failed: {err}"));
                 if always_notify {
-                    self.show_google_calendar_error(
-                        format!("Google Calendar {label} failed"),
-                        err.clone(),
-                    );
-                    self.google_oauth_status = GoogleOAuthStatus::Error;
+                    if is_google_oauth_browser_cancel_or_timeout(&err) {
+                        self.google_oauth_status = GoogleOAuthStatus::Idle;
+                    } else {
+                        self.show_google_calendar_error(
+                            format!("Google Calendar {label} failed"),
+                            err.clone(),
+                        );
+                        self.google_oauth_status = GoogleOAuthStatus::Error;
+                    }
                     cx.notify();
                 }
             }
@@ -1225,9 +1302,10 @@ fn run_google_calendar_import(
     config: GoogleOAuthConfig,
     _existing_accounts: Vec<GoogleOAuthAccount>,
     existing_sources: Vec<ExistingGoogleCalendarSource>,
+    cancel_token: Arc<AtomicBool>,
 ) -> Result<GoogleCalendarImportResult> {
     google_oauth_log("import.oauth start");
-    let accounts = vec![run_google_oauth(config.clone())?];
+    let accounts = vec![run_google_oauth(config.clone(), &cancel_token)?];
     run_google_calendar_sync(
         config,
         accounts,
@@ -1259,13 +1337,14 @@ fn run_google_calendar_import_existing_account_calendar(
 fn run_google_calendar_scheme_reconnect(
     config: GoogleOAuthConfig,
     source: ImportedCalendarSource,
+    cancel_token: Arc<AtomicBool>,
 ) -> Result<GoogleCalendarImportResult> {
     google_oauth_log(format!(
         "reconnect.oauth start account={} calendar_id={}",
         google_calendar_source_target_label(&source),
         source.calendar_id
     ));
-    let account = run_google_oauth(config.clone())?;
+    let account = run_google_oauth(config.clone(), &cancel_token)?;
     if !google_account_matches_calendar_source(&account, &source) {
         let signed_in = account
             .email
@@ -1383,7 +1462,10 @@ fn run_google_calendar_sync(
     })
 }
 
-fn run_google_oauth(config: GoogleOAuthConfig) -> Result<GoogleOAuthAccount> {
+fn run_google_oauth(
+    config: GoogleOAuthConfig,
+    cancel_token: &AtomicBool,
+) -> Result<GoogleOAuthAccount> {
     let listener = TcpListener::bind("127.0.0.1:0").context("bind OAuth loopback listener")?;
     listener
         .set_nonblocking(true)
@@ -1409,6 +1491,7 @@ fn run_google_oauth(config: GoogleOAuthConfig) -> Result<GoogleOAuthAccount> {
         StdDuration::from_secs(120),
         "Google Calendar is connected. You can close this tab and return to KnotQ.",
         "Google Calendar connection failed. You can close this tab and return to KnotQ.",
+        Some(cancel_token),
     ) {
         Ok(code) => {
             google_oauth_log("oauth.callback ok");
@@ -1497,9 +1580,13 @@ pub(crate) fn wait_for_oauth_code(
     timeout: StdDuration,
     success_body: &str,
     failure_body: &str,
+    cancel_token: Option<&AtomicBool>,
 ) -> Result<String> {
     let started = Instant::now();
     while started.elapsed() < timeout {
+        if cancel_token.is_some_and(|cancel_token| cancel_token.load(Ordering::SeqCst)) {
+            bail!(GOOGLE_OAUTH_CALLBACK_CANCELLED);
+        }
         match listener.accept() {
             Ok((mut stream, _)) => {
                 let result = read_oauth_callback(&mut stream, expected_state);
@@ -1517,7 +1604,7 @@ pub(crate) fn wait_for_oauth_code(
             Err(err) => return Err(err).context("accept OAuth callback"),
         }
     }
-    bail!("Google OAuth timed out waiting for browser callback")
+    bail!(GOOGLE_OAUTH_CALLBACK_TIMEOUT)
 }
 
 fn read_oauth_callback(stream: &mut TcpStream, expected_state: &str) -> Result<String> {
@@ -2665,6 +2752,41 @@ mod tests {
     #[test]
     fn google_oauth_client_secret_missing_compile_time_env_is_config_error() {
         assert_eq!(google_oauth_client_secret_from_compiled(None), None);
+    }
+
+    #[test]
+    fn google_oauth_browser_cancel_and_timeout_errors_are_non_modal() {
+        assert!(is_google_oauth_browser_cancel_or_timeout(
+            GOOGLE_OAUTH_CALLBACK_CANCELLED
+        ));
+        assert!(is_google_oauth_browser_cancel_or_timeout(
+            GOOGLE_OAUTH_CALLBACK_TIMEOUT
+        ));
+        assert!(is_google_oauth_browser_cancel_or_timeout(
+            GOOGLE_OAUTH_ACCESS_DENIED
+        ));
+        assert!(!is_google_oauth_browser_cancel_or_timeout(
+            "Google OAuth HTTP 400: invalid_request"
+        ));
+    }
+
+    #[test]
+    fn wait_for_oauth_code_returns_when_cancelled() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let cancel_token = AtomicBool::new(true);
+
+        let err = wait_for_oauth_code(
+            &listener,
+            "state",
+            StdDuration::from_secs(60),
+            "ok",
+            "failed",
+            Some(&cancel_token),
+        )
+        .unwrap_err();
+
+        assert!(format!("{err:#}").contains(GOOGLE_OAUTH_CALLBACK_CANCELLED));
     }
 
     #[test]

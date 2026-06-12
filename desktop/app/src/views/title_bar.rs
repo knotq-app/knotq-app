@@ -287,7 +287,7 @@ impl KnotQApp {
                             move |s| s.bg(token_rgba(c))
                         })
                         .on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
-                            this.open_settings();
+                            this.open_settings(cx);
                             this.focus_app_root(window);
                             cx.notify();
                         }))
@@ -445,7 +445,7 @@ impl KnotQApp {
                 .on_click(cx.listener(move |this, event: &ClickEvent, window, cx| {
                     if sync_disabled {
                         if this.selection.view != View::Settings {
-                            this.open_settings();
+                            this.open_settings(cx);
                         }
                         this.focus_app_root(window);
                         cx.notify();

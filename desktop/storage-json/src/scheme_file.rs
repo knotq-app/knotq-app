@@ -11,7 +11,7 @@ use std::{
 use crate::{
     files::write_atomic,
     paths::schemes_dir,
-    schema::{DailyQueueIndexEntry, SchemeIndex, WorkspaceEnvelope},
+    schema::{DailyQueueIndexEntry, SchemeIndex},
     scheme_markdown::{decode_scheme_file, encode_scheme_file},
 };
 
@@ -46,7 +46,7 @@ pub(crate) fn read_existing_daily_queue_index(path: &Path) -> Result<Vec<DailyQu
     if raw.trim().is_empty() {
         return Ok(Vec::new());
     }
-    let env: WorkspaceEnvelope = serde_json::from_str(&raw).context("parse workspace index")?;
+    let env = crate::files::parse_workspace_envelope(&raw, path)?;
     crate::files::validate_workspace_version(env.version)?;
     Ok(env.workspace.daily_queue)
 }

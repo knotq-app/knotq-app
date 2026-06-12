@@ -27,7 +27,7 @@ use sha2::{Digest, Sha256};
 use std::fmt;
 
 use super::sync_auth::{refresh_sync_backend, RefreshError};
-use super::{KnotQApp, SyncAuthStatus, SyncRunStatus};
+use super::{KnotQApp, SyncAuthStatus, SyncRunStatus, View};
 
 // ── Sync scheduling constants ─────────────────────────────────────────────
 //
@@ -275,19 +275,22 @@ async fn run_sync_once(weak: &gpui::WeakEntity<KnotQApp>, cx: &mut gpui::AsyncAp
                 Utc::now(),
                 0,
             );
-            Some(SyncSnapshot {
+            let snapshot = SyncSnapshot {
                 workspace: app.workspace.clone(),
                 account,
                 replica_id: app.settings.replica_id,
                 pending,
                 crdt_states,
                 notification_schedule,
-            })
+            };
+            // Captured after sync_store_from_workspace above, so it only moves
+            // again if the user edits while the run is in flight.
+            Some((snapshot, app.state.local_edit_watermark()))
         })
         .ok()
         .flatten();
 
-    let Some(snapshot) = snapshot else {
+    let Some((snapshot, local_edit_watermark)) = snapshot else {
         return;
     };
 
@@ -318,8 +321,31 @@ async fn run_sync_once(weak: &gpui::WeakEntity<KnotQApp>, cx: &mut gpui::AsyncAp
                 app.sync_server_rejecting = false;
                 app.last_synced_at = Some(Utc::now());
                 if remote_updates_applied > 0 || local_workspace_changed {
-                    app.state
-                        .replace_workspace_from_sync(workspace, crdt_states);
+                    let scheme_scroll_restore = if app.selection.view == View::Scheme {
+                        app.selection
+                            .scheme_id
+                            .map(|scheme_id| (scheme_id, app.scheme_scroll_handle.offset()))
+                    } else {
+                        None
+                    };
+                    let daily_queue_scroll_restore = (app.selection.view == View::DailyQueue)
+                        .then(|| app.daily_queue_scroll_handle.offset());
+                    // Edits applied while the run was in flight are not in its
+                    // result; merge the result into the live documents so they
+                    // survive (e.g. an event being drafted on the calendar)
+                    // instead of being rolled back until the next round trip.
+                    // With no in-flight edits the replace is equivalent and
+                    // adopts the run's canonical merged state wholesale.
+                    let merged = app.state.has_local_edits_since(local_edit_watermark)
+                        && app
+                            .state
+                            .merge_workspace_from_sync(&workspace, &crdt_states);
+                    if !merged {
+                        app.state
+                            .replace_workspace_from_sync(workspace, crdt_states);
+                    }
+                    app.scheme_scroll_restore_after_sync = scheme_scroll_restore;
+                    app.daily_queue_scroll_restore_after_sync = daily_queue_scroll_restore;
                     app.service_bus.signal_save();
                     app.service_bus.signal_notifications();
                     app.service_bus.signal_timeline();
@@ -381,9 +407,10 @@ async fn ensure_fresh_token(
     let Some(account) = account else {
         return Ok(());
     };
-    if !account.supports_sync {
-        return Ok(());
-    }
+    // Refresh even when sync isn't entitled: rotation recomputes entitlement
+    // server-side and updates the local `supports_sync` cache, so a subscription
+    // purchased on the website reaches a signed-in client within one token
+    // lifetime instead of never.
     // Only refresh when the access token is at/near expiry.
     if account.expires_at > Utc::now() + chrono::Duration::seconds(ACCESS_REFRESH_SKEW_SECS) {
         return Ok(());

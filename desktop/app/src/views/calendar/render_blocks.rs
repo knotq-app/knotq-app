@@ -2,9 +2,6 @@ use super::*;
 
 const CALENDAR_BLOCK_ALPHA_MULTIPLIER: f32 = 0.62;
 const EVENT_RESIZE_HANDLE_PX: f32 = 7.0;
-const EVENT_BLOCK_GUTTER_PX: f32 = 2.0;
-const EVENT_BLOCK_LANE_GAP_PX: f32 = 3.0;
-const COMPACT_EVENT_TIME_WIDTH_PX: f32 = 112.0;
 
 fn calendar_block_bg(t: Theme, offset: bool) -> gpui::Rgba {
     let mut source = token_rgba(t.event_bg);
@@ -59,12 +56,11 @@ pub(super) fn render_event_chunk<'a>(
     let line_count = chunk.equal_groups.iter().map(|g| g.len()).sum::<usize>();
     let span_minutes = (max_end - min_start).num_minutes();
     let hide_time = (head.kind == ItemKind::Event && span_minutes <= 30) || !chunk.show_time;
+    let compact = chunk.lane > 0;
     let height = actual_height.max(event_min_height(hide_time, line_count));
 
     let item_bg = calendar_block_bg(t, idx % 2 == 1);
-    let (block_left, block_w) =
-        calendar_block_geometry(day_col_w, chunk.lane, chunk.lane_span, chunk.lane_count);
-    let compact = block_w < COMPACT_EVENT_TIME_WIDTH_PX;
+    let (block_left, block_w) = event_block_geometry(day_col_w, chunk.lane);
     let any_done = chunk
         .equal_groups
         .iter()
@@ -294,22 +290,14 @@ fn calendar_event_resize_handle(
         .into_any_element()
 }
 
-fn calendar_block_geometry(
-    day_col_w: f32,
-    lane: usize,
-    lane_span: usize,
-    lane_count: usize,
-) -> (f32, f32) {
-    let lane_count = lane_count.max(1);
-    let lane = lane.min(lane_count - 1);
-    let lane_span = lane_span.max(1).min(lane_count - lane);
-    let full_w = (day_col_w - EVENT_BLOCK_GUTTER_PX * 2.0).max(1.0);
-    let total_gap_w = EVENT_BLOCK_LANE_GAP_PX * lane_count.saturating_sub(1) as f32;
-    let lane_w = ((full_w - total_gap_w).max(1.0) / lane_count as f32).max(1.0);
-    let left = EVENT_BLOCK_GUTTER_PX + lane as f32 * (lane_w + EVENT_BLOCK_LANE_GAP_PX);
-    let width =
-        lane_w * lane_span as f32 + EVENT_BLOCK_LANE_GAP_PX * lane_span.saturating_sub(1) as f32;
-    (left, width.max(1.0))
+fn event_block_geometry(day_col_w: f32, lane: usize) -> (f32, f32) {
+    let full_w = (day_col_w - 4.0).max(1.0);
+    if lane == 0 {
+        return (2.0, full_w);
+    }
+    let scale = (0.75 - (lane.saturating_sub(1) as f32 * 0.10)).max(0.55);
+    let width = (full_w * scale).max(1.0);
+    ((day_col_w - 2.0 - width).max(2.0), width)
 }
 
 fn event_min_height(hide_time: bool, line_count: usize) -> f32 {
@@ -514,8 +502,7 @@ pub(super) fn render_pill_chunk<'a>(
     let hide_time = !chunk.show_time;
 
     let item_bg = calendar_block_bg(t, idx % 2 == 1);
-    let (block_left, block_w) =
-        calendar_block_geometry(day_col_w, chunk.lane, chunk.lane_span, chunk.lane_count);
+    let block_w = (day_col_w - 4.0 - chunk.offset).max(1.0);
     let all_done = chunk
         .equal_groups
         .iter()
@@ -578,8 +565,8 @@ pub(super) fn render_pill_chunk<'a>(
         .absolute()
         .top(px(top))
         .h(px(height))
-        .left(px(block_left))
-        .w(px(block_w))
+        .left(px(2.0 + chunk.offset))
+        .right(px(2.0))
         .bg(item_bg)
         .overflow_hidden()
         .opacity(if all_done { 0.55 } else { 1.0 })

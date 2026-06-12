@@ -81,19 +81,38 @@ impl SchemeEditor {
         }
 
         if annotation_text(&row.item, self.time_format).is_some() {
-            let bar_x = checkbox_bounds.left() - px(ANNOTATION_BAR_GAP);
-            let bar_margin = px(3.0);
-            let bar_top = checkbox_bounds.top();
+            let bar_x = self.annotation_bar_x(checkbox_bounds);
             let row_height = self
                 .line_map
                 .item_line(row_ix)
                 .map(SchemeItemLine::height)
                 .unwrap_or(line_height);
-            let bar_bottom = line_origin.y + row_height - bar_margin;
+            let guide_margin = px(3.0);
+            let previous_has_annotation = row_ix
+                .checked_sub(1)
+                .and_then(|ix| self.rows.get(ix))
+                .is_some_and(|row| annotation_text(&row.item, self.time_format).is_some());
+            let next_has_annotation = self
+                .rows
+                .get(row_ix + 1)
+                .is_some_and(|row| annotation_text(&row.item, self.time_format).is_some());
+            let top_margin = if previous_has_annotation {
+                px(0.0)
+            } else {
+                guide_margin
+            };
+            let bottom_margin = if next_has_annotation {
+                px(0.0)
+            } else {
+                guide_margin
+            };
             window.paint_quad(fill(
                 Bounds::new(
-                    point(bar_x, bar_top),
-                    size(px(1.0), (bar_bottom - bar_top).max(px(1.0))),
+                    point(bar_x, line_origin.y + top_margin),
+                    size(
+                        px(1.0),
+                        (row_height - top_margin - bottom_margin).max(px(1.0)),
+                    ),
                 ),
                 annotation_color,
             ));
@@ -120,7 +139,7 @@ impl SchemeEditor {
             .item_line(row_ix)
             .map(SchemeItemLine::height)
             .unwrap_or_else(|| self.line_map.row_line_height(row_ix));
-        let own_bar_x = checkbox_bounds.left() - px(ANNOTATION_BAR_GAP + INDENT_GUIDE_X_SHIFT);
+        let own_bar_x = self.annotation_bar_x(checkbox_bounds);
 
         for guide_indent in 1..=indent {
             let level_offset = px((indent - guide_indent) as f32 * INDENT_WIDTH);
@@ -238,7 +257,8 @@ impl SchemeEditor {
         let y = line_origin.y + self.line_map.line_text_height(row_ix) - px(2.0);
         let text_left = line_origin.x + self.first_text_x(row_ix);
         let checkbox_left = self.marker_left_for_text_left(&row.item, text_left);
-        let mut x = checkbox_left - px(ANNOTATION_BAR_GAP) + px(ANNOTATION_TEXT_GAP);
+        let mut x = checkbox_left - px(ANNOTATION_BAR_GAP + INDENT_GUIDE_X_SHIFT)
+            + px(ANNOTATION_TEXT_GAP);
         let annotation_color = self.annotation_color();
         let mut painted = false;
 
@@ -334,5 +354,9 @@ impl SchemeEditor {
         } else {
             0x536a8fff
         })
+    }
+
+    fn annotation_bar_x(&self, checkbox_bounds: Bounds<Pixels>) -> Pixels {
+        checkbox_bounds.left() - px(ANNOTATION_BAR_GAP + INDENT_GUIDE_X_SHIFT)
     }
 }

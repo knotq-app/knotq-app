@@ -3,6 +3,7 @@ use chrono::NaiveDate;
 use knotq_model::{Scheme, SchemeId, Workspace};
 use std::collections::HashSet;
 use std::io;
+use std::sync::Mutex;
 use std::{fs, path::Path};
 
 use crate::{
@@ -17,6 +18,18 @@ use crate::{
 
 pub(crate) const SCHEMA_VERSION: u32 = 1;
 pub(crate) const SETTINGS_SCHEMA_VERSION: u32 = 1;
+
+/// Serializes whole-workspace saves. The debounced save task and the sync-run
+/// save both call into here from background threads; without this, their
+/// scheme-file/index write sets interleave and `prune_removed_scheme_files`
+/// can act on a half-written sibling snapshot.
+static WORKSPACE_SAVE_LOCK: Mutex<()> = Mutex::new(());
+
+fn lock_workspace_save() -> std::sync::MutexGuard<'static, ()> {
+    WORKSPACE_SAVE_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
 const WORKSPACE_GITIGNORE: &str =
     "# KnotQ local files\n.knotq-history/\nbackups/\n*.tmp\n.DS_Store\n";
 
@@ -111,6 +124,7 @@ pub fn load_daily_queue_schemes_for_calendar_range(
 }
 
 pub fn save_workspace(path: &Path, workspace: &Workspace) -> Result<()> {
+    let _guard = lock_workspace_save();
     let mut workspace = workspace.clone();
     workspace.ensure_sync_metadata();
     let workspace = &workspace;
@@ -148,6 +162,7 @@ pub fn save_workspace_incremental(
     workspace: &Workspace,
     dirty_scheme_ids: &HashSet<SchemeId>,
 ) -> Result<()> {
+    let _guard = lock_workspace_save();
     let mut workspace = workspace.clone();
     workspace.ensure_sync_metadata();
     let workspace = &workspace;
@@ -188,9 +203,32 @@ pub(crate) fn read_workspace_envelope(path: &Path) -> Result<Option<WorkspaceEnv
     if raw.trim().is_empty() {
         return Ok(None);
     }
-    let env: WorkspaceEnvelope = serde_json::from_str(&raw).context("parse workspace index")?;
+    let env = parse_workspace_envelope(&raw, path)?;
     validate_workspace_version(env.version)?;
     Ok(Some(env))
+}
+
+/// Parse the workspace index, recovering from trailing-garbage corruption.
+///
+/// Builds before the unique-tmp-name fix in `write_atomic` could publish an
+/// index consisting of a complete document followed by the tail of the
+/// previous, longer version. The prefix is a complete recent snapshot, so
+/// salvage it (the next save rewrites the file cleanly) instead of wedging
+/// every subsequent save and sync run behind the parse error.
+pub(crate) fn parse_workspace_envelope(raw: &str, path: &Path) -> Result<WorkspaceEnvelope> {
+    let err = match serde_json::from_str(raw) {
+        Ok(env) => return Ok(env),
+        Err(err) => err,
+    };
+    let mut stream = serde_json::Deserializer::from_str(raw).into_iter::<WorkspaceEnvelope>();
+    if let Some(Ok(env)) = stream.next() {
+        eprintln!(
+            "recovered workspace index {} from trailing data after the document (was: {err})",
+            path.display()
+        );
+        return Ok(env);
+    }
+    Err(err).context("parse workspace index")
 }
 
 pub(crate) fn validate_workspace_version(version: u32) -> Result<()> {
@@ -206,15 +244,27 @@ pub(crate) fn validate_workspace_version(version: u32) -> Result<()> {
 
 pub(crate) fn write_atomic(path: &Path, contents: &[u8]) -> Result<()> {
     use std::io::Write;
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    static TMP_COUNTER: AtomicU64 = AtomicU64::new(0);
 
     if let Some(dir) = path.parent() {
         fs::create_dir_all(dir).with_context(|| format!("create {}", dir.display()))?;
     }
+    // The tmp name must be unique per call: concurrent writers to the same
+    // path (the debounced save task racing a sync-run save) sharing one tmp
+    // file interleave their writes, publishing the shorter document with the
+    // longer one's tail appended — a workspace index that no longer parses.
+    let unique = format!(
+        "{}-{}",
+        std::process::id(),
+        TMP_COUNTER.fetch_add(1, Ordering::Relaxed)
+    );
     let tmp = match path.extension().and_then(|ext| ext.to_str()) {
-        Some(ext) => path.with_extension(format!("{ext}.tmp")),
-        None => path.with_extension("tmp"),
+        Some(ext) => path.with_extension(format!("{ext}.{unique}.tmp")),
+        None => path.with_extension(format!("{unique}.tmp")),
     };
-    {
+    let write_result = (|| {
         let mut file =
             fs::File::create(&tmp).with_context(|| format!("create {}", tmp.display()))?;
         file.write_all(contents)
@@ -224,9 +274,12 @@ pub(crate) fn write_atomic(path: &Path, contents: &[u8]) -> Result<()> {
         // a zero-length "complete" file behind.
         file.sync_all()
             .with_context(|| format!("sync {}", tmp.display()))?;
+        fs::rename(&tmp, path).with_context(|| format!("rename {}", path.display()))
+    })();
+    if write_result.is_err() {
+        let _ = fs::remove_file(&tmp);
     }
-    fs::rename(&tmp, path).with_context(|| format!("rename {}", path.display()))?;
-    Ok(())
+    write_result
 }
 
 fn ensure_workspace_gitignore(base_dir: &Path) -> Result<()> {
@@ -267,4 +320,45 @@ fn is_not_found(err: &anyhow::Error) -> bool {
 
 pub(crate) fn is_false(value: &bool) -> bool {
     !*value
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn concurrent_write_atomic_always_publishes_one_complete_document() {
+        let dir =
+            std::env::temp_dir().join(format!("knotq-write-atomic-race-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("target.json");
+
+        // One short and one long payload: with a shared tmp file the
+        // interleaving publishes the short payload with the long one's tail.
+        let short = vec![b'a'; 64];
+        let long = vec![b'b'; 512 * 1024];
+        let handles: Vec<_> = [&short, &long, &short, &long]
+            .into_iter()
+            .cloned()
+            .map(|contents| {
+                let path = path.clone();
+                std::thread::spawn(move || {
+                    for _ in 0..25 {
+                        write_atomic(&path, &contents).unwrap();
+                    }
+                })
+            })
+            .collect();
+        for handle in handles {
+            handle.join().unwrap();
+        }
+
+        let published = fs::read(&path).unwrap();
+        assert!(
+            published == short || published == long,
+            "published file must be exactly one writer's payload, got {} bytes",
+            published.len()
+        );
+        let _ = fs::remove_dir_all(&dir);
+    }
 }

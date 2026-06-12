@@ -95,7 +95,9 @@ fn direct_daily_queue_creation_records_valid_crdt_updates() {
     scheme.items.push(Item::new("first task"));
     direct.daily_queue.insert(date, id);
     direct.schemes.insert(id, scheme);
-    direct.scheme_sync.insert(id, daily_queue_sync_metadata(date));
+    direct
+        .scheme_sync
+        .insert(id, daily_queue_sync_metadata(date));
 
     store.replace_workspace(
         direct,

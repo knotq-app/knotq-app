@@ -74,7 +74,7 @@ impl KnotQApp {
                 cx,
                 |this, window, cx| {
                     this.close_sync_status_popover(cx);
-                    this.open_settings();
+                    this.open_settings(cx);
                     this.focus_app_root(window);
                     cx.notify();
                 },

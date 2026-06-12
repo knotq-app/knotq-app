@@ -186,6 +186,7 @@ impl KnotQApp {
         self.sync_run_status = SyncRunStatus::Idle;
         self.sync_account_action = None;
         self.sync_status_popover = None;
+        self.sync_status_quiet_task = None;
         self.last_synced_at = None;
         cx.notify();
     }
@@ -344,6 +345,68 @@ impl KnotQApp {
     /// Refresh the general account/subscription status shown in Settings.
     pub fn refresh_account_status(&mut self, cx: &mut Context<Self>) {
         self.refresh_account_status_with_options(false, cx);
+    }
+
+    /// Quietly re-check account status (fired when the Settings view opens), so an
+    /// entitlement change made outside the app — e.g. subscribing on the website —
+    /// shows up without the user pressing anything. Runs in the background, never
+    /// touches `sync_auth_status`, and ignores failures; the next open retries.
+    pub fn refresh_account_status_quiet(&mut self, cx: &mut Context<Self>) {
+        if self.sync_status_quiet_task.is_some()
+            || matches!(self.sync_auth_status, SyncAuthStatus::InProgress)
+        {
+            return;
+        }
+        let Some(account) = self.settings.sync_account.clone() else {
+            return;
+        };
+
+        let task = cx.spawn(
+            async move |weak: gpui::WeakEntity<Self>, cx: &mut gpui::AsyncApp| {
+                let (tx, rx) = mpsc::channel();
+                std::thread::spawn(move || {
+                    let _ = tx.send(refresh_account_status_backend(account));
+                });
+
+                // Await the worker without blocking the UI executor.
+                let result = loop {
+                    match rx.try_recv() {
+                        Ok(result) => break Some(result),
+                        Err(mpsc::TryRecvError::Empty) => {
+                            cx.background_executor()
+                                .timer(StdDuration::from_millis(100))
+                                .await;
+                        }
+                        Err(mpsc::TryRecvError::Disconnected) => break None,
+                    }
+                };
+
+                let _ = weak.update(cx, |app, cx| {
+                    app.sync_status_quiet_task = None;
+                    let Some(Ok(updated)) = result else {
+                        return;
+                    };
+                    // The user may have signed out while the check was in flight;
+                    // don't resurrect the account.
+                    if app.settings.sync_account.is_none() {
+                        return;
+                    }
+                    let was_enabled = app
+                        .settings
+                        .sync_account
+                        .as_ref()
+                        .is_some_and(|account| account.supports_sync);
+                    let enabled = updated.supports_sync;
+                    app.settings.sync_account = Some(updated);
+                    app.save_app_settings();
+                    if enabled && !was_enabled {
+                        app.service_bus.signal_sync();
+                    }
+                    cx.notify();
+                });
+            },
+        );
+        self.sync_status_quiet_task = Some(task);
     }
 
     /// After the checkout opens in the browser, quietly re-check entitlement on a
@@ -570,6 +633,7 @@ fn run_browser_sign_in(api_base: &str, mode: SyncAuthMode) -> Result<SyncAccount
         StdDuration::from_secs(300),
         "You're signed in to KnotQ. You can close this tab and return to the app.",
         "Sign-in did not complete. You can close this tab and return to KnotQ.",
+        None,
     )?;
     exchange_authorize_code(&base, &code, &code_verifier)
 }

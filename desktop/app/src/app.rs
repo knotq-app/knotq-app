@@ -36,6 +36,7 @@ pub use settings::initial_window_bounds;
 
 use std::collections::{HashMap, VecDeque};
 use std::ops::{Deref, DerefMut};
+use std::sync::{atomic::AtomicBool, Arc};
 
 use chrono::{DateTime, Duration, Local, NaiveDate, Utc};
 use gpui::{Context, Entity, FocusHandle, Pixels, Point, ScrollHandle, Subscription, Task};
@@ -266,6 +267,7 @@ pub enum SettingsDropdown {
     TimeFormat,
     EventNotification,
     AssignmentNotification,
+    SyncAccountManage,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -535,9 +537,11 @@ pub struct KnotQApp {
     pub(crate) daily_queue_editor_subscriptions: HashMap<NaiveDate, Subscription>,
     pub scheme_scroll_handle: ScrollHandle,
     pub scheme_scroll_initialized_for: Option<SchemeId>,
+    pub(crate) scheme_scroll_restore_after_sync: Option<(SchemeId, Point<Pixels>)>,
     pub daily_queue_scroll_handle: ScrollHandle,
     pub daily_queue_scroll_initialized: bool,
     pub daily_queue_preserved_bottom_distance: Option<Pixels>,
+    pub(crate) daily_queue_scroll_restore_after_sync: Option<Point<Pixels>>,
     pub cal_scroll_handle: ScrollHandle,
     pub cal_scroll_initialized: bool,
     pub rename_node: Option<RenameNodeState>,
@@ -550,6 +554,7 @@ pub struct KnotQApp {
     pub google_calendar_picker_task: Option<Task<()>>,
     pub google_oauth_status: GoogleOAuthStatus,
     pub google_oauth_task: Option<Task<()>>,
+    pub google_oauth_cancel_token: Option<Arc<AtomicBool>>,
     /// Sign-in now happens in the browser; this just remembers whether the
     /// in-flight browser sign-in should advance onboarding when it succeeds.
     pub sync_advance_onboarding_on_success: bool,
@@ -559,10 +564,11 @@ pub struct KnotQApp {
     /// Bounded background poll that re-checks entitlement after the user opens the
     /// subscription checkout, so sync turns on without them clicking anything.
     pub sync_subscription_poll_task: Option<Task<()>>,
+    /// One-shot background account-status refresh fired when Settings opens, so
+    /// an entitlement change made outside the app shows up without any clicks.
+    pub sync_status_quiet_task: Option<Task<()>>,
     /// The currently expanded compact selector in Settings.
     pub settings_dropdown: Option<SettingsDropdown>,
-    /// Whether the signed-in sync card is showing account-management actions.
-    pub sync_account_manage_open: bool,
     /// Pending confirmation for a destructive account action shown in Settings.
     pub sync_account_action: Option<SyncAccountAction>,
     /// Anchor for the title-bar sync status popover; `Some` while it is open.
@@ -706,9 +712,11 @@ impl KnotQApp {
             daily_queue_editor_subscriptions: HashMap::new(),
             scheme_scroll_handle: ScrollHandle::new(),
             scheme_scroll_initialized_for: None,
+            scheme_scroll_restore_after_sync: None,
             daily_queue_scroll_handle: ScrollHandle::new(),
             daily_queue_scroll_initialized: false,
             daily_queue_preserved_bottom_distance: None,
+            daily_queue_scroll_restore_after_sync: None,
             cal_scroll_handle: ScrollHandle::new(),
             cal_scroll_initialized: false,
             rename_node: None,
@@ -721,14 +729,15 @@ impl KnotQApp {
             google_calendar_picker_task: None,
             google_oauth_status: GoogleOAuthStatus::Idle,
             google_oauth_task: None,
+            google_oauth_cancel_token: None,
             sync_advance_onboarding_on_success: false,
             sync_auth_status: SyncAuthStatus::Idle,
             sync_account_action: None,
             settings_dropdown: None,
-            sync_account_manage_open: false,
             sync_run_status: SyncRunStatus::Idle,
             sync_auth_task: None,
             sync_subscription_poll_task: None,
+            sync_status_quiet_task: None,
             sync_status_popover: None,
             last_synced_at: None,
             last_sync_poll_at: None,

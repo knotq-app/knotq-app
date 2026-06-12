@@ -284,6 +284,43 @@ fn missing_daily_queue_files_do_not_block_workspace_load() {
 }
 
 #[test]
+fn workspace_index_with_trailing_data_still_loads_and_saves() {
+    let dir = unique_temp_dir("knotq-storage-trailing-data");
+    let workspace_file = dir.join("workspace.json");
+    let mut workspace = Workspace::new();
+    let root = workspace.root;
+    let scheme = Scheme::new("Notes", 0);
+    let scheme_id = scheme.id;
+    workspace.schemes.insert(scheme_id, scheme);
+    workspace
+        .folders
+        .get_mut(&root)
+        .unwrap()
+        .children
+        .push(NodeRef::Scheme(scheme_id));
+
+    save_workspace(&workspace_file, &workspace).unwrap();
+
+    // Reproduce the tmp-file write race from older builds: a complete index
+    // document with the tail of a previous, longer version after it.
+    let mut raw = fs::read_to_string(&workspace_file).unwrap();
+    raw.push_str("0bc\",\n        \"position\": 9\n      }\n    }\n  }\n}");
+    fs::write(&workspace_file, &raw).unwrap();
+
+    let loaded = load_workspace(&workspace_file).unwrap().unwrap();
+    assert_eq!(loaded.id, workspace.id);
+    assert!(loaded.schemes.contains_key(&scheme_id));
+
+    // Saving over the corrupted index (which re-reads it for the daily queue)
+    // must also succeed and leave a clean file behind.
+    save_workspace(&workspace_file, &loaded).unwrap();
+    let raw = fs::read_to_string(&workspace_file).unwrap();
+    serde_json::from_str::<serde_json::Value>(&raw).unwrap();
+
+    let _ = fs::remove_dir_all(dir);
+}
+
+#[test]
 fn duplicate_scheme_names_are_saved_to_distinct_uuid_paths() {
     let dir = unique_temp_dir("knotq-storage-duplicate-names");
     let workspace_file = dir.join("workspace.json");

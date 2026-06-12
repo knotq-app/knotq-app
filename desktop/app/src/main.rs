@@ -184,7 +184,7 @@ impl Render for KnotQApp {
                     }),
                 )
                 .on_action(cx.listener(|this, _: &OpenSettingsView, window, cx| {
-                    this.open_settings();
+                    this.open_settings(cx);
                     this.focus_app_root(window);
                     cx.notify();
                 }))
@@ -302,6 +302,9 @@ impl Render for KnotQApp {
             root = root.child(menu);
         }
         if let Some(confirm) = self.render_delete_confirmation(cx) {
+            root = root.child(confirm);
+        }
+        if let Some(confirm) = self.render_sync_account_confirm(cx) {
             root = root.child(confirm);
         }
         if let Some(notice) = self.render_notice_modal(cx) {

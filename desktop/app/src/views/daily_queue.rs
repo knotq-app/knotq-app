@@ -1,8 +1,8 @@
 use chrono::{Datelike, NaiveDate};
 use gpui::prelude::*;
 use gpui::{
-    div, point, px, relative, ClickEvent, Context, Entity, IntoElement, MouseButton, Pixels,
-    ScrollDelta, ScrollWheelEvent, SharedString, Window,
+    div, point, px, relative, ClickEvent, Context, Entity, IntoElement, MouseButton, Pixels, Point,
+    ScrollDelta, ScrollHandle, ScrollWheelEvent, SharedString, Window,
 };
 use gpui_component::scroll::Scrollbar;
 
@@ -129,6 +129,7 @@ impl KnotQApp {
             self.daily_queue_scroll_initialized = true;
         }
         self.restore_daily_queue_scroll_from_bottom_if_needed(window);
+        self.restore_daily_queue_scroll_after_sync_if_needed(window);
         if focused_item.is_some() {
             self.selection.focused_item_id = None;
         }
@@ -228,6 +229,17 @@ impl KnotQApp {
             scroll_handle.set_offset(point(Pixels::ZERO, y));
             window.refresh();
         });
+    }
+
+    fn restore_daily_queue_scroll_after_sync_if_needed(&mut self, window: &mut Window) {
+        let Some(offset) = self.daily_queue_scroll_restore_after_sync.take() else {
+            return;
+        };
+        schedule_daily_queue_scroll_offset_restore(
+            self.daily_queue_scroll_handle.clone(),
+            offset,
+            window,
+        );
     }
 
     fn schedule_daily_queue_scroll_to_bottom(&self, window: &mut Window) {
@@ -341,6 +353,29 @@ impl KnotQApp {
             .child("roll over yesterday")
             .into_any_element()
     }
+}
+
+fn schedule_daily_queue_scroll_offset_restore(
+    scroll_handle: ScrollHandle,
+    offset: Point<Pixels>,
+    window: &mut Window,
+) {
+    window.on_next_frame(move |window, _cx| {
+        restore_daily_queue_scroll_offset(&scroll_handle, offset);
+        window.refresh();
+
+        let scroll_handle = scroll_handle.clone();
+        window.on_next_frame(move |window, _cx| {
+            restore_daily_queue_scroll_offset(&scroll_handle, offset);
+            window.refresh();
+        });
+    });
+}
+
+fn restore_daily_queue_scroll_offset(scroll_handle: &ScrollHandle, offset: Point<Pixels>) {
+    let max_y = scroll_handle.max_offset().height;
+    let y = offset.y.clamp(-max_y, Pixels::ZERO);
+    scroll_handle.set_offset(point(offset.x, y));
 }
 
 fn scrolls_toward_older_days(event: &ScrollWheelEvent) -> bool {

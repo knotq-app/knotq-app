@@ -95,7 +95,7 @@ impl KnotQApp {
         self.dismiss_event_popup_if_hidden_context();
     }
 
-    pub fn open_settings(&mut self) {
+    pub fn open_settings(&mut self, cx: &mut Context<Self>) {
         if self.selection.view == View::Settings {
             self.selection = self
                 .settings_return_selection
@@ -105,6 +105,7 @@ impl KnotQApp {
         } else {
             self.settings_return_selection = Some(self.selection.clone());
             self.selection.view = View::Settings;
+            self.refresh_account_status_quiet(cx);
         }
         self.dismiss_event_popup_if_hidden_context();
     }
