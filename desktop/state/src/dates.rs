@@ -1,4 +1,10 @@
-use chrono::{Datelike, NaiveDate};
+use chrono::{Datelike, Duration, NaiveDate};
+
+/// Number of days (today inclusive) the daily queue renders by default before
+/// older days are paged in lazily on scroll. Kept to two weeks so the scroll
+/// view only builds/lays out a handful of editors per frame instead of the
+/// whole loaded month.
+pub const DAILY_QUEUE_DEFAULT_WINDOW_DAYS: i64 = 14;
 
 pub fn add_months(date: NaiveDate, offset: i32) -> NaiveDate {
     let month_index = date.year() * 12 + date.month0() as i32 + offset;
@@ -29,6 +35,16 @@ pub fn daily_queue_initial_start(today: NaiveDate) -> NaiveDate {
     add_months(current_month_start, -1)
 }
 
+/// Start of the daily-queue *render* window: the last [`DAILY_QUEUE_DEFAULT_WINDOW_DAYS`]
+/// days up to and including `today`. Older days stay indexed and are paged in
+/// lazily as the user scrolls toward the top, so this only governs how much is
+/// drawn on open — not what is available. Kept separate from
+/// [`daily_queue_initial_start`], which still preloads a wider span from disk so
+/// the calendar and the first scroll-back have their data ready in memory.
+pub fn daily_queue_default_window_start(today: NaiveDate) -> NaiveDate {
+    today - Duration::days(DAILY_QUEUE_DEFAULT_WINDOW_DAYS - 1)
+}
+
 fn days_in_month(year: i32, month: u32) -> u32 {
     let (next_year, next_month) = if month == 12 {
         (year + 1, 1)
@@ -39,4 +55,32 @@ fn days_in_month(year: i32, month: u32) -> u32 {
         .and_then(|date| date.pred_opt())
         .map(|date| date.day())
         .unwrap_or(31)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn default_render_window_is_two_weeks_inclusive() {
+        let today = NaiveDate::from_ymd_opt(2026, 6, 14).unwrap();
+        let start = daily_queue_default_window_start(today);
+        assert_eq!(start, NaiveDate::from_ymd_opt(2026, 6, 1).unwrap());
+        // today inclusive => exactly DAILY_QUEUE_DEFAULT_WINDOW_DAYS days rendered.
+        assert_eq!(
+            (today - start).num_days() + 1,
+            DAILY_QUEUE_DEFAULT_WINDOW_DAYS
+        );
+    }
+
+    #[test]
+    fn default_render_window_crosses_month_boundary() {
+        // Unlike daily_queue_initial_start (which snaps to a month edge), the
+        // render window is a fixed rolling span that spills into the prior month.
+        let today = NaiveDate::from_ymd_opt(2026, 3, 5).unwrap();
+        assert_eq!(
+            daily_queue_default_window_start(today),
+            NaiveDate::from_ymd_opt(2026, 2, 20).unwrap()
+        );
+    }
 }

@@ -20,7 +20,10 @@ pub use daily_queue::{
     daily_queue_carryover_command, daily_queue_scheme_is_blank, daily_queue_scheme_name,
     make_default_workspace, make_default_workspace_for_date, DailyQueueState,
 };
-pub use dates::{add_months, calendar_month_keys_between, daily_queue_initial_start};
+pub use dates::{
+    add_months, calendar_month_keys_between, daily_queue_default_window_start,
+    daily_queue_initial_start, DAILY_QUEUE_DEFAULT_WINDOW_DAYS,
+};
 pub use dispatch::CommandDispatcher;
 pub use events::{AppEvent, EventBus};
 pub use external::{ExternalModification, ExternalModificationQueue};

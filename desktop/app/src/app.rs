@@ -48,7 +48,8 @@ use knotq_model::{
 };
 pub use knotq_state::{
     add_months, calendar_month_keys_between, calendar_toggle_keys, daily_queue_carryover_command,
-    daily_queue_initial_start, daily_queue_scheme_is_blank, daily_queue_scheme_name,
+    daily_queue_default_window_start, daily_queue_initial_start, daily_queue_scheme_is_blank,
+    daily_queue_scheme_name, DAILY_QUEUE_DEFAULT_WINDOW_DAYS,
     editor_undo_key, make_default_workspace_for_date, recurrence_undo_key,
     should_coalesce_editor_undo, should_coalesce_recurrence_undo, AppState, CalendarOccurrenceKey,
     EditorUndoGroup, EditorUndoKey, Selection, View, UNDO_DEPTH,
@@ -500,7 +501,10 @@ pub const DAILY_QUEUE_COLOR_INDEX: u8 = 0;
 pub const DEFAULT_WINDOW_WIDTH: f32 = 1250.0;
 pub const DEFAULT_WINDOW_HEIGHT: f32 = 750.0;
 pub const MIN_WINDOW_WIDTH: f32 = 800.0;
-pub(super) const DAILY_QUEUE_PAGE_DAYS: i64 = 31;
+// Page older days in two-week chunks (matching the initial render window) so
+// each scroll-back expansion only materializes a couple weeks of editors at a
+// time rather than a whole month in a single frame.
+pub(super) const DAILY_QUEUE_PAGE_DAYS: i64 = DAILY_QUEUE_DEFAULT_WINDOW_DAYS;
 
 // ── Undo navigation state ─────────────────────────────────────────────────
 
@@ -686,12 +690,12 @@ impl KnotQApp {
             max_pending.max(max_pushed) + 1
         };
 
-        Self {
+        let mut app = Self {
             state: AppState::new(
                 workspace,
                 settings,
                 today,
-                daily_queue_initial_start(today),
+                daily_queue_default_window_start(today),
                 initial_dirty,
                 crdt_states,
                 initial_sequence,
@@ -770,6 +774,13 @@ impl KnotQApp {
             show_onboarding: needs_onboarding,
             onboarding_phase,
             onboarding_page: 0,
+        };
+        // Reopen the screen from the last session. Skipped during first-launch
+        // onboarding (which drives its own navigation); a saved scheme that was
+        // deleted in the meantime falls back to the default Union view.
+        if !needs_onboarding {
+            app.restore_last_screen(cx);
         }
+        app
     }
 }

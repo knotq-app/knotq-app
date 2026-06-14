@@ -1,7 +1,18 @@
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
-use crate::ReplicaId;
+use crate::{ReplicaId, SchemeId};
+
+/// The screen the user last had open, persisted so the app reopens where it left
+/// off. Settings is intentionally not a variant — it's a transient page, so the
+/// last *content* view stays saved while it's open.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SavedView {
+    Union,
+    DailyQueue,
+    Scheme,
+}
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -76,6 +87,10 @@ pub struct AppSettings {
     pub sync_account: Option<SyncAccountSettings>,
     #[serde(default)]
     pub onboarding_completed: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_view: Option<SavedView>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_scheme_id: Option<SchemeId>,
 }
 
 impl Default for AppSettings {
@@ -94,6 +109,8 @@ impl Default for AppSettings {
             google_accounts: Vec::new(),
             sync_account: None,
             onboarding_completed: false,
+            last_view: None,
+            last_scheme_id: None,
         }
     }
 }

@@ -1,6 +1,6 @@
 use chrono::{Datelike, Duration, Local, NaiveDate};
 use gpui::{Context, Window};
-use knotq_model::{ItemId, SchemeId};
+use knotq_model::{ItemId, SavedView, SchemeId};
 use knotq_storage_json::{CalendarViewMode, CalendarWeekRange};
 
 use super::{add_months, KnotQApp, View};
@@ -68,6 +68,7 @@ impl KnotQApp {
     pub fn open_union(&mut self) {
         self.selection.view = View::Union;
         self.dismiss_event_popup_if_hidden_context();
+        self.persist_last_screen();
     }
 
     pub fn open_scheme(&mut self, scheme_id: SchemeId, focused_item: Option<ItemId>) {
@@ -80,6 +81,7 @@ impl KnotQApp {
                 .map(|item| item.id)
         });
         self.dismiss_event_popup_if_hidden_context();
+        self.persist_last_screen();
     }
 
     pub fn open_daily_queue(&mut self, cx: &mut Context<Self>) {
@@ -88,11 +90,52 @@ impl KnotQApp {
         let scheme_id = self.ensure_daily_queue_scheme(self.daily_queue_today, cx);
         self.selection.scheme_id = Some(scheme_id);
         self.selection.focused_item_id = None;
-        self.daily_queue_loaded_start = super::daily_queue_initial_start(self.daily_queue_today);
+        self.daily_queue_loaded_start =
+            super::daily_queue_default_window_start(self.daily_queue_today);
         self.daily_queue_preserved_bottom_distance = None;
         self.daily_queue_visible_dates.clear();
         self.daily_queue_scroll_initialized = false;
         self.dismiss_event_popup_if_hidden_context();
+        self.persist_last_screen();
+    }
+
+    /// Reopen the screen saved from the previous session. A saved scheme that no
+    /// longer exists (or was moved to the trash) falls back to the default Union
+    /// view. Routes through the normal `open_*` methods so each view's setup
+    /// (e.g. ensuring the daily-queue scheme) runs exactly as if navigated to.
+    pub(crate) fn restore_last_screen(&mut self, cx: &mut Context<Self>) {
+        match self.settings.last_view {
+            Some(SavedView::Scheme) => {
+                if let Some(id) = self.settings.last_scheme_id {
+                    if self.workspace.scheme(id).is_some() && !self.workspace.is_scheme_deleted(id) {
+                        self.open_scheme(id, None);
+                    }
+                }
+            }
+            Some(SavedView::DailyQueue) => self.open_daily_queue(cx),
+            Some(SavedView::Union) | None => {}
+        }
+    }
+
+    /// Record the current content view (and scheme, when in Scheme view) so the
+    /// next launch reopens it. Settings is treated as transient — it keeps the
+    /// prior content view saved rather than overwriting it.
+    fn persist_last_screen(&mut self) {
+        let saved = match self.selection.view {
+            View::Union => SavedView::Union,
+            View::DailyQueue => SavedView::DailyQueue,
+            View::Scheme => SavedView::Scheme,
+            View::Settings => return,
+        };
+        let scheme_id = (self.selection.view == View::Scheme)
+            .then_some(self.selection.scheme_id)
+            .flatten();
+        if self.settings.last_view == Some(saved) && self.settings.last_scheme_id == scheme_id {
+            return;
+        }
+        self.settings.last_view = Some(saved);
+        self.settings.last_scheme_id = scheme_id;
+        self.save_app_settings();
     }
 
     pub fn open_settings(&mut self, cx: &mut Context<Self>) {

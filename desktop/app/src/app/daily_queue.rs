@@ -231,7 +231,7 @@ impl KnotQApp {
         }
 
         self.daily_queue_today = today;
-        self.daily_queue_loaded_start = daily_queue_initial_start(today);
+        self.daily_queue_loaded_start = daily_queue_default_window_start(today);
         self.daily_queue_preserved_bottom_distance = None;
         self.daily_queue_scroll_initialized = false;
         self.daily_queue_visible_dates.clear();

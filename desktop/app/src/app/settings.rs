@@ -128,6 +128,8 @@ impl KnotQApp {
             google_accounts: self.settings.google_accounts.clone(),
             sync_account: self.settings.sync_account.clone(),
             onboarding_completed: self.settings.onboarding_completed,
+            last_view: self.settings.last_view,
+            last_scheme_id: self.settings.last_scheme_id,
         };
         if let Err(err) = save_app_settings(&settings_path(), &settings) {
             eprintln!("settings save failed: {err:#}");
