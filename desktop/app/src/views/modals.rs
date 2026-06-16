@@ -170,18 +170,19 @@ fn onboarding_account_choice(
                 let c = t.button_hover;
                 move |s| s.bg(token_rgba(c))
             }),
-        AccountChoiceVariant::Ghost => button.text_color(token_hsla(t.text_soft)).hover({
-            let c = t.text_primary;
-            move |s| s.text_color(token_hsla(c))
-        }),
+        AccountChoiceVariant::Ghost => button
+            .text_color(token_hsla(t.text_primary))
+            .hover({
+                let bg = t.button_hover;
+                move |s| s.bg(token_rgba(bg))
+            }),
     };
     button
         .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
             if let Some(mode) = mode {
                 this.open_sync_sign_in_for_onboarding(mode, window, cx);
             } else {
-                this.onboarding_phase = OnboardingPhase::Guide;
-                this.onboarding_page = 0;
+                this.finish_onboarding();
                 cx.notify();
             }
         }))
@@ -193,6 +194,23 @@ impl KnotQApp {
     pub(crate) fn dismiss_notice_modal(&mut self, cx: &mut Context<Self>) {
         if self.notice_modal.take().is_some() {
             cx.notify();
+        }
+    }
+
+    /// Mark onboarding finished and persist it. Callers should `cx.notify()`.
+    pub(crate) fn finish_onboarding(&mut self) {
+        self.show_onboarding = false;
+        self.settings.onboarding_completed = true;
+        self.save_app_settings();
+    }
+
+    /// After the tutorial (via "Done" or "Skip"): surface the sign-in / stay-local
+    /// prompt, unless the user is already signed in, in which case we're done.
+    fn advance_past_tutorial(&mut self) {
+        if self.settings.sync_account.is_some() {
+            self.finish_onboarding();
+        } else {
+            self.onboarding_phase = OnboardingPhase::AccountChoice;
         }
     }
 
@@ -450,15 +468,15 @@ impl KnotQApp {
                                     .text_size(px(18.0))
                                     .font_weight(FontWeight::SEMIBOLD)
                                     .text_color(token_hsla(t.text_primary))
-                                    .child("KnotQ"),
+                                    .child("You're all set"),
                             )
                             .child(
                                 div()
                                     .text_size(px(12.0))
                                     .line_height(px(18.0))
-                                    .text_color(token_hsla(t.text_muted))
+                                    .text_color(token_hsla(t.text_soft))
                                     .child(
-                                        "Local-first planning with optional sync. Choose how this workspace should start.",
+                                        "One last step — choose how this workspace should sync. Everything stays on this device unless you sign in.",
                                     ),
                             )
                             // Settings → Sync-styled panel: a bordered card holding
@@ -642,10 +660,12 @@ impl KnotQApp {
                         .child("Back"),
                 );
             }
-            let next_label: SharedString = if is_last {
+            let next_label: SharedString = if !is_last {
+                "Next".into()
+            } else if self.settings.sync_account.is_some() {
                 "Done".into()
             } else {
-                "Next".into()
+                "Continue".into()
             };
             row.child(
                 div()
@@ -664,9 +684,7 @@ impl KnotQApp {
                     })
                     .on_click(cx.listener(move |this, _: &ClickEvent, _window, cx| {
                         if is_last {
-                            this.show_onboarding = false;
-                            this.settings.onboarding_completed = true;
-                            this.save_app_settings();
+                            this.advance_past_tutorial();
                         } else {
                             this.set_onboarding_page(this.onboarding_page + 1, cx);
                         }
@@ -720,13 +738,11 @@ impl KnotQApp {
             .text_color(token_hsla(t.text_soft))
             .cursor_pointer()
             .hover({
-                let c = t.text_muted;
+                let c = t.text_primary;
                 move |s| s.text_color(token_hsla(c))
             })
             .on_click(cx.listener(|this, _: &ClickEvent, _window, cx| {
-                this.show_onboarding = false;
-                this.settings.onboarding_completed = true;
-                this.save_app_settings();
+                this.advance_past_tutorial();
                 cx.notify();
             }))
             .child("Skip");

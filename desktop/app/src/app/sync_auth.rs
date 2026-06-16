@@ -10,7 +10,7 @@ use knotq_sync::AccountStatusResponse;
 use serde::Deserialize;
 
 use super::{
-    KnotQApp, OnboardingPhase, SyncAccountAction, SyncAuthMode, SyncAuthStatus, SyncRunStatus,
+    KnotQApp, SyncAccountAction, SyncAuthMode, SyncAuthStatus, SyncRunStatus,
 };
 use crate::app::google_oauth::{code_challenge, open_browser, random_token, wait_for_oauth_code};
 
@@ -594,8 +594,10 @@ impl KnotQApp {
                 self.settings.sync_account = Some(account);
                 self.sync_auth_status = SyncAuthStatus::Idle;
                 if advance_onboarding && self.show_onboarding {
-                    self.onboarding_phase = OnboardingPhase::Guide;
-                    self.onboarding_page = 0;
+                    // The account prompt is the last onboarding step, so a
+                    // successful sign-in completes onboarding.
+                    self.show_onboarding = false;
+                    self.settings.onboarding_completed = true;
                 }
                 self.save_app_settings();
                 self.service_bus.signal_sync();

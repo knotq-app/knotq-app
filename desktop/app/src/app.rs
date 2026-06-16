@@ -643,11 +643,10 @@ impl KnotQApp {
         let initial_dirty = true;
         let settings = load_or_default_settings();
         let needs_onboarding = !settings.onboarding_completed;
-        let onboarding_phase = if settings.sync_account.is_some() {
-            OnboardingPhase::Guide
-        } else {
-            OnboardingPhase::AccountChoice
-        };
+        // Always start with the short tutorial. The sign-in / stay-local prompt is
+        // surfaced only after the guide finishes (and skipped entirely if the user
+        // is already signed in) — see `render_onboarding`.
+        let onboarding_phase = OnboardingPhase::Guide;
         let editor_focus_handle = cx.focus_handle();
         let today = Local::now().date_naive();
 
