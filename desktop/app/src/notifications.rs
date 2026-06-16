@@ -886,11 +886,9 @@ fn notification_action_target(response: NotificationResponse) -> Option<Notifica
 }
 
 fn notification_key_kind(key: &str) -> Option<&str> {
-    // New keys are scheme|item|occurrence|kind|fire_at. Legacy keys are
-    // scheme|occurrence|kind|fire_at.
+    // Keys are scheme|item|occurrence|kind|fire_at.
     match key.split('|').count() {
         5 => key.split('|').nth(3),
-        4 => key.split('|').nth(2),
         _ => None,
     }
 }
