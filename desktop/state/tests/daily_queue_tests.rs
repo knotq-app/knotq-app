@@ -1,7 +1,24 @@
 use chrono::NaiveDate;
 use knotq_commands::Command;
-use knotq_model::{Item, Scheme};
-use knotq_state::{daily_queue_carryover_command, daily_queue_scheme_is_blank, DailyQueueState};
+use knotq_model::{daily_queue_scheme_id, Item, Scheme, Workspace};
+use knotq_state::{
+    daily_queue_carryover_command, daily_queue_scheme_is_blank, last_nonempty_daily_queue_day,
+    DailyQueueState,
+};
+
+fn date(year: i32, month: u32, day: u32) -> NaiveDate {
+    NaiveDate::from_ymd_opt(year, month, day).unwrap()
+}
+
+/// Insert a daily-queue scheme for `day` carrying `items` (text only).
+fn insert_daily(workspace: &mut Workspace, day: NaiveDate, items: &[&str]) {
+    let id = daily_queue_scheme_id(day);
+    let mut scheme = Scheme::new(format!("Daily {day}"), 0);
+    scheme.id = id;
+    scheme.items = items.iter().map(|text| Item::new(*text)).collect();
+    workspace.daily_queue.insert(day, id);
+    workspace.schemes.insert(id, scheme);
+}
 
 #[test]
 fn blank_daily_queue_scheme_is_detected() {
@@ -40,6 +57,43 @@ fn carryover_inserts_into_empty_today() {
         commands.as_slice(),
         [Command::InsertItem { position: 0, .. }]
     ));
+}
+
+#[test]
+fn last_nonempty_day_prefers_yesterday() {
+    let today = date(2026, 6, 16);
+    let mut workspace = Workspace::new();
+    insert_daily(&mut workspace, date(2026, 6, 15), &["Finish draft"]);
+    insert_daily(&mut workspace, date(2026, 6, 10), &["Older item"]);
+
+    assert_eq!(
+        last_nonempty_daily_queue_day(&workspace, today),
+        Some(date(2026, 6, 15))
+    );
+}
+
+#[test]
+fn last_nonempty_day_skips_blank_days_within_window() {
+    let today = date(2026, 6, 16);
+    let mut workspace = Workspace::new();
+    // Yesterday exists but is blank (single empty placeholder row).
+    insert_daily(&mut workspace, date(2026, 6, 15), &[""]);
+    insert_daily(&mut workspace, date(2026, 6, 9), &["Plan the week"]);
+
+    assert_eq!(
+        last_nonempty_daily_queue_day(&workspace, today),
+        Some(date(2026, 6, 9))
+    );
+}
+
+#[test]
+fn last_nonempty_day_ignores_content_older_than_two_weeks() {
+    let today = date(2026, 6, 16);
+    let mut workspace = Workspace::new();
+    // 15 days back is just outside the two-week lookback (offsets 1..=14).
+    insert_daily(&mut workspace, date(2026, 6, 1), &["Too old to roll over"]);
+
+    assert_eq!(last_nonempty_daily_queue_day(&workspace, today), None);
 }
 
 #[test]
