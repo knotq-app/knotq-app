@@ -18,7 +18,8 @@ pub use calendar_state::{
 };
 pub use daily_queue::{
     daily_queue_carryover_command, daily_queue_scheme_is_blank, daily_queue_scheme_name,
-    make_default_workspace, make_default_workspace_for_date, DailyQueueState,
+    last_nonempty_daily_queue_day, make_default_workspace, make_default_workspace_for_date,
+    DailyQueueState, DAILY_QUEUE_CARRYOVER_LOOKBACK_DAYS,
 };
 pub use dates::{
     add_months, calendar_month_keys_between, daily_queue_default_window_start,

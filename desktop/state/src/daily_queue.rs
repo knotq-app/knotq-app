@@ -94,6 +94,28 @@ pub fn daily_queue_carryover_command(
     (!commands.is_empty()).then_some(Command::Batch(commands))
 }
 
+/// How many days back the daily-queue carryover ("roll over") scans for the most
+/// recent day with content. Two weeks bridges a weekend or a short break while
+/// keeping the lookback bounded — and stays within the span the app preloads on
+/// open, so the candidate schemes are already in memory.
+pub const DAILY_QUEUE_CARRYOVER_LOOKBACK_DAYS: i64 = 14;
+
+/// The most recent daily-queue day strictly before `today` (within
+/// [`DAILY_QUEUE_CARRYOVER_LOOKBACK_DAYS`]) that has carryable content. Returns
+/// `None` when every day in that window is blank or absent. Only consults
+/// schemes already loaded in `workspace`; days whose scheme bytes haven't been
+/// paged in are treated as having nothing to carry.
+pub fn last_nonempty_daily_queue_day(workspace: &Workspace, today: NaiveDate) -> Option<NaiveDate> {
+    (1..=DAILY_QUEUE_CARRYOVER_LOOKBACK_DAYS)
+        .map(|offset| today - Duration::days(offset))
+        .find(|date| {
+            workspace
+                .daily_queue_scheme_id(*date)
+                .and_then(|id| workspace.scheme(id))
+                .is_some_and(|scheme| !daily_queue_scheme_is_blank(scheme))
+        })
+}
+
 pub fn daily_queue_scheme_is_blank(scheme: &Scheme) -> bool {
     if scheme.items.is_empty() {
         return true;

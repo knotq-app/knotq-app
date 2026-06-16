@@ -49,7 +49,7 @@ use knotq_model::{
 pub use knotq_state::{
     add_months, calendar_month_keys_between, calendar_toggle_keys, daily_queue_carryover_command,
     daily_queue_default_window_start, daily_queue_initial_start, daily_queue_scheme_is_blank,
-    daily_queue_scheme_name, DAILY_QUEUE_DEFAULT_WINDOW_DAYS,
+    daily_queue_scheme_name, last_nonempty_daily_queue_day, DAILY_QUEUE_DEFAULT_WINDOW_DAYS,
     editor_undo_key, make_default_workspace_for_date, recurrence_undo_key,
     should_coalesce_editor_undo, should_coalesce_recurrence_undo, AppState, CalendarOccurrenceKey,
     EditorUndoGroup, EditorUndoKey, Selection, View, UNDO_DEPTH,

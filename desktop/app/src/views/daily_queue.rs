@@ -6,7 +6,8 @@ use gpui::{
 };
 use gpui_component::scroll::Scrollbar;
 
-use crate::app::{daily_queue_scheme_is_blank, KnotQApp};
+use crate::app::{daily_queue_scheme_is_blank, last_nonempty_daily_queue_day, KnotQApp};
+use knotq_date_util::format_contextual_date;
 use crate::theme_gpui::{token_hsla, FONT_UI};
 use knotq_editor::SchemeEditor;
 
@@ -57,13 +58,11 @@ impl KnotQApp {
             let Some(scheme) = self.workspace.scheme(scheme_id).cloned() else {
                 continue;
             };
-            let show_transfer_yesterday = date == today
-                && daily_queue_scheme_is_blank(&scheme)
-                && self
-                    .workspace
-                    .daily_queue_scheme_id(today - chrono::Duration::days(1))
-                    .and_then(|scheme_id| self.workspace.scheme(scheme_id))
-                    .is_some_and(|scheme| !daily_queue_scheme_is_blank(scheme));
+            let carryover_source = if date == today && daily_queue_scheme_is_blank(&scheme) {
+                last_nonempty_daily_queue_day(&self.workspace, today)
+            } else {
+                None
+            };
             let already_visible = self.daily_queue_visible_dates.contains(&date);
             if !already_visible && should_skip_daily_queue_day(date, today, &scheme) {
                 continue;
@@ -108,9 +107,10 @@ impl KnotQApp {
                             .w_full()
                             .pt(px(DAILY_EDITOR_TOP_PAD))
                             .child(editor)
-                            .when(show_transfer_yesterday, |editor_container| {
-                                editor_container
-                                    .child(self.render_daily_carryover_yesterday_button(cx))
+                            .when_some(carryover_source, |editor_container, source_date| {
+                                editor_container.child(
+                                    self.render_daily_carryover_button(source_date, today, cx),
+                                )
                             }),
                     )
                     .into_any_element(),
@@ -323,16 +323,23 @@ impl KnotQApp {
             .into_any_element()
     }
 
-    fn render_daily_carryover_yesterday_button(
+    fn render_daily_carryover_button(
         &mut self,
+        source_date: NaiveDate,
+        today: NaiveDate,
         cx: &mut Context<Self>,
     ) -> gpui::AnyElement {
         let t = self.theme();
         let text = t.link;
         let hover_text = t.link_hover;
+        let label = if (today - source_date).num_days() == 1 {
+            "roll over yesterday".to_string()
+        } else {
+            format!("roll over from {}", format_contextual_date(source_date, today.year()))
+        };
 
         div()
-            .id("daily-carryover-yesterday-button")
+            .id("daily-carryover-button")
             .absolute()
             .left(px(DAILY_CARRYOVER_LEFT_PAD))
             .top(px(0.0))
@@ -350,7 +357,7 @@ impl KnotQApp {
             .on_click(cx.listener(|this, _: &ClickEvent, _window, cx| {
                 this.carryover_daily_queue(cx);
             }))
-            .child("roll over yesterday")
+            .child(label)
             .into_any_element()
     }
 }

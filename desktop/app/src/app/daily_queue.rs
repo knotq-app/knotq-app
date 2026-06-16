@@ -183,8 +183,10 @@ impl KnotQApp {
 
     pub fn carryover_daily_queue(&mut self, cx: &mut Context<Self>) {
         let today = self.daily_queue_today;
-        let yesterday = today - Duration::days(1);
-        let Some(previous_id) = self.workspace.daily_queue_scheme_id(yesterday) else {
+        let Some(previous_date) = last_nonempty_daily_queue_day(&self.workspace, today) else {
+            return;
+        };
+        let Some(previous_id) = self.workspace.daily_queue_scheme_id(previous_date) else {
             return;
         };
         let today_id = self.ensure_daily_queue_scheme(today, cx);
