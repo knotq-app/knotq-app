@@ -69,6 +69,8 @@ pub fn init(cx: &mut App) {
         KeyBinding::new("secondary-b", ToggleBold, Some(KEY_CONTEXT)),
         KeyBinding::new("cmd-i", ToggleItalic, Some(KEY_CONTEXT)),
         KeyBinding::new("secondary-i", ToggleItalic, Some(KEY_CONTEXT)),
+        KeyBinding::new("cmd-shift-x", ToggleStrikethrough, Some(KEY_CONTEXT)),
+        KeyBinding::new("secondary-shift-x", ToggleStrikethrough, Some(KEY_CONTEXT)),
         KeyBinding::new("cmd-j", ToggleHeading, Some(KEY_CONTEXT)),
         KeyBinding::new("secondary-j", ToggleHeading, Some(KEY_CONTEXT)),
         KeyBinding::new("cmd-l", ToggleStatus, Some(KEY_CONTEXT)),

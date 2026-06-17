@@ -56,6 +56,7 @@ impl KnotQApp {
 
         let bold_editor = editor.clone();
         let italic_editor = editor.clone();
+        let strikethrough_editor = editor.clone();
         let highlight_editor = editor.clone();
         let heading_editor = editor.clone();
         let indent_editor = editor.clone();
@@ -175,6 +176,17 @@ impl KnotQApp {
                         cx.listener(move |_this, _: &ClickEvent, _window, cx| {
                             italic_editor
                                 .update(cx, |editor, cx| editor.toggle_italic_from_toolbar(cx));
+                        }),
+                    ))
+                    .child(toolbar_strikethrough_button(
+                        state.strikethrough,
+                        c,
+                        "strikethrough (⌘⇧X)",
+                        editor.clone(),
+                        cx.listener(move |_this, _: &ClickEvent, _window, cx| {
+                            strikethrough_editor.update(cx, |editor, cx| {
+                                editor.toggle_strikethrough_from_toolbar(cx)
+                            });
                         }),
                     ))
                     .child(toolbar_highlight_button(

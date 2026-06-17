@@ -29,6 +29,19 @@ impl SchemeEditor {
             }
         }
 
+        // Run backgrounds (e.g. ==highlight==) are not drawn by `paint`, and must
+        // sit *below* the selection — otherwise a selected highlight would paint
+        // over the selection quad and the selection would be invisible on it.
+        for row in 0..self.line_map.line_count() {
+            let y = self.line_map.y_range(row..row + 1).start;
+            if let Some(line) = self.line_map.line(row).cloned() {
+                let line_origin = point(text_origin.x + self.row_layout_x(row), text_origin.y + y);
+                let line_height = self.line_map.row_line_height(row);
+                let _ =
+                    line.paint_background(line_origin, line_height, TextAlign::Left, None, window, cx);
+            }
+        }
+
         if focused && !self.selection.is_empty() {
             self.paint_selection(text_origin, window);
         }
@@ -38,10 +51,6 @@ impl SchemeEditor {
             if let Some(line) = self.line_map.line(row).cloned() {
                 let line_origin = point(text_origin.x + self.row_layout_x(row), text_origin.y + y);
                 let line_height = self.line_map.row_line_height(row);
-                // Run backgrounds (e.g. ==highlight==) are not drawn by `paint`,
-                // so paint them behind the glyphs first.
-                let _ =
-                    line.paint_background(line_origin, line_height, TextAlign::Left, None, window, cx);
                 let _ = line.paint(line_origin, line_height, TextAlign::Left, None, window, cx);
                 if let Some(editor_row) = self.rows.get(row).cloned() {
                     self.paint_line_marker(&editor_row, row, line_origin, window, cx);

@@ -41,9 +41,11 @@ pub struct Theme {
     pub text_muted: Color,
     pub text_soft: Color,
     pub text_highlight: Color,
-    /// Background fill behind `==highlighted==` inline text.
+    /// Translucent fill behind `==highlighted==` inline text. Kept semi-opaque
+    /// (Obsidian-style) so the marker tints the line without recoloring glyphs.
     pub highlight_bg: Color,
-    /// Foreground color of `==highlighted==` text (sits on `highlight_bg`).
+    /// Foreground color for `==highlighted==` text. Currently unused — highlighted
+    /// text keeps its base color so it reads on both light and dark themes.
     pub highlight_text: Color,
     pub text_placeholder: Color,
     pub text_today: Color,

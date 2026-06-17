@@ -5,6 +5,7 @@ pub(super) struct MarkdownStyle {
     pub(super) bold: bool,
     pub(super) italic: bool,
     pub(super) highlight: bool,
+    pub(super) strikethrough: bool,
     pub(super) heading: bool,
 }
 
@@ -29,6 +30,7 @@ enum Emphasis {
     Bold,
     Italic,
     Highlight,
+    Strikethrough,
 }
 
 impl Emphasis {
@@ -37,16 +39,19 @@ impl Emphasis {
             Emphasis::Bold => style.bold = true,
             Emphasis::Italic => style.italic = true,
             Emphasis::Highlight => style.highlight = true,
+            Emphasis::Strikethrough => style.strikethrough = true,
         }
     }
 }
 
 /// Inline emphasis markers, matched longest-first so `**` wins over `*`.
-/// Mirrors Obsidian: `**`/`__` bold, `*`/`_` italic, `==` highlight.
+/// Mirrors Obsidian: `**`/`__` bold, `*`/`_` italic, `==` highlight,
+/// `~~` strikethrough.
 const DELIMITERS: &[(&str, Emphasis)] = &[
     ("**", Emphasis::Bold),
     ("__", Emphasis::Bold),
     ("==", Emphasis::Highlight),
+    ("~~", Emphasis::Strikethrough),
     ("*", Emphasis::Italic),
     ("_", Emphasis::Italic),
 ];
@@ -57,6 +62,7 @@ pub(super) fn parse_markdown_runs(line: &str) -> Vec<MarkdownRun> {
         bold: heading,
         italic: false,
         highlight: false,
+        strikethrough: false,
         heading,
     };
     let mut runs = Vec::new();

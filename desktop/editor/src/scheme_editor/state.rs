@@ -171,6 +171,7 @@ impl SchemeEditor {
             bold: self.active_text_is_bold(),
             italic: self.active_text_is_italic(),
             highlight: self.active_text_is_highlight(),
+            strikethrough: self.active_text_is_strikethrough(),
             heading: self.active_text_is_heading(),
         }
     }
@@ -255,6 +256,13 @@ impl SchemeEditor {
             return;
         }
         self.toggle_highlight(cx);
+    }
+
+    pub fn toggle_strikethrough_from_toolbar(&mut self, cx: &mut Context<Self>) {
+        if self.read_only {
+            return;
+        }
+        self.toggle_strikethrough(cx);
     }
 
     pub fn toggle_heading_from_toolbar(&mut self, cx: &mut Context<Self>) {

@@ -13,6 +13,10 @@ impl SchemeEditor {
         self.toggle_wrapped_markdown("==", cx);
     }
 
+    pub(super) fn toggle_strikethrough(&mut self, cx: &mut Context<Self>) {
+        self.toggle_wrapped_markdown("~~", cx);
+    }
+
     pub(super) fn toggle_wrapped_markdown(&mut self, delimiter: &str, cx: &mut Context<Self>) {
         if self.read_only {
             return;
@@ -86,6 +90,10 @@ impl SchemeEditor {
 
     pub(super) fn active_text_is_highlight(&self) -> bool {
         self.active_text_is_wrapped("==")
+    }
+
+    pub(super) fn active_text_is_strikethrough(&self) -> bool {
+        self.active_text_is_wrapped("~~")
     }
 
     pub(super) fn active_text_is_wrapped(&self, delimiter: &str) -> bool {

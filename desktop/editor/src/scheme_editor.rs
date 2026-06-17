@@ -108,6 +108,7 @@ actions!(
         ToggleRepeat,
         ToggleStartDate,
         ToggleStatus,
+        ToggleStrikethrough,
         UnindentLine,
     ]
 );
@@ -254,6 +255,7 @@ pub struct EditorToolbarState {
     pub bold: bool,
     pub italic: bool,
     pub highlight: bool,
+    pub strikethrough: bool,
     pub heading: bool,
 }
 

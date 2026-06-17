@@ -110,6 +110,45 @@ pub(super) fn toolbar_italic_button(
         .into_any_element()
 }
 
+pub(super) fn toolbar_strikethrough_button(
+    active: bool,
+    c: Theme,
+    tooltip: &'static str,
+    editor: Entity<SchemeEditor>,
+    listener: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
+) -> gpui::AnyElement {
+    div()
+        .id("scheme-toolbar-strikethrough")
+        .w(px(24.0))
+        .h(px(23.0))
+        .flex()
+        .items_center()
+        .justify_center()
+        .cursor_pointer()
+        .on_mouse_down(MouseButton::Left, toolbar_refocus_listener(editor))
+        .on_click(listener)
+        .tooltip(move |window, cx| Tooltip::new(tooltip).build(window, cx))
+        .child(
+            div()
+                .font_family(FONT_UI)
+                .font_weight(if active {
+                    gpui::FontWeight::BOLD
+                } else {
+                    gpui::FontWeight::MEDIUM
+                })
+                .line_through()
+                .text_size(px(13.0))
+                .line_height(px(13.0))
+                .text_color(if active {
+                    token_hsla(c.toolbar_chip_selected_text)
+                } else {
+                    token_hsla(c.toolbar_chip_muted)
+                })
+                .child("S"),
+        )
+        .into_any_element()
+}
+
 pub(super) fn toolbar_highlight_button(
     active: bool,
     c: Theme,

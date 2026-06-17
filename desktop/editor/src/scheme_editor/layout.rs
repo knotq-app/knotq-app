@@ -154,10 +154,11 @@ impl SchemeEditor {
             font.style = gpui::FontStyle::Italic;
         }
 
+        // Highlighted text keeps its normal color (Obsidian-style): the
+        // translucent `highlight_bg` tints the line without recoloring glyphs,
+        // which reads correctly on both light and dark themes.
         let color = if is_done {
             token_hsla(self.theme.done_text)
-        } else if style.highlight {
-            token_hsla(self.theme.highlight_text)
         } else {
             default_color
         };
@@ -172,9 +173,11 @@ impl SchemeEditor {
                 None
             },
             underline: None,
-            strikethrough: if is_done {
+            // Completed items strike through the whole line; `~~text~~` strikes
+            // just its span. Either way the rule follows the run's text color.
+            strikethrough: if is_done || style.strikethrough {
                 Some(gpui::StrikethroughStyle {
-                    color: Some(token_hsla(self.theme.done_text)),
+                    color: Some(color),
                     thickness: px(1.0),
                 })
             } else {
