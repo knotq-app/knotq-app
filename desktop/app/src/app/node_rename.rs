@@ -1,6 +1,6 @@
 use gpui::prelude::*;
 use gpui::{Context, Window};
-use knotq_commands::{Command, CommandError};
+use knotq_commands::Command;
 use knotq_model::{FolderId, Item, NodeRef, Scheme};
 
 use super::{KnotQApp, NewNodeKind, RenameNodeState};
@@ -162,7 +162,7 @@ impl KnotQApp {
             match self.apply_result(command, cx) {
                 Ok(_) => {}
                 Err(err) => {
-                    self.keep_rename_error(rename, command_error_message(&err), cx);
+                    self.keep_rename_error(rename, format!("Could not rename: {err}"), cx);
                     return false;
                 }
             }
@@ -239,17 +239,5 @@ fn created_folder_id_from_inverse(command: Command) -> Option<FolderId> {
             .into_iter()
             .find_map(created_folder_id_from_inverse),
         _ => None,
-    }
-}
-
-fn command_error_message(err: &CommandError) -> String {
-    match err {
-        CommandError::DuplicateFolderName { name, .. } => {
-            format!("A folder named \"{name}\" already exists in this location.")
-        }
-        CommandError::DuplicateSchemeName { name, .. } => {
-            format!("An item named \"{name}\" already exists in this folder.")
-        }
-        _ => format!("Could not rename: {err}"),
     }
 }

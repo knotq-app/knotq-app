@@ -1,6 +1,6 @@
 use thiserror::Error;
 
-use knotq_model::{FolderId, NodeRef, SchemeId, Workspace, WorkspaceNodeNameError};
+use knotq_model::{FolderId, NodeRef, SchemeId, Workspace};
 
 use crate::Command;
 
@@ -22,16 +22,6 @@ pub enum CommandError {
     BadPosition(usize),
     #[error("scheme {0} is read-only")]
     ReadOnlyScheme(SchemeId),
-    #[error("invalid {kind} name {name:?}: {reason}")]
-    InvalidNodeName {
-        kind: &'static str,
-        name: String,
-        reason: WorkspaceNodeNameError,
-    },
-    #[error("folder name {name:?} already exists under folder {parent}")]
-    DuplicateFolderName { parent: FolderId, name: String },
-    #[error("scheme name {name:?} already exists under folder {parent}")]
-    DuplicateSchemeName { parent: FolderId, name: String },
 }
 
 pub fn validate_position(position: usize, len: usize) -> Result<(), CommandError> {
@@ -70,81 +60,6 @@ pub fn validate_depth_for_node(
             Err(CommandError::FolderMissing(new_parent))
         }
         _ => Ok(()),
-    }
-}
-
-pub fn validate_folder_name(name: &str) -> Result<(), CommandError> {
-    let _ = name;
-    Ok(())
-}
-
-pub fn validate_scheme_name(name: &str) -> Result<(), CommandError> {
-    let _ = name;
-    Ok(())
-}
-
-pub fn ensure_folder_name_available(
-    workspace: &Workspace,
-    parent: FolderId,
-    name: &str,
-    except: Option<FolderId>,
-) -> Result<(), CommandError> {
-    workspace
-        .folders
-        .get(&parent)
-        .ok_or(CommandError::FolderMissing(parent))?;
-    let _ = (name, except);
-    Ok(())
-}
-
-pub fn ensure_scheme_name_available(
-    workspace: &Workspace,
-    parent: FolderId,
-    name: &str,
-    except: Option<SchemeId>,
-) -> Result<(), CommandError> {
-    workspace
-        .folders
-        .get(&parent)
-        .ok_or(CommandError::FolderMissing(parent))?;
-    let _ = (name, except);
-    Ok(())
-}
-
-pub fn scheme_parent(workspace: &Workspace, id: SchemeId) -> Option<FolderId> {
-    workspace.folders.iter().find_map(|(folder_id, folder)| {
-        folder
-            .children.contains(&NodeRef::Scheme(id))
-            .then_some(*folder_id)
-    })
-}
-
-pub fn validate_sibling_name_for_node(
-    workspace: &Workspace,
-    node: NodeRef,
-    parent: FolderId,
-) -> Result<(), CommandError> {
-    match node {
-        NodeRef::Folder(id) => {
-            let name = workspace
-                .folders
-                .get(&id)
-                .ok_or(CommandError::FolderMissing(id))?
-                .name
-                .clone();
-            let _ = (name, parent);
-            Ok(())
-        }
-        NodeRef::Scheme(id) => {
-            let name = workspace
-                .schemes
-                .get(&id)
-                .ok_or(CommandError::SchemeMissing(id))?
-                .name
-                .clone();
-            let _ = (name, parent);
-            Ok(())
-        }
     }
 }
 

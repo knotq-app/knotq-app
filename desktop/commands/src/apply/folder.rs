@@ -1,8 +1,6 @@
 use knotq_model::{DeletedFolderOrigin, Folder, FolderId, NodeRef, Workspace};
 
-use crate::invariants::{
-    ensure_folder_name_available, validate_folder_name, validate_position, CommandError,
-};
+use crate::invariants::{validate_position, CommandError};
 use crate::{ChangeSet, Command, CommandReceipt};
 
 pub(crate) fn apply_folder(
@@ -41,8 +39,6 @@ fn create_folder(
     name: String,
     position: Option<usize>,
 ) -> Result<CommandReceipt, CommandError> {
-    validate_folder_name(&name)?;
-    ensure_folder_name_available(workspace, parent, &name, None)?;
     let parent_folder = workspace
         .folders
         .get(&parent)
@@ -79,8 +75,6 @@ fn restore_folder(
     position: usize,
     folder: Folder,
 ) -> Result<CommandReceipt, CommandError> {
-    validate_folder_name(&folder.name)?;
-    ensure_folder_name_available(workspace, parent, &folder.name, Some(folder.id))?;
     workspace
         .folders
         .get(&parent)
@@ -144,9 +138,6 @@ fn restore_deleted_folder(
         }
         workspace.schemes.insert(scheme.id, scheme);
     }
-    for folder in &folders {
-        validate_folder_name(&folder.name)?;
-    }
     for folder in folders {
         workspace.folders.insert(folder.id, folder);
     }
@@ -187,15 +178,6 @@ fn rename_folder(
     id: FolderId,
     name: String,
 ) -> Result<CommandReceipt, CommandError> {
-    validate_folder_name(&name)?;
-    let parent = workspace
-        .folders
-        .get(&id)
-        .ok_or(CommandError::FolderMissing(id))?
-        .parent;
-    if let Some(parent) = parent {
-        ensure_folder_name_available(workspace, parent, &name, Some(id))?;
-    }
     let folder = workspace
         .folders
         .get_mut(&id)

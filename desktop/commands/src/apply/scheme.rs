@@ -1,10 +1,6 @@
 use knotq_model::{FolderId, NodeRef, Scheme, SchemeId, SchemeSource, Workspace};
 
-use crate::invariants::CommandError;
-use crate::invariants::{
-    ensure_scheme_name_available, is_valid_scheme_parent, scheme_parent, validate_position,
-    validate_scheme_name,
-};
+use crate::invariants::{is_valid_scheme_parent, validate_position, CommandError};
 use crate::{ChangeSet, Command, CommandReceipt};
 
 pub(crate) fn apply_scheme(
@@ -48,8 +44,6 @@ fn create_scheme(
     if !is_valid_scheme_parent(workspace, folder) {
         return Err(CommandError::BadFolderDepth);
     }
-    validate_scheme_name(&name)?;
-    ensure_scheme_name_available(workspace, folder, &name, None)?;
     let folder_obj = workspace
         .folders
         .get(&folder)
@@ -83,8 +77,6 @@ fn restore_scheme(
     if !is_valid_scheme_parent(workspace, folder) {
         return Err(CommandError::BadFolderDepth);
     }
-    validate_scheme_name(&scheme.name)?;
-    ensure_scheme_name_available(workspace, folder, &scheme.name, Some(scheme.id))?;
     let folder_len = workspace
         .folders
         .get(&folder)
@@ -124,7 +116,6 @@ fn restore_deleted_scheme(
     origin: Option<knotq_model::DeletedSchemeOrigin>,
 ) -> Result<CommandReceipt, CommandError> {
     validate_position(position, workspace.recently_deleted.len())?;
-    validate_scheme_name(&scheme.name)?;
     for item in &mut scheme.items {
         item.enforce_marker_constraints();
     }
@@ -147,10 +138,6 @@ fn rename_scheme(
     id: SchemeId,
     name: String,
 ) -> Result<CommandReceipt, CommandError> {
-    validate_scheme_name(&name)?;
-    if let Some(parent) = scheme_parent(workspace, id) {
-        ensure_scheme_name_available(workspace, parent, &name, Some(id))?;
-    }
     let scheme = workspace
         .schemes
         .get_mut(&id)
