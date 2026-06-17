@@ -43,6 +43,8 @@ pub struct Theme {
     pub text_highlight: Color,
     /// Background fill behind `==highlighted==` inline text.
     pub highlight_bg: Color,
+    /// Foreground color of `==highlighted==` text (sits on `highlight_bg`).
+    pub highlight_text: Color,
     pub text_placeholder: Color,
     pub text_today: Color,
     pub caret_color: Color,

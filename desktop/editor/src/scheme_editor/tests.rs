@@ -380,16 +380,42 @@ fn markdown_runs_mark_emphasis_without_removing_markers() {
 #[test]
 fn markdown_runs_mark_headings_as_bold_heading() {
     let runs = parse_markdown_runs("# Heading");
+    let heading_style = MarkdownStyle {
+        bold: true,
+        italic: false,
+        highlight: false,
+        heading: true,
+    };
     assert_eq!(
         runs,
-        vec![MarkdownRun {
-            len: "# Heading".len(),
-            style: MarkdownStyle {
-                bold: true,
-                italic: false,
-                highlight: false,
-                heading: true,
+        vec![
+            // The "# " prefix is a marker so it can collapse off the cursor line.
+            MarkdownRun {
+                len: "# ".len(),
+                style: heading_style,
+                kind: MarkdownRunKind::Marker,
             },
-        }]
+            MarkdownRun {
+                len: "Heading".len(),
+                style: heading_style,
+                kind: MarkdownRunKind::Content,
+            },
+        ]
     );
+}
+
+#[test]
+fn markdown_runs_tag_emphasis_delimiters_as_markers() {
+    let runs = parse_markdown_runs("a **bold**");
+    // Marker runs hold only the delimiter bytes: two "**" of length 2 each.
+    let marker_bytes: usize = runs
+        .iter()
+        .filter(|run| run.kind == MarkdownRunKind::Marker)
+        .map(|run| run.len)
+        .sum();
+    assert_eq!(marker_bytes, 4);
+    // The bold word itself is content, not a marker.
+    assert!(runs
+        .iter()
+        .any(|run| run.len == 4 && run.kind == MarkdownRunKind::Content && run.style.bold));
 }

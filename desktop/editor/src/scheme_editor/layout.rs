@@ -1,9 +1,26 @@
 use super::*;
 
 impl SchemeEditor {
+    /// Rows whose markdown markers should be revealed (the cursor/selection
+    /// lines). `None` means no line is active, so every line renders collapsed
+    /// (e.g. read-only schemes).
+    pub(super) fn active_preview_rows(&self) -> Option<(usize, usize)> {
+        if self.read_only {
+            return None;
+        }
+        let a = self.selection.anchor.row;
+        let b = self.selection.head.row;
+        Some((a.min(b), a.max(b)))
+    }
+
+    fn row_reveals_markers(&self, row: usize) -> bool {
+        matches!(self.active_preview_rows(), Some((start, end)) if row >= start && row <= end)
+    }
+
     pub(super) fn relayout(&mut self, wrap_width: Pixels, window: &mut Window) {
         let font = window.text_style().font();
         let mut wrapped = Vec::new();
+        self.last_active_rows = self.active_preview_rows();
 
         for (row, line) in self.text_lines().into_iter().enumerate() {
             let row_item = self.rows.get(row).map(|row| &row.item);
@@ -33,17 +50,14 @@ impl SchemeEditor {
             } else {
                 token_hsla(self.theme.text_primary)
             };
-            let shaped_text = if hidden_prefix.is_empty() {
-                line.clone()
-            } else {
-                format!("{hidden_prefix}{line}")
-            };
             let (font_size, line_height) = if is_markdown_heading(&line) {
                 (HEADING_FONT_SIZE, HEADING_LINE_HEIGHT)
             } else {
                 (TEXT_FONT_SIZE, TEXT_LINE_HEIGHT)
             };
-            let runs = self.markdown_text_runs(&font, hidden_prefix.len(), &line, color, is_done);
+            let reveal = self.row_reveals_markers(row);
+            let (shaped_text, runs, collapsed) =
+                self.build_line_layout(&font, hidden_prefix, &line, color, is_done, reveal);
             let mut shaped = window
                 .text_system()
                 .shape_text(
@@ -61,7 +75,7 @@ impl SchemeEditor {
                     px(line_height),
                 )
                 .with_media_height(media_height)
-                .with_hidden_prefix(hidden_prefix.len()),
+                .with_layout_mapping(hidden_prefix.len(), collapsed, line.len()),
             );
         }
 
@@ -69,18 +83,27 @@ impl SchemeEditor {
         self.line_map_dirty = false;
     }
 
-    pub(super) fn markdown_text_runs(
+    /// Builds the shaped string, its text runs, and the set of collapsed buffer
+    /// ranges for one line. When `reveal` is false, markdown marker runs (`*`,
+    /// `==`, leading `#`) are dropped from the layout and recorded as collapsed,
+    /// so the markers take no visual space while the cursor is elsewhere.
+    pub(super) fn build_line_layout(
         &self,
         font: &gpui::Font,
-        hidden_prefix_len: usize,
+        hidden_prefix: &str,
         line: &str,
         default_color: gpui::Hsla,
         is_done: bool,
-    ) -> Vec<TextRun> {
+        reveal: bool,
+    ) -> (String, Vec<TextRun>, Vec<Range<usize>>) {
+        let mut shaped = String::with_capacity(hidden_prefix.len() + line.len());
         let mut runs = Vec::new();
-        if hidden_prefix_len > 0 {
+        let mut collapsed = Vec::new();
+
+        if !hidden_prefix.is_empty() {
+            shaped.push_str(hidden_prefix);
             runs.push(self.text_run(
-                hidden_prefix_len,
+                hidden_prefix.len(),
                 font,
                 default_color,
                 MarkdownStyle::default(),
@@ -88,21 +111,30 @@ impl SchemeEditor {
             ));
         }
 
+        let mut pos = 0;
         for markdown_run in parse_markdown_runs(line) {
-            runs.push(self.text_run(
-                markdown_run.len,
-                font,
-                default_color,
-                markdown_run.style,
-                is_done,
-            ));
+            let end = pos + markdown_run.len;
+            let is_marker = markdown_run.kind == MarkdownRunKind::Marker;
+            if is_marker && !reveal {
+                collapsed.push(pos..end);
+            } else {
+                shaped.push_str(&line[pos..end]);
+                runs.push(self.text_run(
+                    markdown_run.len,
+                    font,
+                    default_color,
+                    markdown_run.style,
+                    is_done,
+                ));
+            }
+            pos = end;
         }
 
         if runs.is_empty() {
             runs.push(self.text_run(0, font, default_color, MarkdownStyle::default(), is_done));
         }
 
-        runs
+        (shaped, runs, collapsed)
     }
 
     pub(super) fn text_run(
@@ -124,6 +156,8 @@ impl SchemeEditor {
 
         let color = if is_done {
             token_hsla(self.theme.done_text)
+        } else if style.highlight {
+            token_hsla(self.theme.highlight_text)
         } else {
             default_color
         };

@@ -47,6 +47,7 @@ impl SchemeEditor {
             _focus_out_subscription: focus_out_subscription,
             line_map: LineMap::new(px(TEXT_LINE_HEIGHT)),
             line_map_dirty: true,
+            last_active_rows: None,
             pending_scroll_to_cursor: true,
             last_bounds: None,
             scroll_handle,
@@ -93,6 +94,11 @@ impl SchemeEditor {
     }
 
     pub(super) fn relayout_if_dirty(&mut self, window: &mut Window) {
+        // Moving the cursor to a different line changes which line reveals its
+        // markdown markers, so reshape when the active row range changes.
+        if self.active_preview_rows() != self.last_active_rows {
+            self.line_map_dirty = true;
+        }
         if !self.line_map_dirty {
             return;
         }

@@ -17,7 +17,15 @@ pub struct SchemeItemLine {
     pub text: WrappedLine,
     pub annotation: Option<SchemeItemAnnotation>,
     pub media_height: Pixels,
-    hidden_prefix_len: usize,
+    /// Number of synthetic, layout-only bytes prepended to `text` (e.g. the
+    /// hanging-wrap prefix). These occupy visual space but map to buffer col 0.
+    prefix_len: usize,
+    /// Buffer-coordinate ranges that exist in the source line but were collapsed
+    /// out of `text` (hidden markdown markers). Sorted and disjoint.
+    collapsed: Vec<Range<usize>>,
+    /// Length of the underlying source line in bytes (the column count), which
+    /// stays constant whether or not markers are collapsed.
+    buffer_len: usize,
     line_height: Pixels,
 }
 
@@ -33,11 +41,14 @@ impl SchemeItemLine {
         annotation: Option<SchemeItemAnnotation>,
         line_height: Pixels,
     ) -> Self {
+        let buffer_len = text.len();
         Self {
             text,
             annotation,
             media_height: px(0.0),
-            hidden_prefix_len: 0,
+            prefix_len: 0,
+            collapsed: Vec::new(),
+            buffer_len,
             line_height,
         }
     }
@@ -47,8 +58,18 @@ impl SchemeItemLine {
         self
     }
 
-    pub fn with_hidden_prefix(mut self, hidden_prefix_len: usize) -> Self {
-        self.hidden_prefix_len = hidden_prefix_len.min(self.text.len());
+    /// Records how `text` (the shaped layout) relates to the source line:
+    /// `prefix_len` synthetic bytes at the front, `collapsed` buffer ranges
+    /// removed from the layout, and `buffer_len` source columns total.
+    pub fn with_layout_mapping(
+        mut self,
+        prefix_len: usize,
+        collapsed: Vec<Range<usize>>,
+        buffer_len: usize,
+    ) -> Self {
+        self.prefix_len = prefix_len.min(self.text.len());
+        self.collapsed = collapsed;
+        self.buffer_len = buffer_len;
         self
     }
 
@@ -71,17 +92,62 @@ impl SchemeItemLine {
     }
 
     fn visible_len(&self) -> usize {
-        self.text.len().saturating_sub(self.hidden_prefix_len)
+        self.buffer_len
+    }
+
+    /// Buffer bytes collapsed strictly before `col`. If `col` falls inside a
+    /// collapsed range, it is clamped to that range's start (its layout point).
+    fn collapsed_before(&self, col: usize) -> usize {
+        let mut removed = 0;
+        for range in &self.collapsed {
+            if range.end <= col {
+                removed += range.end - range.start;
+            } else if range.start < col {
+                removed += col - range.start;
+                break;
+            } else {
+                break;
+            }
+        }
+        removed
+    }
+
+    /// Buffer spans that remain in the layout (the complement of `collapsed`).
+    fn kept_spans(&self) -> Vec<Range<usize>> {
+        let mut spans = Vec::with_capacity(self.collapsed.len() + 1);
+        let mut pos = 0;
+        for range in &self.collapsed {
+            let start = range.start.min(self.buffer_len);
+            let end = range.end.min(self.buffer_len);
+            if start > pos {
+                spans.push(pos..start);
+            }
+            pos = pos.max(end);
+        }
+        if pos < self.buffer_len {
+            spans.push(pos..self.buffer_len);
+        }
+        spans
     }
 
     fn layout_index_for_col(&self, col: usize) -> usize {
-        self.hidden_prefix_len + col.min(self.visible_len())
+        let col = col.min(self.buffer_len);
+        self.prefix_len + col - self.collapsed_before(col)
     }
 
     fn visible_col_for_layout_index(&self, index: usize) -> usize {
-        index
-            .saturating_sub(self.hidden_prefix_len)
-            .min(self.visible_len())
+        if index <= self.prefix_len {
+            return 0;
+        }
+        let mut compacted = index - self.prefix_len;
+        for span in self.kept_spans() {
+            let len = span.end - span.start;
+            if compacted <= len {
+                return span.start + compacted;
+            }
+            compacted -= len;
+        }
+        self.buffer_len
     }
 
     fn position_for_index(&self, index: usize) -> Option<Point<Pixels>> {

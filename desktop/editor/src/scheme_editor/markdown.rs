@@ -8,10 +8,20 @@ pub(super) struct MarkdownStyle {
     pub(super) heading: bool,
 }
 
+/// Whether a run is visible document content or a markup marker (the `*`, `==`,
+/// or leading `#` characters). Markers are rendered on the cursor's line but
+/// collapsed away on other lines for an Obsidian-style live preview.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum MarkdownRunKind {
+    Content,
+    Marker,
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) struct MarkdownRun {
     pub(super) len: usize,
     pub(super) style: MarkdownStyle,
+    pub(super) kind: MarkdownRunKind,
 }
 
 #[derive(Clone, Copy)]
@@ -50,13 +60,23 @@ pub(super) fn parse_markdown_runs(line: &str) -> Vec<MarkdownRun> {
         heading,
     };
     let mut runs = Vec::new();
-    parse_emphasis(line, base_style, &mut runs);
+    // The leading `#`/`## ` of a heading is a marker; the rest is parsed as body.
+    let body_start = if heading {
+        let end = markdown_heading_marker_range(line)
+            .map(|range| range.end)
+            .unwrap_or(0);
+        push_markdown_run(&mut runs, end, base_style, MarkdownRunKind::Marker);
+        end
+    } else {
+        0
+    };
+    parse_emphasis(&line[body_start..], base_style, &mut runs);
     runs
 }
 
-/// Walks `text`, applying any emphasis markers on top of `base_style`. The
-/// markers themselves stay visible (styled like the surrounding text); only the
-/// wrapped content is restyled, and nested markers are parsed recursively.
+/// Walks `text`, applying any emphasis markers on top of `base_style`. Delimiter
+/// characters are emitted as `Marker` runs (styled like the surrounding text);
+/// only the wrapped content is restyled, and nested markers parse recursively.
 fn parse_emphasis(text: &str, base_style: MarkdownStyle, runs: &mut Vec<MarkdownRun>) {
     let mut index = 0;
 
@@ -65,13 +85,13 @@ fn parse_emphasis(text: &str, base_style: MarkdownStyle, runs: &mut Vec<Markdown
             let inner_start = index + delimiter.len();
             if let Some(close_rel) = text[inner_start..].find(delimiter) {
                 let inner_end = inner_start + close_rel;
-                push_markdown_run(runs, delimiter.len(), base_style);
+                push_markdown_run(runs, delimiter.len(), base_style, MarkdownRunKind::Marker);
                 if inner_end > inner_start {
                     let mut inner_style = base_style;
                     emphasis.apply(&mut inner_style);
                     parse_emphasis(&text[inner_start..inner_end], inner_style, runs);
                 }
-                push_markdown_run(runs, delimiter.len(), base_style);
+                push_markdown_run(runs, delimiter.len(), base_style, MarkdownRunKind::Marker);
                 index = inner_end + delimiter.len();
                 continue;
             }
@@ -79,7 +99,7 @@ fn parse_emphasis(text: &str, base_style: MarkdownStyle, runs: &mut Vec<Markdown
 
         let ch = text[index..].chars().next().unwrap();
         let ch_len = ch.len_utf8();
-        push_markdown_run(runs, ch_len, base_style);
+        push_markdown_run(runs, ch_len, base_style, MarkdownRunKind::Content);
         index += ch_len;
     }
 }
@@ -91,17 +111,24 @@ fn open_delimiter(text: &str) -> Option<(&'static str, Emphasis)> {
         .map(|(delimiter, emphasis)| (*delimiter, *emphasis))
 }
 
-fn push_markdown_run(runs: &mut Vec<MarkdownRun>, len: usize, style: MarkdownStyle) {
+fn push_markdown_run(
+    runs: &mut Vec<MarkdownRun>,
+    len: usize,
+    style: MarkdownStyle,
+    kind: MarkdownRunKind,
+) {
     if len == 0 {
         return;
     }
     if let Some(last) = runs.last_mut() {
-        if last.style == style {
+        // Only merge runs that share styling *and* kind, so markers stay
+        // distinguishable from identically-styled adjacent content.
+        if last.style == style && last.kind == kind {
             last.len += len;
             return;
         }
     }
-    runs.push(MarkdownRun { len, style });
+    runs.push(MarkdownRun { len, style, kind });
 }
 
 pub(super) fn is_markdown_heading(line: &str) -> bool {

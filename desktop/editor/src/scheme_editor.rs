@@ -226,6 +226,9 @@ pub struct SchemeEditor {
     _focus_out_subscription: Subscription,
     line_map: LineMap,
     line_map_dirty: bool,
+    /// Active (cursor/selection) row range used by the last layout, so a cursor
+    /// move that changes which line reveals its markers can trigger a reshape.
+    last_active_rows: Option<(usize, usize)>,
     pending_scroll_to_cursor: bool,
     last_bounds: Option<Bounds<Pixels>>,
     scroll_handle: ScrollHandle,
