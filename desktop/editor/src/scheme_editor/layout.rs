@@ -132,7 +132,11 @@ impl SchemeEditor {
             len,
             font,
             color,
-            background_color: None,
+            background_color: if style.highlight {
+                Some(token_hsla(self.theme.highlight_bg))
+            } else {
+                None
+            },
             underline: None,
             strikethrough: if is_done {
                 Some(gpui::StrikethroughStyle {

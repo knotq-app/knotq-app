@@ -2,11 +2,15 @@ use super::*;
 
 impl SchemeEditor {
     pub(super) fn toggle_bold(&mut self, cx: &mut Context<Self>) {
-        self.toggle_wrapped_markdown("*", cx);
+        self.toggle_wrapped_markdown("**", cx);
     }
 
     pub(super) fn toggle_italic(&mut self, cx: &mut Context<Self>) {
         self.toggle_wrapped_markdown("_", cx);
+    }
+
+    pub(super) fn toggle_highlight(&mut self, cx: &mut Context<Self>) {
+        self.toggle_wrapped_markdown("==", cx);
     }
 
     pub(super) fn toggle_wrapped_markdown(&mut self, delimiter: &str, cx: &mut Context<Self>) {
@@ -73,11 +77,15 @@ impl SchemeEditor {
     }
 
     pub(super) fn active_text_is_bold(&self) -> bool {
-        self.active_text_is_wrapped("*")
+        self.active_text_is_wrapped("**")
     }
 
     pub(super) fn active_text_is_italic(&self) -> bool {
         self.active_text_is_wrapped("_")
+    }
+
+    pub(super) fn active_text_is_highlight(&self) -> bool {
+        self.active_text_is_wrapped("==")
     }
 
     pub(super) fn active_text_is_wrapped(&self, delimiter: &str) -> bool {

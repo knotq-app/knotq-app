@@ -164,6 +164,7 @@ impl SchemeEditor {
             has_repeat: item.is_some_and(|item| item.repeats.is_some()),
             bold: self.active_text_is_bold(),
             italic: self.active_text_is_italic(),
+            highlight: self.active_text_is_highlight(),
             heading: self.active_text_is_heading(),
         }
     }
@@ -241,6 +242,13 @@ impl SchemeEditor {
             return;
         }
         self.toggle_italic(cx);
+    }
+
+    pub fn toggle_highlight_from_toolbar(&mut self, cx: &mut Context<Self>) {
+        if self.read_only {
+            return;
+        }
+        self.toggle_highlight(cx);
     }
 
     pub fn toggle_heading_from_toolbar(&mut self, cx: &mut Context<Self>) {

@@ -250,6 +250,7 @@ pub struct EditorToolbarState {
     pub has_repeat: bool,
     pub bold: bool,
     pub italic: bool,
+    pub highlight: bool,
     pub heading: bool,
 }
 

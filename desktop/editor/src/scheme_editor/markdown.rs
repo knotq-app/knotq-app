@@ -4,6 +4,7 @@ use std::ops::Range;
 pub(super) struct MarkdownStyle {
     pub(super) bold: bool,
     pub(super) italic: bool,
+    pub(super) highlight: bool,
     pub(super) heading: bool,
 }
 
@@ -13,44 +14,81 @@ pub(super) struct MarkdownRun {
     pub(super) style: MarkdownStyle,
 }
 
+#[derive(Clone, Copy)]
+enum Emphasis {
+    Bold,
+    Italic,
+    Highlight,
+}
+
+impl Emphasis {
+    fn apply(self, style: &mut MarkdownStyle) {
+        match self {
+            Emphasis::Bold => style.bold = true,
+            Emphasis::Italic => style.italic = true,
+            Emphasis::Highlight => style.highlight = true,
+        }
+    }
+}
+
+/// Inline emphasis markers, matched longest-first so `**` wins over `*`.
+/// Mirrors Obsidian: `**`/`__` bold, `*`/`_` italic, `==` highlight.
+const DELIMITERS: &[(&str, Emphasis)] = &[
+    ("**", Emphasis::Bold),
+    ("__", Emphasis::Bold),
+    ("==", Emphasis::Highlight),
+    ("*", Emphasis::Italic),
+    ("_", Emphasis::Italic),
+];
+
 pub(super) fn parse_markdown_runs(line: &str) -> Vec<MarkdownRun> {
     let heading = is_markdown_heading(line);
     let base_style = MarkdownStyle {
         bold: heading,
         italic: false,
+        highlight: false,
         heading,
     };
     let mut runs = Vec::new();
+    parse_emphasis(line, base_style, &mut runs);
+    runs
+}
+
+/// Walks `text`, applying any emphasis markers on top of `base_style`. The
+/// markers themselves stay visible (styled like the surrounding text); only the
+/// wrapped content is restyled, and nested markers are parsed recursively.
+fn parse_emphasis(text: &str, base_style: MarkdownStyle, runs: &mut Vec<MarkdownRun>) {
     let mut index = 0;
 
-    while index < line.len() {
-        let ch = line[index..].chars().next().unwrap();
-        let ch_len = ch.len_utf8();
-
-        if matches!(ch, '*' | '_') {
-            if let Some(close_rel) = line[index + ch_len..].find(ch) {
-                let close = index + ch_len + close_rel;
-                push_markdown_run(&mut runs, ch_len, base_style);
-                if close > index + ch_len {
-                    let mut emphasis = base_style;
-                    if ch == '*' {
-                        emphasis.bold = true;
-                    } else {
-                        emphasis.italic = true;
-                    }
-                    push_markdown_run(&mut runs, close - (index + ch_len), emphasis);
+    while index < text.len() {
+        if let Some((delimiter, emphasis)) = open_delimiter(&text[index..]) {
+            let inner_start = index + delimiter.len();
+            if let Some(close_rel) = text[inner_start..].find(delimiter) {
+                let inner_end = inner_start + close_rel;
+                push_markdown_run(runs, delimiter.len(), base_style);
+                if inner_end > inner_start {
+                    let mut inner_style = base_style;
+                    emphasis.apply(&mut inner_style);
+                    parse_emphasis(&text[inner_start..inner_end], inner_style, runs);
                 }
-                push_markdown_run(&mut runs, ch_len, base_style);
-                index = close + ch_len;
+                push_markdown_run(runs, delimiter.len(), base_style);
+                index = inner_end + delimiter.len();
                 continue;
             }
         }
 
-        push_markdown_run(&mut runs, ch_len, base_style);
+        let ch = text[index..].chars().next().unwrap();
+        let ch_len = ch.len_utf8();
+        push_markdown_run(runs, ch_len, base_style);
         index += ch_len;
     }
+}
 
-    runs
+fn open_delimiter(text: &str) -> Option<(&'static str, Emphasis)> {
+    DELIMITERS
+        .iter()
+        .find(|(delimiter, _)| text.starts_with(delimiter))
+        .map(|(delimiter, emphasis)| (*delimiter, *emphasis))
 }
 
 fn push_markdown_run(runs: &mut Vec<MarkdownRun>, len: usize, style: MarkdownStyle) {

@@ -347,21 +347,34 @@ fn markdown_heading_requires_hash_separator() {
 
 #[test]
 fn markdown_runs_mark_emphasis_without_removing_markers() {
-    let runs = parse_markdown_runs("a *bold* _ital_");
+    let runs = parse_markdown_runs("a **bold** *ital* ==hi==");
     let bold = MarkdownStyle {
         bold: true,
         italic: false,
+        highlight: false,
         heading: false,
     };
     let italic = MarkdownStyle {
         bold: false,
         italic: true,
+        highlight: false,
+        heading: false,
+    };
+    let highlight = MarkdownStyle {
+        bold: false,
+        italic: false,
+        highlight: true,
         heading: false,
     };
 
-    assert_eq!(runs.iter().map(|run| run.len).sum::<usize>(), 15);
+    // Markers stay in the text, so the run lengths still cover every byte.
+    assert_eq!(
+        runs.iter().map(|run| run.len).sum::<usize>(),
+        "a **bold** *ital* ==hi==".len()
+    );
     assert!(runs.iter().any(|run| run.len == 4 && run.style == bold));
     assert!(runs.iter().any(|run| run.len == 4 && run.style == italic));
+    assert!(runs.iter().any(|run| run.len == 2 && run.style == highlight));
 }
 
 #[test]
@@ -374,6 +387,7 @@ fn markdown_runs_mark_headings_as_bold_heading() {
             style: MarkdownStyle {
                 bold: true,
                 italic: false,
+                highlight: false,
                 heading: true,
             },
         }]
