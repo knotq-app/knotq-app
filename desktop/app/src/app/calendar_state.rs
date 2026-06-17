@@ -535,10 +535,8 @@ impl KnotQApp {
             if created_from_calendar {
                 self.retarget_pending_creation_undo(item_id, target_scheme_id);
             }
-        } else {
-            if let Some(popup) = self.event_popup.as_mut() {
-                popup.scheme_id = source_scheme_id;
-            }
+        } else if let Some(popup) = self.event_popup.as_mut() {
+            popup.scheme_id = source_scheme_id;
         }
     }
 

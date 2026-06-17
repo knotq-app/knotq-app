@@ -407,19 +407,23 @@ impl KnotQApp {
         t: Theme,
         cx: &mut Context<Self>,
     ) -> Option<gpui::AnyElement> {
-        if self.settings.sync_account.is_none()
-            && !matches!(self.sync_auth_status, SyncAuthStatus::InProgress)
-        {
-            return None;
-        }
-        let status = self.title_sync_status(t);
-        let popover_open = self.sync_status_popover.is_some();
-        let sync_disabled = self
+        let auth_in_progress = matches!(self.sync_auth_status, SyncAuthStatus::InProgress);
+        let sync_active = self
             .settings
             .sync_account
             .as_ref()
-            .is_some_and(|account| !account.supports_sync);
+            .is_some_and(|account| account.supports_sync);
+        let popover_open = self.sync_status_popover.is_some();
 
+        // Signed out or signed in without a subscription (and not mid sign-in):
+        // surface an "Enable sync" call to action instead of hiding the control.
+        // Clicking it opens the same status popover, which carries the matching
+        // sign-in / subscribe action.
+        if !sync_active && !auth_in_progress {
+            return Some(self.render_enable_sync_cta(t, cx));
+        }
+
+        let status = self.title_sync_status(t);
         Some(
             div()
                 .id("title-sync-account")
@@ -442,16 +446,8 @@ impl KnotQApp {
                     let c = t.button_hover;
                     move |s| s.bg(token_rgba(c))
                 })
-                .on_click(cx.listener(move |this, event: &ClickEvent, window, cx| {
-                    if sync_disabled {
-                        if this.selection.view != View::Settings {
-                            this.open_settings(cx);
-                        }
-                        this.focus_app_root(window);
-                        cx.notify();
-                    } else {
-                        this.toggle_sync_status_popover(event.position(), cx);
-                    }
+                .on_click(cx.listener(move |this, event: &ClickEvent, _window, cx| {
+                    this.toggle_sync_status_popover(event.position(), cx);
                 }))
                 .child(
                     div()
@@ -471,6 +467,44 @@ impl KnotQApp {
                 )
                 .into_any_element(),
         )
+    }
+
+    /// The "Enable sync" pill shown when sync isn't active yet (signed out or not
+    /// subscribed). Styled like the other neutral title-bar controls — an
+    /// invitation, not a loud call to action. Clicking jumps to Settings, where
+    /// the sync card carries the sign-in / subscribe actions.
+    fn render_enable_sync_cta(&self, t: Theme, cx: &mut Context<Self>) -> gpui::AnyElement {
+        div()
+            .id("title-sync-account")
+            .h(px(26.0))
+            .px(px(10.0))
+            .rounded(px(7.0))
+            .border_1()
+            .border_color(token_rgba(t.border_soft))
+            .bg(token_rgba(t.button_bg))
+            .flex()
+            .items_center()
+            .justify_center()
+            .cursor_pointer()
+            .hover({
+                let c = t.button_hover;
+                move |s| s.bg(token_rgba(c))
+            })
+            .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
+                if this.selection.view != View::Settings {
+                    this.open_settings(cx);
+                }
+                this.focus_app_root(window);
+                cx.notify();
+            }))
+            .child(
+                div()
+                    .text_size(px(12.0))
+                    .font_weight(gpui::FontWeight::NORMAL)
+                    .text_color(token_hsla(t.text_dim))
+                    .child("Enable sync"),
+            )
+            .into_any_element()
     }
 
     fn title_sync_status(&self, t: Theme) -> TitleSyncStatus {
@@ -493,7 +527,7 @@ impl KnotQApp {
 
         if account.is_some_and(|account| !account.supports_sync) {
             return TitleSyncStatus {
-                label: "Sync disabled".to_string(),
+                label: "Sync inactive".to_string(),
                 dot_color: STATUS_ERROR,
             };
         }

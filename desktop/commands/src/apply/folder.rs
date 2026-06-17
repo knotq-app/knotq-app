@@ -155,7 +155,7 @@ fn restore_deleted_folder(
         let Some(folder) = workspace.folders.get(folder_id) else {
             return Err(CommandError::FolderMissing(*folder_id));
         };
-        validate_folder_children(workspace, &folder)?;
+        validate_folder_children(workspace, folder)?;
     }
     for folder in workspace.folders.values_mut() {
         folder

@@ -15,15 +15,17 @@ fn main() -> anyhow::Result<()> {
     let workspace_dir = data_dir.join("workspace");
     std::fs::create_dir_all(&workspace_dir)?;
 
-    let mut settings = AppSettings::default();
-    settings.theme_mode = ThemeMode::Dark;
-    settings.calendar_view = CalendarViewMode::Week;
-    settings.onboarding_completed = true;
-    settings.window_size = Some(SavedWindowSize {
-        width: 1360.0,
-        height: 860.0,
-    });
-    settings.window_position = Some(SavedWindowPosition { x: 80.0, y: 80.0 });
+    let settings = AppSettings {
+        theme_mode: ThemeMode::Dark,
+        calendar_view: CalendarViewMode::Week,
+        onboarding_completed: true,
+        window_size: Some(SavedWindowSize {
+            width: 1360.0,
+            height: 860.0,
+        }),
+        window_position: Some(SavedWindowPosition { x: 80.0, y: 80.0 }),
+        ..Default::default()
+    };
     save_app_settings(&data_dir.join("settings.json"), &settings)?;
 
     let today = Local::now().date_naive();

@@ -234,6 +234,11 @@ pub struct AccountStatusResponse {
     pub supports_sync: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub subscription_status: Option<String>,
+    /// Normalized lifecycle independent of provider: `active` (entitled, renews),
+    /// `cancelled` (entitled until `current_period_end` but won't renew), or
+    /// `inactive`. Optional so responses from older backends still deserialize.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub subscription_state: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub subscription_provider: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]

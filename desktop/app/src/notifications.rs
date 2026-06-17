@@ -64,9 +64,9 @@ fn background_schedule_policy() -> PlatformSchedulePolicy {
     let policy = base_schedule_policy();
     #[cfg(target_os = "macos")]
     {
-        return policy
+        policy
             .with_add_interval(StdDuration::from_millis(150))
-            .with_verify_delays(StdDuration::from_millis(500), StdDuration::from_millis(750));
+            .with_verify_delays(StdDuration::from_millis(500), StdDuration::from_millis(750))
     }
     #[cfg(not(target_os = "macos"))]
     {
@@ -539,7 +539,7 @@ fn verify_pending_request_ids(
     let snapshot = match platform_schedule_snapshot(scheduler) {
         Ok(snapshot) => snapshot,
         Err(err) => {
-            let msg = format!("{err}");
+            let msg = err.to_string();
             notif_log(&format!(
                 "pending OS notification verification failed: {msg}"
             ));

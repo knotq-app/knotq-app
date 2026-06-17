@@ -299,7 +299,7 @@ fn best_rank<const N: usize>(ranks: [Option<SearchRank>; N]) -> Option<SearchRan
     ranks
         .into_iter()
         .flatten()
-        .max_by(|left, right| compare_ranks(left, right))
+        .max_by(compare_ranks)
 }
 
 fn compare_ranks(left: &SearchRank, right: &SearchRank) -> Ordering {

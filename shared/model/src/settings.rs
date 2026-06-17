@@ -150,6 +150,10 @@ pub struct SyncAccountStatus {
     pub supports_sync: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub subscription_status: Option<String>,
+    /// Normalized lifecycle from the backend: `active`, `cancelled` (won't renew
+    /// but entitled until `current_period_end`), or `inactive`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub subscription_state: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub subscription_provider: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -167,10 +171,25 @@ impl SyncAccountStatus {
             subscription_status: Some(
                 if supports_sync { "active" } else { "inactive" }.to_string(),
             ),
+            subscription_state: Some(
+                if supports_sync { "active" } else { "inactive" }.to_string(),
+            ),
             subscription_provider: None,
             current_period_end: None,
             checked_at: None,
         }
+    }
+
+    /// Whether the subscription is cancelled but still entitling — i.e. it won't
+    /// renew, yet sync remains available until `current_period_end`. This is the
+    /// state in which the app offers to re-enable the subscription.
+    pub fn is_cancelled(&self) -> bool {
+        self.supports_sync
+            && self
+                .subscription_state
+                .as_deref()
+                .map(|state| state.eq_ignore_ascii_case("cancelled"))
+                .unwrap_or(false)
     }
 }
 

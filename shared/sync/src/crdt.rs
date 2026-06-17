@@ -600,7 +600,7 @@ impl WorkspaceCrdtDocuments {
                         .scheme_sync
                         .get(scheme_id)
                         .map(|m| m.id)
-                        .unwrap_or_else(DocumentId::new);
+                        .unwrap_or_default();
                     outcome.push_document_error(
                         doc_id,
                         SyncDocumentKind::Scheme,

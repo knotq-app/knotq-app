@@ -114,9 +114,7 @@ pub fn ensure_scheme_name_available(
 pub fn scheme_parent(workspace: &Workspace, id: SchemeId) -> Option<FolderId> {
     workspace.folders.iter().find_map(|(folder_id, folder)| {
         folder
-            .children
-            .iter()
-            .any(|child| *child == NodeRef::Scheme(id))
+            .children.contains(&NodeRef::Scheme(id))
             .then_some(*folder_id)
     })
 }

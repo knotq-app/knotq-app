@@ -684,3 +684,61 @@ fn http_scenario_l_randomized_fuzz() {
         common::scenarios::scenario_l_randomized_fuzz(&mut h, seed, 60);
     }
 }
+
+// ---------------------------------------------------------------------------
+// Scenario m / n — Daily-queue carryover family (HTTP)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn http_scenario_m_carryover_basic() {
+    let Some(base_url) = backend_url() else {
+        return;
+    };
+    let mut h = bootstrap_harness(&base_url, "m-carryover", 2);
+    common::scenarios::scenario_m_carryover_basic(&mut h);
+}
+
+#[test]
+fn http_scenario_m2_carryover_concurrent_shared_today() {
+    let Some(base_url) = backend_url() else {
+        return;
+    };
+    let mut h = bootstrap_harness(&base_url, "m2-carryover-shared", 2);
+    common::scenarios::scenario_m2_carryover_concurrent_shared_today(&mut h);
+}
+
+#[test]
+fn http_scenario_m3_carryover_concurrent_independent_today() {
+    let Some(base_url) = backend_url() else {
+        return;
+    };
+    let mut h = bootstrap_harness(&base_url, "m3-carryover-indep", 2);
+    common::scenarios::scenario_m3_carryover_concurrent_independent_today(&mut h);
+}
+
+#[test]
+fn http_scenario_m4_carryover_vs_yesterday_edit() {
+    let Some(base_url) = backend_url() else {
+        return;
+    };
+    let mut h = bootstrap_harness(&base_url, "m4-carryover-edit", 2);
+    common::scenarios::scenario_m4_carryover_vs_yesterday_edit(&mut h);
+}
+
+#[test]
+fn http_scenario_m5_carryover_offline_restart() {
+    let Some(base_url) = backend_url() else {
+        return;
+    };
+    let mut h = bootstrap_harness(&base_url, "m5-carryover-restart", 2);
+    common::scenarios::scenario_m5_carryover_offline_restart(&mut h);
+}
+
+#[test]
+fn http_scenario_n_carryover_chain() {
+    let Some(base_url) = backend_url() else {
+        return;
+    };
+    let mut h = bootstrap_harness(&base_url, "n-carryover-chain", 2);
+    common::scenarios::scenario_n_carryover_chain(&mut h);
+}

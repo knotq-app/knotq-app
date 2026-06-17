@@ -36,11 +36,11 @@ use std::cell::RefCell;
 use std::collections::{BTreeMap, HashMap};
 
 use anyhow::anyhow;
-use chrono::Utc;
+use chrono::{Duration, NaiveDate, Utc};
 use knotq_model::{
     daily_queue_scheme_id, CalendarProvider, DocumentId, Folder, FolderId, ImageAssetFormat,
-    ImportedCalendarSource, Item, ItemMarker, ItemMedia, NodeRef, OperationId, ReplicaId, Scheme,
-    SchemeId, SchemeSource, SyncDocumentKind, Workspace, WorkspaceId,
+    ImportedCalendarSource, Item, ItemId, ItemMarker, ItemMedia, NodeRef, OperationId, ReplicaId,
+    Scheme, SchemeId, SchemeSource, SyncDocumentKind, Workspace, WorkspaceId,
 };
 use knotq_sync::{
     batch_pull_and_apply, batch_push_pending, queue_workspace_bootstrap_updates,
@@ -381,6 +381,27 @@ impl Harness {
     ) -> SchemeId {
         self.device_mut(key)
             .set_daily_queue_without_crdt_content(date, lines)
+    }
+
+    /// Faithful daily-queue creation with rich rows (dates/done/markers) — see
+    /// [`TestDevice::seed_daily_queue`].
+    pub fn seed_daily_queue(
+        &mut self,
+        key: DeviceKey,
+        date: chrono::NaiveDate,
+        items: Vec<Item>,
+    ) -> SchemeId {
+        self.device_mut(key).seed_daily_queue(date, items)
+    }
+
+    /// Roll today's blank daily queue over from the most recent non-blank prior day —
+    /// see [`TestDevice::carryover_daily_queue`]. Returns the carried row texts.
+    pub fn carryover_daily_queue(
+        &mut self,
+        key: DeviceKey,
+        today: chrono::NaiveDate,
+    ) -> Option<Vec<String>> {
+        self.device_mut(key).carryover_daily_queue(today)
     }
 
     /// Record a workspace-index change on a device (e.g. the `daily_queue` map
@@ -1520,18 +1541,13 @@ impl TestDevice {
         // Mirrors restoring a folder unit: re-home it (and any surviving subtree)
         // under root and clear archival on its schemes.
         let root = self.workspace.root;
-        if !self.workspace.folders.contains_key(&folder_id) {
-            self.workspace.folders.insert(
-                folder_id,
-                Folder {
+        self.workspace.folders.entry(folder_id).or_insert_with(|| Folder {
                     id: folder_id,
                     name: "Restored".to_string(),
                     parent: Some(root),
                     children: Vec::new(),
                     expanded: true,
-                },
-            );
-        }
+                });
         let already_present = self
             .workspace
             .folders
@@ -1597,6 +1613,111 @@ impl TestDevice {
         .expect("rebuild store crdt");
         self.crdt_states = self.store_crdt.document_states();
         daily_id
+    }
+
+    /// Faithful daily-queue creation that accepts pre-built rich rows (dates, done
+    /// state, markers) rather than plain text. Uses the deterministic daily SchemeId
+    /// and lets `ensure_sync_metadata` canonicalize the deterministic daily DocumentId,
+    /// so two devices that create the same day independently converge on one document.
+    /// Mirrors `App::ensure_daily_queue_scheme` plus direct row edits.
+    pub fn seed_daily_queue(&mut self, date: NaiveDate, items: Vec<Item>) -> SchemeId {
+        let daily_id = daily_queue_scheme_id(date);
+        // Match `set_daily_queue`'s name so the two helpers are interchangeable for the
+        // same date across devices (the convergence check compares scheme names).
+        let mut scheme = Scheme::new("Daily", 0);
+        scheme.id = daily_id;
+        scheme.items = items;
+        self.workspace.schemes.insert(daily_id, scheme);
+        self.workspace.daily_queue.insert(date, daily_id);
+        self.record_changes(
+            WorkspaceCrdtChangeSet::default()
+                .workspace()
+                .touch_scheme(daily_id),
+        );
+        daily_id
+    }
+
+    /// Mirror of the desktop "roll over from yesterday" action — the net effect of
+    /// `knotq_state::daily_queue_carryover_command` applied via
+    /// `App::carryover_daily_queue`. Every not-fully-complete row from the most recent
+    /// non-blank prior day (within the 14-day lookback) is cloned forward into `today`
+    /// with a FRESH `ItemId`; the source rows keep their text but have their date
+    /// annotations stripped; and today's blank placeholder is replaced by the first
+    /// carried row. The action touches BOTH the previous and today scheme documents in
+    /// one logical batch — the cross-document property that makes it a hard sync case.
+    ///
+    /// `today`'s scheme must already exist (the scenario creates it, as the real app's
+    /// `ensure_daily_queue_scheme` does before carrying over). Returns the carried row
+    /// texts, or `None` when there is nothing to carry.
+    pub fn carryover_daily_queue(&mut self, today: NaiveDate) -> Option<Vec<String>> {
+        let previous_date = dq_last_nonblank_day(&self.workspace, today)?;
+        let previous_id = self.workspace.daily_queue_scheme_id(previous_date)?;
+        let today_id = self.workspace.daily_queue_scheme_id(today)?;
+
+        // Build the carried rows (fresh ids) and the list of source rows to strip,
+        // from an immutable borrow of the previous scheme.
+        let (carried_items, strip_ids): (Vec<Item>, Vec<ItemId>) = {
+            let previous = self.workspace.scheme(previous_id)?;
+            if dq_scheme_is_blank(previous) {
+                return None;
+            }
+            let mut carried = Vec::new();
+            let mut strip = Vec::new();
+            for item in &previous.items {
+                if dq_item_is_fully_complete_task(item) {
+                    continue;
+                }
+                let mut clone = item.clone();
+                clone.id = ItemId::new();
+                carried.push(clone);
+                if dq_item_has_annotations(item) {
+                    strip.push(item.id);
+                }
+            }
+            (carried, strip)
+        };
+        if carried_items.is_empty() {
+            return None;
+        }
+        let carried_texts: Vec<String> = carried_items.iter().map(|i| i.text.clone()).collect();
+
+        // Strip date annotations from the source rows on the previous day.
+        {
+            let previous = self.scheme_mut(previous_id);
+            for item in previous.items.iter_mut() {
+                if strip_ids.contains(&item.id) {
+                    dq_strip_annotations(item);
+                }
+            }
+        }
+
+        // Insert the carried rows into today, replacing the blank placeholder with the
+        // first carried row (the `daily_queue_carryover_command` placeholder branch).
+        {
+            let today_scheme = self.scheme_mut(today_id);
+            let replace_placeholder = dq_scheme_is_blank(today_scheme) && !today_scheme.items.is_empty();
+            let mut position = today_scheme.items.len();
+            let mut carried = carried_items.into_iter();
+            if replace_placeholder {
+                if let Some(mut first) = carried.next() {
+                    first.id = today_scheme.items[0].id;
+                    today_scheme.items[0] = first;
+                }
+                position = 1;
+            }
+            for item in carried {
+                let at = position.min(today_scheme.items.len());
+                today_scheme.items.insert(at, item);
+                position += 1;
+            }
+        }
+
+        self.record_changes(
+            WorkspaceCrdtChangeSet::default()
+                .touch_scheme(previous_id)
+                .touch_scheme(today_id),
+        );
+        Some(carried_texts)
     }
 
     /// The sync document id backing `scheme_id`.
@@ -2301,6 +2422,66 @@ fn scheme_source_label(source: &SchemeSource) -> String {
             source.read_only,
         ),
     }
+}
+
+// ---------------------------------------------------------------------------
+// Daily-queue carryover predicates
+//
+// Faithful copies of the private helpers in `knotq_state::daily_queue` (the source
+// of truth for the "roll over from yesterday" action). They are duplicated here
+// rather than imported because `knotq-state` depends on `knotq-sync`, so the sync
+// crate cannot dev-depend on it without a cycle. Keep them in sync with
+// `desktop/state/src/daily_queue.rs`.
+// ---------------------------------------------------------------------------
+
+/// How many days back the carryover scans for the most recent day with content.
+const DQ_CARRYOVER_LOOKBACK_DAYS: i64 = 14;
+
+fn dq_last_nonblank_day(workspace: &Workspace, today: NaiveDate) -> Option<NaiveDate> {
+    (1..=DQ_CARRYOVER_LOOKBACK_DAYS)
+        .map(|offset| today - Duration::days(offset))
+        .find(|date| {
+            workspace
+                .daily_queue_scheme_id(*date)
+                .and_then(|id| workspace.scheme(id))
+                .is_some_and(|scheme| !dq_scheme_is_blank(scheme))
+        })
+}
+
+fn dq_scheme_is_blank(scheme: &Scheme) -> bool {
+    if scheme.items.is_empty() {
+        return true;
+    }
+    scheme.items.first().is_some_and(dq_item_is_blank_placeholder) && scheme.items.len() == 1
+}
+
+fn dq_item_is_blank_placeholder(item: &Item) -> bool {
+    item.text.trim().is_empty()
+        && item.media.is_empty()
+        && item.marker == ItemMarker::Blank
+        && item.indent == 0
+        && !dq_item_has_annotations(item)
+        && item.priority.is_none()
+        && item.state.len() == 1
+        && item.state[0].state.progress == 0
+        && item.state[0].state.notification_offset_secs.is_none()
+}
+
+fn dq_item_is_fully_complete_task(item: &Item) -> bool {
+    item.marker == ItemMarker::Checkbox
+        && !item.state.is_empty()
+        && item.state.iter().all(|state| state.state.is_done())
+}
+
+fn dq_item_has_annotations(item: &Item) -> bool {
+    item.start.is_some() || item.end.is_some() || item.available.is_some() || item.repeats.is_some()
+}
+
+fn dq_strip_annotations(item: &mut Item) {
+    item.start = None;
+    item.end = None;
+    item.available = None;
+    item.repeats = None;
 }
 
 fn test_notification_schedule() -> NotificationScheduleSnapshot {

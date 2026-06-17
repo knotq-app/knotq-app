@@ -22,6 +22,16 @@ const DEFAULT_SYNC_API_BASE: &str = "https://api.knotq.com";
 const SIGNIN_PAGE_URL: &str = "https://www.knotq.com/signin.html";
 const ACCOUNT_PAGE_URL: &str = "https://www.knotq.com/account.html#signin";
 
+/// The knotq.com checkout portal. Rather than sending users to the Lemon Squeezy
+/// domain, we open this page with the checkout URL in `?url=`; it embeds the
+/// checkout in an iframe so payment stays on the official domain.
+const CHECKOUT_PORTAL_URL: &str = "https://www.knotq.com/checkout.html";
+
+/// Where store-managed subscriptions are re-enabled (auto-renew turned back on).
+/// Neither the app nor our backend can flip that for Apple/Google.
+const APPLE_SUBSCRIPTIONS_URL: &str = "https://apps.apple.com/account/subscriptions";
+const PLAY_SUBSCRIPTIONS_URL: &str = "https://play.google.com/store/account/subscriptions";
+
 #[derive(Deserialize)]
 struct LoginResponse {
     #[serde(default)]
@@ -241,6 +251,10 @@ impl KnotQApp {
         let Some(account) = self.settings.sync_account.clone() else {
             return;
         };
+        // Dismiss the confirmation prompt and the Manage menu the moment the user
+        // commits; the cancel runs in the background and the card reflects the result.
+        self.sync_account_action = None;
+        self.settings_dropdown = None;
         self.sync_auth_status = SyncAuthStatus::InProgress;
         let task = cx.spawn(
             async move |weak: gpui::WeakEntity<Self>, cx: &mut gpui::AsyncApp| {
@@ -279,9 +293,115 @@ impl KnotQApp {
                     self.sync_run_status = SyncRunStatus::Idle;
                 }
                 self.save_app_settings();
+                // The cancel response only carries entitlement, not the new
+                // lifecycle, so re-read account status to surface the cancelled
+                // (won't-renew) state and its period end right away.
+                if supports_sync {
+                    self.refresh_account_status_quiet(cx);
+                }
             }
             Err(message) => {
                 self.sync_auth_status = SyncAuthStatus::Error(message);
+            }
+        }
+        cx.notify();
+    }
+
+    /// Undo a pending cancellation so the subscription renews again. Web
+    /// subscriptions un-cancel through our backend; Apple/Google renewals can only
+    /// be turned back on in their stores, so for those we just open the store's
+    /// subscription-management page.
+    pub fn reenable_sync_subscription(&mut self, cx: &mut Context<Self>) {
+        if matches!(self.sync_auth_status, SyncAuthStatus::InProgress) {
+            return;
+        }
+        let Some(account) = self.settings.sync_account.clone() else {
+            return;
+        };
+        let provider = account
+            .account_status
+            .as_ref()
+            .and_then(|status| status.subscription_provider.as_deref());
+        match provider {
+            Some("apple") => {
+                self.open_store_subscription_management(APPLE_SUBSCRIPTIONS_URL, cx);
+                return;
+            }
+            Some("google") => {
+                self.open_store_subscription_management(PLAY_SUBSCRIPTIONS_URL, cx);
+                return;
+            }
+            _ => {}
+        }
+        self.sync_auth_status = SyncAuthStatus::InProgress;
+        let task = cx.spawn(
+            async move |weak: gpui::WeakEntity<Self>, cx: &mut gpui::AsyncApp| {
+                let (tx, rx) = mpsc::channel();
+                std::thread::spawn(move || {
+                    let result =
+                        resume_subscription_backend(&account).map_err(|err| format!("{err:#}"));
+                    let _ = tx.send(result);
+                });
+                Self::pump_sync_auth_worker(weak, cx, rx, |app, result, cx| {
+                    app.finish_reenable_subscription(result, cx);
+                })
+                .await;
+            },
+        );
+        self.sync_auth_task = Some(task);
+        cx.notify();
+    }
+
+    fn finish_reenable_subscription(
+        &mut self,
+        result: Result<SyncAccountSettings, String>,
+        cx: &mut Context<Self>,
+    ) {
+        self.sync_auth_task = None;
+        match result {
+            Ok(account) => {
+                self.settings.sync_account = Some(account);
+                self.sync_account_action = None;
+                self.sync_auth_status = SyncAuthStatus::Idle;
+                self.save_app_settings();
+            }
+            Err(message) => {
+                self.sync_auth_status = SyncAuthStatus::Error(message);
+            }
+        }
+        cx.notify();
+    }
+
+    /// Cancel a store-managed (Apple/Google) subscription. We can't cancel it for
+    /// the user — Apple exposes no cancel API and we don't cancel Play server-side —
+    /// so open the store's manage-subscriptions page, where cancellation happens.
+    /// The change is picked up on the next status refresh.
+    pub fn cancel_store_subscription(&mut self, cx: &mut Context<Self>) {
+        let provider = self
+            .settings
+            .sync_account
+            .as_ref()
+            .and_then(|account| account.account_status.as_ref())
+            .and_then(|status| status.subscription_provider.as_deref());
+        let url = if provider == Some("google") {
+            PLAY_SUBSCRIPTIONS_URL
+        } else {
+            APPLE_SUBSCRIPTIONS_URL
+        };
+        self.open_store_subscription_management(url, cx);
+    }
+
+    /// Open a store's subscription-management page (Apple/Google) so the user can
+    /// turn renewal back on; the entitlement updates on the next status refresh.
+    fn open_store_subscription_management(&mut self, url: &str, cx: &mut Context<Self>) {
+        match open_browser(url) {
+            Ok(()) => {
+                self.settings_dropdown = None;
+                self.sync_auth_status = SyncAuthStatus::Idle;
+            }
+            Err(err) => {
+                self.sync_auth_status =
+                    SyncAuthStatus::Error(format!("Could not open subscription management: {err}"));
             }
         }
         cx.notify();
@@ -322,19 +442,25 @@ impl KnotQApp {
     ) {
         self.sync_auth_task = None;
         match result {
-            Ok(url) => match open_browser(&url) {
-                Ok(()) => {
-                    self.sync_auth_status = SyncAuthStatus::Idle;
-                    // The purchase finishes in the browser with no callback into
-                    // the app, so quietly poll entitlement until the webhook lands
-                    // and sync turns on by itself — no manual re-check needed.
-                    self.start_subscription_status_poll(cx);
+            Ok(url) => {
+                // Open the knotq.com portal (which embeds the checkout) rather than
+                // the Lemon Squeezy URL directly, so payment stays on our domain.
+                let portal_url = format!("{CHECKOUT_PORTAL_URL}?url={}", percent_encode(&url));
+                match open_browser(&portal_url) {
+                    Ok(()) => {
+                        self.sync_auth_status = SyncAuthStatus::Idle;
+                        // The purchase finishes in the browser with no callback into
+                        // the app, so quietly poll entitlement until the webhook
+                        // lands and sync turns on by itself — no manual re-check.
+                        self.start_subscription_status_poll(cx);
+                    }
+                    Err(err) => {
+                        self.sync_auth_status = SyncAuthStatus::Error(format!(
+                            "Could not open the checkout page: {err}"
+                        ));
+                    }
                 }
-                Err(err) => {
-                    self.sync_auth_status =
-                        SyncAuthStatus::Error(format!("Could not open the checkout page: {err}"));
-                }
-            },
+            }
             Err(message) => {
                 self.sync_auth_status = SyncAuthStatus::Error(message);
             }
@@ -796,6 +922,32 @@ fn cancel_subscription_backend(account: &SyncAccountSettings) -> Result<SyncAcco
     sync_account_settings_from_session(base, session)
 }
 
+/// Undo a pending cancellation for a web subscription. The backend rotates the
+/// session, so this returns fresh credentials to install.
+fn resume_subscription_backend(account: &SyncAccountSettings) -> Result<SyncAccountSettings> {
+    let base = normalize_api_base(&account.api_base)?;
+    let url = format!("{base}/v1/auth/subscription/resume");
+    let response = match ureq::post(&url)
+        .timeout(StdDuration::from_secs(10))
+        .set("authorization", &format!("Bearer {}", account.bearer_token))
+        .send_json(serde_json::json!({}))
+    {
+        Ok(response) => response,
+        Err(ureq::Error::Status(_, response)) => {
+            let code = response
+                .into_json::<LoginError>()
+                .map(|error| error.code)
+                .unwrap_or_else(|_| "resume_failed".to_string());
+            return Err(anyhow!(account_action_error_message(&code)));
+        }
+        Err(error) => return Err(anyhow!("Could not reach the sync API: {error}")),
+    };
+    let session: LoginResponse = response
+        .into_json()
+        .context("parse sync subscription resume response")?;
+    sync_account_settings_from_session(base, session)
+}
+
 /// Create a provider-hosted checkout URL for the signed-in account.
 fn create_subscription_checkout_backend(account: &SyncAccountSettings) -> Result<String> {
     let base = normalize_api_base(&account.api_base)?;
@@ -925,6 +1077,16 @@ fn sync_account_status_from_response(status: AccountStatusResponse) -> SyncAccou
                 .to_string(),
             )
         }),
+        subscription_state: status.subscription_state.or_else(|| {
+            Some(
+                if status.supports_sync {
+                    "active"
+                } else {
+                    "inactive"
+                }
+                .to_string(),
+            )
+        }),
         subscription_provider: status.subscription_provider,
         current_period_end: status.current_period_end,
         checked_at: Some(status.checked_at.unwrap_or_else(Utc::now)),
@@ -954,6 +1116,13 @@ fn account_action_error_message(code: &str) -> &'static str {
         "cancel_in_app_store" => {
             "Manage this App Store subscription from your Apple account subscriptions."
         }
+        "resume_in_app_store" => {
+            "Re-enable this App Store subscription from your Apple account subscriptions."
+        }
+        "resume_in_play_store" => {
+            "Re-enable this subscription from your Google Play subscriptions."
+        }
+        "no_active_subscription" => "There is no active web subscription to change.",
         _ => "The request to the sync API failed.",
     }
 }

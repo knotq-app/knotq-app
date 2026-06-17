@@ -269,7 +269,6 @@ async fn run_update_check(
                 AutoUpdateUiStatus::Idle
             };
             set_update_status(weak, cx, status);
-            return;
         }
         Ok(LatestRelease::Available(update)) => {
             set_update_status(

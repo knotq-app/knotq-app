@@ -31,17 +31,19 @@ fn app_settings_roundtrip_preserves_google_accounts() {
     std::env::set_var("KNOTQ_DISABLE_KEYCHAIN", "1");
     let dir = unique_temp_dir("knotq-settings-google-account");
     let settings_file = dir.join("settings.json");
-    let mut settings = AppSettings::default();
-    settings.calendar_week_range = CalendarWeekRange::CalendarWeek;
-    settings.google_accounts.push(GoogleOAuthAccount {
-        account_id: "sub-1".to_string(),
-        email: Some("user@example.com".to_string()),
-        client_id: "client.apps.googleusercontent.com".to_string(),
-        access_token: "access".to_string(),
-        refresh_token: "refresh".to_string(),
-        expires_at: Some(Utc.with_ymd_and_hms(2026, 5, 18, 12, 0, 0).unwrap()),
-        scope: "https://www.googleapis.com/auth/calendar.events.readonly".to_string(),
-    });
+    let settings = AppSettings {
+        calendar_week_range: CalendarWeekRange::CalendarWeek,
+        google_accounts: vec![GoogleOAuthAccount {
+            account_id: "sub-1".to_string(),
+            email: Some("user@example.com".to_string()),
+            client_id: "client.apps.googleusercontent.com".to_string(),
+            access_token: "access".to_string(),
+            refresh_token: "refresh".to_string(),
+            expires_at: Some(Utc.with_ymd_and_hms(2026, 5, 18, 12, 0, 0).unwrap()),
+            scope: "https://www.googleapis.com/auth/calendar.events.readonly".to_string(),
+        }],
+        ..Default::default()
+    };
 
     save_app_settings(&settings_file, &settings).unwrap();
     let loaded = load_app_settings(&settings_file).unwrap();

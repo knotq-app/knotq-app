@@ -148,3 +148,43 @@ fn scenario_l_randomized_fuzz_seeds() {
         scenarios::scenario_l_randomized_fuzz(&mut h, seed, 150);
     }
 }
+
+// ---------------------------------------------------------------------------
+// Scenario m / n — Daily-queue "roll over from yesterday" (carryover) family
+// ---------------------------------------------------------------------------
+
+#[test]
+fn scenario_m_carryover_basic() {
+    let mut h = Harness::new(2);
+    scenarios::scenario_m_carryover_basic(&mut h);
+}
+
+#[test]
+fn scenario_m2_carryover_concurrent_shared_today() {
+    let mut h = Harness::new(2);
+    scenarios::scenario_m2_carryover_concurrent_shared_today(&mut h);
+}
+
+#[test]
+fn scenario_m3_carryover_concurrent_independent_today() {
+    let mut h = Harness::new(2);
+    scenarios::scenario_m3_carryover_concurrent_independent_today(&mut h);
+}
+
+#[test]
+fn scenario_m4_carryover_vs_yesterday_edit() {
+    let mut h = Harness::new(2);
+    scenarios::scenario_m4_carryover_vs_yesterday_edit(&mut h);
+}
+
+#[test]
+fn scenario_m5_carryover_offline_restart() {
+    let mut h = Harness::new(2);
+    scenarios::scenario_m5_carryover_offline_restart(&mut h);
+}
+
+#[test]
+fn scenario_n_carryover_chain() {
+    let mut h = Harness::new(2);
+    scenarios::scenario_n_carryover_chain(&mut h);
+}

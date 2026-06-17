@@ -7,8 +7,30 @@ use gpui::{deferred, div, px, ClickEvent, Context, FontWeight, IntoElement, Wind
 use gpui_component::tooltip::Tooltip;
 use gpui_component::{Icon, IconName, Sizable};
 
-use crate::app::{KnotQApp, SettingsDropdown, SyncAccountAction, SyncAuthStatus};
+use crate::app::{KnotQApp, SettingsDropdown, SyncAccountAction, SyncAuthStatus, SyncRunStatus};
 use crate::theme_gpui::{token_hsla, token_rgba, Theme};
+
+/// Which provider backs the subscription, used to route the cancel action: a web
+/// subscription cancels through our backend; an Apple/Google one can only be
+/// cancelled in its store (Apple exposes no cancel API), so we open that page.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum SubscriptionProvider {
+    Web,
+    Apple,
+    Google,
+}
+
+impl SubscriptionProvider {
+    fn from_slug(slug: Option<&str>) -> Self {
+        match slug {
+            Some("apple") => SubscriptionProvider::Apple,
+            Some("google") => SubscriptionProvider::Google,
+            // Web, admin overrides, and unknown providers all cancel via the
+            // backend, which returns a precise error if it can't.
+            _ => SubscriptionProvider::Web,
+        }
+    }
+}
 
 impl KnotQApp {
     /// Settings → Sync body. The card header already identifies the account
@@ -23,8 +45,53 @@ impl KnotQApp {
             return signed_out_entry(t, cx);
         };
         let in_progress = matches!(self.sync_auth_status, SyncAuthStatus::InProgress);
+        let syncing = matches!(self.sync_run_status, SyncRunStatus::Running { .. });
         let manage_open = self.settings_dropdown == Some(SettingsDropdown::SyncAccountManage);
-        signed_in_account_actions(account.supports_sync, manage_open, in_progress, t, cx)
+        // Cancelled-but-still-entitling: sync works until the period ends, but the
+        // subscription won't renew, so we offer to re-enable it instead of cancel.
+        let cancelled = account
+            .account_status
+            .as_ref()
+            .map(|status| status.is_cancelled())
+            .unwrap_or(false);
+        let provider = SubscriptionProvider::from_slug(
+            account
+                .account_status
+                .as_ref()
+                .and_then(|status| status.subscription_provider.as_deref()),
+        );
+        // Account-action errors (cancel/re-enable/checkout) surface here, since those
+        // actions dismiss their prompt immediately rather than holding it open.
+        let error = match &self.sync_auth_status {
+            SyncAuthStatus::Error(message) => Some(message.clone()),
+            _ => None,
+        };
+        div()
+            .w_full()
+            .flex()
+            .flex_col()
+            .gap(px(6.0))
+            .child(signed_in_account_actions(
+                account.supports_sync,
+                cancelled,
+                provider,
+                manage_open,
+                in_progress,
+                syncing,
+                t,
+                cx,
+            ))
+            .when_some(error, |column, message| {
+                column.child(
+                    div()
+                        .w_full()
+                        .text_size(px(11.0))
+                        .line_height(px(15.0))
+                        .text_color(token_hsla(0xff5a53ff))
+                        .child(message),
+                )
+            })
+            .into_any_element()
     }
 
     /// Centered confirmation modal for destructive sync-account actions, in the
@@ -124,53 +191,111 @@ fn signed_out_entry(_t: Theme, cx: &mut Context<KnotQApp>) -> gpui::AnyElement {
         .into_any_element()
 }
 
-fn sign_out_button(t: Theme, cx: &mut Context<KnotQApp>) -> gpui::AnyElement {
+/// Triggers a manual sync of the workspace. Mirrors the mobile "Resync" action
+/// and the sync-status popover's "Sync now"; only shown with an active
+/// subscription, since there's nothing to sync without one.
+fn resync_button(syncing: bool, t: Theme, cx: &mut Context<KnotQApp>) -> gpui::AnyElement {
     account_icon_button(
-        "sync-sign-out",
-        Some("Sign out"),
-        "Sign out",
-        IconName::User,
+        "sync-resync",
+        Some(if syncing { "Resyncing\u{2026}" } else { "Resync" }),
+        "Sync now",
+        IconName::Redo2,
         false,
         false,
-        false,
+        syncing,
         false,
         t,
         cx,
         |this, _window, cx| {
-            this.sign_out_sync_account(cx);
+            this.sync_now(cx);
         },
     )
 }
 
 fn signed_in_account_actions(
     supports_sync: bool,
+    cancelled: bool,
+    provider: SubscriptionProvider,
     manage_open: bool,
     in_progress: bool,
+    syncing: bool,
     t: Theme,
     cx: &mut Context<KnotQApp>,
 ) -> gpui::AnyElement {
+    // All controls stay grouped on the right: the primary CTA ("Subscribe" without
+    // an entitlement, "Re-enable" while cancelled) sits immediately left of Manage.
     div()
         .w_full()
         .relative()
         .flex()
+        .items_center()
         .justify_end()
         .child(
             div()
                 .flex()
                 .items_center()
                 .gap(px(6.0))
-                .child(sign_out_button(t, cx))
+                .when(!supports_sync, |s| s.child(subscribe_button(in_progress, t, cx)))
+                .when(supports_sync && cancelled, |s| {
+                    s.child(reenable_button(in_progress, t, cx))
+                })
+                // Resync only makes sense with an active subscription; sign-out
+                // now lives inside the Manage menu below.
+                .when(supports_sync, |s| s.child(resync_button(syncing, t, cx)))
                 .child(manage_account_button(manage_open, t, cx)),
         )
         .when(manage_open, |s| {
             s.child(deferred(manage_account_menu(
                 supports_sync,
+                cancelled,
+                provider,
                 in_progress,
                 t,
                 cx,
             )))
         })
         .into_any_element()
+}
+
+/// Primary CTA shown when the signed-in account has no active subscription.
+/// Opens the hosted checkout, same destination as the "Subscribe" menu row.
+fn subscribe_button(in_progress: bool, t: Theme, cx: &mut Context<KnotQApp>) -> gpui::AnyElement {
+    account_icon_button(
+        "sync-subscribe",
+        Some("Subscribe"),
+        "Subscribe to KnotQ Sync",
+        IconName::ExternalLink,
+        true,
+        false,
+        in_progress,
+        false,
+        t,
+        cx,
+        |this, _window, cx| {
+            this.open_subscription_checkout(cx);
+        },
+    )
+}
+
+/// Primary CTA shown when the signed-in account's subscription is cancelled but
+/// still active. Undoes the cancellation (web) or opens the store's manage page
+/// (Apple/Google) so it renews again.
+fn reenable_button(in_progress: bool, t: Theme, cx: &mut Context<KnotQApp>) -> gpui::AnyElement {
+    account_icon_button(
+        "sync-reenable",
+        Some("Re-enable"),
+        "Re-enable your subscription so it renews",
+        IconName::Redo2,
+        true,
+        false,
+        in_progress,
+        false,
+        t,
+        cx,
+        |this, _window, cx| {
+            this.reenable_sync_subscription(cx);
+        },
+    )
 }
 
 fn manage_account_button(
@@ -208,6 +333,8 @@ fn manage_account_button(
 
 fn manage_account_menu(
     supports_sync: bool,
+    cancelled: bool,
+    provider: SubscriptionProvider,
     in_progress: bool,
     t: Theme,
     cx: &mut Context<KnotQApp>,
@@ -218,7 +345,6 @@ fn manage_account_menu(
         rows.push(manage_menu_row(
             ("sync-manage-subscribe", 0),
             "Subscribe",
-            "Enable sync for this workspace",
             IconName::ExternalLink,
             false,
             in_progress,
@@ -237,11 +363,6 @@ fn manage_account_menu(
         } else {
             "I've subscribed"
         },
-        if supports_sync {
-            "Refresh account entitlement"
-        } else {
-            "Look for an active subscription"
-        },
         IconName::Redo2,
         false,
         in_progress,
@@ -255,7 +376,6 @@ fn manage_account_menu(
     rows.push(manage_menu_row(
         ("sync-manage-account-page", 0),
         "Manage account on website",
-        "Delete account requires password",
         IconName::ExternalLink,
         false,
         false,
@@ -266,20 +386,78 @@ fn manage_account_menu(
         },
     ));
 
+    rows.push(manage_menu_row(
+        ("sync-manage-sign-out", 0),
+        "Sign out",
+        IconName::User,
+        false,
+        in_progress,
+        t,
+        cx,
+        |this, _window, cx| {
+            this.sign_out_sync_account(cx);
+        },
+    ));
+
     if supports_sync {
-        rows.push(manage_menu_row(
-            ("sync-manage-cancel-sync", 0),
-            "Cancel sync",
-            "Cancel subscription",
-            IconName::CircleX,
-            true,
-            in_progress,
-            t,
-            cx,
-            |this, _window, cx| {
-                this.prompt_sync_account_action(SyncAccountAction::CancelSubscription, cx);
-            },
-        ));
+        if cancelled {
+            // Already cancelled (won't renew): offer to turn renewal back on
+            // rather than cancel again.
+            rows.push(manage_menu_row(
+                ("sync-manage-reenable", 0),
+                "Re-enable subscription",
+                IconName::Redo2,
+                false,
+                in_progress,
+                t,
+                cx,
+                |this, _window, cx| {
+                    this.reenable_sync_subscription(cx);
+                },
+            ));
+        } else {
+            match provider {
+                // App Store / Play subscriptions can't be cancelled by us (Apple
+                // has no cancel API), so send the user to the store's manage page
+                // directly instead of attempting a call that always fails.
+                SubscriptionProvider::Apple => rows.push(manage_menu_row(
+                    ("sync-manage-cancel-store", 0),
+                    "Cancel in App Store",
+                    IconName::ExternalLink,
+                    true,
+                    in_progress,
+                    t,
+                    cx,
+                    |this, _window, cx| {
+                        this.cancel_store_subscription(cx);
+                    },
+                )),
+                SubscriptionProvider::Google => rows.push(manage_menu_row(
+                    ("sync-manage-cancel-store", 0),
+                    "Cancel in Google Play",
+                    IconName::ExternalLink,
+                    true,
+                    in_progress,
+                    t,
+                    cx,
+                    |this, _window, cx| {
+                        this.cancel_store_subscription(cx);
+                    },
+                )),
+                SubscriptionProvider::Web => rows.push(manage_menu_row(
+                    ("sync-manage-cancel-sync", 0),
+                    "Cancel sync",
+                    IconName::CircleX,
+                    true,
+                    in_progress,
+                    t,
+                    cx,
+                    |this, _window, cx| {
+                        this.prompt_sync_account_action(SyncAccountAction::CancelSubscription, cx);
+                    },
+                )),
+            }
+        }
     }
 
     div()
@@ -311,7 +489,6 @@ pub(crate) fn sync_cta_hover_bg() -> u32 {
 fn manage_menu_row<F>(
     id: (&'static str, usize),
     label: &'static str,
-    detail: &'static str,
     icon: IconName,
     destructive: bool,
     disabled: bool,
@@ -331,7 +508,7 @@ where
     div()
         .id(id)
         .w_full()
-        .min_h(px(36.0))
+        .min_h(px(30.0))
         .px(px(8.0))
         .py(px(5.0))
         .flex()
@@ -359,23 +536,10 @@ where
         .child(
             div()
                 .min_w_0()
-                .flex()
-                .flex_col()
-                .gap(px(1.0))
-                .child(
-                    div()
-                        .text_size(px(12.0))
-                        .font_weight(FontWeight::SEMIBOLD)
-                        .text_color(token_hsla(fg))
-                        .child(label),
-                )
-                .child(
-                    div()
-                        .text_size(px(11.0))
-                        .line_height(px(14.0))
-                        .text_color(token_hsla(t.text_soft))
-                        .child(detail),
-                ),
+                .text_size(px(12.0))
+                .font_weight(FontWeight::SEMIBOLD)
+                .text_color(token_hsla(fg))
+                .child(label),
         )
         .into_any_element()
 }
@@ -422,10 +586,10 @@ where
         .when(label.is_none() && !full_width, |s| {
             s.w(px(30.0)).justify_center()
         })
-        .when(label.is_some() || full_width, |s| s.px(px(10.0)))
+        .when(label.is_some() || full_width, |s| s.px(px(8.0)))
         .flex()
         .items_center()
-        .gap(px(6.0))
+        .gap(px(3.0))
         .rounded(px(5.0))
         .border_1()
         .border_color(token_rgba(border))

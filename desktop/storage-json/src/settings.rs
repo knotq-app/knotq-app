@@ -198,10 +198,11 @@ mod tests {
 
         // 1. Save redacts the on-disk copy; load rehydrates from the keychain.
         let path = temp_settings_path();
-        let mut settings = AppSettings::default();
-        settings.sync_account = Some(sync_account("BEARER-SECRET", "REFRESH-SECRET"));
-        settings.google_accounts =
-            vec![google_account("acct-1", "GOOGLE-ACCESS", "GOOGLE-REFRESH")];
+        let settings = AppSettings {
+            sync_account: Some(sync_account("BEARER-SECRET", "REFRESH-SECRET")),
+            google_accounts: vec![google_account("acct-1", "GOOGLE-ACCESS", "GOOGLE-REFRESH")],
+            ..Default::default()
+        };
         save_app_settings(&path, &settings).unwrap();
 
         let raw = fs::read_to_string(&path).unwrap();
@@ -234,8 +235,10 @@ mod tests {
         // 2. With the keychain disabled, tokens stay in the file and round-trip.
         let path = temp_settings_path();
         std::env::set_var("KNOTQ_DISABLE_KEYCHAIN", "1");
-        let mut settings = AppSettings::default();
-        settings.sync_account = Some(sync_account("INFILE-BEARER", "INFILE-REFRESH"));
+        let settings = AppSettings {
+            sync_account: Some(sync_account("INFILE-BEARER", "INFILE-REFRESH")),
+            ..Default::default()
+        };
         save_app_settings(&path, &settings).unwrap();
         let raw = fs::read_to_string(&path).unwrap();
         assert!(

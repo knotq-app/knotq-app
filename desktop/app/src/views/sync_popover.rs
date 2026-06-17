@@ -182,7 +182,7 @@ impl KnotQApp {
         if !account.is_some_and(|account| account.supports_sync) {
             return SyncStatusView {
                 dot_color: STATUS_ERROR,
-                headline: "Sync disabled".into(),
+                headline: "Sync inactive".into(),
                 detail: Some("Subscribe to enable cross-device notes and notifications.".into()),
             };
         }

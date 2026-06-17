@@ -61,7 +61,7 @@ fn midpoint(a: &str, b: Option<&str>) -> String {
 
     if digit_b - digit_a > 1 {
         // Room for a digit strictly between the two; pick the midpoint.
-        let mid = (digit_a + digit_b + 1) / 2;
+        let mid = (digit_a + digit_b).div_ceil(2);
         (DIGITS[mid] as char).to_string()
     } else if let Some(b) = b.filter(|b| b.len() > 1) {
         // Consecutive leading digits but `b` has more: its first digit alone is

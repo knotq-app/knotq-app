@@ -121,12 +121,10 @@ pub fn calendar_item_color(is_done: bool, color_index: u8, is_dark: bool) -> Hsl
         } else {
             0.45
         }
+    } else if is_dark {
+        0.7
     } else {
-        if is_dark {
-            0.7
-        } else {
-            0.9
-        }
+        0.9
     };
     let mut hsla: Hsla = swiftui_saturation(palette_rgba(rgb, 1.0), amount).into();
     if is_done {
