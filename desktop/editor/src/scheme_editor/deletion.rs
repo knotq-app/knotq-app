@@ -396,7 +396,9 @@ impl SchemeEditor {
     }
 
     pub(super) fn delete_forward(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.merge_adjacent_table_if_boundary(false, window, cx) {
+        if self.delete_table_at_forward_boundary(window, cx)
+            || self.merge_adjacent_table_if_boundary(false, window, cx)
+        {
             return;
         }
         if self.boundary_delete_blocked(false) {
@@ -448,6 +450,116 @@ impl SchemeEditor {
         } else {
             self.replace_byte_range(offset..line_end, "", Some(window), cx);
         }
+    }
+
+    fn delete_table_at_forward_boundary(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        if !self.selection.is_empty() {
+            return false;
+        }
+        let row = self.current_row_index();
+        let Some(editor_row) = self.rows.get(row) else {
+            return false;
+        };
+        if editor_row.path.is_cell() || self.selection.head.col != self.line_len(row) {
+            return false;
+        }
+
+        if editor_row.path.is_table_anchor() {
+            return self.delete_table_from_anchor_row(row, window, cx);
+        }
+
+        if self.line_len(row) == 0 {
+            let next = row + 1;
+            if self
+                .rows
+                .get(next)
+                .is_some_and(|row| row.path.is_table_anchor())
+            {
+                return self.delete_table_item_after_row(row, next, window, cx);
+            }
+        }
+
+        false
+    }
+
+    fn delete_table_from_anchor_row(
+        &mut self,
+        anchor_row: usize,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let Some(anchor) = self.rows.get(anchor_row) else {
+            return false;
+        };
+        let table_id = anchor.item.id;
+        let old_top = reconstruct_top_level(&self.rows);
+        let mut new_top = old_top.clone();
+        let Some(pos) = new_top.iter().position(|item| item.id == table_id) else {
+            return false;
+        };
+        let Some(table_pos) = new_top[pos]
+            .content
+            .iter()
+            .position(|inline| matches!(inline, Inline::Table(_)))
+        else {
+            return false;
+        };
+        new_top[pos].content.remove(table_pos);
+
+        let (text, rows) = build_buffer(&new_top);
+        self.text = text;
+        self.rows = rows;
+        self.refresh_layout_after_content_change(Some(window));
+        let row = flat_row_for_top_level_index(&self.rows, pos);
+        self.selection = TextSelection::collapsed(TextLocation {
+            row,
+            col: self.line_len(row),
+        });
+        self.marked_range = None;
+        self.reset_cursor_blink(cx);
+        self.scroll_to_cursor(cx);
+        cx.notify();
+        self.emit_top_level_diff(&old_top, &new_top, cx);
+        true
+    }
+
+    fn delete_table_item_after_row(
+        &mut self,
+        cursor_row: usize,
+        table_row: usize,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let Some(table_item) = self.rows.get(table_row) else {
+            return false;
+        };
+        let table_id = table_item.item.id;
+        let old_top = reconstruct_top_level(&self.rows);
+        let mut new_top = old_top.clone();
+        let Some(pos) = new_top.iter().position(|item| item.id == table_id) else {
+            return false;
+        };
+        new_top.remove(pos);
+
+        let (text, rows) = build_buffer(&new_top);
+        self.text = text;
+        self.rows = rows;
+        self.refresh_layout_after_content_change(Some(window));
+        let row = cursor_row.min(self.rows.len().saturating_sub(1));
+        self.selection = TextSelection::collapsed(TextLocation {
+            row,
+            col: self.line_len(row),
+        });
+        self.marked_range = None;
+        self.reset_cursor_blink(cx);
+        self.scroll_to_cursor(cx);
+        cx.notify();
+        self.emit_top_level_diff(&old_top, &new_top, cx);
+        true
     }
 
     fn merge_adjacent_table_if_boundary(
