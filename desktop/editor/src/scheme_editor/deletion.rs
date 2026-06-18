@@ -116,15 +116,36 @@ impl SchemeEditor {
             if head.col != 0 || head.row == 0 {
                 return false;
             }
+            if self.empty_doc_line_adjacent_to_table(head.row) {
+                return false;
+            }
             let previous = self.rows[head.row - 1].path;
             !same_region(previous, path)
         } else {
             if head.col != self.line_len(head.row) || head.row + 1 >= self.rows.len() {
                 return false;
             }
+            if self.empty_doc_line_adjacent_to_table(head.row) {
+                return false;
+            }
             let next = self.rows[head.row + 1].path;
             !same_region(next, path)
         }
+    }
+
+    fn empty_doc_line_adjacent_to_table(&self, row: usize) -> bool {
+        self.rows.get(row).is_some_and(|editor_row| {
+            editor_row.path.is_doc()
+                && self.line_len(row) == 0
+                && (row
+                    .checked_sub(1)
+                    .and_then(|previous| self.rows.get(previous))
+                    .is_some_and(|previous| previous.path.is_table_anchor())
+                    || self
+                        .rows
+                        .get(row + 1)
+                        .is_some_and(|next| next.path.is_table_anchor()))
+        })
     }
 
     pub(super) fn clear_current_line_attributes_if_empty(
@@ -238,7 +259,7 @@ impl SchemeEditor {
         }
 
         if rows_have_table(&self.rows) {
-            return false;
+            return self.delete_empty_doc_line_adjacent_to_table(prefer_backward, window, cx);
         }
 
         let row = self.current_row_index();
@@ -268,6 +289,62 @@ impl SchemeEditor {
         self.rows = rows;
         self.refresh_layout_after_content_change(window);
         self.selection = TextSelection::collapsed(self.clamp_location(plan.cursor_after));
+        self.marked_range = None;
+        self.reset_cursor_blink(cx);
+        self.scroll_to_cursor(cx);
+        cx.notify();
+        cx.emit(EditorEvent::Command(Command::DeleteItem {
+            scheme: self.scheme_id,
+            item: deleted,
+        }));
+        cx.notify();
+        true
+    }
+
+    fn delete_empty_doc_line_adjacent_to_table(
+        &mut self,
+        prefer_backward: bool,
+        window: Option<&mut Window>,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let row = self.current_row_index();
+        if !self.empty_doc_line_adjacent_to_table(row) {
+            return false;
+        }
+        let Some(top_index) = top_level_index_for_flat_row(&self.rows, row) else {
+            return false;
+        };
+
+        let old_top = reconstruct_top_level(&self.rows);
+        let Some(item) = old_top.get(top_index) else {
+            return false;
+        };
+        if !item.is_content_empty() {
+            return false;
+        }
+        let deleted = item.id;
+        let mut new_top = old_top.clone();
+        new_top.remove(top_index);
+
+        let (text, rows) = build_buffer(&new_top);
+        self.text = text;
+        self.rows = rows;
+        self.refresh_layout_after_content_change(window);
+        let target_top = if prefer_backward {
+            top_index.saturating_sub(1)
+        } else {
+            top_index.min(new_top.len().saturating_sub(1))
+        };
+        let target_row = flat_row_for_top_level_index(&self.rows, target_top);
+        let target_col = if prefer_backward {
+            self.line_len(target_row)
+        } else {
+            0
+        };
+        self.selection = TextSelection::collapsed(self.clamp_location(TextLocation {
+            row: target_row,
+            col: target_col,
+        }));
         self.marked_range = None;
         self.reset_cursor_blink(cx);
         self.scroll_to_cursor(cx);

@@ -38,6 +38,9 @@ impl SchemeEditor {
             });
         }
 
+        if !commands.is_empty() {
+            self.line_map_dirty = true;
+        }
         self.emit_commands(commands, cx);
     }
 
