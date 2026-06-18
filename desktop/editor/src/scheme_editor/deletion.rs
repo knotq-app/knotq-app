@@ -330,13 +330,14 @@ impl SchemeEditor {
         self.text = text;
         self.rows = rows;
         self.refresh_layout_after_content_change(window);
-        let target_top = if prefer_backward {
+        let deleted_last_top = top_index >= new_top.len();
+        let target_top = if prefer_backward || deleted_last_top {
             top_index.saturating_sub(1)
         } else {
-            top_index.min(new_top.len().saturating_sub(1))
+            top_index
         };
         let target_row = flat_row_for_top_level_index(&self.rows, target_top);
-        let target_col = if prefer_backward {
+        let target_col = if prefer_backward || deleted_last_top {
             self.line_len(target_row)
         } else {
             0
@@ -607,13 +608,8 @@ impl SchemeEditor {
         }
 
         if self.line_len(row) == 0 {
-            let next = row + 1;
-            if self
-                .rows
-                .get(next)
-                .is_some_and(|row| row.path.is_table_anchor())
-            {
-                return self.delete_table_item_after_row(row, next, window, cx);
+            if self.empty_doc_line_adjacent_to_table(row) {
+                return self.delete_empty_doc_line_adjacent_to_table(false, Some(window), cx);
             }
         }
 
@@ -649,41 +645,6 @@ impl SchemeEditor {
         self.rows = rows;
         self.refresh_layout_after_content_change(Some(window));
         let row = flat_row_for_top_level_index(&self.rows, pos);
-        self.selection = TextSelection::collapsed(TextLocation {
-            row,
-            col: self.line_len(row),
-        });
-        self.marked_range = None;
-        self.reset_cursor_blink(cx);
-        self.scroll_to_cursor(cx);
-        cx.notify();
-        self.emit_top_level_diff(&old_top, &new_top, cx);
-        true
-    }
-
-    fn delete_table_item_after_row(
-        &mut self,
-        cursor_row: usize,
-        table_row: usize,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) -> bool {
-        let Some(table_item) = self.rows.get(table_row) else {
-            return false;
-        };
-        let table_id = table_item.item.id;
-        let old_top = reconstruct_top_level(&self.rows);
-        let mut new_top = old_top.clone();
-        let Some(pos) = new_top.iter().position(|item| item.id == table_id) else {
-            return false;
-        };
-        new_top.remove(pos);
-
-        let (text, rows) = build_buffer(&new_top);
-        self.text = text;
-        self.rows = rows;
-        self.refresh_layout_after_content_change(Some(window));
-        let row = cursor_row.min(self.rows.len().saturating_sub(1));
         self.selection = TextSelection::collapsed(TextLocation {
             row,
             col: self.line_len(row),
