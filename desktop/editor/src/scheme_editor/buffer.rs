@@ -1,6 +1,7 @@
 use std::ops::Range;
 
-use knotq_model::{Inline, Item, ItemMarker, Table};
+use knotq_model::{ColumnId, Inline, Item, ItemId, ItemMarker, Table};
+use uuid::Uuid;
 
 /// Sentinel table-row index for a header cell. Header cells map to a column's
 /// *name* rather than a body row, so they live "above" body row 0 — and
@@ -102,6 +103,12 @@ pub(super) fn build_buffer(items: &[Item]) -> (String, Vec<EditorRow>) {
                 item: item.clone(),
                 path: RowPath::anchor(),
             });
+            for (c, column) in table.columns.iter().enumerate() {
+                rows.push(EditorRow {
+                    item: header_item(column.id, &column.name),
+                    path: RowPath::cell(anchor, HEADER_ROW, c, 0, 1),
+                });
+            }
             for (r, table_row) in table.rows.iter().enumerate() {
                 for (c, cell) in table_row.cells.iter().enumerate() {
                     let cell_lines = cell.items.len().max(1);
@@ -123,6 +130,18 @@ pub(super) fn build_buffer(items: &[Item]) -> (String, Vec<EditorRow>) {
         .collect::<Vec<_>>()
         .join("\n");
     (text, rows)
+}
+
+fn header_item(column: ColumnId, name: &str) -> Item {
+    let mut item = Item::new(name.to_string());
+    item.id = header_item_id(column);
+    item
+}
+
+fn header_item_id(column: ColumnId) -> ItemId {
+    let mut bytes = column.0.into_bytes();
+    bytes[0] ^= 0x80;
+    ItemId(Uuid::from_bytes(bytes))
 }
 
 pub(super) fn reconstruct_top_level(rows: &[EditorRow]) -> Vec<Item> {
@@ -281,7 +300,7 @@ pub(super) fn line_ranges(text: &str) -> Vec<Range<usize>> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use knotq_model::{ImageAssetFormat, ImageInline};
+    use knotq_model::{ImageAssetFormat, ImageInline, Table};
     use uuid::Uuid;
 
     #[test]
@@ -311,6 +330,41 @@ mod tests {
     fn empty_text_still_has_one_logical_line() {
         assert_eq!(line_ranges(""), vec![0..0]);
         assert_eq!(line_ranges("a\n"), vec![0..1, 2..2]);
+    }
+
+    #[test]
+    fn table_headers_are_editable_buffer_rows() {
+        let mut item = Item::new("");
+        item.content.push(Inline::Table(Table::new(1, 2)));
+
+        let (text, rows) = build_buffer(&[item.clone()]);
+        let (_, rebuilt_rows) = build_buffer(&[item]);
+
+        assert_eq!(
+            text.lines().take(3).collect::<Vec<_>>(),
+            ["", "Column 1", "Column 2"]
+        );
+        assert!(rows[1].path.is_header_cell());
+        assert_eq!((rows[1].path.r, rows[1].path.c), (HEADER_ROW, 0));
+        assert!(rows[2].path.is_header_cell());
+        assert_eq!((rows[2].path.r, rows[2].path.c), (HEADER_ROW, 1));
+        assert_eq!(rows[1].item.id, rebuilt_rows[1].item.id);
+        assert_ne!(rows[1].item.id, rows[2].item.id);
+    }
+
+    #[test]
+    fn edited_header_rows_reconstruct_to_column_names() {
+        let mut item = Item::new("");
+        item.content.push(Inline::Table(Table::new(1, 2)));
+        let (_, mut rows) = build_buffer(&[item]);
+
+        rows[1].item.set_text("Project".to_string());
+        rows[2].item.set_text("Owner".to_string());
+        let top = reconstruct_top_level(&rows);
+        let table = top[0].table().expect("table remains inline");
+
+        assert_eq!(table.columns[0].name, "Project");
+        assert_eq!(table.columns[1].name, "Owner");
     }
 
     #[test]

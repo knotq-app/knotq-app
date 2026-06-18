@@ -41,7 +41,6 @@ pub(super) struct TableLayout {
     pub(super) grid_w: Pixels,
     pub(super) header_h: Pixels,
     pub(super) body_band_h: Vec<Pixels>,
-    pub(super) header_cells: Vec<WrappedLine>,
     pub(super) block_height: Pixels,
 }
 
@@ -101,13 +100,11 @@ impl SchemeEditor {
         let grid_w = acc;
 
         let header_color = token_hsla(self.theme.text_muted);
-        let mut header_cells = Vec::with_capacity(ncols);
         let mut header_h = px(ROW_MIN_H);
         for (c, col) in table.columns.iter().enumerate() {
             let text_w = (col_w[c] - px(CELL_PAD_X * 2.0)).max(px(16.0));
             let line = self.shape_cell_line(&font, &col.name, text_w, header_color, true, window);
             header_h = header_h.max(line.size(lh).height + px(CELL_PAD_Y * 2.0));
-            header_cells.push(line);
         }
 
         let body_color = token_hsla(self.theme.text_primary);
@@ -140,7 +137,6 @@ impl SchemeEditor {
             grid_w,
             header_h,
             body_band_h,
-            header_cells,
             block_height,
         })
     }
@@ -230,7 +226,8 @@ impl SchemeEditor {
                         band_top.get(path.r).copied().unwrap_or(body_top) + px(CELL_PAD_Y);
                     let run = cell_run.entry((path.r, path.c)).or_insert(px(0.0));
                     let top = cell_base + *run;
-                    *run += self.line_map.line_text_height(i).max(px(CELL_LINE_HEIGHT)) + annotation;
+                    *run +=
+                        self.line_map.line_text_height(i).max(px(CELL_LINE_HEIGHT)) + annotation;
                     top
                 };
                 self.cell_slots.insert(
@@ -297,7 +294,6 @@ impl SchemeEditor {
             return;
         };
         let theme = self.theme;
-        let lh = px(CELL_LINE_HEIGHT);
         let border = token_hsla(theme.border_soft);
         let header_bg = token_rgba(theme.row_hover);
 
@@ -334,16 +330,6 @@ impl SchemeEditor {
                 Bounds::new(point(origin.x, y), size(grid_w, px(1.0))),
                 border,
             ));
-        }
-
-        for (c, line) in layout.header_cells.iter().enumerate() {
-            let text_origin = point(
-                origin.x + layout.col_x[c] + px(CELL_PAD_X),
-                origin.y + px(CELL_PAD_Y),
-            );
-            let _ = line
-                .clone()
-                .paint(text_origin, lh, TextAlign::Left, None, window, cx);
         }
 
         self.paint_table_controls(anchor_row, origin, grid_w, grid_h, &layout, window, cx);

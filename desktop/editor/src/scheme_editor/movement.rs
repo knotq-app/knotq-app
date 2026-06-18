@@ -28,6 +28,12 @@ impl SchemeEditor {
             self.move_cursor_to(start, false, cx);
             return;
         }
+        if !select {
+            if let Some(target) = self.table_boundary_horizontal_target(false) {
+                self.move_cursor_to(target, false, cx);
+                return;
+            }
+        }
         let offset = self.location_to_offset(self.selection.head);
         let prev = previous_char_boundary(&self.text, offset);
         let target = self.clamp_horizontal(self.selection.head, self.offset_to_location(prev));
@@ -39,6 +45,12 @@ impl SchemeEditor {
             let (_, end) = self.selection.ordered();
             self.move_cursor_to(end, false, cx);
             return;
+        }
+        if !select {
+            if let Some(target) = self.table_boundary_horizontal_target(true) {
+                self.move_cursor_to(target, false, cx);
+                return;
+            }
         }
         let offset = self.location_to_offset(self.selection.head);
         let next = next_char_boundary(&self.text, offset);
@@ -180,6 +192,55 @@ impl SchemeEditor {
         }
     }
 
+    fn table_boundary_horizontal_target(&self, forward: bool) -> Option<TextLocation> {
+        let head = self.selection.head;
+        let row = head.row.min(self.rows.len().saturating_sub(1));
+        let col = head.col.min(self.line_len(row));
+        let path = self.rows.get(row)?.path;
+
+        if forward {
+            if col != self.line_len(row) {
+                return None;
+            }
+            if path.is_table_anchor() {
+                return self
+                    .row_after_table(row)
+                    .map(|row| TextLocation { row, col: 0 });
+            }
+            if self
+                .rows
+                .get(row + 1)
+                .is_some_and(|row| row.path.is_table_anchor())
+            {
+                return Some(TextLocation {
+                    row: row + 1,
+                    col: 0,
+                });
+            }
+            return None;
+        }
+
+        if col != 0 {
+            return None;
+        }
+        if path.is_table_anchor() {
+            return row.checked_sub(1).map(|row| TextLocation {
+                row,
+                col: self.line_len(row),
+            });
+        }
+        if row > 0 {
+            let previous = self.rows[row - 1].path;
+            if previous.is_cell() {
+                return Some(TextLocation {
+                    row: previous.anchor,
+                    col: self.line_len(previous.anchor),
+                });
+            }
+        }
+        None
+    }
+
     pub(super) fn cell_line_span(&self, row: usize) -> Option<(usize, usize)> {
         let path = self.rows.get(row)?.path;
         if !path.is_cell() {
@@ -230,12 +291,10 @@ impl SchemeEditor {
                 return pick(cur.row - 1);
             }
 
-            let table_rows = self.table_nrows(path.anchor);
-            let target_table_row = path.r as isize + delta;
-            if target_table_row >= 0 && (target_table_row as usize) < table_rows {
+            if let Some(target_table_row) = self.next_visual_table_row(path.r, delta, path.anchor) {
                 let want_last = delta < 0;
                 if let Some(row) =
-                    self.find_cell_row(path.anchor, target_table_row as usize, path.c, want_last)
+                    self.find_cell_row(path.anchor, target_table_row, path.c, want_last)
                 {
                     return pick(row);
                 }
@@ -253,20 +312,22 @@ impl SchemeEditor {
         }
         let next = next as usize;
         let next_path = self.rows[next].path;
-        if next_path.is_table_anchor() || next_path.is_cell() {
-            let anchor = if next_path.is_table_anchor() {
-                next
-            } else {
-                next_path.anchor
-            };
+        if next_path.is_table_anchor() {
+            return pick(next);
+        }
+        if next_path.is_cell() {
+            let anchor = next_path.anchor;
             let target_table_row = if delta > 0 {
-                0
+                HEADER_ROW
             } else {
                 self.table_nrows(anchor).saturating_sub(1)
             };
             let col = self.column_for_x(anchor, prefer_x);
             let want_last = delta < 0;
-            if let Some(row) = self.find_cell_row(anchor, target_table_row, col, want_last) {
+            if let Some(row) = self
+                .find_cell_row(anchor, target_table_row, col, want_last)
+                .or_else(|| self.find_cell_row(anchor, 0, col, want_last))
+            {
                 return pick(row);
             }
             return cur;
@@ -290,7 +351,13 @@ impl SchemeEditor {
             .unwrap_or(0)
     }
 
-    fn find_cell_row(&self, anchor: usize, r: usize, c: usize, want_last: bool) -> Option<usize> {
+    pub(super) fn find_cell_row(
+        &self,
+        anchor: usize,
+        r: usize,
+        c: usize,
+        want_last: bool,
+    ) -> Option<usize> {
         let mut found = None;
         for (row, editor_row) in self.rows.iter().enumerate() {
             let path = editor_row.path;
@@ -305,6 +372,25 @@ impl SchemeEditor {
         found
     }
 
+    fn next_visual_table_row(&self, r: usize, delta: isize, anchor: usize) -> Option<usize> {
+        let nrows = self.table_nrows(anchor);
+        if delta > 0 {
+            if r == HEADER_ROW {
+                (nrows > 0).then_some(0)
+            } else if r + 1 < nrows {
+                Some(r + 1)
+            } else {
+                None
+            }
+        } else if r == HEADER_ROW {
+            None
+        } else if r == 0 {
+            Some(HEADER_ROW)
+        } else {
+            Some(r - 1)
+        }
+    }
+
     fn exit_table_row(&self, anchor: usize, delta: isize) -> Option<usize> {
         if delta < 0 {
             (anchor > 0).then_some(anchor - 1)
@@ -315,6 +401,14 @@ impl SchemeEditor {
             }
             (row < self.rows.len()).then_some(row)
         }
+    }
+
+    fn row_after_table(&self, anchor: usize) -> Option<usize> {
+        let mut row = anchor + 1;
+        while row < self.rows.len() && self.rows[row].path.is_cell() {
+            row += 1;
+        }
+        (row < self.rows.len()).then_some(row)
     }
 
     pub(super) fn cell_tab_nav(&mut self, forward: bool, cx: &mut Context<Self>) {
