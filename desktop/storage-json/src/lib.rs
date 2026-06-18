@@ -41,6 +41,28 @@ pub use sync_state::{
     sync_state_path,
 };
 
+/// Decode a legacy markdown scheme file's items. For the one-off migration to
+/// XML; the normal loader auto-detects the format.
+pub fn decode_legacy_markdown_items(
+    raw: &str,
+    id: knotq_model::SchemeId,
+) -> anyhow::Result<Vec<knotq_model::Item>> {
+    Ok(scheme_markdown::decode_scheme_file(raw, Path::new("<migrate>"), id)?.items)
+}
+
+/// Decode an XML scheme file's items (round-trip check during migration).
+pub fn decode_xml_items(
+    raw: &str,
+    id: knotq_model::SchemeId,
+) -> anyhow::Result<Vec<knotq_model::Item>> {
+    Ok(scheme_xml::decode_scheme_xml(raw, Path::new("<migrate>"), id)?.items)
+}
+
+/// Encode a scheme to the XML on-disk format.
+pub fn encode_scheme_to_xml(scheme: &Scheme) -> anyhow::Result<String> {
+    scheme_xml::encode_scheme_xml(scheme)
+}
+
 #[derive(Clone, Debug)]
 pub struct JsonBackend {
     workspace_path: PathBuf,
