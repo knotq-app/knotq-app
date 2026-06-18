@@ -7,7 +7,10 @@ pub const PALETTE: &[u32] = &[
     0xffd60a, // SwiftUI yellow, dark
 ];
 
-const PALETTE_LIGHT: &[u32] = &[0xd4271c, 0xc47400, 0x1e9e40, 0x0064d2, 0x8a3db5, 0xe0a800];
+// Muted scheme colors that harmonize with the knotq.com light theme: the site's
+// named --red / --green / --blue / --purple, with orange and amber to fill out
+// the six-slot palette.
+const PALETTE_LIGHT: &[u32] = &[0xb84433, 0xc47400, 0x28764f, 0x2563a6, 0x735aa6, 0xe0a800];
 
 pub fn scheme_color(index: u8, is_dark: bool) -> u32 {
     if is_dark {

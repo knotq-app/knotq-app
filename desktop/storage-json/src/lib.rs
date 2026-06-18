@@ -63,6 +63,14 @@ pub fn encode_scheme_to_xml(scheme: &Scheme) -> anyhow::Result<String> {
     scheme_xml::encode_scheme_xml(scheme)
 }
 
+/// Repair a `.knotq` scheme file that is already XML but needs normalization.
+///
+/// This fixes declaration-less XML files and files where a previous load saved
+/// XML tags as literal item text. Returns true when the file was rewritten.
+pub fn repair_scheme_file_format(path: &Path) -> anyhow::Result<bool> {
+    scheme_file::repair_scheme_file_format(path)
+}
+
 #[derive(Clone, Debug)]
 pub struct JsonBackend {
     workspace_path: PathBuf,

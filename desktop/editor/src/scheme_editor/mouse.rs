@@ -116,6 +116,16 @@ impl SchemeEditor {
         if !self.is_selecting {
             return;
         }
+
+        if let Some(origin) = self.mouse_selection_origin {
+            if !mouse_moved_past_selection_epsilon(origin, position) {
+                return;
+            }
+            self.mouse_selection_origin = None;
+            self.start_responding_to_mouse_movements(cx);
+        }
+
+        self.auto_scroll_last_mouse_position = Some(position);
         self.update_mouse_selection_to_position(position);
         self.marked_range = None;
         self.reset_cursor_blink(cx);
@@ -134,6 +144,7 @@ impl SchemeEditor {
         if self.read_only {
             return;
         }
+        self.editor_focused = true;
         self.focus_handle.focus(window);
 
         if event.button == MouseButton::Left {
@@ -141,6 +152,8 @@ impl SchemeEditor {
                 self.apply_table_control(hitbox, window, cx);
                 self.is_selecting = false;
                 self.mouse_selection_mode = None;
+                self.mouse_selection_origin = None;
+                self.stop_responding_to_mouse_movements();
                 cx.stop_propagation();
                 cx.notify();
                 return;
@@ -152,6 +165,7 @@ impl SchemeEditor {
             if let Some(row) = self.rows.get(loc.row) {
                 self.selection = TextSelection::collapsed(loc);
                 self.mouse_selection_mode = None;
+                self.mouse_selection_origin = None;
                 cx.emit(EditorEvent::OpenContextMenu {
                     scheme_id: self.scheme_id,
                     item_id: row.item.id,
@@ -159,6 +173,7 @@ impl SchemeEditor {
                     date_anchor: self.date_anchor_for_row(loc.row),
                 });
                 self.is_selecting = false;
+                self.stop_responding_to_mouse_movements();
                 self.reset_cursor_blink(cx);
                 cx.stop_propagation();
                 cx.notify();
@@ -180,6 +195,8 @@ impl SchemeEditor {
             });
             self.is_selecting = false;
             self.mouse_selection_mode = None;
+            self.mouse_selection_origin = None;
+            self.stop_responding_to_mouse_movements();
             self.reset_cursor_blink(cx);
             cx.stop_propagation();
             cx.notify();
@@ -199,6 +216,8 @@ impl SchemeEditor {
             });
             self.is_selecting = false;
             self.mouse_selection_mode = None;
+            self.mouse_selection_origin = None;
+            self.stop_responding_to_mouse_movements();
             self.reset_cursor_blink(cx);
             cx.stop_propagation();
             cx.notify();
@@ -218,6 +237,8 @@ impl SchemeEditor {
             }));
             self.is_selecting = false;
             self.mouse_selection_mode = None;
+            self.mouse_selection_origin = None;
+            self.stop_responding_to_mouse_movements();
             self.reset_cursor_blink(cx);
             cx.stop_propagation();
             cx.notify();
@@ -226,8 +247,7 @@ impl SchemeEditor {
 
         self.is_selecting = true;
         self.mouse_selection_mode = Some(MouseSelectionMode::Character);
-        self.auto_scroll_last_mouse_position = Some(event.position);
-        self.start_responding_to_mouse_movements(cx);
+        self.mouse_selection_origin = Some(event.position);
         let loc = self.location_for_window_position(event.position);
         if event.modifiers.shift {
             self.selection.head = self.clamp_to_anchor_region(self.selection.anchor, loc);
@@ -263,7 +283,6 @@ impl SchemeEditor {
         cx: &mut Context<Self>,
     ) {
         if self.is_selecting && event.dragging() {
-            self.auto_scroll_last_mouse_position = Some(event.position);
             self.drag_to_position(event.position, cx);
             cx.stop_propagation();
         }
@@ -277,6 +296,7 @@ impl SchemeEditor {
     ) {
         self.is_selecting = false;
         self.mouse_selection_mode = None;
+        self.mouse_selection_origin = None;
         self.stop_responding_to_mouse_movements();
         cx.notify();
     }
@@ -293,6 +313,12 @@ fn word_drag_offsets(
     } else {
         (anchor_range.start, hover_range.end)
     }
+}
+
+fn mouse_moved_past_selection_epsilon(origin: Point<Pixels>, position: Point<Pixels>) -> bool {
+    let dx = (position.x - origin.x).to_f64() as f32;
+    let dy = (position.y - origin.y).to_f64() as f32;
+    dx * dx + dy * dy >= MOUSE_SELECTION_DRAG_EPSILON * MOUSE_SELECTION_DRAG_EPSILON
 }
 
 #[cfg(test)]
@@ -312,5 +338,23 @@ mod tests {
 
         assert_eq!(word_drag_offsets(text, 6..10, 2), (10, 0));
         assert_eq!(word_drag_offsets(text, 6..10, 13), (6, 16));
+    }
+
+    #[test]
+    fn mouse_selection_waits_for_drag_epsilon() {
+        let origin = point(px(10.0), px(10.0));
+
+        assert!(!mouse_moved_past_selection_epsilon(
+            origin,
+            point(px(15.0), px(10.0))
+        ));
+        assert!(mouse_moved_past_selection_epsilon(
+            origin,
+            point(px(16.0), px(10.0))
+        ));
+        assert!(mouse_moved_past_selection_epsilon(
+            origin,
+            point(px(14.5), px(14.5))
+        ));
     }
 }

@@ -14,6 +14,16 @@ pub fn settings_path() -> PathBuf {
 }
 
 pub fn data_dir() -> PathBuf {
+    // Explicit override, used to point a build at a throwaway/seeded data dir
+    // (e.g. the website screenshot seed) without touching the real user data.
+    // launchd resets `HOME`, so this is the reliable way to redirect a bundled
+    // app via `LSEnvironment`/`open --env`.
+    if let Ok(dir) = std::env::var("KNOTQ_DATA_DIR") {
+        if !dir.is_empty() {
+            return PathBuf::from(dir);
+        }
+    }
+
     #[cfg(target_os = "windows")]
     {
         if let Ok(local_app_data) = std::env::var("LOCALAPPDATA") {

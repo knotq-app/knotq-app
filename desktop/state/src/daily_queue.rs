@@ -2,7 +2,10 @@ use std::collections::HashSet;
 
 use chrono::{DateTime, Datelike, Duration, Local, LocalResult, NaiveDate, TimeZone, Utc};
 use knotq_commands::Command;
-use knotq_model::{Item, ItemId, ItemMarker, NodeRef, Scheme, SchemeId, Workspace};
+use knotq_model::{
+    CalendarRecurrence, DocumentId, Item, ItemId, ItemMarker, NodeRef, Scheme, SchemeId,
+    SyncDocumentKind, SyncDocumentMeta, Workspace,
+};
 
 #[derive(Clone, Debug)]
 pub struct DailyQueueState {
@@ -133,9 +136,21 @@ pub fn make_default_workspace() -> Workspace {
 
 pub fn make_default_workspace_for_date(today: NaiveDate) -> Workspace {
     let mut workspace = Workspace::new();
-    insert_root_scheme(&mut workspace, make_start_here_scheme(today));
-    insert_root_scheme(&mut workspace, make_scheduling_scheme(today));
-    insert_root_scheme(&mut workspace, make_projects_scheme(today));
+    insert_root_scheme(
+        &mut workspace,
+        make_start_here_scheme(today),
+        fixed_document_id("00000000-0000-8000-8000-000000000201"),
+    );
+    insert_root_scheme(
+        &mut workspace,
+        make_scheduling_scheme(today),
+        fixed_document_id("00000000-0000-8000-8000-000000000202"),
+    );
+    insert_root_scheme(
+        &mut workspace,
+        make_projects_scheme(today),
+        fixed_document_id("00000000-0000-8000-8000-000000000203"),
+    );
 
     let yesterday = today - Duration::days(1);
     let mut past_daily = Scheme::new(
@@ -144,8 +159,13 @@ pub fn make_default_workspace_for_date(today: NaiveDate) -> Workspace {
     );
     past_daily.id = knotq_model::daily_queue_scheme_id(yesterday);
     past_daily.items = vec![
-        Item::new("Past daily pages stay available here"),
-        Item::new("Completed tasks stay behind as a record").done(),
+        fixed_item("00000000-0000-8000-8000-000000000402", "Past daily pages stay available here"),
+        fixed_item(
+            "00000000-0000-8000-8000-000000000403",
+            "Completed work stays behind as a record",
+        )
+        .with_marker(ItemMarker::Checkbox)
+        .done(),
     ];
     let past_daily_id = past_daily.id;
     workspace.daily_queue.insert(yesterday, past_daily_id);
@@ -170,9 +190,12 @@ pub fn make_default_workspace_for_date(today: NaiveDate) -> Workspace {
     workspace
 }
 
-fn insert_root_scheme(workspace: &mut Workspace, scheme: Scheme) {
+fn insert_root_scheme(workspace: &mut Workspace, scheme: Scheme, sync_document_id: DocumentId) {
     let scheme_id = scheme.id;
     workspace.schemes.insert(scheme_id, scheme);
+    workspace
+        .scheme_sync
+        .insert(scheme_id, fixed_scheme_sync(sync_document_id));
     if let Some(root) = workspace.folders.get_mut(&workspace.root) {
         root.children.push(NodeRef::Scheme(scheme_id));
     }
@@ -180,108 +203,267 @@ fn insert_root_scheme(workspace: &mut Workspace, scheme: Scheme) {
 
 fn make_start_here_scheme(today: NaiveDate) -> Scheme {
     let mut scheme = Scheme::new("Coursework", 0);
+    scheme.id = fixed_scheme_id("00000000-0000-8000-8000-000000000101");
     scheme.items = vec![
-        Item::new("History Paper"),
-        Item::new("Thesis: compare the economic causes of two revolutions")
-            .with_marker(ItemMarker::Bullet),
-        Item::new("Submit final draft")
-            .with_marker(ItemMarker::Checkbox)
-            .with_end(local_dt(today + Duration::days(2), 17, 0)),
-        Item::new("Finish source notes")
-            .with_marker(ItemMarker::Checkbox)
-            .done(),
-        Item::new("Add two quotes from chapter 4")
-            .with_marker(ItemMarker::Checkbox)
-            .with_indent(1),
-        Item::new("Ask about citation format after class")
-            .with_marker(ItemMarker::Checkbox)
-            .with_start(local_dt(today + Duration::days(1), 15, 30)),
-        Item::new("Exam Prep"),
-        Item::new("Review lecture notes from weeks 3 and 4").with_marker(ItemMarker::Checkbox),
-        Item::new("Make flashcards for key terms").with_marker(ItemMarker::Checkbox),
-        Item::new("Schedule a study session")
-            .with_marker(ItemMarker::Checkbox)
-            .with_start(local_dt(today + Duration::days(1), 19, 0))
-            .with_end(local_dt(today + Duration::days(1), 20, 30)),
-        Item::new("Questions for office hours").with_marker(ItemMarker::Bullet),
+        fixed_item(
+            "00000000-0000-8000-8000-000000001003",
+            "### Thesis",
+        ),
+        fixed_item(
+            "00000000-0000-8000-8000-000000001004",
+            "==Argument:== compare economic pressure and *public trust*",
+        )
+        .with_marker(ItemMarker::Bullet),
+        fixed_item(
+            "00000000-0000-8000-8000-000000001005",
+            "Final draft",
+        )
+        .with_marker(ItemMarker::Checkbox)
+        .with_end(local_dt(today + Duration::days(2), 17, 0)),
+        fixed_item(
+            "00000000-0000-8000-8000-000000001006",
+            "Finish source notes",
+        )
+        .with_marker(ItemMarker::Checkbox)
+        .done(),
+        fixed_item(
+            "00000000-0000-8000-8000-000000001007",
+            "Add two primary quotes from chapter 4",
+        )
+        .with_marker(ItemMarker::Checkbox)
+        .with_indent(1),
+        fixed_item(
+            "00000000-0000-8000-8000-000000001008",
+            "Citation question",
+        )
+        .with_marker(ItemMarker::Checkbox)
+        .with_start(local_dt(today + Duration::days(1), 15, 30)),
+        fixed_item(
+            "00000000-0000-8000-8000-000000001009",
+            "Old outline moved into final draft",
+        )
+        .with_marker(ItemMarker::Bullet)
+        .with_indent(1),
+        fixed_item("00000000-0000-8000-8000-000000001010", "### Exam Prep"),
+        fixed_item(
+            "00000000-0000-8000-8000-000000001011",
+            "Review **weeks 3-4** lecture notes",
+        )
+        .with_marker(ItemMarker::Checkbox),
+        fixed_item(
+            "00000000-0000-8000-8000-000000001012",
+            "Make flashcards for *key terms*",
+        )
+        .with_marker(ItemMarker::Checkbox),
+        fixed_item(
+            "00000000-0000-8000-8000-000000001013",
+            "Study block",
+        )
+        .with_marker(ItemMarker::Checkbox)
+        .with_start(local_dt(today + Duration::days(1), 19, 0))
+        .with_end(local_dt(today + Duration::days(1), 20, 30)),
+        fixed_item(
+            "00000000-0000-8000-8000-000000001014",
+            "Questions for office hours",
+        )
+        .with_marker(ItemMarker::Bullet)
+        .with_indent(1),
     ];
     scheme
 }
 
 fn make_scheduling_scheme(today: NaiveDate) -> Scheme {
     let mut scheme = Scheme::new("Scheduling", 5);
+    scheme.id = fixed_scheme_id("00000000-0000-8000-8000-000000000102");
     scheme.items = vec![
-        Item::new("Four ways a task can relate to time"),
-        Item::new("Event: focus block")
-            .with_marker(ItemMarker::Checkbox)
-            .with_start(local_dt(today, 10, 0))
-            .with_end(local_dt(today, 11, 0)),
-        Item::new("Start + end gives you an event with a duration on the calendar")
-            .with_marker(ItemMarker::Bullet)
-            .with_indent(1),
-        Item::new("Assignment: submit first draft")
-            .with_marker(ItemMarker::Checkbox)
-            .with_end(local_dt(today + Duration::days(1), 17, 0)),
-        Item::new("No start + end gives you a deadline")
-            .with_marker(ItemMarker::Bullet)
-            .with_indent(1),
-        Item::new("Reminder: message the team")
+        fixed_item(
+            "00000000-0000-8000-8000-000000002002",
+            "### Calendar shapes",
+        ),
+        fixed_item(
+            "00000000-0000-8000-8000-000000002003",
+            "**Events** have a start and end",
+        )
+        .with_marker(ItemMarker::Bullet),
+        fixed_item(
+            "00000000-0000-8000-8000-000000002004",
+            "Focus block",
+        )
+        .with_marker(ItemMarker::Checkbox)
+        .with_start(local_dt(today, 10, 0))
+        .with_end(local_dt(today, 11, 0)),
+        fixed_item(
+            "00000000-0000-8000-8000-000000002005",
+            "**Assignments** have a deadline",
+        )
+        .with_marker(ItemMarker::Bullet),
+        fixed_item(
+            "00000000-0000-8000-8000-000000002006",
+            "First draft",
+        )
+        .with_marker(ItemMarker::Checkbox)
+        .with_end(local_dt(today + Duration::days(1), 17, 0)),
+        fixed_item(
+            "00000000-0000-8000-8000-000000002007",
+            "**Reminders** happen at one time",
+        )
+        .with_marker(ItemMarker::Bullet),
+        fixed_item("00000000-0000-8000-8000-000000002008", "Team message")
             .with_marker(ItemMarker::Checkbox)
             .with_start(local_dt(today, 16, 0)),
-        Item::new("Start + no end gives you a reminder at a specific time")
-            .with_marker(ItemMarker::Bullet)
-            .with_indent(1),
-        Item::new("Backlog: choose next experiment").with_marker(ItemMarker::Checkbox),
-        Item::new("No start + no end gives you a normal task that stays out of the calendar")
-            .with_marker(ItemMarker::Bullet)
-            .with_indent(1),
+        fixed_item(
+            "00000000-0000-8000-8000-000000002009",
+            "### Repeating habits",
+        ),
+        fixed_item("00000000-0000-8000-8000-000000002010", "Morning review")
+            .with_marker(ItemMarker::Checkbox)
+            .with_start(local_dt(today, 8, 30))
+            .with_repeats(repeat("FREQ=WEEKLY;INTERVAL=1")),
+        fixed_item(
+            "00000000-0000-8000-8000-000000002011",
+            "Backlog: choose next experiment",
+        )
+        .with_marker(ItemMarker::Checkbox),
     ];
     scheme
 }
 
 fn make_projects_scheme(today: NaiveDate) -> Scheme {
     let mut scheme = Scheme::new("Projects", 3);
+    scheme.id = fixed_scheme_id("00000000-0000-8000-8000-000000000103");
     scheme.items = vec![
-        Item::new("Break large work into specific next actions"),
-        Item::new("Draft the outline")
+        fixed_item("00000000-0000-8000-8000-000000003001", "### Launch Plan"),
+        fixed_item(
+            "00000000-0000-8000-8000-000000003003",
+            "Make the first screen feel **clear**, *fast*, and alive",
+        )
+        .with_marker(ItemMarker::Bullet),
+        fixed_item("00000000-0000-8000-8000-000000003004", "Draft the outline")
             .with_marker(ItemMarker::Checkbox)
             .done(),
-        Item::new("Review open questions")
-            .with_marker(ItemMarker::Checkbox)
-            .with_end(local_dt(today + Duration::days(2), 12, 0)),
-        Item::new("Schedule a focused work session")
-            .with_marker(ItemMarker::Checkbox)
-            .with_start(local_dt(today + Duration::days(1), 14, 0))
-            .with_end(local_dt(today + Duration::days(1), 15, 30)),
-        Item::new("Nested lines become context for the parent task")
-            .with_marker(ItemMarker::Bullet)
-            .with_indent(1),
+        fixed_item("00000000-0000-8000-8000-000000003005", "Open questions")
+        .with_marker(ItemMarker::Checkbox)
+        .with_end(local_dt(today + Duration::days(2), 12, 0)),
+        fixed_item("00000000-0000-8000-8000-000000003006", "Work session")
+        .with_marker(ItemMarker::Checkbox)
+        .with_start(local_dt(today + Duration::days(1), 14, 0))
+        .with_end(local_dt(today + Duration::days(1), 15, 0)),
+        fixed_item(
+            "00000000-0000-8000-8000-000000003007",
+            "Nested notes keep context close",
+        )
+        .with_marker(ItemMarker::Bullet)
+        .with_indent(1),
+        fixed_item(
+            "00000000-0000-8000-8000-000000003008",
+            "Risk: ==too much process==; keep the path light",
+        )
+        .with_marker(ItemMarker::Bullet)
+        .with_indent(1),
+        fixed_item("00000000-0000-8000-8000-000000003009", "### Design polish"),
+        fixed_item(
+            "00000000-0000-8000-8000-000000003011",
+            "Find the moment that matters",
+        )
+        .with_marker(ItemMarker::Checkbox),
+        fixed_item(
+            "00000000-0000-8000-8000-000000003012",
+            "Cut rough copy into **sharper labels**",
+        )
+        .with_marker(ItemMarker::Checkbox),
+        fixed_item(
+            "00000000-0000-8000-8000-000000003013",
+            "Ship a tiny, beautiful default workspace",
+        )
+        .with_marker(ItemMarker::Checkbox),
     ];
     scheme
 }
 
 fn make_daily_seed_items() -> Vec<Item> {
     vec![
-        Item::new("Daily Queue"),
-        Item::new("Start each day with an optimistic list of concrete, small tasks"),
-        Item::new("Make coffee")
+        fixed_item("00000000-0000-8000-8000-000000004002", "Make coffee")
             .with_marker(ItemMarker::Checkbox)
             .done(),
-        Item::new("Review today's calendar").with_marker(ItemMarker::Checkbox),
-        Item::new("Write the next draft").with_marker(ItemMarker::Checkbox),
-        Item::new("Send one follow-up message").with_marker(ItemMarker::Checkbox),
-        Item::new(""),
-        Item::new("The goal is to avoid deciding what to do next after every task"),
-        Item::new("Keep the list realistic, but long enough to last the day")
-            .with_marker(ItemMarker::Bullet)
-            .with_indent(1),
-        Item::new("Use Daily for quick notes and loose ideas too")
-            .with_marker(ItemMarker::Bullet)
-            .with_indent(1),
-        Item::new("Add dates here when a daily task needs time or a deadline")
-            .with_marker(ItemMarker::Bullet)
-            .with_indent(1),
+        fixed_item(
+            "00000000-0000-8000-8000-000000004003",
+            "Review today's calendar",
+        )
+        .with_marker(ItemMarker::Checkbox),
+        fixed_item("00000000-0000-8000-8000-000000004004", "Write the next draft")
+            .with_marker(ItemMarker::Checkbox),
+        fixed_item(
+            "00000000-0000-8000-8000-000000004005",
+            "Send one **thoughtful** follow-up",
+        )
+        .with_marker(ItemMarker::Checkbox),
+        fixed_item("00000000-0000-8000-8000-000000004006", ""),
+        fixed_item(
+            "00000000-0000-8000-8000-000000004007",
+            "### Daily Recommendations (My workflow)",
+        ),
+        fixed_item(
+            "00000000-0000-8000-8000-000000004011",
+            "Write an optimistic list of *concrete, small* tasks at the start of each day and check them as you progress",
+        )
+        .with_marker(ItemMarker::Numbered)
+        .with_indent(1),
+        fixed_item(
+            "00000000-0000-8000-8000-000000004008",
+            "The point is that **you never have to make a decision about what to do next**",
+        )
+        .with_marker(ItemMarker::Numbered)
+        .with_indent(1),
+        fixed_item(
+            "00000000-0000-8000-8000-000000004009",
+            "When you finish a task the next one is right there",
+        )
+        .with_marker(ItemMarker::Bullet)
+        .with_indent(2),
+        fixed_item(
+            "00000000-0000-8000-8000-000000004010",
+            "KnotQ can carry over incomplete items to the next day; completed work stays behind",
+        )
+        .with_marker(ItemMarker::Numbered)
+        .with_indent(1),
+        fixed_item("00000000-0000-8000-8000-000000004013", ""),
+        fixed_item(
+            "00000000-0000-8000-8000-000000004012",
+            "Before KnotQ, I found myself in the paradoxical state of having so many things I needed to get done yet not doing anything because everything was such a large task. Breaking these into actionable tasks daily helped me a lot.",
+        )
+        .with_indent(1),
     ]
+}
+
+fn fixed_scheme_id(id: &str) -> SchemeId {
+    id.parse().expect("valid fixed starter scheme id")
+}
+
+fn fixed_document_id(id: &str) -> DocumentId {
+    id.parse().expect("valid fixed starter document id")
+}
+
+fn fixed_item_id(id: &str) -> ItemId {
+    id.parse().expect("valid fixed starter item id")
+}
+
+fn fixed_item(id: &str, text: &str) -> Item {
+    let mut item = Item::new(text);
+    item.id = fixed_item_id(id);
+    item
+}
+
+fn fixed_scheme_sync(document_id: DocumentId) -> SyncDocumentMeta {
+    let mut meta = SyncDocumentMeta::local(SyncDocumentKind::Scheme);
+    meta.id = document_id;
+    meta
+}
+
+fn repeat(rrule: &str) -> CalendarRecurrence {
+    CalendarRecurrence {
+        rrules: vec![rrule.to_string()],
+        ..CalendarRecurrence::default()
+    }
 }
 
 fn local_dt(date: NaiveDate, hour: u32, minute: u32) -> DateTime<Utc> {

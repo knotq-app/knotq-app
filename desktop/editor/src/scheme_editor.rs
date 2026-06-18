@@ -128,6 +128,10 @@ const TEXT_FONT_SIZE: f32 = FONT_SIZE_EDITOR;
 const TEXT_LINE_HEIGHT: f32 = 20.0;
 const HEADING_FONT_SIZE: f32 = 24.0;
 const HEADING_LINE_HEIGHT: f32 = 30.0;
+const HEADING2_FONT_SIZE: f32 = 21.0;
+const HEADING2_LINE_HEIGHT: f32 = 27.0;
+const HEADING3_FONT_SIZE: f32 = 18.0;
+const HEADING3_LINE_HEIGHT: f32 = 24.0;
 const ANNOTATION_HEIGHT: f32 = 13.0;
 const ANNOTATION_FONT_SIZE: f32 = FONT_SIZE_CAPTION2;
 const HANGING_WRAP_PREFIX: &str = "     ";
@@ -143,6 +147,7 @@ const IMAGE_FALLBACK_HEIGHT: f32 = 180.0;
 const CHECKBOX_SIZE: f32 = 14.0;
 const CHECKBOX_GAP: f32 = 7.0;
 const EMPTY_SELECTION_WIDTH: f32 = 5.0;
+const MOUSE_SELECTION_DRAG_EPSILON: f32 = 6.0;
 const CURSOR_BLINK_DELAY: Duration = Duration::from_millis(500);
 const CURSOR_BLINK_INTERVAL: Duration = Duration::from_millis(500);
 const SCROLL_MARGIN_LINES: f32 = 4.0;
@@ -224,7 +229,9 @@ pub struct SchemeEditor {
     selection: TextSelection,
     marked_range: Option<Range<usize>>,
     is_selecting: bool,
+    editor_focused: bool,
     mouse_selection_mode: Option<MouseSelectionMode>,
+    mouse_selection_origin: Option<Point<Pixels>>,
     cursor_blink_state: bool,
     cursor_blink_task: Option<Task<()>>,
     focus_handle: FocusHandle,

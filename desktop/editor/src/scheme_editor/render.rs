@@ -225,7 +225,6 @@ impl Element for SchemeTextElement {
             window.on_mouse_event(move |event: &MouseMoveEvent, phase, _window, cx| {
                 if phase == DispatchPhase::Bubble && event.dragging() {
                     editor.update(cx, |editor, cx| {
-                        editor.auto_scroll_last_mouse_position = Some(event.position);
                         editor.drag_to_position(event.position, cx);
                     });
                 }
@@ -237,6 +236,8 @@ impl Element for SchemeTextElement {
                     editor.update(cx, |editor, cx| {
                         editor.is_selecting = false;
                         editor.stop_responding_to_mouse_movements();
+                        editor.mouse_selection_mode = None;
+                        editor.mouse_selection_origin = None;
                         cx.notify();
                     });
                 }

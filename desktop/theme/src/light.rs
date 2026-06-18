@@ -192,63 +192,67 @@ pub fn theme_catppuccin_latte() -> Theme {
 pub fn theme_light() -> Theme {
     let mut theme = theme_parchment();
     theme.name = "Light";
-    // Warm, muted backgrounds — no pure whites
-    theme.bg_app = rgb(0xe8e2d8);
-    theme.bg_sidebar = rgb(0xe0d8cc);
-    theme.bg_toolbar = rgb(0xe3dcd2);
-    theme.bg_upcoming = rgb(0xe5ded5);
-    theme.bg_hint = rgb(0xe0d8cc);
-    theme.bg_cal_hdr = rgb(0xe0d8cc);
-    theme.bg_modal = rgb(0xece6dd);
-    theme.border_main = rgba(0xc4b5a4ff);
-    theme.border_soft = rgba(0xd6cabcff);
-    theme.border_strong = rgba(0xa89580ff);
-    theme.border_overlay = rgba(0x3d2a1830);
-    // Softened text for less harsh contrast
-    theme.text_primary = rgb(0x2c2420);
-    theme.text_dim = rgba(0x302520e0);
-    theme.text_muted = rgba(0x5a4a3cc0);
-    theme.text_soft = rgba(0x382c22d8);
-    theme.text_highlight = rgba(0x1a1410f4);
-    theme.text_placeholder = rgba(0x5a4a3c90);
-    theme.text_today = rgb(0xd04e1a);
-    theme.caret_color = rgb(0x1a1410);
-    theme.row_alt = rgba(0x5a46350c);
-    theme.row_hover = rgba(0x5a463518);
-    theme.row_hover_strong = rgba(0x5a463524);
-    theme.row_selected = rgba(0xe66f1f1a);
-    theme.button_bg = rgba(0x5a463518);
-    theme.button_hover = rgba(0xe66f1f20);
-    theme.divider = rgba(0x5a463524);
-    theme.divider_soft = rgba(0x5a463518);
-    theme.divider_faint = rgba(0x5a463514);
-    theme.divider_tiny = rgba(0x5a46350d);
-    theme.overlay_scrim = rgba(0x3b24169a);
-    theme.cal_grid = rgba(0x5a463524);
-    theme.cal_grid_soft = rgba(0x5a463510);
-    theme.cal_past = rgba(0x8c8c8c40);
-    // Event blocks: cooler/grayer tint to stand out from warm bg
-    theme.event_bg = rgba(0xd3d2ceee);
-    theme.event_border = rgba(0xa89580c0);
-    theme.checkbox_border_on = rgba(0xd04e1ac8);
-    theme.checkbox_border_off = rgba(0x6b5d50c0);
-    theme.checkbox_fill_on = rgba(0xe66f1f90);
-    theme.checkbox_fill_off = rgba(0xe8e2d890);
-    theme.checkbox_mark = rgba(0x1a1410e0);
-    theme.done_text = rgba(0x5a4a3ca8);
-    theme.drag_preview_bg = rgba(0xe0d8ccc8);
-    theme.toolbar_chip_bg = rgba(0xebeff5f0);
-    theme.toolbar_chip_border = rgba(0xb0b8c8aa);
-    theme.toolbar_chip_selected_text = rgb(0x111418);
-    theme.toolbar_chip_muted = rgba(0x4a4050ff);
-    theme.toolbar_chip_separator = rgba(0x7a808a66);
-    theme.daily_title_active = rgb(0x1a1410);
-    theme.daily_title_muted = rgb(0x4a3e34);
-    theme.link = rgb(0xc04510);
-    theme.link_hover = rgb(0xe66f1f);
-    // Fully opaque dark text on calendar events
-    theme.cal_event_text = rgba(0x1a1410f0);
-    theme.cal_weekend_tint = rgba(0xe66f1f06);
-    theme.row_stripe = rgba(0xe66f1f12);
+    // Clean, near-white base matching the knotq.com light theme: a faintly cool
+    // off-white canvas, soft gray-green surfaces, near-black ink, and a rose accent.
+    // Surfaces map to the site tokens --bg / --surface / --surface-2 / --paper;
+    // translucent rows/dividers tint with a slate-green so they read as the site's
+    // --line colors over the light canvas.
+    theme.bg_app = rgb(0xfafbf9); // --bg
+    theme.bg_sidebar = rgb(0xf2f5f2); // --surface
+    theme.bg_toolbar = rgb(0xf2f5f2); // --surface
+    theme.bg_upcoming = rgb(0xf2f5f2); // --surface
+    theme.bg_hint = rgb(0xe8ede9); // --surface-2
+    theme.bg_cal_hdr = rgb(0xf2f5f2); // --surface
+    theme.bg_modal = rgb(0xffffff); // --paper
+    theme.border_main = rgba(0xcbd5cfff); // --line-strong
+    theme.border_soft = rgba(0xe2e7e2ff); // --line
+    theme.border_strong = rgba(0xb4c0b8ff);
+    theme.border_overlay = rgba(0x3a443d33);
+    // Near-black ink with softened secondary text.
+    theme.text_primary = rgb(0x171717); // --ink
+    theme.text_dim = rgba(0x393f39e6); // --text
+    theme.text_muted = rgba(0x6d746dcc); // --muted
+    theme.text_soft = rgba(0x393f39d9); // --text
+    theme.text_highlight = rgba(0x0f0f0ff5);
+    theme.text_placeholder = rgba(0x6d746d80); // --muted
+    theme.text_today = rgb(0xc7375d); // --accent
+    theme.caret_color = rgb(0x171717);
+    theme.row_alt = rgba(0x3a443d0a);
+    theme.row_hover = rgba(0x3a443d14);
+    theme.row_hover_strong = rgba(0x3a443d1f);
+    theme.row_selected = rgba(0xc7375d1f); // --accent tint
+    theme.button_bg = rgba(0x3a443d14);
+    theme.button_hover = rgba(0x3a443d21);
+    theme.divider = rgba(0x3a443d29);
+    theme.divider_soft = rgba(0x3a443d1c);
+    theme.divider_faint = rgba(0x3a443d14);
+    theme.divider_tiny = rgba(0x3a443d0d);
+    theme.overlay_scrim = rgba(0x1f231f80);
+    theme.cal_grid = rgba(0x3a443d29);
+    theme.cal_grid_soft = rgba(0x3a443d12);
+    theme.cal_past = rgba(0x8c948c33);
+    // Event blocks: a soft gray-green card that lifts off the off-white canvas.
+    theme.event_bg = rgba(0xe8ede9f2);
+    theme.event_border = rgba(0xb4c0b8cc);
+    theme.checkbox_border_on = rgba(0xc7375dcc);
+    theme.checkbox_border_off = rgba(0x6d746dbf);
+    theme.checkbox_fill_on = rgba(0xc7375d8c);
+    theme.checkbox_fill_off = rgba(0xffffffcc);
+    theme.checkbox_mark = rgba(0x171717e0);
+    theme.done_text = rgba(0x6d746db3);
+    theme.drag_preview_bg = rgba(0xf2f5f2e6);
+    theme.toolbar_chip_bg = rgba(0xf2f5f2f5);
+    theme.toolbar_chip_border = rgba(0xcbd5cfcc);
+    theme.toolbar_chip_selected_text = rgb(0x171717);
+    theme.toolbar_chip_muted = rgba(0x6d746dff);
+    theme.toolbar_chip_separator = rgba(0x9aa49e80);
+    theme.daily_title_active = rgb(0x171717);
+    theme.daily_title_muted = rgb(0x6d746d);
+    theme.link = rgb(0x2563a6); // --blue
+    theme.link_hover = rgb(0x2f74bf);
+    // Fully opaque dark text on calendar events.
+    theme.cal_event_text = rgba(0x171717f0);
+    theme.cal_weekend_tint = rgba(0x3a443d08);
+    theme.row_stripe = rgba(0xc7375d12);
     theme
 }

@@ -5,7 +5,7 @@ impl SchemeEditor {
     /// lines). `None` means no line is active, so every line renders collapsed
     /// (e.g. read-only schemes).
     pub(super) fn active_preview_rows(&self) -> Option<(usize, usize)> {
-        if self.read_only {
+        if self.read_only || !self.editor_focused {
             return None;
         }
         let a = self.selection.anchor.row;
@@ -68,25 +68,42 @@ impl SchemeEditor {
                 wrap_width - px(TEXT_LEFT_PAD + 18.0) - self.row_indent_x(row) - row_layout_offset
             }
             .max(px(40.0));
+            let has_line_text = !line.is_empty();
             let media_height = if is_cell || is_anchor {
                 px(0.0)
             } else {
                 row_item
-                    .map(|item| self.media_stack_height(item, text_width))
+                    .map(|item| self.media_stack_height(item, text_width, has_line_text))
                     .unwrap_or(px(0.0))
             };
             let is_done = row_item.map(item_is_done).unwrap_or(false);
             let color = if is_done {
                 token_hsla(self.theme.done_text)
+            } else if path.is_header_cell() {
+                token_hsla(self.theme.text_muted)
             } else {
                 token_hsla(self.theme.text_primary)
             };
-            let (font_size, mut line_height) = if !is_cell && is_markdown_heading(&line) {
-                (HEADING_FONT_SIZE, HEADING_LINE_HEIGHT)
-            } else {
-                (TEXT_FONT_SIZE, TEXT_LINE_HEIGHT)
-            };
-            if is_anchor && line.is_empty() {
+            let (font_size, mut line_height) =
+                if !is_cell {
+                    match markdown_heading_level(&line) {
+                        Some(1) => (HEADING_FONT_SIZE, HEADING_LINE_HEIGHT),
+                        Some(2) => (HEADING2_FONT_SIZE, HEADING2_LINE_HEIGHT),
+                        Some(_) => (HEADING3_FONT_SIZE, HEADING3_LINE_HEIGHT),
+                        None => (TEXT_FONT_SIZE, TEXT_LINE_HEIGHT),
+                    }
+                } else {
+                    (TEXT_FONT_SIZE, TEXT_LINE_HEIGHT)
+                };
+            // Collapse the empty text band for a line whose only content is a
+            // block inline (a table anchor, or an image-only line) so the image
+            // or table renders in place instead of hanging below a full-height
+            // blank text line.
+            let media_only = !is_cell
+                && !is_anchor
+                && !has_line_text
+                && row_item.map(|item| item.has_images()).unwrap_or(false);
+            if (is_anchor && line.is_empty()) || media_only {
                 line_height = 2.0;
             }
             let reveal = self.row_reveals_markers(row);

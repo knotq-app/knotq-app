@@ -243,12 +243,64 @@ impl SchemeEditor {
         if self.delete_preflight(true, window, cx) {
             return;
         }
+        if self.delete_table_if_on_empty_anchor(window, cx) {
+            return;
+        }
         let offset = self.location_to_offset(self.selection.head);
         if offset == 0 {
             return;
         }
         let prev = previous_char_boundary(&self.text, offset);
         self.replace_byte_range(prev..offset, "", Some(window), cx);
+    }
+
+    /// Backspace on a table's own line (the anchor) with no title text deletes
+    /// the whole table — the natural "there's nothing else on this line" action,
+    /// and the only way to remove a table that is the document's first line.
+    fn delete_table_if_on_empty_anchor(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        if !self.selection.is_empty() {
+            return false;
+        }
+        let row = self.selection.head.row;
+        let Some(editor_row) = self.rows.get(row) else {
+            return false;
+        };
+        if !editor_row.path.is_table_anchor() || !editor_row.item.text().is_empty() {
+            return false;
+        }
+        let table_id = editor_row.item.id;
+
+        let mut top = reconstruct_top_level(&self.rows);
+        let Some(pos) = top.iter().position(|item| item.id == table_id) else {
+            return false;
+        };
+        top.remove(pos);
+        if top.is_empty() {
+            top.push(Item::new(""));
+        }
+
+        let (text, rows) = build_buffer(&top);
+        self.text = text;
+        self.rows = rows;
+        self.refresh_layout_after_content_change(Some(window));
+        let new_row = pos.min(self.rows.len().saturating_sub(1));
+        self.selection = TextSelection::collapsed(TextLocation {
+            row: new_row,
+            col: self.line_len(new_row),
+        });
+        self.marked_range = None;
+        self.reset_cursor_blink(cx);
+        self.scroll_to_cursor(cx);
+        cx.emit(EditorEvent::Command(Command::DeleteItem {
+            scheme: self.scheme_id,
+            item: table_id,
+        }));
+        cx.notify();
+        true
     }
 
     pub(super) fn backspace_word(&mut self, window: &mut Window, cx: &mut Context<Self>) {

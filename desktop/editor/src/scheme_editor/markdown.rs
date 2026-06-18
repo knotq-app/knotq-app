@@ -138,12 +138,20 @@ fn push_markdown_run(
 }
 
 pub(super) fn is_markdown_heading(line: &str) -> bool {
+    markdown_heading_level(line).is_some()
+}
+
+pub(super) fn markdown_heading_level(line: &str) -> Option<usize> {
     let trimmed = line.trim_start();
     let hashes = trimmed.chars().take_while(|ch| *ch == '#').count();
     if hashes == 0 {
-        return false;
+        return None;
     }
-    trimmed.chars().nth(hashes).is_none_or(char::is_whitespace)
+    trimmed
+        .chars()
+        .nth(hashes)
+        .is_none_or(char::is_whitespace)
+        .then_some(hashes)
 }
 
 pub(super) fn markdown_heading_marker_range(line: &str) -> Option<Range<usize>> {

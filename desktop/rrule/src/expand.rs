@@ -136,6 +136,31 @@ mod tests {
     }
 
     #[test]
+    fn weekly_rrule_without_byday_repeats_on_anchor_weekday() {
+        let mut item = Item::new("review");
+        item.start = Some(Utc.with_ymd_and_hms(2026, 1, 8, 8, 30, 0).unwrap());
+        item.repeats = Some(CalendarRecurrence {
+            rrules: vec!["FREQ=WEEKLY;INTERVAL=1".to_string()],
+            ..Default::default()
+        });
+
+        let occs = item.occurrences(
+            Utc.with_ymd_and_hms(2026, 1, 1, 0, 0, 0).unwrap(),
+            Utc.with_ymd_and_hms(2026, 1, 23, 0, 0, 0).unwrap(),
+        );
+
+        assert_eq!(occs.len(), 3);
+        assert_eq!(
+            occs.iter().filter_map(|occ| occ.start).collect::<Vec<_>>(),
+            vec![
+                Utc.with_ymd_and_hms(2026, 1, 8, 8, 30, 0).unwrap(),
+                Utc.with_ymd_and_hms(2026, 1, 15, 8, 30, 0).unwrap(),
+                Utc.with_ymd_and_hms(2026, 1, 22, 8, 30, 0).unwrap(),
+            ]
+        );
+    }
+
+    #[test]
     fn repeat_count_is_total_occurrences() {
         let mut item = Item::new("class");
         item.start = Some(Utc.with_ymd_and_hms(2026, 1, 5, 18, 0, 0).unwrap());

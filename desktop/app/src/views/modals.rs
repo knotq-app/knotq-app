@@ -466,16 +466,14 @@ impl KnotQApp {
                                     .text_size(px(18.0))
                                     .font_weight(FontWeight::SEMIBOLD)
                                     .text_color(token_hsla(t.text_primary))
-                                    .child("You're all set"),
+                                    .child("Enable Sync?"),
                             )
                             .child(
                                 div()
                                     .text_size(px(12.0))
                                     .line_height(px(18.0))
                                     .text_color(token_hsla(t.text_soft))
-                                    .child(
-                                        "One last step — choose how this workspace should sync. Everything stays on this device unless you sign in.",
-                                    ),
+                                    .child("Sync is $3.99 a month and lets you share your workspace across devices. Local-only is fully free."),
                             )
                             // Settings → Sync-styled panel: a bordered card holding
                             // the primary/secondary account actions.
@@ -490,30 +488,17 @@ impl KnotQApp {
                                     .flex_col()
                                     .gap(px(10.0))
                                     .child(
-                                        div()
-                                            .flex()
-                                            .flex_col()
-                                            .gap(px(2.0))
-                                            .child(
-                                                div()
-                                                    .text_size(px(13.0))
-                                                    .font_weight(FontWeight::SEMIBOLD)
-                                                    .text_color(token_hsla(t.text_primary))
-                                                    .child("Sync across your devices"),
-                                            )
-                                            .child(
-                                                div()
-                                                    .text_size(px(11.0))
-                                                    .line_height(px(15.0))
-                                                    .text_color(token_hsla(t.text_soft))
-                                                    .child(
-                                                        "Sign in through your browser — KnotQ never stores your password.",
-                                                    ),
-                                            ),
+                                        div().flex().flex_col().gap(px(2.0)).child(
+                                            div()
+                                                .text_size(px(13.0))
+                                                .font_weight(FontWeight::SEMIBOLD)
+                                                .text_color(token_hsla(t.text_primary))
+                                                .child("KnotQ Sync"),
+                                        ),
                                     )
                                     .child(onboarding_account_choice(
                                         "onboarding-account-create",
-                                        "Create account",
+                                        "Sign up",
                                         Some(SyncAuthMode::CreateAccount),
                                         AccountChoiceVariant::Primary,
                                         t,
@@ -530,7 +515,7 @@ impl KnotQApp {
                             )
                             .child(onboarding_account_choice(
                                 "onboarding-account-local",
-                                "Continue without an account",
+                                "Continue local for now",
                                 None,
                                 AccountChoiceVariant::Ghost,
                                 t,
@@ -549,13 +534,6 @@ impl KnotQApp {
                                         .child(message),
                                 )
                             })
-                            .child(
-                                div()
-                                    .text_size(px(11.0))
-                                    .line_height(px(15.0))
-                                    .text_color(token_hsla(t.text_soft))
-                                    .child("You can change sync settings at any time."),
-                            ),
                     )
                     .into_any_element(),
             );

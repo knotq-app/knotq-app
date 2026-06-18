@@ -14,6 +14,7 @@ impl SchemeEditor {
         let initial_selection = TextSelection::collapsed(text_end_location(&text));
         let focus_handle = cx.focus_handle();
         let focus_in_subscription = cx.on_focus_in(&focus_handle, window, |editor, _window, cx| {
+            editor.editor_focused = true;
             editor.reset_cursor_blink(cx);
             cx.emit(EditorEvent::Focused {
                 scheme_id: editor.scheme_id,
@@ -21,8 +22,10 @@ impl SchemeEditor {
         });
         let focus_out_subscription =
             cx.on_focus_out(&focus_handle, window, |editor, _event, _window, cx| {
+                editor.editor_focused = false;
                 editor.is_selecting = false;
                 editor.mouse_selection_mode = None;
+                editor.mouse_selection_origin = None;
                 editor.stop_responding_to_mouse_movements();
                 editor.cursor_blink_task = None;
                 editor.cursor_blink_state = false;
@@ -39,7 +42,9 @@ impl SchemeEditor {
             selection: initial_selection,
             marked_range: None,
             is_selecting: false,
+            editor_focused: false,
             mouse_selection_mode: None,
+            mouse_selection_origin: None,
             cursor_blink_state: true,
             cursor_blink_task: None,
             focus_handle,
@@ -70,6 +75,7 @@ impl SchemeEditor {
         if self.read_only {
             return;
         }
+        self.editor_focused = true;
         self.focus_handle.focus(window);
         self.reset_cursor_blink(cx);
         cx.emit(EditorEvent::Focused {

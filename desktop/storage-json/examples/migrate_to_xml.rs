@@ -11,7 +11,9 @@
 use std::path::{Path, PathBuf};
 
 use knotq_model::{Scheme, SchemeId};
-use knotq_storage_json::{decode_legacy_markdown_items, decode_xml_items, encode_scheme_to_xml};
+use knotq_storage_json::{
+    decode_legacy_markdown_items, decode_xml_items, encode_scheme_to_xml, repair_scheme_file_format,
+};
 
 fn main() {
     let mut args = std::env::args().skip(1);
@@ -52,6 +54,10 @@ fn main() {
 }
 
 fn convert_file(path: &Path, dry_run: bool) -> anyhow::Result<bool> {
+    if !dry_run && repair_scheme_file_format(path)? {
+        return Ok(true);
+    }
+
     let raw = std::fs::read_to_string(path)?;
     let trimmed = raw.trim_start();
     if trimmed.is_empty() {

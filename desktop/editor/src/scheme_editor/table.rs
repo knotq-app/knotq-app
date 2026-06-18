@@ -215,9 +215,24 @@ impl SchemeEditor {
                 let width = (layout.col_w.get(path.c).copied().unwrap_or(px(MIN_COL_W))
                     - px(CELL_PAD_X * 2.0))
                 .max(px(16.0));
-                let cell_base = band_top.get(path.r).copied().unwrap_or(body_top) + px(CELL_PAD_Y);
-                let run = cell_run.entry((path.r, path.c)).or_insert(px(0.0));
-                let top = cell_base + *run;
+                let annotation = self
+                    .line_map
+                    .item_line(i)
+                    .and_then(|line| line.annotation.as_ref())
+                    .map(|annotation| annotation.height)
+                    .unwrap_or(px(0.0));
+                let top = if path.is_header_cell() {
+                    // Header cells sit in the header band, vertically centered.
+                    let text_h = self.line_map.line_text_height(i).max(px(CELL_LINE_HEIGHT));
+                    header_top + ((layout.header_h - text_h) / 2.0).max(px(0.0))
+                } else {
+                    let cell_base =
+                        band_top.get(path.r).copied().unwrap_or(body_top) + px(CELL_PAD_Y);
+                    let run = cell_run.entry((path.r, path.c)).or_insert(px(0.0));
+                    let top = cell_base + *run;
+                    *run += self.line_map.line_text_height(i).max(px(CELL_LINE_HEIGHT)) + annotation;
+                    top
+                };
                 self.cell_slots.insert(
                     i,
                     CellSlot {
@@ -227,13 +242,6 @@ impl SchemeEditor {
                         width,
                     },
                 );
-                let annotation = self
-                    .line_map
-                    .item_line(i)
-                    .and_then(|line| line.annotation.as_ref())
-                    .map(|annotation| annotation.height)
-                    .unwrap_or(px(0.0));
-                *run += self.line_map.line_text_height(i).max(px(CELL_LINE_HEIGHT)) + annotation;
                 i += 1;
             }
         }
@@ -392,7 +400,8 @@ impl SchemeEditor {
                     kind: TableControlKind::DeleteColumn(c),
                 });
             }
-            if layout.body_band_h.len() > 1 {
+            // No delete-row affordance while editing the header (it isn't a body row).
+            if r != HEADER_ROW && layout.body_band_h.len() > 1 {
                 let mut band_top = origin.y + layout.header_h;
                 for height in layout.body_band_h.iter().take(r) {
                     band_top += *height;
@@ -560,10 +569,10 @@ impl SchemeEditor {
             .unwrap_or_default()
             .pop()
         {
-            let text_width = line.size(px(CONTROL_BTN)).width;
+            let glyph = line.size(px(CONTROL_BTN));
             let origin = point(
-                bounds.left() + (bounds.size.width - text_width) / 2.0,
-                bounds.top() + px(1.0),
+                bounds.left() + (bounds.size.width - glyph.width) / 2.0,
+                bounds.top() + (bounds.size.height - glyph.height) / 2.0,
             );
             let _ = line.paint(origin, px(CONTROL_BTN), TextAlign::Left, None, window, cx);
         }

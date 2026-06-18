@@ -84,21 +84,6 @@ pub(crate) fn expand_weekly(
 
     loop {
         let week_start = anchor_week_start + Duration::weeks(cycle as i64);
-        let week_end = week_start + Duration::weeks(1);
-        let week_end_dt = Utc
-            .with_ymd_and_hms(
-                week_end.year(),
-                week_end.month(),
-                week_end.day(),
-                ctx.anchor.hour(),
-                ctx.anchor.minute(),
-                ctx.anchor.second(),
-            )
-            .single()
-            .unwrap_or(ctx.anchor);
-        if week_end_dt >= ctx.to && !out.is_empty() {
-            break;
-        }
         if week_start > ctx.to.date_naive() + Duration::weeks(1) {
             break;
         }

@@ -76,9 +76,9 @@ impl SchemeEditor {
 
         for row in 0..self.line_map.line_count() {
             let path = self.rows.get(row).map(|row| row.path).unwrap_or_default();
-            if path.is_table_anchor() {
-                continue;
-            }
+            // A table anchor's grid chrome is painted earlier, but its *text*
+            // (a title/caption on the same line as the table) still renders here
+            // in the line band above the grid — otherwise that text is invisible.
             let (base_x, base_y) = self.row_base_xy(row);
             if let Some(line) = self.line_map.line(row).cloned() {
                 let line_origin = point(text_origin.x + base_x, text_origin.y + base_y);
@@ -94,7 +94,7 @@ impl SchemeEditor {
                     {
                         self.paint_date_annotation(&editor_row, row, line_origin, window, cx);
                     }
-                    if !path.is_cell() {
+                    if !path.is_cell() && !path.is_table_anchor() {
                         self.paint_item_media(&editor_row.item, row, line_origin, window, cx);
                     }
                 }
@@ -128,7 +128,12 @@ impl SchemeEditor {
         }
     }
 
-    pub(super) fn media_stack_height(&self, item: &Item, max_width: Pixels) -> Pixels {
+    pub(super) fn media_stack_height(
+        &self,
+        item: &Item,
+        max_width: Pixels,
+        has_text: bool,
+    ) -> Pixels {
         let mut height = px(0.0);
         let mut count = 0;
         for media in item.images() {
@@ -137,7 +142,9 @@ impl SchemeEditor {
                 continue;
             }
             if count == 0 {
-                height += px(IMAGE_TOP_GAP);
+                // An image-only line has no text to separate from, so it sits
+                // flush at the top of the (collapsed) line band.
+                height += if has_text { px(IMAGE_TOP_GAP) } else { px(0.0) };
             } else {
                 height += px(IMAGE_STACK_GAP);
             }
@@ -175,10 +182,11 @@ impl SchemeEditor {
             .as_ref()
             .map(|annotation| annotation.height)
             .unwrap_or(px(0.0));
+        let has_text = !clean_line_text(&item.text()).is_empty();
         let mut y = line_origin.y
             + self.line_map.line_text_height(row_ix)
             + annotation_height
-            + px(IMAGE_TOP_GAP);
+            + if has_text { px(IMAGE_TOP_GAP) } else { px(0.0) };
 
         for media in item.images() {
             let media_size = media_display_size(media, max_width);

@@ -2,6 +2,11 @@ use std::ops::Range;
 
 use knotq_model::{Inline, Item, ItemMarker, Table};
 
+/// Sentinel table-row index for a header cell. Header cells map to a column's
+/// *name* rather than a body row, so they live "above" body row 0 — and
+/// `HEADER_ROW as isize == -1` makes vertical navigation fall out naturally.
+pub(super) const HEADER_ROW: usize = usize::MAX;
+
 /// Where a buffer row lives in the document tree. The editor keeps one flat
 /// text buffer so the ordinary text pipeline can edit table cells too.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -49,6 +54,11 @@ impl RowPath {
 
     pub(super) fn is_cell(&self) -> bool {
         self.kind == RowKind::Cell
+    }
+
+    /// A header cell is a cell whose row index is the [`HEADER_ROW`] sentinel.
+    pub(super) fn is_header_cell(&self) -> bool {
+        self.kind == RowKind::Cell && self.r == HEADER_ROW
     }
 
     pub(super) fn is_doc(&self) -> bool {
@@ -135,7 +145,11 @@ pub(super) fn reconstruct_top_level(rows: &[EditorRow]) -> Vec<Item> {
                 i += 1;
                 while i < rows.len() && rows[i].path.is_cell() {
                     let path = rows[i].path;
-                    if let Some(table_row) = table.rows.get_mut(path.r) {
+                    if path.is_header_cell() {
+                        if let Some(column) = table.columns.get_mut(path.c) {
+                            column.name = rows[i].item.text();
+                        }
+                    } else if let Some(table_row) = table.rows.get_mut(path.r) {
                         if let Some(cell) = table_row.cells.get_mut(path.c) {
                             cell.items.push(rows[i].item.clone());
                         }

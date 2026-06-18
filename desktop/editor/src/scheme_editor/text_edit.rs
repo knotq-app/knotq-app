@@ -118,21 +118,50 @@ impl SchemeEditor {
         let mut items: Vec<Item> = self.rows.iter().map(|row| row.item.clone()).collect();
         let mut commands = Vec::new();
 
+        let delete_start = if reuse_first { prefix + 1 } else { prefix };
+        // Lines that merge into the reused prefix line carry their embeds
+        // (inline images/tables) onto it rather than being dropped along with
+        // their deleted items.
+        let merged_embeds: Vec<Inline> = if reuse_first {
+            (delete_start..old_suffix.min(items.len()))
+                .flat_map(|idx| {
+                    items[idx]
+                        .content
+                        .iter()
+                        .filter(|inline| !inline.is_text())
+                        .cloned()
+                        .collect::<Vec<_>>()
+                })
+                .collect()
+        } else {
+            Vec::new()
+        };
+
         if reuse_first {
             if let Some(item) = items.get_mut(prefix) {
                 let text = new_text_lines[prefix].clone();
-                if item.text() != text {
+                let text_changed = item.text() != text;
+                if text_changed {
                     item.set_text(text.clone());
-                    commands.push(Command::UpdateItemText {
+                }
+                if merged_embeds.is_empty() {
+                    if text_changed {
+                        commands.push(Command::UpdateItemText {
+                            scheme: self.scheme_id,
+                            item: item.id,
+                            text,
+                        });
+                    }
+                } else {
+                    item.content.extend(merged_embeds.iter().cloned());
+                    commands.push(Command::ReplaceItem {
                         scheme: self.scheme_id,
-                        item: item.id,
-                        text,
+                        item: item.clone(),
                     });
                 }
             }
         }
 
-        let delete_start = if reuse_first { prefix + 1 } else { prefix };
         for _ in delete_start..old_suffix {
             if delete_start < items.len() {
                 let id = items[delete_start].id;
@@ -476,12 +505,20 @@ mod tests {
         text.split('\n').map(clean_line_text).collect()
     }
 
+    /// Index of the first body cell row (after the anchor and the header row).
+    fn first_body_cell(rows: &[EditorRow]) -> usize {
+        rows.iter()
+            .position(|row| row.path.is_cell() && !row.path.is_header_cell())
+            .expect("table has a body cell")
+    }
+
     #[test]
     fn tabled_text_replacement_preserves_the_edited_cell_path() {
         let item = table_item(2, 2);
         let (old_text, old_rows) = build_buffer(&[item]);
+        let body0 = first_body_cell(&old_rows);
         let mut new_lines = text_lines(&old_text);
-        new_lines[1] = "Alpha".to_string();
+        new_lines[body0] = "Alpha".to_string();
         let old_lines = text_lines(&old_text);
         let old_refs: Vec<&str> = old_lines.iter().map(String::as_str).collect();
         let new_refs: Vec<&str> = new_lines.iter().map(String::as_str).collect();
@@ -491,10 +528,10 @@ mod tests {
             &old_rows,
             &new_lines,
             change,
-            TextLocation { row: 1, col: 0 },
+            TextLocation { row: body0, col: 0 },
         );
-        assert!(rows[1].path.is_cell());
-        assert_eq!((rows[1].path.r, rows[1].path.c), (0, 0));
+        assert!(rows[body0].path.is_cell());
+        assert_eq!((rows[body0].path.r, rows[body0].path.c), (0, 0));
 
         let top = reconstruct_top_level(&rows);
         assert_eq!(top.len(), 1);
@@ -508,8 +545,9 @@ mod tests {
         let mut item = table_item(2, 2);
         item.table_mut().unwrap().cell_mut(0, 0).unwrap().items[0].set_text("Alpha".to_string());
         let (old_text, old_rows) = build_buffer(&[item]);
+        let body0 = first_body_cell(&old_rows);
         let mut new_lines = text_lines(&old_text);
-        new_lines.insert(2, "Second line".to_string());
+        new_lines.insert(body0 + 1, "Second line".to_string());
         let old_lines = text_lines(&old_text);
         let old_refs: Vec<&str> = old_lines.iter().map(String::as_str).collect();
         let new_refs: Vec<&str> = new_lines.iter().map(String::as_str).collect();
@@ -519,7 +557,7 @@ mod tests {
             &old_rows,
             &new_lines,
             change,
-            TextLocation { row: 1, col: 5 },
+            TextLocation { row: body0, col: 5 },
         );
         let top = reconstruct_top_level(&rows);
         let table = top[0].table().unwrap();

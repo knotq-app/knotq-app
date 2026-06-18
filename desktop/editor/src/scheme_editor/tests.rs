@@ -342,7 +342,11 @@ fn numbered_marker_ordinals_reset_at_same_indent_boundaries() {
 fn markdown_heading_requires_hash_separator() {
     assert!(is_markdown_heading("# Heading"));
     assert!(is_markdown_heading("## Heading"));
+    assert_eq!(markdown_heading_level("# Heading"), Some(1));
+    assert_eq!(markdown_heading_level("## Heading"), Some(2));
+    assert_eq!(markdown_heading_level("### Heading"), Some(3));
     assert!(!is_markdown_heading("#channel"));
+    assert_eq!(markdown_heading_level("#channel"), None);
 }
 
 #[test]

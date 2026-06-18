@@ -335,10 +335,16 @@ impl SchemeEditor {
             .map(|table| table.column_count())
             .unwrap_or(1);
         let nrows = self.table_nrows(path.anchor);
+        let is_header = path.is_header_cell();
         let (mut r, mut c) = (path.r, path.c);
+        // Tab order runs across the header row, then row-major through the body.
+        // Header cells carry the HEADER_ROW sentinel, so guard `r` arithmetic.
         if forward {
             if c + 1 < ncols {
                 c += 1;
+            } else if is_header {
+                r = 0;
+                c = 0;
             } else if r + 1 < nrows {
                 c = 0;
                 r += 1;
@@ -347,11 +353,14 @@ impl SchemeEditor {
             }
         } else if c > 0 {
             c -= 1;
-        } else if r > 0 {
+        } else if is_header {
+            return;
+        } else if r == 0 {
+            r = HEADER_ROW;
+            c = ncols.saturating_sub(1);
+        } else {
             c = ncols.saturating_sub(1);
             r -= 1;
-        } else {
-            return;
         }
 
         if let Some(row) = self.find_cell_row(path.anchor, r, c, false) {

@@ -7,7 +7,6 @@ pub(super) enum ToolbarGlyph {
     Bullet,
     Numbered,
     Heading,
-    Image,
     Table,
     Unindent,
     Indent,
@@ -77,92 +76,34 @@ pub(super) fn toolbar_glyph(glyph: ToolbarGlyph, active: bool, c: Theme) -> gpui
             .text_color(color)
             .child("#")
             .into_any_element(),
-        ToolbarGlyph::Image => div()
+        // A 14×12 table: a header band (top divider) over two body columns
+        // (one centered vertical divider). Reads clearly as a table and is
+        // symmetric within the 24px chip.
+        ToolbarGlyph::Table => div()
             .relative()
-            .w(px(15.0))
+            .w(px(14.0))
             .h(px(12.0))
             .rounded(px(2.0))
             .border_1()
             .border_color(color)
+            // Header divider, full inner width.
             .child(
                 div()
                     .absolute()
-                    .top(px(2.0))
-                    .right(px(2.0))
-                    .w(px(3.0))
-                    .h(px(3.0))
-                    .rounded(px(2.0))
-                    .bg(color),
-            )
-            .child(
-                div()
-                    .absolute()
-                    .left(px(2.0))
-                    .right(px(2.0))
-                    .bottom(px(2.0))
+                    .left(px(0.0))
+                    .right(px(0.0))
+                    .top(px(3.0))
                     .h(px(1.0))
                     .bg(color),
             )
+            // Body column divider, centered, below the header.
             .child(
                 div()
                     .absolute()
-                    .left(px(4.0))
-                    .bottom(px(2.0))
-                    .w(px(1.0))
-                    .h(px(3.0))
-                    .bg(color),
-            )
-            .child(
-                div()
-                    .absolute()
-                    .left(px(7.0))
-                    .bottom(px(2.0))
-                    .w(px(1.0))
-                    .h(px(5.0))
-                    .bg(color),
-            )
-            .into_any_element(),
-        ToolbarGlyph::Table => div()
-            .relative()
-            .w(px(14.0))
-            .h(px(13.0))
-            .rounded(px(2.0))
-            .border_1()
-            .border_color(color)
-            .child(
-                div()
-                    .absolute()
-                    .top(px(1.0))
-                    .bottom(px(1.0))
-                    .left(px(4.0))
-                    .w(px(1.0))
-                    .bg(color),
-            )
-            .child(
-                div()
-                    .absolute()
-                    .top(px(1.0))
-                    .bottom(px(1.0))
-                    .left(px(8.0))
-                    .w(px(1.0))
-                    .bg(color),
-            )
-            .child(
-                div()
-                    .absolute()
-                    .left(px(1.0))
-                    .right(px(1.0))
                     .top(px(4.0))
-                    .h(px(1.0))
-                    .bg(color),
-            )
-            .child(
-                div()
-                    .absolute()
-                    .left(px(1.0))
-                    .right(px(1.0))
-                    .top(px(8.0))
-                    .h(px(1.0))
+                    .bottom(px(0.0))
+                    .left(px(6.0))
+                    .w(px(1.0))
                     .bg(color),
             )
             .into_any_element(),

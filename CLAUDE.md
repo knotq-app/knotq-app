@@ -69,7 +69,8 @@ Child lines (indented under a task) become the event's description on the calend
 ### Themes
 
 8 themes total:
-- **Dark:** Obsidian (default), Rosé Piné Moon, Catppuccin Mocha, Tokyo Night
+- **Default mode:** System
+- **Dark:** Obsidian, Rosé Piné Moon, Catppuccin Mocha, Tokyo Night
 - **Light:** Light, Parchment, Rosé Piné Dawn, Catppuccin Latte
 
 ### Data Storage
