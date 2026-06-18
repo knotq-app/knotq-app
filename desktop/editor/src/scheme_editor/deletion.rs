@@ -134,18 +134,7 @@ impl SchemeEditor {
     }
 
     fn empty_doc_line_adjacent_to_table(&self, row: usize) -> bool {
-        self.rows.get(row).is_some_and(|editor_row| {
-            editor_row.path.is_doc()
-                && self.line_len(row) == 0
-                && (row
-                    .checked_sub(1)
-                    .and_then(|previous| self.rows.get(previous))
-                    .is_some_and(|previous| previous.path.is_table_anchor())
-                    || self
-                        .rows
-                        .get(row + 1)
-                        .is_some_and(|next| next.path.is_table_anchor()))
-        })
+        is_empty_doc_line_adjacent_to_table(&self.rows, row, self.line_len(row))
     }
 
     pub(super) fn clear_current_line_attributes_if_empty(
@@ -721,6 +710,58 @@ impl SchemeEditor {
         cx.notify();
         self.emit_top_level_diff(&old_top, &new_top, cx);
         true
+    }
+}
+
+fn is_empty_doc_line_adjacent_to_table(rows: &[EditorRow], row: usize, line_len: usize) -> bool {
+    let Some(editor_row) = rows.get(row) else {
+        return false;
+    };
+    if !editor_row.path.is_doc() || line_len != 0 {
+        return false;
+    }
+
+    let Some(top_index) = top_level_index_for_flat_row(rows, row) else {
+        return false;
+    };
+    let top = reconstruct_top_level(rows);
+    top_index
+        .checked_sub(1)
+        .and_then(|previous| top.get(previous))
+        .is_some_and(|item| item.has_table())
+        || top.get(top_index + 1).is_some_and(|item| item.has_table())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use knotq_model::Table;
+
+    #[test]
+    fn empty_doc_line_after_table_is_boundary_across_cell_rows() {
+        let mut table = Item::new("");
+        table.content.push(Inline::Table(Table::new(2, 2)));
+        let blank = Item::new("");
+        let (_, rows) = build_buffer(&[table, blank]);
+        let blank_row = rows
+            .iter()
+            .rposition(|row| row.path.is_doc() && !row.item.has_table())
+            .expect("blank doc row after table");
+
+        assert!(!rows[blank_row - 1].path.is_table_anchor());
+        assert!(is_empty_doc_line_adjacent_to_table(&rows, blank_row, 0));
+    }
+
+    #[test]
+    fn empty_doc_line_before_table_is_boundary() {
+        let blank = Item::new("");
+        let mut table = Item::new("");
+        table.content.push(Inline::Table(Table::new(1, 2)));
+        let (_, rows) = build_buffer(&[blank, table]);
+
+        assert!(rows[1].path.is_table_anchor());
+        assert!(is_empty_doc_line_adjacent_to_table(&rows, 0, 0));
+        assert!(!is_empty_doc_line_adjacent_to_table(&rows, 0, 1));
     }
 }
 
