@@ -252,6 +252,66 @@ fn block_inlines_for_item(item: &Item, table: Option<Table>) -> Vec<Inline> {
     blocks
 }
 
+pub(super) fn selected_block_inlines(
+    item: &Item,
+    line: &str,
+    selection: Range<usize>,
+) -> Vec<Inline> {
+    let blocks = block_inlines_for_item(item, None);
+    block_object_ranges(line)
+        .into_iter()
+        .zip(blocks)
+        .filter_map(|(object, block)| {
+            (selection.start < object.end && object.start < selection.end).then_some(block)
+        })
+        .collect()
+}
+
+pub(super) fn replace_block_range_with_inlines(
+    item: &mut Item,
+    line: &str,
+    range: Range<usize>,
+    inserted: Vec<Inline>,
+) -> bool {
+    if range.start > range.end
+        || range.end > line.len()
+        || !line.is_char_boundary(range.start)
+        || !line.is_char_boundary(range.end)
+    {
+        return false;
+    }
+
+    let old_blocks = block_inlines_for_item(item, None);
+    let object_ranges = block_object_ranges(line);
+    let mut new_line = String::with_capacity(
+        line.len() + inserted.len() * TABLE_OBJECT_LEN - range.len().min(line.len()),
+    );
+    new_line.push_str(&line[..range.start]);
+    for _ in &inserted {
+        new_line.push(TABLE_OBJECT_CHAR);
+    }
+    new_line.push_str(&line[range.end..]);
+
+    let mut blocks = Vec::with_capacity(old_blocks.len() + inserted.len());
+    let mut inserted_blocks = Some(inserted);
+    for (object, block) in object_ranges.into_iter().zip(old_blocks) {
+        if object.end <= range.start {
+            blocks.push(block);
+        } else if object.start >= range.end {
+            if let Some(mut inserted) = inserted_blocks.take() {
+                blocks.append(&mut inserted);
+            }
+            blocks.push(block);
+        }
+    }
+    if let Some(mut inserted) = inserted_blocks {
+        blocks.append(&mut inserted);
+    }
+
+    item.content = content_from_block_line(&new_line, &mut blocks.into_iter());
+    true
+}
+
 fn content_from_block_line(line: &str, blocks: &mut impl Iterator<Item = Inline>) -> Vec<Inline> {
     let mut content = Vec::new();
     let mut cursor = 0;
@@ -839,6 +899,87 @@ mod tests {
         assert_eq!(top[1].indent, 2);
         assert!(matches!(top[1].content[0], Inline::Image(_)));
         assert!(matches!(top[1].content[1], Inline::Text { .. }));
+    }
+
+    #[test]
+    fn selected_block_inlines_extracts_selected_image_or_table() {
+        let image = test_image();
+        let mut item = Item::new("");
+        item.content.push(Inline::text("Before"));
+        item.content.push(Inline::Image(image));
+        item.content.push(Inline::Table(Table::new(1, 1)));
+        item.content.push(Inline::text("After"));
+
+        let (text, _) = build_buffer(&[item.clone()]);
+        let image_start = "Before".len();
+        let image_range = image_start..image_start + TABLE_OBJECT_LEN;
+        let table_start = image_range.end;
+        let table_range = table_start..table_start + TABLE_OBJECT_LEN;
+
+        assert_eq!(
+            selected_block_inlines(&item, &text, image_range),
+            vec![Inline::Image(image)]
+        );
+        assert!(matches!(
+            selected_block_inlines(&item, &text, table_range).as_slice(),
+            [Inline::Table(_)]
+        ));
+    }
+
+    #[test]
+    fn replace_block_range_with_inlines_replaces_selected_object_only() {
+        let first = test_image();
+        let second = ImageInline {
+            asset: Uuid::new_v4(),
+            format: ImageAssetFormat::Jpeg,
+            width: Some(640),
+            height: Some(480),
+        };
+        let mut item = Item::new("");
+        item.content.push(Inline::text("Before"));
+        item.content.push(Inline::Image(first));
+        item.content.push(Inline::text("After"));
+
+        let (text, _) = build_buffer(&[item.clone()]);
+        let image_start = "Before".len();
+        let image_range = image_start..image_start + TABLE_OBJECT_LEN;
+
+        assert!(replace_block_range_with_inlines(
+            &mut item,
+            &text,
+            image_range,
+            vec![Inline::Image(second)]
+        ));
+        assert_eq!(
+            item.content,
+            vec![
+                Inline::text("Before"),
+                Inline::Image(second),
+                Inline::text("After")
+            ]
+        );
+    }
+
+    #[test]
+    fn replace_block_range_with_inlines_inserts_object_at_cursor() {
+        let image = test_image();
+        let mut item = Item::new("BeforeAfter");
+        let line = item.text();
+
+        assert!(replace_block_range_with_inlines(
+            &mut item,
+            &line,
+            "Before".len().."Before".len(),
+            vec![Inline::Image(image)]
+        ));
+        assert_eq!(
+            item.content,
+            vec![
+                Inline::text("Before"),
+                Inline::Image(image),
+                Inline::text("After")
+            ]
+        );
     }
 
     #[test]

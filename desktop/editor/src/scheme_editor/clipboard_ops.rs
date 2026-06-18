@@ -54,8 +54,51 @@ impl SchemeEditor {
                 return Some(rows);
             }
         }
+        if let Some(items) = self.selected_block_object_clipboard_items(&text) {
+            cx.write_to_clipboard(ClipboardItem::new_string_with_json_metadata(
+                text,
+                SchemeClipboardPayload::new_object_selection(items),
+            ));
+            return None;
+        }
         cx.write_to_clipboard(ClipboardItem::new_string(text));
         None
+    }
+
+    fn selected_block_object_clipboard_items(&self, selected_text: &str) -> Option<Vec<Item>> {
+        if selected_text.chars().any(|ch| ch != '\n') {
+            return None;
+        }
+
+        let (start, end) = self.selection.ordered();
+        let mut items = Vec::new();
+        for row in start.row..=end.row {
+            let Some(editor_row) = self.rows.get(row) else {
+                continue;
+            };
+            if editor_row.path.is_cell() || !item_has_block_object(&editor_row.item) {
+                continue;
+            }
+            let line_len = self.line_len(row);
+            let selection_start = (if row == start.row { start.col } else { 0 }).min(line_len);
+            let selection_end = (if row == end.row { end.col } else { line_len }).min(line_len);
+            if selection_start >= selection_end {
+                continue;
+            }
+            let Some(line) = self.line_range(row).and_then(|range| self.text.get(range)) else {
+                continue;
+            };
+            for block in
+                selected_block_inlines(&editor_row.item, line, selection_start..selection_end)
+            {
+                let mut item = Item::new("");
+                item.indent = editor_row.item.indent;
+                item.content.push(block);
+                items.push(item);
+            }
+        }
+
+        (!items.is_empty()).then_some(items)
     }
 
     pub(super) fn copy(&mut self, cx: &mut Context<Self>) {
@@ -192,6 +235,10 @@ impl SchemeEditor {
             return;
         }
         if let Some(payload) = rich_clipboard_payload(&item) {
+            if payload.object_selection {
+                self.paste_rich_objects(payload.items, window, cx);
+                return;
+            }
             self.paste_rich_items(payload.items, window, cx);
             return;
         }
@@ -306,6 +353,74 @@ impl SchemeEditor {
             .collect::<Vec<_>>();
         let delete_range = self.rich_paste_delete_range();
         self.replace_rows_with_items(delete_range, pasted_items, window, cx)
+    }
+
+    pub(super) fn paste_rich_objects(
+        &mut self,
+        items: Vec<Item>,
+        window: Option<&mut Window>,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        if self.read_only {
+            return false;
+        }
+        let blocks = items
+            .into_iter()
+            .flat_map(|item| item.content)
+            .filter(|inline| !inline.is_text())
+            .collect::<Vec<_>>();
+        if blocks.is_empty() {
+            return false;
+        }
+
+        let (start, end) = self.selection.ordered();
+        if start.row != end.row {
+            return false;
+        }
+        let row = start.row.min(self.rows.len().saturating_sub(1));
+        let Some(editor_row) = self.rows.get(row) else {
+            return false;
+        };
+        if editor_row.path.is_cell() {
+            return false;
+        }
+        let Some(line) = self
+            .line_range(row)
+            .and_then(|range| self.text.get(range))
+            .map(ToOwned::to_owned)
+        else {
+            return false;
+        };
+
+        let range = start.col.min(line.len())..end.col.min(line.len());
+        let cursor_col = range.start + blocks.len() * TABLE_OBJECT_LEN;
+        let old_top = reconstruct_top_level(&self.rows);
+        let mut new_top = old_top.clone();
+        let Some(pos) = top_level_index_for_flat_row(&self.rows, row) else {
+            return false;
+        };
+        let Some(item) = new_top.get_mut(pos) else {
+            return false;
+        };
+        if !replace_block_range_with_inlines(item, &line, range, blocks) {
+            return false;
+        }
+
+        let (text, rows) = build_buffer(&new_top);
+        self.text = text;
+        self.rows = rows;
+        self.refresh_layout_after_content_change(window);
+        let row = flat_row_for_top_level_index(&self.rows, pos);
+        self.selection = TextSelection::collapsed(TextLocation {
+            row,
+            col: cursor_col.min(self.line_len(row)),
+        });
+        self.marked_range = None;
+        self.reset_cursor_blink(cx);
+        self.scroll_to_cursor(cx);
+        cx.notify();
+        self.emit_top_level_diff(&old_top, &new_top, cx);
+        true
     }
 
     pub(super) fn replace_rows_with_items(

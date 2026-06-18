@@ -8,6 +8,8 @@ const KNOTQ_CLIPBOARD_FORMAT: &str = "knotq.scheme_items.v1";
 pub(super) struct SchemeClipboardPayload {
     pub(super) format: String,
     pub(super) items: Vec<Item>,
+    #[serde(default)]
+    pub(super) object_selection: bool,
 }
 
 impl SchemeClipboardPayload {
@@ -15,6 +17,15 @@ impl SchemeClipboardPayload {
         Self {
             format: KNOTQ_CLIPBOARD_FORMAT.to_string(),
             items,
+            object_selection: false,
+        }
+    }
+
+    pub(super) fn new_object_selection(items: Vec<Item>) -> Self {
+        Self {
+            format: KNOTQ_CLIPBOARD_FORMAT.to_string(),
+            items,
+            object_selection: true,
         }
     }
 }
