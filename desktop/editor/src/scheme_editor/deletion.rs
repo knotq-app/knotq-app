@@ -216,8 +216,8 @@ impl SchemeEditor {
     }
 
     pub(super) fn backspace(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.delete_table_if_on_empty_anchor(window, cx)
-            || self.delete_adjacent_table_if_boundary(true, window, cx)
+        if self.merge_adjacent_table_if_boundary(true, window, cx)
+            || self.delete_table_if_on_empty_anchor(window, cx)
         {
             return;
         }
@@ -316,7 +316,7 @@ impl SchemeEditor {
     }
 
     pub(super) fn backspace_word(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.delete_adjacent_table_if_boundary(true, window, cx) {
+        if self.merge_adjacent_table_if_boundary(true, window, cx) {
             return;
         }
         if self.boundary_delete_blocked(true) {
@@ -331,7 +331,7 @@ impl SchemeEditor {
     }
 
     pub(super) fn backspace_line(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.delete_adjacent_table_if_boundary(true, window, cx) {
+        if self.merge_adjacent_table_if_boundary(true, window, cx) {
             return;
         }
         if self.boundary_delete_blocked(true) {
@@ -353,7 +353,7 @@ impl SchemeEditor {
     }
 
     pub(super) fn delete_forward(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.delete_adjacent_table_if_boundary(false, window, cx) {
+        if self.merge_adjacent_table_if_boundary(false, window, cx) {
             return;
         }
         if self.boundary_delete_blocked(false) {
@@ -371,7 +371,7 @@ impl SchemeEditor {
     }
 
     pub(super) fn delete_word(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.delete_adjacent_table_if_boundary(false, window, cx) {
+        if self.merge_adjacent_table_if_boundary(false, window, cx) {
             return;
         }
         if self.boundary_delete_blocked(false) {
@@ -386,7 +386,7 @@ impl SchemeEditor {
     }
 
     pub(super) fn delete_line(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.delete_adjacent_table_if_boundary(false, window, cx) {
+        if self.merge_adjacent_table_if_boundary(false, window, cx) {
             return;
         }
         if self.boundary_delete_blocked(false) {
@@ -407,109 +407,69 @@ impl SchemeEditor {
         }
     }
 
-    fn delete_adjacent_table_if_boundary(
+    fn merge_adjacent_table_if_boundary(
         &mut self,
         prefer_backward: bool,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> bool {
-        if self.selection.is_empty() {
-            let row = self.current_row_index();
-            let path = self.rows.get(row).map(|row| row.path).unwrap_or_default();
-            if path.is_cell() {
-                return false;
-            }
-            let col = self.selection.head.col.min(self.line_len(row));
-            let anchor = if prefer_backward {
-                (col == 0)
-                    .then(|| self.table_anchor_before_row(row))
-                    .flatten()
-            } else {
-                (col == self.line_len(row))
-                    .then(|| self.table_anchor_after_row(row))
-                    .flatten()
-            };
+        if !self.selection.is_empty() {
+            return false;
+        };
 
-            if let Some(anchor) = anchor {
-                return self.delete_table_at_anchor(anchor, row, prefer_backward, window, cx);
-            }
-        }
-        false
-    }
-
-    fn table_anchor_before_row(&self, row: usize) -> Option<usize> {
-        let previous = row.checked_sub(1)?;
-        let path = self.rows.get(previous)?.path;
+        let row = self.current_row_index();
+        let path = self.rows.get(row).map(|row| row.path).unwrap_or_default();
         if path.is_cell() {
-            Some(path.anchor)
-        } else if path.is_table_anchor() {
-            Some(previous)
-        } else {
-            None
+            return false;
         }
-    }
 
-    fn table_anchor_after_row(&self, row: usize) -> Option<usize> {
-        let next = row + 1;
-        let path = self.rows.get(next)?.path;
-        if path.is_table_anchor() {
-            Some(next)
-        } else if path.is_cell() {
-            Some(path.anchor)
-        } else {
+        let col = self.selection.head.col.min(self.line_len(row));
+        let Some((target_top, table_top, cursor_col)) = (if prefer_backward {
+            if col != 0 || !path.is_table_anchor() {
+                None
+            } else {
+                top_level_index_for_flat_row(&self.rows, row).and_then(|table_top| {
+                    table_top.checked_sub(1).map(|target_top| {
+                        let target_row = flat_row_for_top_level_index(&self.rows, target_top);
+                        (target_top, table_top, self.line_len(target_row))
+                    })
+                })
+            }
+        } else if col != self.line_len(row) {
             None
-        }
-    }
-
-    fn delete_table_at_anchor(
-        &mut self,
-        anchor_row: usize,
-        cursor_row: usize,
-        prefer_backward: bool,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) -> bool {
-        let Some(anchor) = self.rows.get(anchor_row) else {
+        } else {
+            top_level_index_for_flat_row(&self.rows, row).and_then(|target_top| {
+                let table_top = target_top.checked_add(1)?;
+                let table_row = flat_row_for_top_level_index(&self.rows, table_top);
+                self.rows
+                    .get(table_row)
+                    .filter(|row| row.path.is_table_anchor())
+                    .map(|_| (target_top, table_top, col))
+            })
+        }) else {
             return false;
         };
-        if !anchor.path.is_table_anchor() {
-            return false;
-        }
-        let table_id = anchor.item.id;
-        let mut top = reconstruct_top_level(&self.rows);
-        let Some(pos) = top.iter().position(|item| item.id == table_id) else {
+
+        let old_top = reconstruct_top_level(&self.rows);
+        let mut new_top = old_top.clone();
+        let Some(result) = merge_table_item_into(&mut new_top, target_top, table_top) else {
             return false;
         };
-        top.remove(pos);
-        if top.is_empty() {
-            top.push(Item::new(""));
-        }
 
-        let (text, rows) = build_buffer(&top);
+        let (text, rows) = build_buffer(&new_top);
         self.text = text;
         self.rows = rows;
         self.refresh_layout_after_content_change(Some(window));
-        let target_top = if prefer_backward || cursor_row == anchor_row {
-            pos
-        } else {
-            pos.saturating_sub(1)
-        }
-        .min(self.rows.len().saturating_sub(1));
-        let row = flat_row_for_top_level_index(&self.rows, target_top);
-        let col = if prefer_backward || cursor_row == anchor_row {
-            0
-        } else {
-            self.line_len(row)
-        };
-        self.selection = TextSelection::collapsed(TextLocation { row, col });
+        let row = flat_row_for_top_level_index(&self.rows, result.target_index);
+        self.selection = TextSelection::collapsed(TextLocation {
+            row,
+            col: cursor_col.min(self.line_len(row)),
+        });
         self.marked_range = None;
         self.reset_cursor_blink(cx);
         self.scroll_to_cursor(cx);
-        cx.emit(EditorEvent::Command(Command::DeleteItem {
-            scheme: self.scheme_id,
-            item: table_id,
-        }));
         cx.notify();
+        self.emit_top_level_diff(&old_top, &new_top, cx);
         true
     }
 }
@@ -526,6 +486,20 @@ fn flat_row_for_top_level_index(rows: &[EditorRow], top_level_index: usize) -> u
         top += 1;
     }
     rows.len().saturating_sub(1)
+}
+
+fn top_level_index_for_flat_row(rows: &[EditorRow], target_row: usize) -> Option<usize> {
+    let mut top = 0;
+    for (row, editor_row) in rows.iter().enumerate() {
+        if editor_row.path.is_cell() {
+            continue;
+        }
+        if row == target_row {
+            return Some(top);
+        }
+        top += 1;
+    }
+    None
 }
 
 fn same_region(a: RowPath, b: RowPath) -> bool {

@@ -205,6 +205,44 @@ pub(super) fn rows_have_table(rows: &[EditorRow]) -> bool {
     rows.iter().any(|row| row.path.is_table_anchor())
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) struct TableMergeResult {
+    pub(super) target: ItemId,
+    pub(super) deleted: ItemId,
+    pub(super) target_index: usize,
+}
+
+pub(super) fn merge_table_item_into(
+    items: &mut Vec<Item>,
+    target_index: usize,
+    table_index: usize,
+) -> Option<TableMergeResult> {
+    if target_index == table_index
+        || target_index >= items.len()
+        || table_index >= items.len()
+        || !items[table_index].has_table()
+        || items[target_index].has_table()
+    {
+        return None;
+    }
+
+    let mut table_item = items.remove(table_index);
+    let target_index = if table_index < target_index {
+        target_index.checked_sub(1)?
+    } else {
+        target_index
+    };
+    let deleted = table_item.id;
+    let target = items.get_mut(target_index)?;
+    target.content.append(&mut table_item.content);
+
+    Some(TableMergeResult {
+        target: target.id,
+        deleted,
+        target_index,
+    })
+}
+
 pub(super) fn same_rows(a: &[EditorRow], b: &[EditorRow]) -> bool {
     a.len() == b.len()
         && a.iter().zip(b).all(|(a, b)| {
@@ -365,6 +403,54 @@ mod tests {
 
         assert_eq!(table.columns[0].name, "Project");
         assert_eq!(table.columns[1].name, "Owner");
+    }
+
+    #[test]
+    fn table_merge_keeps_table_inline_as_a_single_object() {
+        let before = Item::new("Before");
+        let mut table = Item::new("");
+        table.content.push(Inline::Table(Table::new(1, 2)));
+        let after = Item::new("After");
+        let table_id = table.id;
+
+        let mut top = vec![before.clone(), table, after.clone()];
+        let result = merge_table_item_into(&mut top, 0, 1).expect("table merges into text item");
+
+        assert_eq!(result.target, before.id);
+        assert_eq!(result.deleted, table_id);
+        assert_eq!(result.target_index, 0);
+        assert_eq!(top.len(), 2);
+        assert_eq!(top[0].text(), "Before");
+        assert!(top[0].has_table());
+        assert_eq!(top[1].id, after.id);
+
+        let (text, rows) = build_buffer(&top);
+        assert_eq!(
+            text.lines().take(3).collect::<Vec<_>>(),
+            ["Before", "Column 1", "Column 2"]
+        );
+        assert!(rows[0].path.is_table_anchor());
+        assert!(rows[1].path.is_header_cell());
+        assert!(rows[2].path.is_header_cell());
+        let rebuilt = reconstruct_top_level(&rows);
+        assert_eq!(rebuilt.len(), 2);
+        assert_eq!(rebuilt[0].text(), "Before");
+        assert!(rebuilt[0].has_table());
+        assert_eq!(rebuilt[1].text(), "After");
+    }
+
+    #[test]
+    fn table_merge_does_not_create_multiple_tables_on_one_item() {
+        let mut first = Item::new("First");
+        first.content.push(Inline::Table(Table::new(1, 1)));
+        let mut second = Item::new("Second");
+        second.content.push(Inline::Table(Table::new(1, 1)));
+        let mut top = vec![first, second];
+
+        assert!(merge_table_item_into(&mut top, 0, 1).is_none());
+        assert_eq!(top.len(), 2);
+        assert!(top[0].has_table());
+        assert!(top[1].has_table());
     }
 
     #[test]
