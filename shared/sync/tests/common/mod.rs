@@ -2353,7 +2353,7 @@ impl TestDevice {
                 archived: self.workspace.is_scheme_deleted(*id),
                 gsync: scheme.gsync,
                 source: scheme_source_label(&scheme.source),
-                items: scheme.items.iter().map(|item| item.text()).collect(),
+                items: scheme.items.iter().map(item_content_summary).collect(),
             })
             .collect::<Vec<_>>();
         schemes.sort_by(|left, right| left.id.cmp(&right.id));
@@ -2427,6 +2427,10 @@ fn node_ref_label(node: &NodeRef) -> String {
         NodeRef::Folder(id) => format!("folder:{id}"),
         NodeRef::Scheme(id) => format!("scheme:{id}"),
     }
+}
+
+fn item_content_summary(item: &Item) -> String {
+    serde_json::to_string(&item.content).expect("inline content should serialize")
 }
 
 /// A stable label for a scheme's source so the convergence check catches a lost or

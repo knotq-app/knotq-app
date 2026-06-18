@@ -14,7 +14,11 @@ mod common;
 
 use chrono::NaiveDate;
 use common::{Harness, Rng, D0, D1, D2};
-use knotq_model::{NodeRef, SchemeId};
+use knotq_model::{
+    ImageAssetFormat, ImageInline, Inline, Item, NodeRef, SchemeId, Table, TableCell,
+};
+use knotq_sync::WorkspaceCrdtChangeSet;
+use uuid::Uuid;
 
 #[test]
 fn three_devices_converge_on_concurrent_distinct_scheme_creation() {
@@ -65,6 +69,137 @@ fn concurrent_same_line_edits_merge_through_full_server_round_trip() {
 }
 
 #[test]
+fn inline_table_round_trips_through_sync_restart_and_late_pull() {
+    let mut h = Harness::new(3);
+    h.login_all();
+    let scheme = h.add_scheme(D0, "Tables", &["anchor"]);
+    h.settle();
+
+    let table = table_with_cells(&[&["r1c1", "r1c2"], &["r2c1", "r2c2"]]);
+    let expected = vec![
+        Inline::text("before "),
+        Inline::Table(table.clone()),
+        Inline::text(" after"),
+    ];
+    set_item_content(&mut h, D0, scheme, 0, expected.clone());
+
+    h.sync(D0);
+    h.device_mut_for_surgery(D1).restart();
+    h.sync(D1);
+    h.device_mut_for_surgery(D2).restart();
+    h.sync(D2);
+    h.sync(D0);
+
+    for device in h.device_keys() {
+        let content = item_content(&h, device, scheme, 0);
+        assert_eq!(content, expected, "{device:?} lost inline table content");
+        let table = first_table(&content).expect("table missing after sync");
+        assert_eq!(
+            table_cell_texts(table),
+            vec![vec!["r1c1", "r1c2"], vec!["r2c1", "r2c2"]],
+            "{device:?} table cells changed",
+        );
+    }
+}
+
+#[test]
+fn concurrent_text_edit_and_inline_table_insert_same_item_converge() {
+    let mut h = Harness::new(2);
+    h.login_all();
+    let scheme = h.add_scheme(D0, "Mixed", &["alpha"]);
+    h.settle();
+
+    let table = table_with_cells(&[&["cell-a", "cell-b"]]);
+    h.edit_line(D0, scheme, 0, "alpha from d0");
+    set_item_content(
+        &mut h,
+        D1,
+        scheme,
+        0,
+        vec![Inline::text("alpha"), Inline::Table(table.clone())],
+    );
+
+    h.settle();
+    h.assert_all_converged();
+
+    for device in h.device_keys() {
+        let content = item_content(&h, device, scheme, 0);
+        assert_eq!(
+            content
+                .iter()
+                .filter(|inline| matches!(inline, Inline::Table(_)))
+                .count(),
+            1,
+            "{device:?} should materialize exactly one table embed",
+        );
+        let text = h.device(device).scheme_item_texts(scheme).join("");
+        assert!(
+            text.contains("from d0"),
+            "{device:?} lost concurrent text edit: {text:?}",
+        );
+        let table = first_table(&content).expect("table missing after concurrent merge");
+        assert_eq!(table_cell_texts(table), vec![vec!["cell-a", "cell-b"]]);
+    }
+}
+
+#[test]
+fn table_cell_image_media_syncs_after_restart() {
+    let mut h = Harness::new(2);
+    h.login_all();
+    let scheme = h.add_scheme(D0, "Gallery", &["anchor"]);
+    h.settle();
+
+    let image_bytes: Vec<u8> = (0u32..4096).map(|i| (i % 251) as u8).collect();
+    let image = ImageInline {
+        asset: Uuid::new_v4(),
+        format: ImageAssetFormat::Png,
+        width: Some(96),
+        height: Some(54),
+    };
+    let image_name = format!("{}.{}", image.asset, image.format.extension());
+
+    let mut table = table_with_cells(&[&["caption", "metadata"]]);
+    table.rows[0].cells[0].items = vec![item_with_content(vec![
+        Inline::text("caption "),
+        Inline::Image(image),
+    ])];
+    set_item_content(
+        &mut h,
+        D0,
+        scheme,
+        0,
+        vec![Inline::text("gallery "), Inline::Table(table)],
+    );
+    h.device_mut_for_surgery(D0)
+        .media_assets
+        .insert(image_name.clone(), image_bytes.clone());
+
+    h.sync(D0);
+    let latest = h.device_remote_latest(D0);
+    h.upload_media(D0, &latest)
+        .expect("upload table-cell image");
+
+    h.device_mut_for_surgery(D1).restart();
+    h.sync(D1);
+    h.download_media(D1);
+
+    let content = item_content(&h, D1, scheme, 0);
+    let table = first_table(&content).expect("table missing on peer");
+    let cell_item = &table.rows[0].cells[0].items[0];
+    assert_eq!(cell_item.text(), "caption ");
+    assert_eq!(
+        cell_item.images().copied().collect::<Vec<_>>(),
+        vec![image],
+        "image ref inside table cell did not sync",
+    );
+    assert_eq!(
+        h.device(D1).media_assets.get(&image_name),
+        Some(&image_bytes),
+        "peer did not download table-cell image bytes",
+    );
+}
+
+#[test]
 fn offline_queue_of_many_edits_pushes_in_order_and_converges() {
     let mut h = Harness::new(2);
     h.login_all();
@@ -84,6 +219,62 @@ fn offline_queue_of_many_edits_pushes_in_order_and_converges() {
     assert_eq!(texts.len(), 26, "{texts:?}");
     assert_eq!(texts[0], "seed edited");
     assert_eq!(texts[25], "line 24");
+}
+
+fn item_with_content(content: Vec<Inline>) -> Item {
+    let mut item = Item::new("");
+    item.content = content;
+    item
+}
+
+fn set_item_content(
+    h: &mut Harness,
+    device: common::DeviceKey,
+    scheme: SchemeId,
+    index: usize,
+    content: Vec<Inline>,
+) {
+    let test_device = h.device_mut_for_surgery(device);
+    test_device.scheme_mut_pub(scheme).items[index].content = content;
+    test_device.record_changes(WorkspaceCrdtChangeSet::default().touch_scheme(scheme));
+}
+
+fn item_content(
+    h: &Harness,
+    device: common::DeviceKey,
+    scheme: SchemeId,
+    index: usize,
+) -> Vec<Inline> {
+    h.device(device).workspace.schemes[&scheme].items[index]
+        .content
+        .clone()
+}
+
+fn table_with_cells(rows: &[&[&str]]) -> Table {
+    let row_count = rows.len().max(1);
+    let column_count = rows.first().map(|row| row.len()).unwrap_or(1).max(1);
+    let mut table = Table::new(row_count, column_count);
+    for (row_index, row) in rows.iter().enumerate() {
+        for (column_index, text) in row.iter().enumerate() {
+            table.rows[row_index].cells[column_index] = TableCell::with_text(*text);
+        }
+    }
+    table
+}
+
+fn first_table(content: &[Inline]) -> Option<&Table> {
+    content.iter().find_map(|inline| match inline {
+        Inline::Table(table) => Some(table),
+        _ => None,
+    })
+}
+
+fn table_cell_texts(table: &Table) -> Vec<Vec<String>> {
+    table
+        .rows
+        .iter()
+        .map(|row| row.cells.iter().map(TableCell::summary_text).collect())
+        .collect()
 }
 
 #[test]

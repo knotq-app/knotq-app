@@ -223,40 +223,12 @@ impl SchemeEditor {
         let new_refs: Vec<&str> = new_lines.iter().map(String::as_str).collect();
         let change = line_change(&old_refs, &new_refs);
 
-        let ref_row = if change.prefix > 0 {
-            old_rows.get(change.prefix - 1)
-        } else {
-            old_rows.get(change.old_suffix)
-        };
-        let mut ref_path = ref_row.map(|row| row.path).unwrap_or_default();
-        if ref_path.is_table_anchor() {
-            ref_path = RowPath::default();
-        }
-        let ref_item = ref_row.map(|row| row.item.clone());
-
-        let mut new_rows = Vec::with_capacity(new_lines.len());
-        for (i, line) in new_lines.iter().enumerate().take(change.prefix) {
-            let mut row = old_rows[i].clone();
-            row.item.set_text(line.clone());
-            new_rows.push(row);
-        }
-
-        for line in new_lines.iter().take(change.new_suffix).skip(change.prefix) {
-            let style = ref_item.as_ref().map(InsertedLineStyle::from_item);
-            new_rows.push(EditorRow {
-                item: item_for_inserted_line(line.clone(), style),
-                path: ref_path,
-            });
-        }
-
-        for i in change.old_suffix..old_rows.len() {
-            let mut row = old_rows[i].clone();
-            let new_index = change.new_suffix + (i - change.old_suffix);
-            if let Some(line) = new_lines.get(new_index) {
-                row.item.set_text(line.clone());
-            }
-            new_rows.push(row);
-        }
+        let new_rows = rebuild_tabled_rows_after_text_change(
+            &old_rows,
+            &new_lines,
+            change,
+            self.selection.head,
+        );
 
         let old_top = reconstruct_top_level(&old_rows);
         let new_top = reconstruct_top_level(&new_rows);
@@ -387,5 +359,174 @@ impl SchemeEditor {
             scheme: self.scheme_id,
             item,
         }));
+    }
+}
+
+fn rebuild_tabled_rows_after_text_change(
+    old_rows: &[EditorRow],
+    new_lines: &[String],
+    change: LineChange,
+    selection_head: TextLocation,
+) -> Vec<EditorRow> {
+    let old_changed = change.old_suffix.saturating_sub(change.prefix);
+    let new_changed = change.new_suffix.saturating_sub(change.prefix);
+    let inserted_path = table_inserted_row_path(old_rows, change, selection_head);
+    let inserted_style = table_inserted_row_style(old_rows, change, selection_head);
+
+    let mut new_rows = Vec::with_capacity(new_lines.len());
+    for (i, line) in new_lines.iter().enumerate().take(change.prefix) {
+        let Some(old_row) = old_rows.get(i) else {
+            continue;
+        };
+        let mut row = old_row.clone();
+        row.item.set_text(line.clone());
+        new_rows.push(row);
+    }
+
+    for offset in 0..new_changed {
+        let line_index = change.prefix + offset;
+        let Some(line) = new_lines.get(line_index) else {
+            continue;
+        };
+        if offset < old_changed {
+            if let Some(old_row) = old_rows.get(change.prefix + offset) {
+                let mut row = old_row.clone();
+                row.item.set_text(line.clone());
+                new_rows.push(row);
+                continue;
+            }
+        }
+
+        new_rows.push(EditorRow {
+            item: item_for_inserted_line(line.clone(), inserted_style),
+            path: inserted_path,
+        });
+    }
+
+    for i in change.old_suffix..old_rows.len() {
+        let mut row = old_rows[i].clone();
+        let new_index = change.new_suffix + (i - change.old_suffix);
+        if let Some(line) = new_lines.get(new_index) {
+            row.item.set_text(line.clone());
+        }
+        new_rows.push(row);
+    }
+
+    new_rows
+}
+
+fn table_inserted_row_path(
+    old_rows: &[EditorRow],
+    change: LineChange,
+    selection_head: TextLocation,
+) -> RowPath {
+    if let Some(row) = old_rows
+        .get(selection_head.row)
+        .filter(|row| row.path.is_cell())
+    {
+        return row.path;
+    }
+
+    [
+        old_rows.get(change.prefix),
+        change
+            .prefix
+            .checked_sub(1)
+            .and_then(|index| old_rows.get(index)),
+        old_rows.get(change.old_suffix),
+    ]
+    .into_iter()
+    .flatten()
+    .find_map(|row| row.path.is_cell().then_some(row.path))
+    .unwrap_or_default()
+}
+
+fn table_inserted_row_style(
+    old_rows: &[EditorRow],
+    change: LineChange,
+    selection_head: TextLocation,
+) -> Option<InsertedLineStyle> {
+    [
+        old_rows.get(selection_head.row),
+        old_rows.get(change.prefix),
+        change
+            .prefix
+            .checked_sub(1)
+            .and_then(|index| old_rows.get(index)),
+        old_rows.get(change.old_suffix),
+    ]
+    .into_iter()
+    .flatten()
+    .find(|row| !row.path.is_table_anchor())
+    .map(|row| InsertedLineStyle::from_item(&row.item))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use knotq_model::Table;
+
+    fn table_item(rows: usize, cols: usize) -> Item {
+        let mut item = Item::new("");
+        item.content.push(Inline::Table(Table::new(rows, cols)));
+        item
+    }
+
+    fn text_lines(text: &str) -> Vec<String> {
+        text.split('\n').map(clean_line_text).collect()
+    }
+
+    #[test]
+    fn tabled_text_replacement_preserves_the_edited_cell_path() {
+        let item = table_item(2, 2);
+        let (old_text, old_rows) = build_buffer(&[item]);
+        let mut new_lines = text_lines(&old_text);
+        new_lines[1] = "Alpha".to_string();
+        let old_lines = text_lines(&old_text);
+        let old_refs: Vec<&str> = old_lines.iter().map(String::as_str).collect();
+        let new_refs: Vec<&str> = new_lines.iter().map(String::as_str).collect();
+        let change = line_change(&old_refs, &new_refs);
+
+        let rows = rebuild_tabled_rows_after_text_change(
+            &old_rows,
+            &new_lines,
+            change,
+            TextLocation { row: 1, col: 0 },
+        );
+        assert!(rows[1].path.is_cell());
+        assert_eq!((rows[1].path.r, rows[1].path.c), (0, 0));
+
+        let top = reconstruct_top_level(&rows);
+        assert_eq!(top.len(), 1);
+        let table = top[0].table().unwrap();
+        assert_eq!(table.cell(0, 0).unwrap().items[0].text(), "Alpha");
+        assert_eq!(table.cell(0, 1).unwrap().items[0].text(), "");
+    }
+
+    #[test]
+    fn tabled_line_insertion_uses_the_active_cell_path() {
+        let mut item = table_item(2, 2);
+        item.table_mut().unwrap().cell_mut(0, 0).unwrap().items[0].set_text("Alpha".to_string());
+        let (old_text, old_rows) = build_buffer(&[item]);
+        let mut new_lines = text_lines(&old_text);
+        new_lines.insert(2, "Second line".to_string());
+        let old_lines = text_lines(&old_text);
+        let old_refs: Vec<&str> = old_lines.iter().map(String::as_str).collect();
+        let new_refs: Vec<&str> = new_lines.iter().map(String::as_str).collect();
+        let change = line_change(&old_refs, &new_refs);
+
+        let rows = rebuild_tabled_rows_after_text_change(
+            &old_rows,
+            &new_lines,
+            change,
+            TextLocation { row: 1, col: 5 },
+        );
+        let top = reconstruct_top_level(&rows);
+        let table = top[0].table().unwrap();
+
+        assert_eq!(table.cell(0, 0).unwrap().items.len(), 2);
+        assert_eq!(table.cell(0, 0).unwrap().items[0].text(), "Alpha");
+        assert_eq!(table.cell(0, 0).unwrap().items[1].text(), "Second line");
+        assert_eq!(table.cell(0, 1).unwrap().items[0].text(), "");
     }
 }
