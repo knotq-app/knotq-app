@@ -19,7 +19,8 @@ use crate::{CrdtDocumentUpdate, StoredCrdtUpdate};
 
 const SCHEME_SCHEMA_V1: &str = "knotq.scheme_file.v1";
 const WORKSPACE_SCHEMA_V1: &str = "knotq.workspace.v1";
-const INLINE_EMBED_PREFIX: &[u8] = b"knotq.inline.v1\0";
+const INLINE_EMBED_PREFIX: &str = "\u{fffc}knotq.inline.v1\0";
+const LEGACY_INLINE_EMBED_PREFIX: &[u8] = b"knotq.inline.v1\0";
 
 const NODE_KIND_FOLDER: &str = "folder";
 const NODE_KIND_SCHEME: &str = "scheme";
@@ -1067,6 +1068,11 @@ impl YrsSchemeDocument {
                             if current != new_content {
                                 apply_content_diff(&text_ref, &mut txn, &current, &new_content)?;
                             }
+                            if prev.is_none_or(|stored| {
+                                stored.content_shadow.as_deref() != Some(new_content.as_slice())
+                            }) {
+                                write_item_content_shadow(&item_map, &mut txn, &new_content)?;
+                            }
                         }
                         // No Text present (corrupt entry) — rebuild it whole.
                         None => {
@@ -1165,6 +1171,7 @@ struct StoredItem {
     position: String,
     snapshot_json: String,
     content: Vec<Inline>,
+    content_shadow: Option<Vec<Inline>>,
 }
 
 fn item_map_ref(items_by_id: &MapRef, txn: &impl ReadTxn, key: &str) -> Option<MapRef> {
@@ -1189,12 +1196,15 @@ fn read_stored_item(item_map: &MapRef, txn: &impl ReadTxn) -> StoredItem {
             .flatten()
             .unwrap_or_default()
     };
+    let content_shadow = serde_json::from_str::<Vec<Inline>>(&str_field("content_json")).ok();
+    let content = item_text_ref(item_map, txn)
+        .map(|text| read_text_content(&text, txn))
+        .unwrap_or_default();
     StoredItem {
         position: str_field("position"),
         snapshot_json: str_field("snapshot_json"),
-        content: item_text_ref(item_map, txn)
-            .map(|text| read_text_content(&text, txn))
-            .unwrap_or_default(),
+        content: reconcile_content_shadow(content, content_shadow.as_deref()),
+        content_shadow,
     }
 }
 
@@ -1227,6 +1237,15 @@ fn write_item_metadata(
     snapshot_json: &str,
 ) -> anyhow::Result<()> {
     write_item_fields(item_map, txn, item, position, snapshot_json, false)
+}
+
+fn write_item_content_shadow(
+    item_map: &MapRef,
+    txn: &mut TransactionMut,
+    content: &[Inline],
+) -> anyhow::Result<()> {
+    item_map.insert(txn, "content_json", serde_json::to_string(content)?);
+    Ok(())
 }
 
 fn write_item_fields(
@@ -1266,6 +1285,11 @@ fn write_item_fields(
     item_map.insert(txn, "priority_json", serde_json::to_string(&item.priority)?);
     item_map.insert(txn, "external_json", serde_json::to_string(&item.external)?);
     item_map.insert(txn, "snapshot_json", snapshot_json.to_string());
+    item_map.insert(
+        txn,
+        "content_json",
+        serde_json::to_string(&normalize_inline_content(&item.content))?,
+    );
     Ok(())
 }
 
@@ -1273,9 +1297,16 @@ fn read_text_content(text: &TextRef, txn: &impl ReadTxn) -> Vec<Inline> {
     let mut content = Vec::new();
     for diff in text.diff(txn, |_| ()) {
         match diff.insert {
-            Out::Any(Any::String(text)) => push_text_inline(&mut content, text.as_ref()),
+            Out::Any(Any::String(text)) => {
+                let text = text.as_ref();
+                if let Some(inline) = decode_inline_embed_str(text) {
+                    content.push(inline);
+                } else {
+                    push_text_inline(&mut content, text);
+                }
+            }
             Out::Any(Any::Buffer(bytes)) => {
-                if let Some(inline) = decode_inline_embed(&bytes) {
+                if let Some(inline) = decode_legacy_inline_embed(&bytes) {
                     content.push(inline);
                 }
             }
@@ -1349,6 +1380,26 @@ fn units_len(units: &[ContentUnit]) -> u32 {
     units.iter().map(unit_len).sum()
 }
 
+fn reconcile_content_shadow(content: Vec<Inline>, shadow: Option<&[Inline]>) -> Vec<Inline> {
+    let Some(shadow) = shadow else {
+        return content;
+    };
+    let shadow = normalize_inline_content(shadow);
+    if content == shadow {
+        return content;
+    }
+    let actual_units = content_units(&content);
+    let shadow_units = content_units(&shadow);
+    if !shadow_units.is_empty()
+        && actual_units.len() == shadow_units.len() * 2
+        && actual_units[..shadow_units.len()] == shadow_units
+        && actual_units[shadow_units.len()..] == shadow_units
+    {
+        return shadow;
+    }
+    content
+}
+
 /// Apply the change from `old` to `new` as a single contiguous splice on the
 /// rich Text (the common prefix and suffix are left untouched). Text characters
 /// remain collaborative, while image/table embeds move with their surrounding
@@ -1419,15 +1470,22 @@ fn insert_units(
     Ok(())
 }
 
-fn encode_inline_embed(inline: &Inline) -> anyhow::Result<Vec<u8>> {
-    let mut bytes = Vec::from(INLINE_EMBED_PREFIX);
-    bytes.extend(serde_json::to_vec(inline)?);
-    Ok(bytes)
+fn encode_inline_embed(inline: &Inline) -> anyhow::Result<String> {
+    Ok(format!(
+        "{INLINE_EMBED_PREFIX}{}",
+        serde_json::to_string(inline)?
+    ))
 }
 
-fn decode_inline_embed(bytes: &[u8]) -> Option<Inline> {
+fn decode_inline_embed_str(text: &str) -> Option<Inline> {
+    text.strip_prefix(INLINE_EMBED_PREFIX)
+        .and_then(|json| serde_json::from_str::<Inline>(json).ok())
+        .and_then(|inline| (!inline.is_text()).then_some(inline))
+}
+
+fn decode_legacy_inline_embed(bytes: &[u8]) -> Option<Inline> {
     bytes
-        .strip_prefix(INLINE_EMBED_PREFIX)
+        .strip_prefix(LEGACY_INLINE_EMBED_PREFIX)
         .and_then(|json| serde_json::from_slice::<Inline>(json).ok())
         .and_then(|inline| (!inline.is_text()).then_some(inline))
 }
@@ -2465,6 +2523,54 @@ mod tests {
     }
 
     #[test]
+    fn concurrent_image_embeds_on_distinct_items_merge() {
+        let document = DocumentId::new();
+        let mut base = Scheme::new("Plan", 0);
+        base.items.push(Item::new("First"));
+        base.items.push(Item::new("Second"));
+        let image_a = ImageInline {
+            asset: uuid::Uuid::new_v4(),
+            format: ImageAssetFormat::Png,
+            width: Some(64),
+            height: Some(64),
+        };
+        let image_b = ImageInline {
+            asset: uuid::Uuid::new_v4(),
+            format: ImageAssetFormat::Png,
+            width: Some(64),
+            height: Some(64),
+        };
+
+        let left = YrsSchemeDocument::from_scheme(document, &base).unwrap();
+        let base_update = left.encode_update_v1(&[]).unwrap();
+        let right = YrsSchemeDocument::new(document);
+        right.apply_update_v1(&base_update).unwrap();
+
+        let mut scheme_left = base.clone();
+        scheme_left.items[0].push_image(image_a);
+        let delta_left = left.sync_scheme(&scheme_left).unwrap().unwrap().update_v1;
+
+        let mut scheme_right = base.clone();
+        scheme_right.items[1].push_image(image_b);
+        let delta_right = right.sync_scheme(&scheme_right).unwrap().unwrap().update_v1;
+
+        let merged = YrsSchemeDocument::new(document);
+        merged.apply_update_v1(&base_update).unwrap();
+        merged.apply_update_v1(&delta_left).unwrap();
+        merged.apply_update_v1(&delta_right).unwrap();
+
+        let items = merged.scheme_items().unwrap();
+        assert_eq!(
+            items[0].images().copied().collect::<Vec<_>>(),
+            vec![image_a]
+        );
+        assert_eq!(
+            items[1].images().copied().collect::<Vec<_>>(),
+            vec![image_b]
+        );
+    }
+
+    #[test]
     fn concurrent_edits_to_same_item_text_merge_character_wise() {
         let document = DocumentId::new();
         let mut base = Scheme::new("Plan", 0);
@@ -2495,6 +2601,44 @@ mod tests {
         // Because text is a sequence CRDT, both insertions survive instead of one
         // last-writer-wins clobbering the other. Order is deterministic.
         assert_eq!(merged.item_texts().unwrap(), vec!["Xhello!".to_string()]);
+    }
+
+    #[test]
+    fn identical_concurrent_insert_into_blank_materializes_once() {
+        let document = DocumentId::new();
+        let mut base = Scheme::new("Plan", 0);
+        base.items.push(Item::new(""));
+
+        let left = YrsSchemeDocument::from_scheme(document, &base).unwrap();
+        let base_update = left.encode_update_v1(&[]).unwrap();
+        let right = YrsSchemeDocument::new(document);
+        right.apply_update_v1(&base_update).unwrap();
+
+        let mut scheme_left = base.clone();
+        scheme_left.items[0].set_text("task A");
+        let delta_left = left.sync_scheme(&scheme_left).unwrap().unwrap().update_v1;
+
+        let mut scheme_right = base.clone();
+        scheme_right.items[0].set_text("task A");
+        let delta_right = right.sync_scheme(&scheme_right).unwrap().unwrap().update_v1;
+
+        let merged = YrsSchemeDocument::new(document);
+        merged.apply_update_v1(&base_update).unwrap();
+        merged.apply_update_v1(&delta_left).unwrap();
+        merged.apply_update_v1(&delta_right).unwrap();
+
+        assert_eq!(merged.item_texts().unwrap(), vec!["task A".to_string()]);
+    }
+
+    #[test]
+    fn intentional_doubled_text_roundtrips() {
+        let document = DocumentId::new();
+        let mut scheme = Scheme::new("Plan", 0);
+        scheme.items.push(Item::new("task Atask A"));
+
+        let doc = YrsSchemeDocument::from_scheme(document, &scheme).unwrap();
+
+        assert_eq!(doc.item_texts().unwrap(), vec!["task Atask A".to_string()]);
     }
 
     #[test]

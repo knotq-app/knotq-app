@@ -10,8 +10,8 @@ use chrono::Utc;
 use futures::{pin_mut, select, FutureExt};
 use gpui::{Context, Task};
 use knotq_model::{
-    DocumentId, ImageAssetFormat, OperationId, ReplicaId, SyncAccountSettings, SyncAccountStatus,
-    Workspace, WorkspaceId,
+    DocumentId, ImageAssetFormat, ImageInline, Inline, Item, OperationId, ReplicaId,
+    SyncAccountSettings, SyncAccountStatus, Workspace, WorkspaceId,
 };
 use knotq_storage_json::{
     image_asset_path, load_crdt_state, load_local_sync_state, load_workspace_with_options,
@@ -736,7 +736,7 @@ fn workspace_media_assets(workspace: &Workspace) -> Vec<SyncMediaAsset> {
             continue;
         };
         for item in &scheme.items {
-            for image in item.images() {
+            for image in item_image_assets(item) {
                 let media = SyncMediaAsset {
                     document: meta.id,
                     asset: image.asset,
@@ -749,6 +749,28 @@ fn workspace_media_assets(workspace: &Workspace) -> Vec<SyncMediaAsset> {
         }
     }
     assets
+}
+
+fn item_image_assets(item: &Item) -> Vec<ImageInline> {
+    let mut images = Vec::new();
+    collect_item_image_assets(item, &mut images);
+    images
+}
+
+fn collect_item_image_assets(item: &Item, images: &mut Vec<ImageInline>) {
+    for inline in &item.content {
+        match inline {
+            Inline::Text { .. } => {}
+            Inline::Image(image) => images.push(*image),
+            Inline::Table(table) => {
+                for cell in table.cells() {
+                    for item in &cell.items {
+                        collect_item_image_assets(item, images);
+                    }
+                }
+            }
+        }
+    }
 }
 
 fn upload_local_media_assets(

@@ -72,6 +72,28 @@ pub const D0: DeviceKey = DeviceKey(0);
 pub const D1: DeviceKey = DeviceKey(1);
 pub const D2: DeviceKey = DeviceKey(2);
 
+fn item_image_assets(item: &Item) -> Vec<ImageInline> {
+    let mut images = Vec::new();
+    collect_item_image_assets(item, &mut images);
+    images
+}
+
+fn collect_item_image_assets(item: &Item, images: &mut Vec<ImageInline>) {
+    for inline in &item.content {
+        match inline {
+            Inline::Text { .. } => {}
+            Inline::Image(image) => images.push(*image),
+            Inline::Table(table) => {
+                for cell in table.cells() {
+                    for item in &cell.items {
+                        collect_item_image_assets(item, images);
+                    }
+                }
+            }
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Harness
 // ---------------------------------------------------------------------------
@@ -1212,7 +1234,7 @@ impl TestDevice {
             })
             .flat_map(|(document, scheme)| {
                 scheme.items.iter().flat_map(move |item| {
-                    item.images().map(move |media| {
+                    item_image_assets(item).into_iter().map(move |media| {
                         let image_name = format!("{}.{}", media.asset, media.format.extension());
                         (document, image_name)
                     })
@@ -1263,15 +1285,11 @@ impl TestDevice {
             })
             .flat_map(|(document, items)| {
                 items.into_iter().flat_map(move |item| {
-                    item.content.into_iter().filter_map({
-                        let document = document;
-                        move |inline| {
-                            let Inline::Image(media) = inline else {
-                                return None;
-                            };
+                    item_image_assets(&item).into_iter().map({
+                        move |media| {
                             let image_name =
                                 format!("{}.{}", media.asset, media.format.extension());
-                            Some((document, image_name))
+                            (document, image_name)
                         }
                     })
                 })
@@ -1959,7 +1977,7 @@ impl TestDevice {
             })
             .flat_map(|(document, scheme)| {
                 scheme.items.iter().flat_map(move |item| {
-                    item.images().map(move |media| {
+                    item_image_assets(item).into_iter().map(move |media| {
                         let image_name = format!("{}.{}", media.asset, media.format.extension());
                         (document, image_name)
                     })
@@ -2008,15 +2026,11 @@ impl TestDevice {
             })
             .flat_map(|(document, items)| {
                 items.into_iter().flat_map(move |item| {
-                    item.content.into_iter().filter_map({
-                        let document = document;
-                        move |inline| {
-                            let Inline::Image(media) = inline else {
-                                return None;
-                            };
+                    item_image_assets(&item).into_iter().map({
+                        move |media| {
                             let image_name =
                                 format!("{}.{}", media.asset, media.format.extension());
-                            Some((document, image_name))
+                            (document, image_name)
                         }
                     })
                 })
