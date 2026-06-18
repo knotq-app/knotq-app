@@ -3,6 +3,7 @@ use gpui::{
     div, px, ClickEvent, Context, IntoElement, MouseButton, MouseDownEvent, SharedString, Window,
 };
 use knotq_commands::{Command, DateKind};
+use knotq_editor::{TableContext, TableStructureAction};
 use knotq_model::ItemMarker;
 
 use crate::app::{EditorContextMenu, KnotQApp};
@@ -25,11 +26,11 @@ impl KnotQApp {
         if scheme.is_read_only() {
             return None;
         }
-        let item = scheme.item(menu.item_id)?;
+        let item = scheme.item(menu.item_id);
         let t = self.theme();
 
         let mut items: Vec<gpui::AnyElement> = Vec::new();
-        if item.marker == ItemMarker::Checkbox {
+        if let Some(item) = item.filter(|item| item.marker == ItemMarker::Checkbox) {
             push_date_items(
                 &mut items,
                 DateMenuItem {
@@ -56,12 +57,23 @@ impl KnotQApp {
             );
         }
 
+        if let Some(table) = menu.table {
+            if !items.is_empty() {
+                items.push(editor_context_separator(t));
+            }
+            push_table_items(&mut items, &menu, table, t, cx);
+        }
+
         if items.is_empty() {
             return None;
         }
         let viewport_width = px(f32::from(window.viewport_size().width));
         let viewport_height = px(f32::from(window.viewport_size().height));
-        let menu_width = px(140.0);
+        let menu_width = if menu.table.is_some() {
+            px(184.0)
+        } else {
+            px(140.0)
+        };
         let menu_height = px(items.len() as f32 * 29.0 + 8.0);
         let menu_left = clamped_popover_left(menu.position.x, menu_width, viewport_width);
         let menu_top = popover_top_biased_below(menu.position.y, menu_height, viewport_height);
@@ -92,7 +104,7 @@ impl KnotQApp {
                         .left(menu_left)
                         .top(menu_top)
                         .occlude()
-                        .min_w(px(140.0))
+                        .min_w(menu_width)
                         .p(px(4.0))
                         .rounded(px(7.0))
                         .bg(token_hsla(t.bg_sidebar))
@@ -108,6 +120,130 @@ impl KnotQApp {
                 .into_any_element(),
         )
     }
+}
+
+fn push_table_items(
+    items: &mut Vec<gpui::AnyElement>,
+    menu: &EditorContextMenu,
+    table: TableContext,
+    t: Theme,
+    cx: &mut Context<KnotQApp>,
+) {
+    let mut pushed_row_items = false;
+    if let Some(row) = table.row {
+        push_table_action(
+            items,
+            "row-before",
+            "Insert Row Before",
+            table.table_item_id,
+            TableStructureAction::InsertRowBefore(row),
+            menu,
+            t,
+            cx,
+        );
+        push_table_action(
+            items,
+            "row-after",
+            "Insert Row After",
+            table.table_item_id,
+            TableStructureAction::InsertRowAfter(row),
+            menu,
+            t,
+            cx,
+        );
+        if table.row_count > 1 {
+            push_table_action(
+                items,
+                "row-delete",
+                "Delete Row",
+                table.table_item_id,
+                TableStructureAction::DeleteRow(row),
+                menu,
+                t,
+                cx,
+            );
+        }
+        pushed_row_items = true;
+    }
+
+    if pushed_row_items && table.column.is_some() {
+        items.push(editor_context_separator(t));
+    }
+
+    if let Some(column) = table.column {
+        push_table_action(
+            items,
+            "column-before",
+            "Insert Column Before",
+            table.table_item_id,
+            TableStructureAction::InsertColumnBefore(column),
+            menu,
+            t,
+            cx,
+        );
+        push_table_action(
+            items,
+            "column-after",
+            "Insert Column After",
+            table.table_item_id,
+            TableStructureAction::InsertColumnAfter(column),
+            menu,
+            t,
+            cx,
+        );
+        if table.column_count > 1 {
+            push_table_action(
+                items,
+                "column-delete",
+                "Delete Column",
+                table.table_item_id,
+                TableStructureAction::DeleteColumn(column),
+                menu,
+                t,
+                cx,
+            );
+        }
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn push_table_action(
+    items: &mut Vec<gpui::AnyElement>,
+    id_suffix: &'static str,
+    label: &'static str,
+    table_item_id: knotq_model::ItemId,
+    action: TableStructureAction,
+    menu: &EditorContextMenu,
+    t: Theme,
+    cx: &mut Context<KnotQApp>,
+) {
+    let scheme_id = menu.scheme_id;
+    items.push(editor_context_item(
+        SharedString::from(format!("editor-menu-table-{id_suffix}")),
+        label.to_string(),
+        t,
+        cx.listener(move |this, _: &ClickEvent, window, cx| {
+            this.editor_context_menu = None;
+            let editor = if let Some((active_scheme_id, editor)) = this.scheme_editor.as_ref() {
+                (*active_scheme_id == scheme_id).then_some(editor.clone())
+            } else {
+                None
+            }
+            .or_else(|| {
+                this.workspace
+                    .daily_queue_date_for_scheme(scheme_id)
+                    .and_then(|date| this.daily_queue_editors.get(&date).cloned())
+            });
+
+            if let Some(editor) = editor {
+                editor.update(cx, |editor, cx| {
+                    editor.apply_table_structure_action(table_item_id, action, window, cx);
+                });
+            }
+            cx.stop_propagation();
+            cx.notify();
+        }),
+    ));
 }
 
 #[derive(Clone, Copy)]
@@ -195,5 +331,14 @@ fn editor_context_item(
         .hover(move |s| s.bg(token_rgba(t.row_hover_strong)))
         .on_click(on_click)
         .child(label)
+        .into_any_element()
+}
+
+fn editor_context_separator(t: Theme) -> gpui::AnyElement {
+    div()
+        .h(px(1.0))
+        .mx(px(6.0))
+        .my(px(3.0))
+        .bg(token_rgba(t.border_overlay))
         .into_any_element()
 }

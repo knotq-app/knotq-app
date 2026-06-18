@@ -592,12 +592,6 @@ impl SchemeEditor {
         cx.notify();
     }
 
-    pub(super) fn active_cell_rc(&self, anchor_row: usize) -> Option<(usize, usize)> {
-        let row = self.selection.head.row;
-        let path = self.rows.get(row)?.path;
-        (path.is_cell() && path.anchor == anchor_row).then_some((path.r, path.c))
-    }
-
     fn paint_control_button(
         &self,
         bounds: Bounds<Pixels>,

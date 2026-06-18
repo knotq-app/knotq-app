@@ -312,6 +312,37 @@ pub(super) fn merge_table_item_into(
     })
 }
 
+pub(super) fn append_item_into_table(
+    items: &mut Vec<Item>,
+    table_index: usize,
+    item_index: usize,
+) -> Option<TableMergeResult> {
+    if table_index == item_index
+        || table_index >= items.len()
+        || item_index >= items.len()
+        || !items[table_index].has_table()
+        || items[item_index].has_table()
+    {
+        return None;
+    }
+
+    let mut item = items.remove(item_index);
+    let table_index = if item_index < table_index {
+        table_index.checked_sub(1)?
+    } else {
+        table_index
+    };
+    let deleted = item.id;
+    let target = items.get_mut(table_index)?;
+    target.content.append(&mut item.content);
+
+    Some(TableMergeResult {
+        target: target.id,
+        deleted,
+        target_index: table_index,
+    })
+}
+
 pub(super) fn split_table_item_at_text_col(
     items: &mut Vec<Item>,
     item_index: usize,
@@ -609,6 +640,26 @@ mod tests {
         assert_eq!(top.len(), 2);
         assert!(top[0].has_table());
         assert!(top[1].has_table());
+    }
+
+    #[test]
+    fn table_backward_merge_appends_following_text_after_table() {
+        let mut table = Item::new("");
+        table.content.push(Inline::Table(Table::new(1, 1)));
+        let table_id = table.id;
+        let suffix = Item::new("After");
+        let suffix_id = suffix.id;
+        let mut top = vec![table, suffix];
+
+        let result =
+            append_item_into_table(&mut top, 0, 1).expect("suffix merges into table item");
+
+        assert_eq!(result.target, table_id);
+        assert_eq!(result.deleted, suffix_id);
+        assert_eq!(result.target_index, 0);
+        assert_eq!(top.len(), 1);
+        assert!(matches!(top[0].content[0], Inline::Table(_)));
+        assert!(matches!(&top[0].content[1], Inline::Text { text } if text == "After"));
     }
 
     #[test]

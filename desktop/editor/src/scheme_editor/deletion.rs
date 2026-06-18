@@ -664,15 +664,26 @@ impl SchemeEditor {
 
         let col = self.selection.head.col.min(self.line_len(row));
         let Some((target_top, table_top, cursor_col)) = (if prefer_backward {
-            if col != 0 || !path.is_table_anchor() {
+            if col != 0 {
                 None
-            } else {
+            } else if path.is_table_anchor() {
                 top_level_index_for_flat_row(&self.rows, row).and_then(|table_top| {
                     table_top.checked_sub(1).map(|target_top| {
                         let target_row = flat_row_for_top_level_index(&self.rows, target_top);
                         (target_top, table_top, self.line_len(target_row))
                     })
                 })
+            } else if path.is_doc() {
+                top_level_index_for_flat_row(&self.rows, row).and_then(|item_top| {
+                    let table_top = item_top.checked_sub(1)?;
+                    let table_row = flat_row_for_top_level_index(&self.rows, table_top);
+                    self.rows
+                        .get(table_row)
+                        .filter(|row| row.path.is_table_anchor())
+                        .map(|_| (item_top, table_top, self.line_len(table_row)))
+                })
+            } else {
+                None
             }
         } else if col != self.line_len(row) {
             None
@@ -691,7 +702,12 @@ impl SchemeEditor {
 
         let old_top = reconstruct_top_level(&self.rows);
         let mut new_top = old_top.clone();
-        let Some(result) = merge_table_item_into(&mut new_top, target_top, table_top) else {
+        let result = if prefer_backward && target_top > table_top {
+            append_item_into_table(&mut new_top, table_top, target_top)
+        } else {
+            merge_table_item_into(&mut new_top, target_top, table_top)
+        };
+        let Some(result) = result else {
             return false;
         };
 
