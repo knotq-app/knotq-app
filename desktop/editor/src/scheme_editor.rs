@@ -8,8 +8,9 @@ use gpui::{
     actions, div, fill, point, px, quad, relative, size, App, BorderStyle, Bounds, ClipboardItem,
     Context, Corners, CursorStyle, DispatchPhase, Element, ElementId, ElementInputHandler, Entity,
     EventEmitter, ExternalPaths, FocusHandle, GlobalElementId, Image, IntoElement, KeyBinding,
-    LayoutId, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, PathBuilder, Pixels,
-    Point, ScrollHandle, SharedString, Style, Subscription, Task, TextAlign, TextRun, Window,
+    LayoutId, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, PathBuilder,
+    PathPromptOptions, Pixels, Point, ScrollHandle, SharedString, Style, Subscription, Task,
+    TextAlign, TextRun, Window,
 };
 use knotq_commands::{Command, DateKind};
 use knotq_model::TimeFormat;
@@ -73,6 +74,7 @@ actions!(
         DeleteWord,
         Enter,
         IndentLine,
+        InsertImage,
         InsertTable,
         MoveDocumentEnd,
         MoveDocumentStart,

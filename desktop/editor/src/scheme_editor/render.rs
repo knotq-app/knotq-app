@@ -73,6 +73,9 @@ impl gpui::Render for SchemeEditor {
             .on_action(
                 cx.listener(|this, _: &UnindentLine, _w, cx| this.indent_current_line(-1, cx)),
             )
+            .on_action(cx.listener(|this, _: &InsertImage, window, cx| {
+                this.insert_image_from_picker(window, cx)
+            }))
             .on_action(
                 cx.listener(|this, _: &InsertTable, window, cx| this.insert_table(window, cx)),
             )

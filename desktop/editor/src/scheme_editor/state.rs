@@ -275,6 +275,20 @@ impl SchemeEditor {
         self.toggle_heading(cx);
     }
 
+    pub fn insert_image_from_toolbar(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.read_only {
+            return;
+        }
+        self.insert_image_from_picker(window, cx);
+    }
+
+    pub fn insert_table_from_toolbar(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.read_only {
+            return;
+        }
+        self.insert_table(window, cx);
+    }
+
     pub fn indent_from_toolbar(&mut self, delta: isize, cx: &mut Context<Self>) {
         if self.read_only {
             return;

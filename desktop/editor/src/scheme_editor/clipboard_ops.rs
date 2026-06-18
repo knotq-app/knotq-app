@@ -1,6 +1,40 @@
 use super::*;
 
 impl SchemeEditor {
+    pub(super) fn insert_image_from_picker(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.read_only {
+            return;
+        }
+
+        self.focus(window, cx);
+        let paths = cx.prompt_for_paths(PathPromptOptions {
+            files: true,
+            directories: false,
+            multiple: true,
+            prompt: Some("Insert image".into()),
+        });
+        cx.spawn(
+            async move |editor: gpui::WeakEntity<SchemeEditor>, cx: &mut gpui::AsyncApp| {
+                let paths = match paths.await {
+                    Ok(Ok(Some(paths))) => paths,
+                    _ => return,
+                };
+                let media = paths
+                    .iter()
+                    .filter_map(|path| persist_image_file(path))
+                    .collect::<Vec<_>>();
+                if media.is_empty() {
+                    return;
+                }
+                let _ = editor.update(cx, |editor, cx| {
+                    let row = editor.current_row_index();
+                    editor.append_media_to_row(row, media, None, cx);
+                });
+            },
+        )
+        .detach();
+    }
+
     pub(super) fn copy_selection_to_clipboard(
         &self,
         cx: &mut Context<Self>,

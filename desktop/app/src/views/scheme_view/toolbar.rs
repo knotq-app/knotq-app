@@ -59,6 +59,8 @@ impl KnotQApp {
         let strikethrough_editor = editor.clone();
         let highlight_editor = editor.clone();
         let heading_editor = editor.clone();
+        let image_editor = editor.clone();
+        let table_editor = editor.clone();
         let indent_editor = editor.clone();
         let unindent_editor = editor.clone();
         let start_editor = editor.clone();
@@ -209,6 +211,33 @@ impl KnotQApp {
                         cx.listener(move |_this, _: &ClickEvent, _window, cx| {
                             heading_editor
                                 .update(cx, |editor, cx| editor.toggle_heading_from_toolbar(cx));
+                        }),
+                    ))
+                    .child(toolbar_separator(c.toolbar_chip_separator))
+                    .child(toolbar_glyph_button(
+                        "scheme-toolbar-image",
+                        false,
+                        ToolbarGlyph::Image,
+                        c,
+                        "insert image (⌘⇧I)",
+                        editor.clone(),
+                        cx.listener(move |_this, _: &ClickEvent, window, cx| {
+                            image_editor.update(cx, |editor, cx| {
+                                editor.insert_image_from_toolbar(window, cx)
+                            });
+                        }),
+                    ))
+                    .child(toolbar_glyph_button(
+                        "scheme-toolbar-table",
+                        false,
+                        ToolbarGlyph::Table,
+                        c,
+                        "insert table (⌘⇧T)",
+                        editor.clone(),
+                        cx.listener(move |_this, _: &ClickEvent, window, cx| {
+                            table_editor.update(cx, |editor, cx| {
+                                editor.insert_table_from_toolbar(window, cx)
+                            });
                         }),
                     ))
                     .child(toolbar_separator(c.toolbar_chip_separator))

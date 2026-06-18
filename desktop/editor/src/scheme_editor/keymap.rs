@@ -47,6 +47,8 @@ pub fn init(cx: &mut App) {
         KeyBinding::new("shift-cmd-down", SelectDocumentEnd, Some(KEY_CONTEXT)),
         KeyBinding::new("tab", IndentLine, Some(KEY_CONTEXT)),
         KeyBinding::new("shift-tab", UnindentLine, Some(KEY_CONTEXT)),
+        KeyBinding::new("cmd-shift-i", InsertImage, Some(KEY_CONTEXT)),
+        KeyBinding::new("secondary-shift-i", InsertImage, Some(KEY_CONTEXT)),
         KeyBinding::new("cmd-shift-t", InsertTable, Some(KEY_CONTEXT)),
         KeyBinding::new("secondary-shift-t", InsertTable, Some(KEY_CONTEXT)),
         KeyBinding::new("cmd-a", SelectAll, Some(KEY_CONTEXT)),
