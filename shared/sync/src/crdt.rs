@@ -3,21 +3,23 @@ use std::collections::{HashMap, HashSet};
 use anyhow::{anyhow, Context};
 use chrono::{DateTime, NaiveDate};
 use knotq_model::{
-    DeletedFolderOrigin, DeletedSchemeOrigin, DocumentId, Folder, FolderId, Item, ItemId, NodeRef,
-    ReplicaId, Scheme, SchemeId, SchemeSource, SyncDocumentKind, SyncDocumentMeta, Workspace,
+    DeletedFolderOrigin, DeletedSchemeOrigin, DocumentId, Folder, FolderId, Inline, Item, ItemId,
+    NodeRef, ReplicaId, Scheme, SchemeId, SchemeSource, SyncDocumentKind, SyncDocumentMeta,
+    Workspace,
 };
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use yrs::updates::{decoder::Decode, encoder::Encode};
 use yrs::{
-    ClientID, Doc, GetString, Map, MapPrelim, MapRef, OffsetKind, Options, Out, ReadTxn,
-    StateVector, Text, TextPrelim, TextRef, Transact, TransactionMut, Update,
+    Any, ClientID, Doc, Map, MapPrelim, MapRef, OffsetKind, Options, Out, ReadTxn, StateVector,
+    Text, TextPrelim, TextRef, Transact, TransactionMut, Update,
 };
 
 use crate::{CrdtDocumentUpdate, StoredCrdtUpdate};
 
 const SCHEME_SCHEMA_V1: &str = "knotq.scheme_file.v1";
 const WORKSPACE_SCHEMA_V1: &str = "knotq.workspace.v1";
+const INLINE_EMBED_PREFIX: &[u8] = b"knotq.inline.v1\0";
 
 const NODE_KIND_FOLDER: &str = "folder";
 const NODE_KIND_SCHEME: &str = "scheme";
@@ -846,8 +848,6 @@ fn validate_scheme_item(
         .with_context(|| format!("item end invalid: {item_id}"))?;
     parse_optional_rfc3339(&require_str("available")?)
         .with_context(|| format!("item available invalid: {item_id}"))?;
-    parse_json_value(&require_str("media_json")?)
-        .with_context(|| format!("item media invalid: {item_id}"))?;
     parse_json_value(&require_str("repeats_json")?)
         .with_context(|| format!("item repeats invalid: {item_id}"))?;
     parse_json_value(&require_str("state_json")?)
@@ -857,15 +857,14 @@ fn validate_scheme_item(
     parse_json_value(&require_str("external_json")?)
         .with_context(|| format!("item external invalid: {item_id}"))?;
 
-    // Text is a collaborative sequence CRDT (yrs Text), not a plain string, so
-    // concurrent character edits merge. Its presence (and that it reads as text)
-    // is the structural requirement; any content is valid line text.
+    // Content is a collaborative rich-text sequence (yrs Text): text lives as
+    // normal string chunks and images/tables live as embedded JSON blobs.
     if item_text_ref(item_map, txn).is_none() {
         return Err(anyhow!("item text missing or not a text type: {item_id}"));
     }
 
-    // snapshot_json carries every non-text field for materialization; text lives
-    // in the Text CRDT and is intentionally absent here.
+    // snapshot_json carries non-content metadata. The ordered inline content
+    // lives in the Text CRDT and is intentionally absent here.
     let snapshot: Item = serde_json::from_str(&require_str("snapshot_json")?)
         .with_context(|| format!("item snapshot invalid: {item_id}"))?;
     if snapshot.id != parsed_item_id {
@@ -1041,13 +1040,13 @@ impl YrsSchemeDocument {
             items_by_id.remove(&mut txn, &key);
         }
 
-        // For each item, merge text as a sequence CRDT and treat the rest as
-        // last-writer-wins metadata:
-        //   - new item        -> insert the full entry (text seeded into a Text type)
-        //   - text changed     -> apply a minimal insert/delete diff to the Text so
-        //                         concurrent character edits converge
-        //   - metadata changed -> rewrite the scalar fields + snapshot blob only
-        // so a text edit never recreates (and clobbers) the collaborative Text.
+        // For each item, merge content as a rich-text sequence CRDT and treat
+        // non-content fields as last-writer-wins metadata:
+        //   - new item         -> insert the full entry (content seeded into a Text type)
+        //   - content changed   -> splice the minimal changed range into the Text so
+        //                          ordinary character edits converge
+        //   - metadata changed  -> rewrite the scalar fields + metadata blob only
+        // so a content edit never recreates (and clobbers) the collaborative Text.
         for (item, position) in scheme.items.iter().zip(&positions) {
             let item_id = item.id.to_string();
             let next_snapshot = item_snapshot_json(item)?;
@@ -1061,12 +1060,12 @@ impl YrsSchemeDocument {
                     match item_text_ref(&item_map, &txn) {
                         Some(text_ref) => {
                             let current = match prev {
-                                Some(stored) => stored.text.clone(),
-                                None => text_ref.get_string(&txn),
+                                Some(stored) => stored.content.clone(),
+                                None => read_text_content(&text_ref, &txn),
                             };
-                            let new_text = item.text();
-                            if current != new_text {
-                                apply_text_diff(&text_ref, &mut txn, &current, &new_text);
+                            let new_content = normalize_inline_content(&item.content);
+                            if current != new_content {
+                                apply_content_diff(&text_ref, &mut txn, &current, &new_content)?;
                             }
                         }
                         // No Text present (corrupt entry) — rebuild it whole.
@@ -1141,7 +1140,7 @@ impl YrsSchemeDocument {
         Ok(self
             .sorted_entries()?
             .into_iter()
-            .map(|(_, entry)| entry.text)
+            .map(|(_, entry)| inline_text(&entry.content))
             .collect())
     }
 
@@ -1149,11 +1148,11 @@ impl YrsSchemeDocument {
         self.sorted_entries()?
             .into_iter()
             .map(|(id, entry)| {
-                // snapshot_json holds every field except text; text comes from the
-                // Text CRDT, which is the source of truth for line content.
+                // snapshot_json holds every non-content field; the ordered inline
+                // stream comes from the Text CRDT, which is the source of truth.
                 let mut item: Item = serde_json::from_str(&entry.snapshot_json)
                     .with_context(|| format!("parse item snapshot {id}"))?;
-                item.set_text(entry.text);
+                item.content = entry.content;
                 Ok(item)
             })
             .collect()
@@ -1165,7 +1164,7 @@ impl YrsSchemeDocument {
 struct StoredItem {
     position: String,
     snapshot_json: String,
-    text: String,
+    content: Vec<Inline>,
 }
 
 fn item_map_ref(items_by_id: &MapRef, txn: &impl ReadTxn, key: &str) -> Option<MapRef> {
@@ -1193,20 +1192,18 @@ fn read_stored_item(item_map: &MapRef, txn: &impl ReadTxn) -> StoredItem {
     StoredItem {
         position: str_field("position"),
         snapshot_json: str_field("snapshot_json"),
-        text: item_text_ref(item_map, txn)
-            .map(|text| text.get_string(txn))
+        content: item_text_ref(item_map, txn)
+            .map(|text| read_text_content(&text, txn))
             .unwrap_or_default(),
     }
 }
 
-/// Serialize every item field except text. Text is owned by the Text CRDT, so
-/// keeping it out of the snapshot blob means a text edit never rewrites the blob
-/// and the two representations cannot disagree.
+/// Serialize every item field except content. Content is owned by the Text CRDT,
+/// so keeping it out of the snapshot blob means a text/embed edit never rewrites
+/// the blob and the two representations cannot disagree.
 fn item_snapshot_json(item: &Item) -> anyhow::Result<String> {
     let mut snapshot = item.clone();
-    // Text runs live in the Text CRDT; keep only the non-text inlines
-    // (images/tables) in the snapshot blob.
-    snapshot.content.retain(|inline| !inline.is_text());
+    snapshot.content.clear();
     Ok(serde_json::to_string(&snapshot)?)
 }
 
@@ -1244,7 +1241,8 @@ fn write_item_fields(
     item_map.insert(txn, "id", item.id.to_string());
     item_map.insert(txn, "position", position.to_string());
     if include_text {
-        item_map.insert(txn, "text", TextPrelim::new(item.text()));
+        let text_ref = item_map.insert(txn, "text", TextPrelim::new(""));
+        insert_inline_content(&text_ref, txn, &normalize_inline_content(&item.content))?;
     }
     item_map.insert(txn, "marker", serde_json_string_value(&item.marker)?);
     item_map.insert(txn, "indent", i64::from(item.indent));
@@ -1263,11 +1261,6 @@ fn write_item_fields(
         "available",
         item.available.map(|dt| dt.to_rfc3339()).unwrap_or_default(),
     );
-    item_map.insert(
-        txn,
-        "media_json",
-        serde_json::to_string(&item.images().copied().collect::<Vec<_>>())?,
-    );
     item_map.insert(txn, "repeats_json", serde_json::to_string(&item.repeats)?);
     item_map.insert(txn, "state_json", serde_json::to_string(&item.state)?);
     item_map.insert(txn, "priority_json", serde_json::to_string(&item.priority)?);
@@ -1276,37 +1269,167 @@ fn write_item_fields(
     Ok(())
 }
 
-/// Apply the change from `old` to `new` as a single contiguous splice on the Text
-/// (the common prefix and suffix are left untouched), so a typical edit becomes a
-/// minimal insert/delete that merges character-for-character under concurrency.
-/// Offsets are UTF-16 code units to match the doc's OffsetKind and Yjs.
-fn apply_text_diff(text: &TextRef, txn: &mut TransactionMut, old: &str, new: &str) {
-    if old == new {
+fn read_text_content(text: &TextRef, txn: &impl ReadTxn) -> Vec<Inline> {
+    let mut content = Vec::new();
+    for diff in text.diff(txn, |_| ()) {
+        match diff.insert {
+            Out::Any(Any::String(text)) => push_text_inline(&mut content, text.as_ref()),
+            Out::Any(Any::Buffer(bytes)) => {
+                if let Some(inline) = decode_inline_embed(&bytes) {
+                    content.push(inline);
+                }
+            }
+            _ => {}
+        }
+    }
+    normalize_inline_content(&content)
+}
+
+fn normalize_inline_content(content: &[Inline]) -> Vec<Inline> {
+    let mut normalized = Vec::with_capacity(content.len());
+    for inline in content {
+        match inline {
+            Inline::Text { text } => push_text_inline(&mut normalized, text),
+            Inline::Image(image) => normalized.push(Inline::Image(*image)),
+            Inline::Table(table) => normalized.push(Inline::Table(table.clone())),
+        }
+    }
+    normalized
+}
+
+fn push_text_inline(content: &mut Vec<Inline>, text: &str) {
+    if text.is_empty() {
         return;
     }
-    let old_chars: Vec<char> = old.chars().collect();
-    let new_chars: Vec<char> = new.chars().collect();
-    let min_len = old_chars.len().min(new_chars.len());
+    if let Some(Inline::Text { text: previous }) = content.last_mut() {
+        previous.push_str(text);
+    } else {
+        content.push(Inline::Text {
+            text: text.to_string(),
+        });
+    }
+}
+
+fn inline_text(content: &[Inline]) -> String {
+    let mut text = String::new();
+    for inline in content {
+        if let Inline::Text { text: chunk } = inline {
+            text.push_str(chunk);
+        }
+    }
+    text
+}
+
+#[derive(Clone, Debug, PartialEq)]
+enum ContentUnit {
+    Char(char),
+    Embed(Inline),
+}
+
+fn content_units(content: &[Inline]) -> Vec<ContentUnit> {
+    let mut units = Vec::new();
+    for inline in content {
+        match inline {
+            Inline::Text { text } => units.extend(text.chars().map(ContentUnit::Char)),
+            Inline::Image(image) => units.push(ContentUnit::Embed(Inline::Image(*image))),
+            Inline::Table(table) => units.push(ContentUnit::Embed(Inline::Table(table.clone()))),
+        }
+    }
+    units
+}
+
+fn unit_len(unit: &ContentUnit) -> u32 {
+    match unit {
+        ContentUnit::Char(ch) => ch.len_utf16() as u32,
+        ContentUnit::Embed(_) => 1,
+    }
+}
+
+fn units_len(units: &[ContentUnit]) -> u32 {
+    units.iter().map(unit_len).sum()
+}
+
+/// Apply the change from `old` to `new` as a single contiguous splice on the
+/// rich Text (the common prefix and suffix are left untouched). Text characters
+/// remain collaborative, while image/table embeds move with their surrounding
+/// content as first-class sequence elements.
+fn apply_content_diff(
+    text: &TextRef,
+    txn: &mut TransactionMut,
+    old: &[Inline],
+    new: &[Inline],
+) -> anyhow::Result<()> {
+    if old == new {
+        return Ok(());
+    }
+    let old_units = content_units(old);
+    let new_units = content_units(new);
+    let min_len = old_units.len().min(new_units.len());
     let mut prefix = 0;
-    while prefix < min_len && old_chars[prefix] == new_chars[prefix] {
+    while prefix < min_len && old_units[prefix] == new_units[prefix] {
         prefix += 1;
     }
     let mut suffix = 0;
     while suffix < (min_len - prefix)
-        && old_chars[old_chars.len() - 1 - suffix] == new_chars[new_chars.len() - 1 - suffix]
+        && old_units[old_units.len() - 1 - suffix] == new_units[new_units.len() - 1 - suffix]
     {
         suffix += 1;
     }
-    let utf16_len = |chars: &[char]| chars.iter().map(|c| c.len_utf16() as u32).sum::<u32>();
-    let at = utf16_len(&old_chars[..prefix]);
-    let removed = utf16_len(&old_chars[prefix..old_chars.len() - suffix]);
-    let inserted: String = new_chars[prefix..new_chars.len() - suffix].iter().collect();
+    let at = units_len(&old_units[..prefix]);
+    let removed = units_len(&old_units[prefix..old_units.len() - suffix]);
     if removed > 0 {
         text.remove_range(txn, at, removed);
     }
-    if !inserted.is_empty() {
-        text.insert(txn, at, &inserted);
+    insert_units(text, txn, at, &new_units[prefix..new_units.len() - suffix])?;
+    Ok(())
+}
+
+fn insert_inline_content(
+    text: &TextRef,
+    txn: &mut TransactionMut,
+    content: &[Inline],
+) -> anyhow::Result<()> {
+    insert_units(text, txn, 0, &content_units(content))
+}
+
+fn insert_units(
+    text: &TextRef,
+    txn: &mut TransactionMut,
+    mut at: u32,
+    units: &[ContentUnit],
+) -> anyhow::Result<()> {
+    let mut pending = String::new();
+    for unit in units {
+        match unit {
+            ContentUnit::Char(ch) => pending.push(*ch),
+            ContentUnit::Embed(inline) => {
+                if !pending.is_empty() {
+                    text.insert(txn, at, &pending);
+                    at += pending.chars().map(|ch| ch.len_utf16() as u32).sum::<u32>();
+                    pending.clear();
+                }
+                text.insert_embed(txn, at, encode_inline_embed(inline)?);
+                at += 1;
+            }
+        }
     }
+    if !pending.is_empty() {
+        text.insert(txn, at, &pending);
+    }
+    Ok(())
+}
+
+fn encode_inline_embed(inline: &Inline) -> anyhow::Result<Vec<u8>> {
+    let mut bytes = Vec::from(INLINE_EMBED_PREFIX);
+    bytes.extend(serde_json::to_vec(inline)?);
+    Ok(bytes)
+}
+
+fn decode_inline_embed(bytes: &[u8]) -> Option<Inline> {
+    bytes
+        .strip_prefix(INLINE_EMBED_PREFIX)
+        .and_then(|json| serde_json::from_slice::<Inline>(json).ok())
+        .and_then(|inline| (!inline.is_text()).then_some(inline))
 }
 
 fn serde_json_string_value(value: &impl Serialize) -> anyhow::Result<String> {
@@ -2259,7 +2382,9 @@ fn scheme_documents_by_id(workspace: &Workspace) -> HashMap<knotq_model::Documen
 #[cfg(test)]
 mod tests {
     use super::*;
-    use knotq_model::{CalendarProvider, ImportedCalendarSource, Item, NodeRef};
+    use knotq_model::{
+        CalendarProvider, ImageAssetFormat, ImageInline, ImportedCalendarSource, Item, NodeRef,
+    };
 
     #[test]
     fn scheme_document_update_can_be_applied_to_empty_replica() {
@@ -2275,6 +2400,31 @@ mod tests {
         right.apply_update_v1(&update).unwrap();
 
         assert_eq!(right.item_texts().unwrap(), vec!["First", "Second"]);
+    }
+
+    #[test]
+    fn inline_embeds_roundtrip_at_text_position() {
+        let document = DocumentId::new();
+        let image = ImageInline {
+            asset: uuid::Uuid::new_v4(),
+            format: ImageAssetFormat::Png,
+            width: Some(640),
+            height: Some(360),
+        };
+        let mut item = Item::new("");
+        item.content = vec![
+            Inline::text("before "),
+            Inline::Image(image),
+            Inline::text(" after"),
+        ];
+        let expected = item.content.clone();
+        let mut scheme = Scheme::new("Plan", 0);
+        scheme.items.push(item);
+
+        let doc = YrsSchemeDocument::from_scheme(document, &scheme).unwrap();
+        let items = doc.scheme_items().unwrap();
+
+        assert_eq!(items[0].content, expected);
     }
 
     #[test]
