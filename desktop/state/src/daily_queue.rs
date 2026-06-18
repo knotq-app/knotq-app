@@ -311,8 +311,9 @@ fn strip_daily_queue_annotations(item: &mut Item) {
 }
 
 fn daily_queue_item_is_blank_placeholder(item: &Item) -> bool {
-    item.text.trim().is_empty()
-        && item.media.is_empty()
+    item.text().trim().is_empty()
+        && !item.has_images()
+        && !item.has_table()
         && item.marker == ItemMarker::Blank
         && item.indent == 0
         && !daily_queue_item_has_annotations(item)

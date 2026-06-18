@@ -201,9 +201,10 @@ fn push_scheme_hits(
             if !item_has_search_title(item) {
                 continue;
             }
+            let title = item.text();
             let (detail, status) = item_detail(item, time_format);
             let Some(rank) = best_rank([
-                field_rank(&item.text, query, ITEM_TITLE_FIELD_WEIGHT),
+                field_rank(&title, query, ITEM_TITLE_FIELD_WEIGHT),
                 field_rank(&scheme.name, query, SCHEME_CONTEXT_FIELD_WEIGHT),
                 field_rank(&detail, query, DETAIL_FIELD_WEIGHT),
             ]) else {
@@ -220,7 +221,7 @@ fn push_scheme_hits(
                     scheme_name: scheme.name.clone(),
                     color_index: Some(scheme.color_index),
                     color_override: None,
-                    title: item.text.clone(),
+                    title,
                     detail,
                     status,
                 },
@@ -243,9 +244,10 @@ fn push_daily_queue_hits(
             if !item_has_search_title(item) {
                 continue;
             }
+            let title = item.text();
             let (detail, _) = item_detail(item, time_format);
             let Some(rank) = best_rank([
-                field_rank(&item.text, query, ITEM_TITLE_FIELD_WEIGHT),
+                field_rank(&title, query, ITEM_TITLE_FIELD_WEIGHT),
                 field_rank(
                     options.daily_queue_title,
                     query,
@@ -267,7 +269,7 @@ fn push_daily_queue_hits(
                     scheme_name: options.daily_queue_title.to_string(),
                     color_index: None,
                     color_override: Some(options.daily_queue_marker_color),
-                    title: item.text.clone(),
+                    title,
                     detail,
                     status: SearchHitStatus::DailyQueue,
                 },
@@ -548,7 +550,7 @@ fn subsequence_match_indices(text: &str, query: &str) -> Option<Vec<usize>> {
 }
 
 fn item_has_search_title(item: &Item) -> bool {
-    !item.text.trim().is_empty()
+    !item.text().trim().is_empty()
 }
 
 fn item_detail(item: &Item, time_format: TimeFormat) -> (String, SearchHitStatus) {

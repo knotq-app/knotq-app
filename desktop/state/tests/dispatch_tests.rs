@@ -57,7 +57,8 @@ fn direct_workspace_mutation_syncs_before_next_command() {
             .workspace
             .scheme(scheme_id)
             .and_then(|scheme| scheme.item(item_id))
-            .map(|item| item.text.as_str()),
+            .map(|item| item.text())
+            .as_deref(),
         Some("after")
     );
 }

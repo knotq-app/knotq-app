@@ -1064,8 +1064,9 @@ impl YrsSchemeDocument {
                                 Some(stored) => stored.text.clone(),
                                 None => text_ref.get_string(&txn),
                             };
-                            if current != item.text {
-                                apply_text_diff(&text_ref, &mut txn, &current, &item.text);
+                            let new_text = item.text();
+                            if current != new_text {
+                                apply_text_diff(&text_ref, &mut txn, &current, &new_text);
                             }
                         }
                         // No Text present (corrupt entry) — rebuild it whole.
@@ -1152,7 +1153,7 @@ impl YrsSchemeDocument {
                 // Text CRDT, which is the source of truth for line content.
                 let mut item: Item = serde_json::from_str(&entry.snapshot_json)
                     .with_context(|| format!("parse item snapshot {id}"))?;
-                item.text = entry.text;
+                item.set_text(entry.text);
                 Ok(item)
             })
             .collect()
@@ -1203,7 +1204,9 @@ fn read_stored_item(item_map: &MapRef, txn: &impl ReadTxn) -> StoredItem {
 /// and the two representations cannot disagree.
 fn item_snapshot_json(item: &Item) -> anyhow::Result<String> {
     let mut snapshot = item.clone();
-    snapshot.text = String::new();
+    // Text runs live in the Text CRDT; keep only the non-text inlines
+    // (images/tables) in the snapshot blob.
+    snapshot.content.retain(|inline| !inline.is_text());
     Ok(serde_json::to_string(&snapshot)?)
 }
 
@@ -1241,7 +1244,7 @@ fn write_item_fields(
     item_map.insert(txn, "id", item.id.to_string());
     item_map.insert(txn, "position", position.to_string());
     if include_text {
-        item_map.insert(txn, "text", TextPrelim::new(item.text.clone()));
+        item_map.insert(txn, "text", TextPrelim::new(item.text()));
     }
     item_map.insert(txn, "marker", serde_json_string_value(&item.marker)?);
     item_map.insert(txn, "indent", i64::from(item.indent));
@@ -1260,7 +1263,11 @@ fn write_item_fields(
         "available",
         item.available.map(|dt| dt.to_rfc3339()).unwrap_or_default(),
     );
-    item_map.insert(txn, "media_json", serde_json::to_string(&item.media)?);
+    item_map.insert(
+        txn,
+        "media_json",
+        serde_json::to_string(&item.images().copied().collect::<Vec<_>>())?,
+    );
     item_map.insert(txn, "repeats_json", serde_json::to_string(&item.repeats)?);
     item_map.insert(txn, "state_json", serde_json::to_string(&item.state)?);
     item_map.insert(txn, "priority_json", serde_json::to_string(&item.priority)?);
@@ -2285,11 +2292,11 @@ mod tests {
 
         // Each replica edits a *different* item's text concurrently.
         let mut scheme_left = base.clone();
-        scheme_left.items[0].text = "First edited".to_string();
+        scheme_left.items[0].set_text("First edited");
         let delta_left = left.sync_scheme(&scheme_left).unwrap().unwrap().update_v1;
 
         let mut scheme_right = base.clone();
-        scheme_right.items[1].text = "Second edited".to_string();
+        scheme_right.items[1].set_text("Second edited");
         let delta_right = right.sync_scheme(&scheme_right).unwrap().unwrap().update_v1;
 
         // A third replica merges both concurrent deltas.
@@ -2321,11 +2328,11 @@ mod tests {
 
         // Both edit the *same* line concurrently: left appends, right prepends.
         let mut scheme_left = base.clone();
-        scheme_left.items[0].text = "hello!".to_string();
+        scheme_left.items[0].set_text("hello!");
         let delta_left = left.sync_scheme(&scheme_left).unwrap().unwrap().update_v1;
 
         let mut scheme_right = base.clone();
-        scheme_right.items[0].text = "Xhello".to_string();
+        scheme_right.items[0].set_text("Xhello");
         let delta_right = right.sync_scheme(&scheme_right).unwrap().unwrap().update_v1;
 
         // Merge both concurrent edits into a third replica.
@@ -2428,7 +2435,7 @@ mod tests {
         let doc = YrsSchemeDocument::from_scheme(document, &scheme).unwrap();
         let initial = doc.encode_update_v1(&[]).unwrap();
 
-        scheme.items[0].text = "Changed".to_string();
+        scheme.items[0].set_text("Changed");
         let delta = doc.sync_scheme(&scheme).unwrap().unwrap().update_v1;
 
         validate_crdt_update_sequence(
@@ -2455,7 +2462,7 @@ mod tests {
         let doc = YrsSchemeDocument::from_scheme(document, &scheme).unwrap();
         let _initial = doc.encode_update_v1(&[]).unwrap();
 
-        scheme.items[0].text = "Changed".to_string();
+        scheme.items[0].set_text("Changed");
         let delta = doc.sync_scheme(&scheme).unwrap().unwrap().update_v1;
 
         assert!(
@@ -2596,7 +2603,7 @@ mod tests {
         workspace.ensure_sync_metadata();
 
         let mut docs = WorkspaceCrdtDocuments::try_new(&workspace).unwrap();
-        workspace.schemes.get_mut(&scheme_id).unwrap().items[0].text = "Changed".to_string();
+        workspace.schemes.get_mut(&scheme_id).unwrap().items[0].set_text("Changed");
         let updates = docs
             .sync_changes(
                 &workspace,
@@ -2646,7 +2653,7 @@ mod tests {
 
         assert!(outcome.is_ok(), "{:?}", outcome.document_errors);
         assert_eq!(
-            outcome.workspace.schemes[&scheme_id].items[0].text,
+            outcome.workspace.schemes[&scheme_id].items[0].text(),
             "First remote line"
         );
         assert!(outcome.workspace.folders[&outcome.workspace.root]

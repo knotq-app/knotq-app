@@ -39,8 +39,8 @@ use anyhow::anyhow;
 use chrono::{Duration, NaiveDate, Utc};
 use knotq_model::{
     daily_queue_scheme_id, CalendarProvider, DocumentId, Folder, FolderId, ImageAssetFormat,
-    ImportedCalendarSource, Item, ItemId, ItemMarker, ItemMedia, NodeRef, OperationId, ReplicaId,
-    Scheme, SchemeId, SchemeSource, SyncDocumentKind, Workspace, WorkspaceId,
+    ImageInline, ImportedCalendarSource, Inline, Item, ItemId, ItemMarker, NodeRef, OperationId,
+    ReplicaId, Scheme, SchemeId, SchemeSource, SyncDocumentKind, Workspace, WorkspaceId,
 };
 use knotq_sync::{
     batch_pull_and_apply, batch_push_pending, queue_workspace_bootstrap_updates,
@@ -1178,7 +1178,7 @@ impl TestDevice {
         {
             let items = &mut self.scheme_mut(scheme_id).items;
             if item_index < items.len() {
-                items[item_index].media.push(ItemMedia::Image {
+                items[item_index].push_image(ImageInline {
                     asset,
                     format,
                     width: Some(64),
@@ -1212,10 +1212,9 @@ impl TestDevice {
             })
             .flat_map(|(document, scheme)| {
                 scheme.items.iter().flat_map(move |item| {
-                    item.media.iter().filter_map(move |media| {
-                        let ItemMedia::Image { asset, format, .. } = media;
-                        let image_name = format!("{}.{}", asset, format.extension());
-                        Some((document, image_name))
+                    item.images().map(move |media| {
+                        let image_name = format!("{}.{}", media.asset, media.format.extension());
+                        (document, image_name)
                     })
                 })
             })
@@ -1264,11 +1263,13 @@ impl TestDevice {
             })
             .flat_map(|(document, items)| {
                 items.into_iter().flat_map(move |item| {
-                    item.media.into_iter().filter_map({
+                    item.content.into_iter().filter_map({
                         let document = document;
-                        move |media| {
-                            let ItemMedia::Image { asset, format, .. } = media;
-                            let image_name = format!("{}.{}", asset, format.extension());
+                        move |inline| {
+                            let Inline::Image(media) = inline else {
+                                return None;
+                            };
+                            let image_name = format!("{}.{}", media.asset, media.format.extension());
                             Some((document, image_name))
                         }
                     })
@@ -1317,7 +1318,7 @@ impl TestDevice {
     pub fn edit_line(&mut self, scheme_id: SchemeId, index: usize, text: &str) {
         let items = &mut self.scheme_mut(scheme_id).items;
         if index < items.len() {
-            items[index].text = text.to_string();
+            items[index].set_text(text);
             self.record_changes(WorkspaceCrdtChangeSet::default().touch_scheme(scheme_id));
         }
     }
@@ -1679,7 +1680,7 @@ impl TestDevice {
         if carried_items.is_empty() {
             return None;
         }
-        let carried_texts: Vec<String> = carried_items.iter().map(|i| i.text.clone()).collect();
+        let carried_texts: Vec<String> = carried_items.iter().map(|i| i.text()).collect();
 
         // Strip date annotations from the source rows on the previous day.
         {
@@ -1953,10 +1954,9 @@ impl TestDevice {
             })
             .flat_map(|(document, scheme)| {
                 scheme.items.iter().flat_map(move |item| {
-                    item.media.iter().filter_map(move |media| {
-                        let ItemMedia::Image { asset, format, .. } = media;
-                        let image_name = format!("{}.{}", asset, format.extension());
-                        Some((document, image_name))
+                    item.images().map(move |media| {
+                        let image_name = format!("{}.{}", media.asset, media.format.extension());
+                        (document, image_name)
                     })
                 })
             })
@@ -2003,11 +2003,13 @@ impl TestDevice {
             })
             .flat_map(|(document, items)| {
                 items.into_iter().flat_map(move |item| {
-                    item.media.into_iter().filter_map({
+                    item.content.into_iter().filter_map({
                         let document = document;
-                        move |media| {
-                            let ItemMedia::Image { asset, format, .. } = media;
-                            let image_name = format!("{}.{}", asset, format.extension());
+                        move |inline| {
+                            let Inline::Image(media) = inline else {
+                                return None;
+                            };
+                            let image_name = format!("{}.{}", media.asset, media.format.extension());
                             Some((document, image_name))
                         }
                     })
@@ -2316,7 +2318,7 @@ impl TestDevice {
         self.workspace.schemes[&scheme]
             .items
             .iter()
-            .map(|item| item.text.clone())
+            .map(|item| item.text())
             .collect()
     }
 
@@ -2331,7 +2333,7 @@ impl TestDevice {
                 archived: self.workspace.is_scheme_deleted(*id),
                 gsync: scheme.gsync,
                 source: scheme_source_label(&scheme.source),
-                items: scheme.items.iter().map(|item| item.text.clone()).collect(),
+                items: scheme.items.iter().map(|item| item.text()).collect(),
             })
             .collect::<Vec<_>>();
         schemes.sort_by(|left, right| left.id.cmp(&right.id));
@@ -2456,8 +2458,9 @@ fn dq_scheme_is_blank(scheme: &Scheme) -> bool {
 }
 
 fn dq_item_is_blank_placeholder(item: &Item) -> bool {
-    item.text.trim().is_empty()
-        && item.media.is_empty()
+    item.text().trim().is_empty()
+        && !item.has_images()
+        && !item.has_table()
         && item.marker == ItemMarker::Blank
         && item.indent == 0
         && !dq_item_has_annotations(item)

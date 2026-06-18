@@ -121,7 +121,7 @@ fn two_device_convergence() {
     let items_b: Vec<String> = device_b.workspace.schemes[&scheme]
         .items
         .iter()
-        .map(|item| item.text.clone())
+        .map(|item| item.text())
         .collect();
     assert!(
         items_b.iter().any(|t| t == "alpha") && items_b.iter().any(|t| t == "beta"),
@@ -137,7 +137,7 @@ fn two_device_convergence() {
     let items_a: Vec<String> = device_a.workspace.schemes[&scheme]
         .items
         .iter()
-        .map(|i| i.text.clone())
+        .map(|i| i.text())
         .collect();
     assert!(
         items_a.iter().any(|t| t == "gamma"),
@@ -150,7 +150,7 @@ fn two_device_convergence() {
     let mut items_b2: Vec<String> = device_b.workspace.schemes[&scheme]
         .items
         .iter()
-        .map(|i| i.text.clone())
+        .map(|i| i.text())
         .collect();
     items_a_sorted.sort();
     items_b2.sort();
@@ -370,7 +370,7 @@ fn restart_with_pending_edits() {
         .workspace
         .schemes
         .get(&scheme)
-        .map(|s| s.items.iter().map(|i| i.text.clone()).collect())
+        .map(|s| s.items.iter().map(|i| i.text()).collect())
         .unwrap_or_default();
     assert!(
         items.iter().any(|t| t == &expected),

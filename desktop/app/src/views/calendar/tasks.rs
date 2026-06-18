@@ -20,7 +20,7 @@ impl KnotQApp {
                         color_index: scheme.color_index,
                         is_daily,
                         is_read_only,
-                        text: item.text.clone(),
+                        text: item.text(),
                         start: occ.start.map(|d| d.with_timezone(&Local)),
                         end: occ.end.map(|d| d.with_timezone(&Local)),
                         kind: occ.kind,

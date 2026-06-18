@@ -167,7 +167,7 @@ impl KnotQApp {
         }
 
         let mut commands = Vec::new();
-        if popup.title_dirty && item.text != popup.draft_title {
+        if popup.title_dirty && item.text() != popup.draft_title {
             commands.push(Command::UpdateItemText {
                 scheme: popup.scheme_id,
                 item: popup.item_id,
@@ -244,7 +244,7 @@ impl KnotQApp {
             self.event_popup_title_subscription = None;
             None
         } else {
-            let input = cx.new(|cx| SingleLineEditor::new("Title", item.text.clone(), window, cx));
+            let input = cx.new(|cx| SingleLineEditor::new("Title", item.text(), window, cx));
             let title_subscription =
                 cx.subscribe_in(&input, window, Self::on_event_popup_title_input_event);
             if select_title {

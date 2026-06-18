@@ -2357,8 +2357,7 @@ fn imported_item_lists_equal(existing: &[Item], imported: &[Item]) -> bool {
 }
 
 fn item_content_eq_ignoring_id(left: &Item, right: &Item) -> bool {
-    left.text == right.text
-        && left.media == right.media
+    left.content == right.content
         && left.marker == right.marker
         && left.indent == right.indent
         && left.start == right.start
@@ -2522,7 +2521,7 @@ fn sort_imported_items(items: &mut [Item]) {
         let right_date = right.start.or(right.end);
         left_date
             .cmp(&right_date)
-            .then_with(|| left.text.cmp(&right.text))
+            .then_with(|| left.text().cmp(&right.text()))
             .then_with(|| left.id.0.cmp(&right.id.0))
     });
 }
@@ -2945,7 +2944,7 @@ mod tests {
 
         let item = google_event_to_item(&account(), "cal", &event).unwrap();
 
-        assert_eq!(item.text, "Standup");
+        assert_eq!(item.text(), "Standup");
         assert_eq!(item.marker, ItemMarker::Checkbox);
         assert_eq!(item.start, Some(dt("2026-05-18T13:00:00Z")));
         assert_eq!(item.end, Some(dt("2026-05-18T13:30:00Z")));
@@ -3101,7 +3100,7 @@ mod tests {
         assert!(changed);
         assert_eq!(scheme.items.len(), 1);
         assert_eq!(scheme.items[0].id, existing_id);
-        assert_eq!(scheme.items[0].text, "Updated");
+        assert_eq!(scheme.items[0].text(), "Updated");
         assert_eq!(scheme.items[0].external.as_ref().unwrap().event_id, "stay");
     }
 
@@ -3134,7 +3133,7 @@ mod tests {
         assert!(!changed);
         assert_eq!(scheme.items.len(), 1);
         assert_eq!(scheme.items[0].id, existing_id);
-        assert_eq!(scheme.items[0].text, "Same");
+        assert_eq!(scheme.items[0].text(), "Same");
     }
 
     #[test]

@@ -114,7 +114,7 @@ fn fresh_device_repairs_legacy_root_and_keeps_archived_scheme_synced() {
         legacy.schemes[&archived_id]
             .items
             .iter()
-            .map(|item| item.text.clone())
+            .map(|item| item.text())
             .collect::<Vec<_>>()
     );
 }

@@ -433,7 +433,7 @@ fn image_media_syncs_between_devices() {
             .schemes
             .get(&scheme)
             .and_then(|s| s.items.first())
-            .map(|item| !item.media.is_empty())
+            .map(|item| item.has_images())
             .unwrap_or(false);
         assert!(
             !has_media_before,
@@ -483,7 +483,7 @@ fn image_media_syncs_between_devices() {
             .schemes
             .get(&scheme)
             .and_then(|s| s.items.first())
-            .map(|item| !item.media.is_empty())
+            .map(|item| item.has_images())
             .unwrap_or(false);
         assert!(
             has_media,

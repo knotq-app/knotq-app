@@ -1,15 +1,61 @@
 use anyhow::{bail, Context, Result};
 use chrono::{DateTime, SecondsFormat, Utc};
 use knotq_model::{
-    ExternalItemSource, Item, ItemId, ItemMarker, OccurrenceId, OccurrenceState, Recurrence,
-    Scheme, SchemeId,
+    ExternalItemSource, ImageAssetFormat, ImageInline, Inline, Item, ItemId, ItemMarker,
+    OccurrenceId, OccurrenceState, Recurrence, Scheme, SchemeId,
 };
+use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::path::Path;
+use uuid::Uuid;
 
 use crate::scheme_file::SchemeFile;
 
 const ATTR_PREFIX: &str = "!knotq{";
+
+/// On-disk `media=` JSON shape — the historical `ItemMedia` tagged form. Kept so
+/// existing scheme files (and the migration that reads them) round-trip into the
+/// inline-content model.
+#[derive(Clone, Copy, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+enum StoredMedia {
+    Image {
+        asset: Uuid,
+        format: ImageAssetFormat,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        width: Option<u32>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        height: Option<u32>,
+    },
+}
+
+impl From<&ImageInline> for StoredMedia {
+    fn from(image: &ImageInline) -> Self {
+        StoredMedia::Image {
+            asset: image.asset,
+            format: image.format,
+            width: image.width,
+            height: image.height,
+        }
+    }
+}
+
+impl From<StoredMedia> for ImageInline {
+    fn from(media: StoredMedia) -> Self {
+        let StoredMedia::Image {
+            asset,
+            format,
+            width,
+            height,
+        } = media;
+        ImageInline {
+            asset,
+            format,
+            width,
+            height,
+        }
+    }
+}
 
 pub(crate) fn encode_scheme_file(scheme: &Scheme) -> Result<String> {
     let mut out = String::new();
@@ -41,7 +87,7 @@ fn encode_item(item: &Item) -> Result<String> {
         ItemMarker::Checkbox if checked => "- [x] ",
         ItemMarker::Checkbox => "- [ ] ",
     };
-    let mut body = escape_text(&item.text);
+    let mut body = escape_text(&item.text());
     let attrs = encode_item_attrs(item, checked)?;
     if !attrs.is_empty() {
         if !body.is_empty() {
@@ -84,8 +130,9 @@ fn encode_item_attrs(
     {
         attrs.push(("state", serde_json::to_string(&item.state)?));
     }
-    if !item.media.is_empty() {
-        attrs.push(("media", serde_json::to_string(&item.media)?));
+    if item.has_images() {
+        let media: Vec<StoredMedia> = item.images().map(StoredMedia::from).collect();
+        attrs.push(("media", serde_json::to_string(&media)?));
     }
     if let Some(external) = &item.external {
         attrs.push(("external", serde_json::to_string(external)?));
@@ -131,7 +178,9 @@ fn decode_item(line: &str) -> Result<Item> {
         item.state = serde_json::from_str(state).context("parse state")?;
     }
     if let Some(media) = attrs.get("media") {
-        item.media = serde_json::from_str(media).context("parse media")?;
+        let media: Vec<StoredMedia> = serde_json::from_str(media).context("parse media")?;
+        item.content
+            .extend(media.into_iter().map(|m| Inline::Image(m.into())));
     }
     if let Some(external) = attrs.get("external") {
         item.external =
@@ -387,8 +436,7 @@ fn item_needs_stable_id(item: &Item, checked_marker_represents_state: bool) -> b
 mod tests {
     use super::*;
     use chrono::TimeZone;
-    use knotq_model::{CalendarProvider, ExternalItemSource, ImageAssetFormat, ItemMedia};
-    use uuid::Uuid;
+    use knotq_model::{CalendarProvider, ExternalItemSource};
 
     #[test]
     fn escapes_attribute_like_text_at_start_and_end() {
@@ -403,9 +451,9 @@ mod tests {
 
         let decoded = decode_scheme_file(&encoded, Path::new("Escapes.knotq"), scheme.id).unwrap();
         assert_eq!(decoded.id, scheme.id);
-        assert_eq!(decoded.items[0].text, "!knotq{not_attrs=true}");
-        assert_eq!(decoded.items[1].text, "literal !knotq{id=\"fake\"}");
-        assert_eq!(decoded.items[2].text, r"C:\Users\me");
+        assert_eq!(decoded.items[0].text(), "!knotq{not_attrs=true}");
+        assert_eq!(decoded.items[1].text(), "literal !knotq{id=\"fake\"}");
+        assert_eq!(decoded.items[2].text(), r"C:\Users\me");
     }
 
     #[test]
@@ -419,8 +467,8 @@ mod tests {
             rrules: vec!["FREQ=WEEKLY;BYDAY=WE".to_string()],
             ..Default::default()
         });
-        item.media.push(ItemMedia::Image {
-            asset: Uuid::new_v4(),
+        item.push_image(ImageInline {
+            asset: uuid::Uuid::new_v4(),
             format: ImageAssetFormat::Png,
             width: Some(320),
             height: Some(180),
@@ -450,12 +498,12 @@ mod tests {
         let decoded = &decoded.items[0];
         let original = &scheme.items[0];
         assert_eq!(decoded.id, original.id);
-        assert_eq!(decoded.text, original.text);
+        assert_eq!(decoded.text(), original.text());
         assert_eq!(decoded.marker, original.marker);
         assert_eq!(decoded.start, original.start);
         assert_eq!(decoded.end, original.end);
         assert_eq!(decoded.repeats, original.repeats);
-        assert_eq!(decoded.media, original.media);
+        assert_eq!(decoded.content, original.content);
         assert_eq!(decoded.external, original.external);
     }
 }

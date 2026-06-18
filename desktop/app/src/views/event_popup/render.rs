@@ -28,7 +28,7 @@ impl KnotQApp {
         let date_presence_changed = has_repeating_occurrence
             && ((popup.start_dirty && item.start.is_some() != popup.draft_start.is_some())
                 || (popup.end_dirty && item.end.is_some() != popup.draft_end.is_some()));
-        let title = item_title(&item.text);
+        let title = item_title(&item.text());
         let title_input = popup.title_input.clone();
         let start = popup.draft_start;
         let end = popup.draft_end;

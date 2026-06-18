@@ -10,7 +10,7 @@ pub(super) struct EditorRow {
 pub(super) fn build_buffer(items: &[Item]) -> (String, Vec<EditorRow>) {
     let text = items
         .iter()
-        .map(|item| display_line(&item.text))
+        .map(|item| display_line(&item.text()))
         .collect::<Vec<_>>()
         .join("\n");
     let rows = items
@@ -25,8 +25,7 @@ pub(super) fn same_rows(a: &[EditorRow], b: &[EditorRow]) -> bool {
     a.len() == b.len()
         && a.iter().zip(b).all(|(a, b)| {
             a.item.id == b.item.id
-                && a.item.text == b.item.text
-                && a.item.media == b.item.media
+                && a.item.content == b.item.content
                 && a.item.marker == b.item.marker
                 && a.item.indent == b.item.indent
                 && a.item.start == b.item.start
@@ -116,7 +115,7 @@ pub(super) fn line_ranges(text: &str) -> Vec<Range<usize>> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use knotq_model::{ImageAssetFormat, ItemMedia};
+    use knotq_model::{ImageAssetFormat, ImageInline};
     use uuid::Uuid;
 
     #[test]
@@ -176,7 +175,7 @@ mod tests {
     fn row_equality_tracks_media_metadata() {
         let base = Item::new("image");
         let mut with_media = Item::new("image");
-        with_media.media.push(ItemMedia::Image {
+        with_media.push_image(ImageInline {
             asset: Uuid::new_v4(),
             format: ImageAssetFormat::Png,
             width: Some(32),

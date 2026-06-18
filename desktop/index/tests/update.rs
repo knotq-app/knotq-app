@@ -6,7 +6,7 @@ fn incremental_update_matches_full_rebuild_for_changed_scheme() {
     let mut workspace = workspace_with_item("Before");
     let mut indexed = IndexedWorkspace::build(workspace.clone());
     let scheme_id = *workspace.schemes.keys().next().unwrap();
-    workspace.schemes.get_mut(&scheme_id).unwrap().items[0].text = "After".to_string();
+    workspace.schemes.get_mut(&scheme_id).unwrap().items[0].set_text("After");
     indexed.workspace = workspace.clone();
     indexed.apply_changeset(
         &IndexChangeSet {

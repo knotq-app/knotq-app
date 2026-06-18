@@ -1132,7 +1132,7 @@ mod tests {
         assert_eq!(workspace.daily_queue_scheme_id(date), Some(expected_id));
         assert!(!workspace.schemes.contains_key(&legacy_id));
         assert_eq!(
-            workspace.schemes[&expected_id].items[0].text,
+            workspace.schemes[&expected_id].items[0].text(),
             "legacy entry"
         );
         assert_eq!(

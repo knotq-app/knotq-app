@@ -81,7 +81,7 @@ pub(super) fn empty_line_delete_plan(
 
 pub(super) fn item_for_rich_paste(mut item: Item) -> Item {
     item.id = knotq_model::ItemId::new();
-    item.text = clean_line_text(&item.text);
+    item.set_text(clean_line_text(&item.text()));
     item.indent = item.indent.min(MAX_INDENT);
     item.enforce_marker_constraints();
     item
@@ -184,8 +184,8 @@ pub(super) fn numbered_marker_ordinal(rows: &[EditorRow], row: usize) -> Option<
 }
 
 pub(super) fn item_without_line_attributes(item: &Item) -> Item {
-    let mut clean = Item::new(item.text.clone());
+    let mut clean = Item::new("");
     clean.id = item.id;
-    clean.media = item.media.clone();
+    clean.content = item.content.clone();
     clean
 }

@@ -455,7 +455,7 @@ pub fn scenario_h_calendar_import_lifecycle(h: &mut Harness) {
         device
             .scheme_mut_pub(cal)
             .items
-            .retain(|item| item.text != "1:1");
+            .retain(|item| item.text() != "1:1");
         // record the retained change so it queues as CRDT updates
         let changes = knotq_sync::WorkspaceCrdtChangeSet::default().touch_scheme(cal);
         device.record_changes(changes);
@@ -874,7 +874,7 @@ fn find_item<'a>(
     h.device(key).workspace.schemes[&scheme]
         .items
         .iter()
-        .find(|item| item.text == text)
+        .find(|item| item.text() == text)
         .unwrap_or_else(|| panic!("{key:?}: item {text:?} not found in {scheme}"))
 }
 

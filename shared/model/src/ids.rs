@@ -42,6 +42,8 @@ macro_rules! id_newtype {
 id_newtype!(FolderId);
 id_newtype!(SchemeId);
 id_newtype!(ItemId);
+id_newtype!(RowId);
+id_newtype!(ColumnId);
 id_newtype!(WorkspaceId);
 id_newtype!(ReplicaId);
 id_newtype!(OperationId);

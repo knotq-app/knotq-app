@@ -25,7 +25,7 @@ pub fn event_update_commands(
     item: &Item,
 ) -> Vec<Command> {
     let mut commands = Vec::new();
-    if item.text != event.summary {
+    if item.text() != event.summary {
         commands.push(Command::UpdateItemText {
             scheme: scheme_id,
             item: item.id,
@@ -92,7 +92,7 @@ mod tests {
         let Command::InsertItem { item, .. } = &commands[0] else {
             panic!("expected insert command");
         };
-        assert_eq!(item.text, "MATH 15");
+        assert_eq!(item.text(), "MATH 15");
         assert_eq!(item.marker, ItemMarker::Checkbox);
         assert_eq!(item.start, Some(start));
     }

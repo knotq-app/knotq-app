@@ -89,7 +89,8 @@ fn update_item_text(
     text: String,
 ) -> Result<CommandReceipt, CommandError> {
     let item_ref = item_mut(workspace, scheme, item)?;
-    let prev = std::mem::replace(&mut item_ref.text, text);
+    let prev = item_ref.text();
+    item_ref.set_text(text);
     Ok(CommandReceipt {
         inverse: Command::UpdateItemText {
             scheme,

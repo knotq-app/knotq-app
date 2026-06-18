@@ -264,7 +264,7 @@ mod tests {
 
         assert!(ensure_plain_blank_daily_row(&mut scheme));
         assert_eq!(scheme.items.len(), 1);
-        assert_eq!(scheme.items[0].text, "");
+        assert_eq!(scheme.items[0].text(), "");
         assert_eq!(scheme.items[0].marker, ItemMarker::Blank);
         assert_eq!(scheme.items[0].indent, 0);
         assert!(!ensure_plain_blank_daily_row(&mut scheme));

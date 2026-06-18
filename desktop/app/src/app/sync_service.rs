@@ -10,7 +10,7 @@ use chrono::Utc;
 use futures::{pin_mut, select, FutureExt};
 use gpui::{Context, Task};
 use knotq_model::{
-    DocumentId, ImageAssetFormat, ItemMedia, OperationId, ReplicaId, SyncAccountSettings,
+    DocumentId, ImageAssetFormat, OperationId, ReplicaId, SyncAccountSettings,
     SyncAccountStatus, Workspace, WorkspaceId,
 };
 use knotq_storage_json::{
@@ -736,12 +736,11 @@ fn workspace_media_assets(workspace: &Workspace) -> Vec<SyncMediaAsset> {
             continue;
         };
         for item in &scheme.items {
-            for media in &item.media {
-                let ItemMedia::Image { asset, format, .. } = media;
+            for image in item.images() {
                 let media = SyncMediaAsset {
                     document: meta.id,
-                    asset: *asset,
-                    format: *format,
+                    asset: image.asset,
+                    format: image.format,
                 };
                 if seen.insert(media) {
                     assets.push(media);

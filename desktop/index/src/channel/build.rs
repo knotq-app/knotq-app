@@ -14,7 +14,8 @@ pub fn build_channel_index(workspace: &Workspace) -> ChannelIndex {
             },
         );
         for item in &scheme.items {
-            let task = item.text.lines().next().unwrap_or("").trim();
+            let text = item.text();
+            let task = text.lines().next().unwrap_or("").trim();
             if task.is_empty() {
                 continue;
             }

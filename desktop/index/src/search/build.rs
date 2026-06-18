@@ -12,14 +12,15 @@ pub fn build_search_index(workspace: &Workspace) -> SearchIndex {
             tokens: tokenize(&scheme.name),
         });
         for item in &scheme.items {
-            if item.text.trim().is_empty() {
+            let text = item.text();
+            if text.trim().is_empty() {
                 continue;
             }
             documents.push(SearchDocument {
                 scheme_id: scheme.id,
                 item_id: Some(item.id),
-                text: item.text.clone(),
-                tokens: tokenize(&format!("{} {}", scheme.name, item.text)),
+                text: text.clone(),
+                tokens: tokenize(&format!("{} {}", scheme.name, text)),
             });
         }
     }

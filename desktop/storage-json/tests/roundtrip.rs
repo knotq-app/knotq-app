@@ -1,7 +1,7 @@
 use chrono::{NaiveDate, TimeZone, Utc};
 use knotq_model::{
     AppSettings, CalendarProvider, CalendarWeekRange, ExternalItemSource, Folder, FolderId,
-    GoogleOAuthAccount, ImageAssetFormat, Item, ItemMarker, ItemMedia, NodeRef, Scheme, ThemeMode,
+    GoogleOAuthAccount, ImageAssetFormat, ImageInline, Item, ItemMarker, NodeRef, Scheme, ThemeMode,
     Workspace,
 };
 use knotq_storage_json::{
@@ -87,7 +87,7 @@ fn save_workspace_splits_scheme_files_and_omits_empty_item_fields() {
         instance_id: None,
         updated_at: Some(Utc.with_ymd_and_hms(2026, 5, 18, 12, 0, 0).unwrap()),
     });
-    image_item.media.push(ItemMedia::Image {
+    image_item.push_image(ImageInline {
         asset: uuid::Uuid::new_v4(),
         format: ImageAssetFormat::Png,
         width: Some(320),
@@ -144,7 +144,7 @@ fn save_workspace_splits_scheme_files_and_omits_empty_item_fields() {
     let loaded = load_workspace(&workspace_file).unwrap().unwrap();
     assert_eq!(loaded.id, workspace.id);
     assert_eq!(loaded.schemes[&scheme_id].items.len(), 3);
-    assert_eq!(loaded.schemes[&scheme_id].items[0].text, "plain");
+    assert_eq!(loaded.schemes[&scheme_id].items[0].text(), "plain");
     assert_eq!(
         loaded.schemes[&scheme_id].items[2]
             .external
@@ -195,7 +195,7 @@ fn schemes_are_saved_under_uuid_paths() {
     assert!(!dir.join("schemes").join("Projects").exists());
 
     let loaded = load_workspace(&workspace_file).unwrap().unwrap();
-    assert_eq!(loaded.schemes[&scheme_id].items[0].text, "Read paper");
+    assert_eq!(loaded.schemes[&scheme_id].items[0].text(), "Read paper");
 
     let _ = fs::remove_dir_all(dir);
 }
@@ -247,7 +247,7 @@ fn nested_folders_do_not_affect_scheme_file_paths() {
     assert!(!dir.join("schemes").join("Projects").exists());
 
     let loaded = load_workspace(&workspace_file).unwrap().unwrap();
-    assert_eq!(loaded.schemes[&scheme_id].items[0].text, "Read paper");
+    assert_eq!(loaded.schemes[&scheme_id].items[0].text(), "Read paper");
 
     let _ = fs::remove_dir_all(dir);
 }
@@ -387,13 +387,13 @@ fn workspace_load_options_keep_unrequested_daily_queue_index_only() {
     assert_eq!(loaded.daily_queue_scheme_id(old_date), Some(old_id));
     assert_eq!(loaded.daily_queue_scheme_id(today), Some(current_id));
     assert!(!loaded.schemes.contains_key(&old_id));
-    assert_eq!(loaded.schemes[&current_id].items[0].text, "today note");
+    assert_eq!(loaded.schemes[&current_id].items[0].text(), "today note");
 
     let loaded_old = load_daily_queue_scheme(&workspace_file, old_date)
         .unwrap()
         .unwrap();
     assert_eq!(loaded_old.id, old_id);
-    assert_eq!(loaded_old.items[0].text, "old note");
+    assert_eq!(loaded_old.items[0].text(), "old note");
 
     let _ = fs::remove_dir_all(dir);
 }
@@ -431,8 +431,8 @@ fn workspace_load_options_load_daily_queue_by_calendar_index() {
     .unwrap()
     .unwrap();
 
-    assert_eq!(loaded.schemes[&old_id].items[0].text, "shows today");
-    assert_eq!(loaded.schemes[&current_id].items[0].text, "today note");
+    assert_eq!(loaded.schemes[&old_id].items[0].text(), "shows today");
+    assert_eq!(loaded.schemes[&current_id].items[0].text(), "today note");
 
     let loaded_for_range =
         load_daily_queue_schemes_for_calendar_range(&workspace_file, today, today).unwrap();
@@ -479,7 +479,7 @@ fn version_history_restores_saved_workspace_files() {
     let first_scheme_path = dir.join("schemes").join(format!("{scheme_id}.knotq"));
     assert!(first_scheme_path.exists());
 
-    workspace.schemes.get_mut(&scheme_id).unwrap().items[0].text = "second version".into();
+    workspace.schemes.get_mut(&scheme_id).unwrap().items[0].set_text("second version");
     save_workspace(&workspace_file, &workspace).unwrap();
     assert!(fs::read_to_string(&first_scheme_path)
         .unwrap()
@@ -488,7 +488,7 @@ fn version_history_restores_saved_workspace_files() {
     restore_workspace_snapshot(&dir, &first_snapshot).unwrap();
     let restored = load_workspace(&workspace_file).unwrap().unwrap();
 
-    assert_eq!(restored.schemes[&scheme_id].items[0].text, "first version");
+    assert_eq!(restored.schemes[&scheme_id].items[0].text(), "first version");
     assert!(fs::read_to_string(&first_scheme_path)
         .unwrap()
         .contains("first version"));

@@ -96,7 +96,7 @@ impl SchemeEditor {
         let old_text_lines: Vec<String> = self
             .rows
             .iter()
-            .map(|row| clean_line_text(&row.item.text))
+            .map(|row| clean_line_text(&row.item.text()))
             .collect();
         let new_text_lines: Vec<String> = new_text.split('\n').map(clean_line_text).collect();
         let old_refs: Vec<&str> = old_text_lines.iter().map(String::as_str).collect();
@@ -116,8 +116,8 @@ impl SchemeEditor {
         if reuse_first {
             if let Some(item) = items.get_mut(prefix) {
                 let text = new_text_lines[prefix].clone();
-                if item.text != text {
-                    item.text = text.clone();
+                if item.text() != text {
+                    item.set_text(text.clone());
                     commands.push(Command::UpdateItemText {
                         scheme: self.scheme_id,
                         item: item.id,
@@ -217,7 +217,8 @@ impl SchemeEditor {
         if editor_row.item.marker != ItemMarker::Blank {
             return;
         }
-        let text = &editor_row.item.text;
+        let text = editor_row.item.text();
+        let text = text.as_str();
 
         let (new_marker, prefix_len) = if text == "- " || text == "* " {
             (ItemMarker::Bullet, text.len())
@@ -240,14 +241,14 @@ impl SchemeEditor {
         };
 
         // Save undo state before conversion.
-        let original_text = editor_row.item.text.clone();
+        let original_text = editor_row.item.text();
         let original_marker = editor_row.item.marker;
-        self.auto_bullet_undo = Some((row, original_text, original_marker));
+        self.auto_bullet_undo = Some((row, original_text.clone(), original_marker));
 
         // Strip the prefix and set the marker.
-        let new_text = editor_row.item.text[prefix_len..].to_string();
+        let new_text = original_text[prefix_len..].to_string();
         let item = &mut self.rows[row].item;
-        item.text = new_text.clone();
+        item.set_text(new_text.clone());
         item.marker = new_marker;
 
         // Rebuild buffer to sync text representation.

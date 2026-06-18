@@ -19,7 +19,7 @@ fn user_item_mutations_are_rejected_for_read_only_calendar_schemes() {
         .unwrap_err();
 
     assert_read_only(err, scheme_id);
-    assert_eq!(workspace.schemes[&scheme_id].items[0].text, "meeting");
+    assert_eq!(workspace.schemes[&scheme_id].items[0].text(), "meeting");
 
     let err = workspace
         .apply(Command::ToggleOccurrence {
@@ -87,7 +87,7 @@ fn importer_can_refresh_read_only_calendar_schemes() {
         .unwrap();
 
     assert_eq!(
-        workspace.schemes[&scheme_id].items[0].text,
+        workspace.schemes[&scheme_id].items[0].text(),
         "updated from google"
     );
 }

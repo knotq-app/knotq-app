@@ -139,7 +139,7 @@ impl EventPopup {
             scheme_id,
             item_id,
             title_input: None,
-            draft_title: item.text.clone(),
+            draft_title: item.text(),
             created_from_calendar: false,
             occurrence,
             draft_start,

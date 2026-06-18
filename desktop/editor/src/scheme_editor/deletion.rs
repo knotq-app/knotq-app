@@ -181,7 +181,7 @@ impl SchemeEditor {
             if self.selection.is_empty() && self.selection.head.row == undo_row {
                 // Revert: restore original text and marker.
                 if let Some(editor_row) = self.rows.get_mut(undo_row) {
-                    editor_row.item.text = original_text.clone();
+                    editor_row.item.set_text(original_text.clone());
                     editor_row.item.marker = original_marker;
 
                     let items: Vec<Item> = self.rows.iter().map(|r| r.item.clone()).collect();

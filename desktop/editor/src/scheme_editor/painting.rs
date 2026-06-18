@@ -97,7 +97,7 @@ impl SchemeEditor {
     pub(super) fn media_stack_height(&self, item: &Item, max_width: Pixels) -> Pixels {
         let mut height = px(0.0);
         let mut count = 0;
-        for media in &item.media {
+        for media in item.images() {
             let media_size = media_display_size(media, max_width);
             if media_size.height <= px(0.0) {
                 continue;
@@ -121,7 +121,7 @@ impl SchemeEditor {
         window: &mut Window,
         cx: &mut App,
     ) {
-        if item.media.is_empty() {
+        if !item.has_images() {
             return;
         }
 
@@ -146,7 +146,7 @@ impl SchemeEditor {
             + annotation_height
             + px(IMAGE_TOP_GAP);
 
-        for media in &item.media {
+        for media in item.images() {
             let media_size = media_display_size(media, max_width);
             if media_size.height <= px(0.0) {
                 continue;
@@ -171,15 +171,14 @@ impl SchemeEditor {
         }
     }
 
-    pub(super) fn image_for_media(&mut self, media: &ItemMedia) -> Option<Arc<Image>> {
-        let ItemMedia::Image { asset, .. } = media;
-        if let Some(cached) = self.image_cache.get(asset) {
+    pub(super) fn image_for_media(&mut self, media: &ImageInline) -> Option<Arc<Image>> {
+        if let Some(cached) = self.image_cache.get(&media.asset) {
             return cached.clone();
         }
 
         let image = load_image_for_media(media);
         if image.is_some() {
-            self.image_cache.insert(*asset, image.clone());
+            self.image_cache.insert(media.asset, image.clone());
         }
         image
     }

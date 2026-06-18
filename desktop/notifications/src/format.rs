@@ -4,7 +4,8 @@ use knotq_model::Item;
 use crate::NotificationKind;
 
 pub(crate) fn title_for(item: &Item) -> String {
-    let title = item.text.lines().next().unwrap_or("").trim();
+    let text = item.text();
+    let title = text.lines().next().unwrap_or("").trim();
     if title.is_empty() {
         "(untitled)".to_string()
     } else {

@@ -401,5 +401,5 @@ fn should_skip_daily_queue_day(
         && scheme
             .items
             .iter()
-            .all(|item| item.text.trim().is_empty() && item.media.is_empty())
+            .all(|item| item.text().trim().is_empty() && !item.has_images() && !item.has_table())
 }

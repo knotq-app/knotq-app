@@ -159,7 +159,7 @@ fn empty_line_attribute_clear_preserves_text_and_id_only() {
     let clean = item_without_line_attributes(&item);
 
     assert_eq!(clean.id, id);
-    assert_eq!(clean.text, "");
+    assert_eq!(clean.text(), "");
     assert_eq!(clean.marker, ItemMarker::Blank);
     assert_eq!(clean.indent, 0);
     assert!(clean.start.is_none());
@@ -203,7 +203,7 @@ fn inserted_lines_inherit_marker_style_without_dates() {
     let inserted =
         item_for_inserted_line("next".into(), Some(InsertedLineStyle::from_item(&template)));
 
-    assert_eq!(inserted.text, "next");
+    assert_eq!(inserted.text(), "next");
     assert_eq!(inserted.marker, ItemMarker::Checkbox);
     assert_eq!(inserted.indent, 2);
     assert!(inserted.start.is_none());
@@ -220,7 +220,7 @@ fn inserted_lines_inherit_numbered_marker_style() {
     let inserted =
         item_for_inserted_line("next".into(), Some(InsertedLineStyle::from_item(&template)));
 
-    assert_eq!(inserted.text, "next");
+    assert_eq!(inserted.text(), "next");
     assert_eq!(inserted.marker, ItemMarker::Numbered);
     assert_eq!(inserted.indent, 1);
     assert!(inserted.start.is_none());
@@ -277,7 +277,7 @@ fn rich_paste_duplicates_item_metadata_with_new_id() {
     let pasted = item_for_rich_paste(copied);
 
     assert_ne!(pasted.id, original_id);
-    assert_eq!(pasted.text, "task");
+    assert_eq!(pasted.text(), "task");
     assert_eq!(pasted.marker, ItemMarker::Checkbox);
     assert_eq!(pasted.indent, 2);
     assert_eq!(pasted.start, Some(start));

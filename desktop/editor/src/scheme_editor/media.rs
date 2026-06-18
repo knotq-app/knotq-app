@@ -8,7 +8,7 @@ use gpui::{
     Pixels,
 };
 use image::GenericImageView;
-use knotq_model::{ImageAssetFormat, ItemMedia};
+use knotq_model::{ImageAssetFormat, ImageInline};
 use uuid::Uuid;
 
 use super::{IMAGE_FALLBACK_HEIGHT, IMAGE_FALLBACK_WIDTH, IMAGE_MAX_HEIGHT};
@@ -22,7 +22,7 @@ pub(super) fn clipboard_image(item: &ClipboardItem) -> Option<&Image> {
     })
 }
 
-pub(super) fn persist_clipboard_image(image: &Image) -> Option<ItemMedia> {
+pub(super) fn persist_clipboard_image(image: &Image) -> Option<ImageInline> {
     let format = image_asset_format(image.format())?;
     if image.bytes().len() > MAX_IMAGE_ASSET_BYTES {
         eprintln!(
@@ -45,7 +45,7 @@ pub(super) fn persist_clipboard_image(image: &Image) -> Option<ItemMedia> {
         return None;
     }
     let (width, height) = image_dimensions(format, image.bytes());
-    Some(ItemMedia::Image {
+    Some(ImageInline {
         asset,
         format,
         width,
@@ -60,7 +60,7 @@ pub(super) fn external_paths_have_supported_image(paths: &ExternalPaths) -> bool
         .any(|path| image_asset_format_from_path(path).is_some())
 }
 
-pub(super) fn persist_image_file(path: &Path) -> Option<ItemMedia> {
+pub(super) fn persist_image_file(path: &Path) -> Option<ImageInline> {
     let format = image_asset_format_from_path(path)?;
     let bytes = fs::read(path).ok()?;
     if bytes.len() > MAX_IMAGE_ASSET_BYTES {
@@ -84,7 +84,7 @@ pub(super) fn persist_image_file(path: &Path) -> Option<ItemMedia> {
         return None;
     }
     let (width, height) = image_dimensions(format, &bytes);
-    Some(ItemMedia::Image {
+    Some(ImageInline {
         asset,
         format,
         width,
@@ -104,12 +104,13 @@ pub(super) fn gpui_image_format(format: ImageAssetFormat) -> GpuiImageFormat {
     }
 }
 
-pub(super) fn media_display_size(media: &ItemMedia, max_width: Pixels) -> gpui::Size<Pixels> {
-    let ItemMedia::Image { width, height, .. } = media;
-    let raw_width = width
+pub(super) fn media_display_size(media: &ImageInline, max_width: Pixels) -> gpui::Size<Pixels> {
+    let raw_width = media
+        .width
         .map(|width| width as f32)
         .unwrap_or(IMAGE_FALLBACK_WIDTH);
-    let raw_height = height
+    let raw_height = media
+        .height
         .map(|height| height as f32)
         .unwrap_or(IMAGE_FALLBACK_HEIGHT);
     if raw_width <= 0.0 || raw_height <= 0.0 {
@@ -122,11 +123,10 @@ pub(super) fn media_display_size(media: &ItemMedia, max_width: Pixels) -> gpui::
     size(px(raw_width * scale), px(raw_height * scale))
 }
 
-pub(super) fn load_image_for_media(media: &ItemMedia) -> Option<Arc<Image>> {
-    let ItemMedia::Image { asset, format, .. } = media;
-    fs::read(image_asset_path(*asset, format.extension()))
+pub(super) fn load_image_for_media(media: &ImageInline) -> Option<Arc<Image>> {
+    fs::read(image_asset_path(media.asset, media.format.extension()))
         .ok()
-        .map(|bytes| Arc::new(Image::from_bytes(gpui_image_format(*format), bytes)))
+        .map(|bytes| Arc::new(Image::from_bytes(gpui_image_format(media.format), bytes)))
 }
 
 fn image_asset_format(format: GpuiImageFormat) -> Option<ImageAssetFormat> {

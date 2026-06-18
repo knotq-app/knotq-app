@@ -13,7 +13,7 @@ use gpui::{
 };
 use knotq_commands::{Command, DateKind};
 use knotq_model::TimeFormat;
-use knotq_model::{Item, ItemId, ItemMarker, ItemMedia, OccurrenceId, Scheme, SchemeId};
+use knotq_model::{ImageInline, Inline, Item, ItemId, ItemMarker, OccurrenceId, Scheme, SchemeId};
 use uuid::Uuid;
 
 use crate::line_map::{LineMap, SchemeItemAnnotation, SchemeItemLine, TextLocation};

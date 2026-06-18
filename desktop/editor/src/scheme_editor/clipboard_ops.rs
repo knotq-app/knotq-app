@@ -214,7 +214,7 @@ impl SchemeEditor {
     pub(super) fn append_media_to_row(
         &mut self,
         row: usize,
-        media: Vec<ItemMedia>,
+        media: Vec<ImageInline>,
         window: Option<&mut Window>,
         cx: &mut Context<Self>,
     ) -> bool {
@@ -225,7 +225,10 @@ impl SchemeEditor {
         let Some(editor_row) = self.rows.get_mut(row) else {
             return false;
         };
-        editor_row.item.media.extend(media);
+        editor_row
+            .item
+            .content
+            .extend(media.into_iter().map(Inline::Image));
         let item = editor_row.item.clone();
         let items: Vec<Item> = self.rows.iter().map(|row| row.item.clone()).collect();
         let (text, rows) = build_buffer(&items);
