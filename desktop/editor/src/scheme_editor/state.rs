@@ -68,6 +68,7 @@ impl SchemeEditor {
             table_layouts: HashMap::new(),
             cell_slots: HashMap::new(),
             table_control_hitboxes: Vec::new(),
+            hovered_table_control: None,
         }
     }
 

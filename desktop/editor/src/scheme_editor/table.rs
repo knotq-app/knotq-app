@@ -16,10 +16,10 @@ pub(super) const CELL_PAD_X: f32 = 10.0;
 pub(super) const CELL_PAD_Y: f32 = 6.0;
 pub(super) const GRID_TOP_GAP: f32 = 6.0;
 const ROW_MIN_H: f32 = 30.0;
-const GRID_BOTTOM_GAP: f32 = 6.0;
-const CONTROL_H: f32 = 24.0;
-const CONTROL_BTN: f32 = 18.0;
-const RIGHT_MARGIN: f32 = CONTROL_BTN + 30.0;
+const GRID_BOTTOM_GAP: f32 = 2.0;
+const CONTROL_H: f32 = 16.0;
+const CONTROL_BTN: f32 = 14.0;
+const RIGHT_MARGIN: f32 = CONTROL_BTN + 10.0;
 const CELL_LINE_HEIGHT: f32 = TEXT_LINE_HEIGHT;
 
 pub(super) fn grid_left_content() -> Pixels {
@@ -60,12 +60,10 @@ impl TableLayout {
     }
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) enum TableControlKind {
     AddRow,
     AddColumn,
-    DeleteRow(usize),
-    DeleteColumn(usize),
 }
 
 #[derive(Clone, Copy)]
@@ -301,6 +299,60 @@ impl SchemeEditor {
             .find(|hitbox| bounds_contains(hitbox.bounds, position))
     }
 
+    pub(super) fn table_context_at_position(
+        &self,
+        position: Point<Pixels>,
+    ) -> Option<TableContext> {
+        let bounds = self.last_bounds?;
+        for anchor_row in 0..self.rows.len() {
+            let anchor = self.rows.get(anchor_row)?;
+            if !anchor.path.is_table_anchor() {
+                continue;
+            }
+            let table = anchor.item.table()?;
+            let layout = self.table_layouts.get(&anchor_row)?;
+            let (origin, grid_w, grid_h) = self.table_grid_geom(anchor_row, bounds)?;
+            if position.x < origin.x
+                || position.x >= origin.x + grid_w
+                || position.y < origin.y
+                || position.y >= origin.y + grid_h
+            {
+                continue;
+            }
+
+            let local_x = position.x - origin.x;
+            let local_y = position.y - origin.y;
+            let column = layout
+                .col_x
+                .iter()
+                .zip(&layout.col_w)
+                .enumerate()
+                .find_map(|(c, (left, width))| {
+                    (local_x >= *left && local_x < *left + *width).then_some(c)
+                });
+            let row = if local_y < layout.header_h {
+                None
+            } else {
+                let body_y = local_y - layout.header_h;
+                let mut top = px(0.0);
+                layout.body_band_h.iter().enumerate().find_map(|(r, height)| {
+                    let in_row = body_y >= top && body_y < top + *height;
+                    top += *height;
+                    in_row.then_some(r)
+                })
+            };
+
+            return Some(TableContext {
+                table_item_id: anchor.item.id,
+                row,
+                column,
+                row_count: table.row_count(),
+                column_count: table.column_count(),
+            });
+        }
+        None
+    }
+
     pub(super) fn paint_table_chrome(
         &mut self,
         anchor_row: usize,
@@ -375,57 +427,40 @@ impl SchemeEditor {
             ),
             size(btn, btn),
         );
-        self.paint_control_button(add_row, "+", false, window, cx);
+        let add_row_kind = TableControlKind::AddRow;
+        self.paint_control_button(
+            add_row,
+            "+",
+            self.hovered_table_control == Some(add_row_kind),
+            window,
+            cx,
+        );
         self.table_control_hitboxes.push(TableControlHitbox {
             bounds: add_row,
             anchor_row,
-            kind: TableControlKind::AddRow,
+            kind: add_row_kind,
         });
 
         let add_col = Bounds::new(
             point(
-                origin.x + grid_w + px(8.0),
+                origin.x + grid_w + px(4.0),
                 origin.y + (layout.header_h - btn) / 2.0,
             ),
             size(btn, btn),
         );
-        self.paint_control_button(add_col, "+", false, window, cx);
+        let add_col_kind = TableControlKind::AddColumn;
+        self.paint_control_button(
+            add_col,
+            "+",
+            self.hovered_table_control == Some(add_col_kind),
+            window,
+            cx,
+        );
         self.table_control_hitboxes.push(TableControlHitbox {
             bounds: add_col,
             anchor_row,
-            kind: TableControlKind::AddColumn,
+            kind: add_col_kind,
         });
-
-        if let Some((r, c)) = self.active_cell_rc(anchor_row) {
-            if layout.col_w.len() > 1 {
-                let x = origin.x + layout.col_x[c] + (layout.col_w[c] - btn) / 2.0;
-                let del_col = Bounds::new(point(x, origin.y - btn - px(3.0)), size(btn, btn));
-                self.paint_control_button(del_col, "x", true, window, cx);
-                self.table_control_hitboxes.push(TableControlHitbox {
-                    bounds: del_col,
-                    anchor_row,
-                    kind: TableControlKind::DeleteColumn(c),
-                });
-            }
-            // No delete-row affordance while editing the header (it isn't a body row).
-            if r != HEADER_ROW && layout.body_band_h.len() > 1 {
-                let mut band_top = origin.y + layout.header_h;
-                for height in layout.body_band_h.iter().take(r) {
-                    band_top += *height;
-                }
-                let band_h = layout.body_band_h.get(r).copied().unwrap_or(px(ROW_MIN_H));
-                let del_row = Bounds::new(
-                    point(origin.x - btn - px(3.0), band_top + (band_h - btn) / 2.0),
-                    size(btn, btn),
-                );
-                self.paint_control_button(del_row, "x", true, window, cx);
-                self.table_control_hitboxes.push(TableControlHitbox {
-                    bounds: del_row,
-                    anchor_row,
-                    kind: TableControlKind::DeleteRow(r),
-                });
-            }
-        }
     }
 
     pub(super) fn insert_table(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -492,6 +527,23 @@ impl SchemeEditor {
             return;
         }
         let table_id = anchor.item.id;
+        let action = match hitbox.kind {
+            TableControlKind::AddRow => TableStructureAction::AppendRow,
+            TableControlKind::AddColumn => TableStructureAction::AppendColumn,
+        };
+        self.apply_table_structure_action(table_id, action, window, cx);
+    }
+
+    pub fn apply_table_structure_action(
+        &mut self,
+        table_id: ItemId,
+        action: TableStructureAction,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.read_only {
+            return;
+        }
         let mut top = reconstruct_top_level(&self.rows);
         let Some(pos) = top.iter().position(|item| item.id == table_id) else {
             return;
@@ -499,16 +551,30 @@ impl SchemeEditor {
         let Some(table) = top[pos].table_mut() else {
             return;
         };
-        match hitbox.kind {
-            TableControlKind::AddRow => {
+        match action {
+            TableStructureAction::AppendRow => {
                 table.insert_row(table.row_count());
             }
-            TableControlKind::AddColumn => {
+            TableStructureAction::AppendColumn => {
                 let n = table.column_count();
                 table.insert_column(n, format!("Column {}", n + 1));
             }
-            TableControlKind::DeleteRow(row) => table.remove_row(row),
-            TableControlKind::DeleteColumn(col) => table.remove_column(col),
+            TableStructureAction::InsertRowBefore(row) => {
+                table.insert_row(row);
+            }
+            TableStructureAction::InsertRowAfter(row) => {
+                table.insert_row(row.saturating_add(1));
+            }
+            TableStructureAction::DeleteRow(row) => table.remove_row(row),
+            TableStructureAction::InsertColumnBefore(col) => {
+                let n = table.column_count();
+                table.insert_column(col, format!("Column {}", n + 1));
+            }
+            TableStructureAction::InsertColumnAfter(col) => {
+                let n = table.column_count();
+                table.insert_column(col.saturating_add(1), format!("Column {}", n + 1));
+            }
+            TableStructureAction::DeleteColumn(col) => table.remove_column(col),
         }
         table.normalize();
         let item = top[pos].clone();
@@ -536,23 +602,27 @@ impl SchemeEditor {
         &self,
         bounds: Bounds<Pixels>,
         glyph: &str,
-        danger: bool,
+        hovered: bool,
         window: &mut Window,
         cx: &mut App,
     ) {
         let theme = self.theme;
         window.paint_quad(quad(
             bounds,
-            px(4.0),
-            token_rgba(theme.button_bg),
-            px(1.0),
+            px(3.0),
+            if hovered {
+                token_rgba(theme.button_bg)
+            } else {
+                token_rgba(0x00000000)
+            },
+            px(if hovered { 1.0 } else { 0.0 }),
             token_hsla(theme.border_main),
             BorderStyle::default(),
         ));
-        let color = if danger {
+        let color = if hovered {
             token_hsla(theme.text_primary)
         } else {
-            token_hsla(theme.text_muted)
+            token_hsla(if theme.is_dark { 0xffffff2a } else { 0x00000026 })
         };
         let mut font = window.text_style().font().clone();
         font.family = SharedString::new(FONT_UI);

@@ -163,14 +163,18 @@ impl SchemeEditor {
         if event.button == MouseButton::Right {
             let loc = self.location_for_window_position(event.position);
             if let Some(row) = self.rows.get(loc.row) {
+                let table = self.table_context_at_position(event.position);
                 self.selection = TextSelection::collapsed(loc);
                 self.mouse_selection_mode = None;
                 self.mouse_selection_origin = None;
                 cx.emit(EditorEvent::OpenContextMenu {
                     scheme_id: self.scheme_id,
-                    item_id: row.item.id,
+                    item_id: table
+                        .map(|context| context.table_item_id)
+                        .unwrap_or(row.item.id),
                     position: event.position,
                     date_anchor: self.date_anchor_for_row(loc.row),
+                    table,
                 });
                 self.is_selecting = false;
                 self.stop_responding_to_mouse_movements();
@@ -282,6 +286,12 @@ impl SchemeEditor {
         _window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        let hovered_table_control = self.table_control_at(event.position).map(|hitbox| hitbox.kind);
+        if hovered_table_control != self.hovered_table_control {
+            self.hovered_table_control = hovered_table_control;
+            cx.notify();
+        }
+
         if self.is_selecting && event.dragging() {
             self.drag_to_position(event.position, cx);
             cx.stop_propagation();

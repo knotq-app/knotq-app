@@ -66,7 +66,7 @@ use bootstrap::load_or_seed;
 use services::{spawn_notification_task, spawn_save_task, spawn_timeline_task, AppServiceBus};
 use sync_service::spawn_sync_task;
 
-use knotq_editor::{SchemeEditor, SchemeEditorSessionState};
+use knotq_editor::{SchemeEditor, SchemeEditorSessionState, TableContext};
 use knotq_ui::date_field::DateComponentField;
 use knotq_ui::single_line_editor::SingleLineEditor;
 
@@ -305,6 +305,7 @@ pub struct EditorContextMenu {
     pub item_id: ItemId,
     pub position: gpui::Point<gpui::Pixels>,
     pub date_anchor: gpui::Point<gpui::Pixels>,
+    pub table: Option<TableContext>,
 }
 
 pub struct DatePickerPopover {
@@ -377,6 +378,7 @@ pub(crate) enum SchemeEditorMenuState {
         item_id: ItemId,
         position: Point<Pixels>,
         date_anchor: Point<Pixels>,
+        table: Option<TableContext>,
     },
 }
 

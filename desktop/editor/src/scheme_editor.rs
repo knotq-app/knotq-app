@@ -59,7 +59,7 @@ use markdown::*;
 use media::*;
 use navigation::*;
 use selection::TextSelection;
-use table::{CellSlot, TableControlHitbox, TableLayout};
+use table::{CellSlot, TableControlHitbox, TableControlKind, TableLayout};
 
 actions!(
     scheme_editor,
@@ -175,6 +175,7 @@ pub enum EditorEvent {
         item_id: ItemId,
         position: Point<Pixels>,
         date_anchor: Point<Pixels>,
+        table: Option<TableContext>,
     },
     CloseDatePopover,
     Focused {
@@ -186,6 +187,27 @@ pub enum EditorEvent {
 }
 
 impl EventEmitter<EditorEvent> for SchemeEditor {}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct TableContext {
+    pub table_item_id: ItemId,
+    pub row: Option<usize>,
+    pub column: Option<usize>,
+    pub row_count: usize,
+    pub column_count: usize,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum TableStructureAction {
+    AppendRow,
+    AppendColumn,
+    InsertRowBefore(usize),
+    InsertRowAfter(usize),
+    DeleteRow(usize),
+    InsertColumnBefore(usize),
+    InsertColumnAfter(usize),
+    DeleteColumn(usize),
+}
 
 #[derive(Clone, Copy)]
 struct CheckboxHitbox {
@@ -259,6 +281,7 @@ pub struct SchemeEditor {
     table_layouts: HashMap<usize, TableLayout>,
     cell_slots: HashMap<usize, CellSlot>,
     table_control_hitboxes: Vec<TableControlHitbox>,
+    hovered_table_control: Option<TableControlKind>,
 }
 
 #[derive(Clone, Copy, Debug)]

@@ -115,6 +115,7 @@ impl KnotQApp {
                 item_id,
                 position,
                 date_anchor,
+                table,
             } => {
                 self.close_date_popover();
                 self.close_repeat_popover();
@@ -124,6 +125,7 @@ impl KnotQApp {
                     item_id,
                     position,
                     date_anchor,
+                    table,
                 });
                 cx.notify();
             }
@@ -199,6 +201,7 @@ impl KnotQApp {
                 item_id: menu.item_id,
                 position: menu.position,
                 date_anchor: menu.date_anchor,
+                table: menu.table,
             })
     }
 
@@ -253,13 +256,18 @@ impl KnotQApp {
                 item_id,
                 position,
                 date_anchor,
+                table,
             } => {
-                if self.scheme_item_exists(scheme_id, item_id) {
+                let item_exists = self.scheme_item_exists(scheme_id, item_id);
+                let table_exists = table
+                    .is_some_and(|table| self.scheme_item_exists(scheme_id, table.table_item_id));
+                if item_exists || table_exists {
                     self.editor_context_menu = Some(super::EditorContextMenu {
                         scheme_id,
                         item_id,
                         position,
                         date_anchor,
+                        table,
                     });
                 }
             }
