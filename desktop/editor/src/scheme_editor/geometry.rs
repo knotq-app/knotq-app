@@ -354,6 +354,61 @@ impl SchemeEditor {
         }
     }
 
+    pub(super) fn paint_block_object_selection(&self, bounds: Bounds<Pixels>, window: &mut Window) {
+        let (start, end) = self.selection.ordered();
+        let selection_bg = text_selection_rgba(self.theme);
+        for row in start.row..=end.row {
+            if row >= self.line_map.line_count()
+                || self.rows.get(row).is_some_and(|row| row.path.is_cell())
+            {
+                continue;
+            }
+            let line_len = self.line_map.line_len(row);
+            let selection_start = (if row == start.row { start.col } else { 0 }).min(line_len);
+            let selection_end = (if row == end.row { end.col } else { line_len }).min(line_len);
+            if selection_start >= selection_end {
+                continue;
+            }
+            let Some(line) = self.line_range(row).and_then(|range| self.text.get(range)) else {
+                continue;
+            };
+            for object in block_object_ranges(line) {
+                if selection_start < object.end && object.start < selection_end {
+                    if let Some(block_bounds) =
+                        self.block_object_selection_bounds(row, object.start, bounds)
+                    {
+                        window.paint_quad(fill(block_bounds, selection_bg));
+                    }
+                }
+            }
+        }
+    }
+
+    fn block_object_selection_bounds(
+        &self,
+        row: usize,
+        object_start: usize,
+        bounds: Bounds<Pixels>,
+    ) -> Option<Bounds<Pixels>> {
+        if self
+            .table_object_range_for_row(row)
+            .is_some_and(|object| object.start == object_start)
+        {
+            let (origin, grid_w, grid_h) = self.table_grid_geom(row, bounds)?;
+            return Some(Bounds::new(origin, size(grid_w, grid_h)));
+        }
+
+        let (_, image_index) = self.image_object_at_location(TextLocation {
+            row,
+            col: object_start,
+        })?;
+        let image = self.image_bounds_for_index_content(row, image_index)?;
+        Some(Bounds::new(
+            self.content_to_window(image.origin, bounds),
+            image.size,
+        ))
+    }
+
     pub(super) fn location_for_window_position(&self, position: Point<Pixels>) -> TextLocation {
         let Some(bounds) = self.last_bounds else {
             return self.selection.head;

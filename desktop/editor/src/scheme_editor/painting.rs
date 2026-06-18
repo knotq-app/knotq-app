@@ -104,6 +104,10 @@ impl SchemeEditor {
             }
         }
 
+        if focused && !self.selection.is_empty() {
+            self.paint_block_object_selection(bounds, window);
+        }
+
         if focused && self.selection.is_empty() && self.cursor_blink_state {
             if let Some(caret) = self.block_object_caret_bounds(self.selection.head, bounds) {
                 window.paint_quad(fill(caret, token_hsla(theme.caret_color)));
