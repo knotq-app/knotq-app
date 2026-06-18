@@ -92,7 +92,7 @@ impl SchemeEditor {
             return;
         }
 
-        if rows_have_table(&self.rows) {
+        if rows_have_block_object(&self.rows) {
             self.sync_tabled_buffer(new_text, cursor_after, window, cx);
             return;
         }
@@ -242,10 +242,7 @@ impl SchemeEditor {
         cx: &mut Context<Self>,
     ) {
         let old_rows = self.rows.clone();
-        let old_lines: Vec<String> = old_rows
-            .iter()
-            .map(display_line_for_row)
-            .collect();
+        let old_lines: Vec<String> = old_rows.iter().map(display_line_for_row).collect();
         let new_lines: Vec<String> = new_text.split('\n').map(clean_display_line_text).collect();
         let old_refs: Vec<&str> = old_lines.iter().map(String::as_str).collect();
         let new_refs: Vec<&str> = new_lines.iter().map(String::as_str).collect();
@@ -324,7 +321,7 @@ impl SchemeEditor {
         if self.read_only {
             return;
         }
-        if rows_have_table(&self.rows) {
+        if rows_have_block_object(&self.rows) {
             return;
         }
         // Only act when cursor is collapsed (no selection).
@@ -451,6 +448,8 @@ fn set_row_text_from_buffer_line(row: &mut EditorRow, line: &str) {
             .cloned()
             .unwrap_or_else(|| knotq_model::Table::new(1, 1));
         set_table_anchor_content_from_line(&mut row.item, line, table);
+    } else if row.item.has_images() {
+        set_item_content_from_block_line(&mut row.item, line, None);
     } else {
         row.item.set_text(clean_line_text(line));
     }

@@ -13,7 +13,7 @@ impl SchemeEditor {
                     }
                     return;
                 }
-                if path.is_table_anchor() && self.handle_table_anchor_enter(window, cx) {
+                if !path.is_cell() && self.handle_block_object_enter(window, cx) {
                     return;
                 }
             }
@@ -21,7 +21,7 @@ impl SchemeEditor {
         self.replace_selection("\n", Some(window), cx);
     }
 
-    fn handle_table_anchor_enter(&mut self, window: &mut Window, cx: &mut Context<Self>) -> bool {
+    fn handle_block_object_enter(&mut self, window: &mut Window, cx: &mut Context<Self>) -> bool {
         if !self.selection.is_empty() {
             return false;
         }
@@ -29,7 +29,7 @@ impl SchemeEditor {
         let Some(editor_row) = self.rows.get(row) else {
             return false;
         };
-        if !editor_row.path.is_table_anchor() {
+        if editor_row.path.is_cell() || !item_has_block_object(&editor_row.item) {
             return false;
         }
         let Some(top_index) = top_level_index_for_flat_row(&self.rows, row) else {
@@ -39,9 +39,9 @@ impl SchemeEditor {
         let old_top = reconstruct_top_level(&self.rows);
         let mut new_top = old_top.clone();
         let mut col = self.selection.head.col.min(self.line_len(row));
-        if let Some(object) = self.table_object_range_for_row(row) {
+        if let Some(object) = self.last_block_object_range_for_row(row) {
             if col > object.start {
-                return self.insert_blank_after_table_anchor(row, window, cx);
+                return self.insert_blank_after_block_item(row, window, cx);
             }
             col = col.min(object.start);
         }
@@ -56,7 +56,7 @@ impl SchemeEditor {
         let row = self
             .rows
             .iter()
-            .position(|row| row.path.is_table_anchor() && row.item.id == result.table)
+            .position(|row| item_has_block_object(&row.item) && row.item.id == result.table)
             .unwrap_or_else(|| flat_row_for_top_level_index(&self.rows, result.table_index));
         self.selection = TextSelection::collapsed(TextLocation { row, col: 0 });
         self.marked_range = None;
@@ -67,13 +67,13 @@ impl SchemeEditor {
         true
     }
 
-    fn insert_blank_after_table_anchor(
+    fn insert_blank_after_block_item(
         &mut self,
-        anchor_row: usize,
+        block_row: usize,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> bool {
-        let Some(anchor) = self.rows.get(anchor_row) else {
+        let Some(anchor) = self.rows.get(block_row) else {
             return false;
         };
         let table_id = anchor.item.id;
@@ -116,7 +116,7 @@ impl SchemeEditor {
             if head.col != 0 || head.row == 0 {
                 return false;
             }
-            if self.empty_doc_line_adjacent_to_table(head.row) {
+            if self.empty_doc_line_adjacent_to_block(head.row) {
                 return false;
             }
             let previous = self.rows[head.row - 1].path;
@@ -125,7 +125,7 @@ impl SchemeEditor {
             if head.col != self.line_len(head.row) || head.row + 1 >= self.rows.len() {
                 return false;
             }
-            if self.empty_doc_line_adjacent_to_table(head.row) {
+            if self.empty_doc_line_adjacent_to_block(head.row) {
                 return false;
             }
             let next = self.rows[head.row + 1].path;
@@ -133,8 +133,8 @@ impl SchemeEditor {
         }
     }
 
-    fn empty_doc_line_adjacent_to_table(&self, row: usize) -> bool {
-        is_empty_doc_line_adjacent_to_table(&self.rows, row, self.line_len(row))
+    fn empty_doc_line_adjacent_to_block(&self, row: usize) -> bool {
+        is_empty_doc_line_adjacent_to_block(&self.rows, row, self.line_len(row))
     }
 
     pub(super) fn clear_current_line_attributes_if_empty(
@@ -247,8 +247,8 @@ impl SchemeEditor {
             return false;
         }
 
-        if rows_have_table(&self.rows) {
-            return self.delete_empty_doc_line_adjacent_to_table(prefer_backward, window, cx);
+        if rows_have_block_object(&self.rows) {
+            return self.delete_empty_doc_line_adjacent_to_block(prefer_backward, window, cx);
         }
 
         let row = self.current_row_index();
@@ -290,14 +290,14 @@ impl SchemeEditor {
         true
     }
 
-    fn delete_empty_doc_line_adjacent_to_table(
+    fn delete_empty_doc_line_adjacent_to_block(
         &mut self,
         prefer_backward: bool,
         window: Option<&mut Window>,
         cx: &mut Context<Self>,
     ) -> bool {
         let row = self.current_row_index();
-        if !self.empty_doc_line_adjacent_to_table(row) {
+        if !self.empty_doc_line_adjacent_to_block(row) {
             return false;
         }
         let Some(top_index) = top_level_index_for_flat_row(&self.rows, row) else {
@@ -356,7 +356,7 @@ impl SchemeEditor {
         if self.read_only {
             return true;
         }
-        if self.delete_selected_table_object(window, cx) {
+        if self.delete_selected_block_object(window, cx) {
             return true;
         }
         if !self.selection.is_empty() {
@@ -368,7 +368,7 @@ impl SchemeEditor {
             || self.delete_empty_line_boundary_if_possible(prefer_backward, Some(window), cx)
     }
 
-    fn delete_selected_table_object(
+    fn delete_selected_block_object(
         &mut self,
         window: &mut Window,
         cx: &mut Context<Self>,
@@ -380,18 +380,19 @@ impl SchemeEditor {
         if start.row != end.row {
             return false;
         }
-        let Some(object) = self.table_object_range_for_row(start.row) else {
+        let Some((object, block_index)) = self.block_object_after_or_at(start.row, start.col)
+        else {
             return false;
         };
         if start.col != object.start || end.col != object.end {
             return false;
         }
-        self.delete_table_from_anchor_row(start.row, window, cx)
+        self.delete_block_object_from_row(start.row, block_index, object.start, window, cx)
     }
 
     pub(super) fn backspace(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.merge_adjacent_table_if_boundary(true, window, cx)
-            || self.delete_table_at_backward_boundary(window, cx)
+        if self.merge_adjacent_block_if_boundary(true, window, cx)
+            || self.delete_block_at_backward_boundary(window, cx)
         {
             return;
         }
@@ -440,7 +441,7 @@ impl SchemeEditor {
         self.replace_byte_range(prev..offset, "", Some(window), cx);
     }
 
-    fn delete_table_at_backward_boundary(
+    fn delete_block_at_backward_boundary(
         &mut self,
         window: &mut Window,
         cx: &mut Context<Self>,
@@ -452,21 +453,23 @@ impl SchemeEditor {
         let Some(editor_row) = self.rows.get(row) else {
             return false;
         };
-        if !editor_row.path.is_table_anchor() {
+        if editor_row.path.is_cell() || !item_has_block_object(&editor_row.item) {
             return false;
         }
-        let Some(object) = self.table_object_range_for_row(row) else {
+        let Some((object, block_index)) =
+            self.block_object_before_or_at(row, self.selection.head.col)
+        else {
             return false;
         };
         if self.selection.head.col != object.end {
             return false;
         }
-        self.delete_table_from_anchor_row(row, window, cx)
+        self.delete_block_object_from_row(row, block_index, object.start, window, cx)
     }
 
     pub(super) fn backspace_word(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.merge_adjacent_table_if_boundary(true, window, cx)
-            || self.delete_table_at_backward_boundary(window, cx)
+        if self.merge_adjacent_block_if_boundary(true, window, cx)
+            || self.delete_block_at_backward_boundary(window, cx)
         {
             return;
         }
@@ -482,8 +485,8 @@ impl SchemeEditor {
     }
 
     pub(super) fn backspace_line(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.merge_adjacent_table_if_boundary(true, window, cx)
-            || self.delete_table_at_backward_boundary(window, cx)
+        if self.merge_adjacent_block_if_boundary(true, window, cx)
+            || self.delete_block_at_backward_boundary(window, cx)
         {
             return;
         }
@@ -506,8 +509,8 @@ impl SchemeEditor {
     }
 
     pub(super) fn delete_forward(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.delete_table_at_forward_boundary(window, cx)
-            || self.merge_adjacent_table_if_boundary(false, window, cx)
+        if self.delete_block_at_forward_boundary(window, cx)
+            || self.merge_adjacent_block_if_boundary(false, window, cx)
         {
             return;
         }
@@ -526,8 +529,8 @@ impl SchemeEditor {
     }
 
     pub(super) fn delete_word(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.delete_table_at_forward_boundary(window, cx)
-            || self.merge_adjacent_table_if_boundary(false, window, cx)
+        if self.delete_block_at_forward_boundary(window, cx)
+            || self.merge_adjacent_block_if_boundary(false, window, cx)
         {
             return;
         }
@@ -543,8 +546,8 @@ impl SchemeEditor {
     }
 
     pub(super) fn delete_line(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.delete_table_at_forward_boundary(window, cx)
-            || self.merge_adjacent_table_if_boundary(false, window, cx)
+        if self.delete_block_at_forward_boundary(window, cx)
+            || self.merge_adjacent_block_if_boundary(false, window, cx)
         {
             return;
         }
@@ -566,7 +569,7 @@ impl SchemeEditor {
         }
     }
 
-    fn delete_table_at_forward_boundary(
+    fn delete_block_at_forward_boundary(
         &mut self,
         window: &mut Window,
         cx: &mut Context<Self>,
@@ -582,12 +585,20 @@ impl SchemeEditor {
             return false;
         }
 
-        if editor_row.path.is_table_anchor() {
-            let Some(object) = self.table_object_range_for_row(row) else {
+        if item_has_block_object(&editor_row.item) {
+            let Some((object, block_index)) =
+                self.block_object_after_or_at(row, self.selection.head.col)
+            else {
                 return false;
             };
             if self.selection.head.col <= object.start {
-                return self.delete_table_from_anchor_row(row, window, cx);
+                return self.delete_block_object_from_row(
+                    row,
+                    block_index,
+                    object.start,
+                    window,
+                    cx,
+                );
             }
             return false;
         }
@@ -597,37 +608,42 @@ impl SchemeEditor {
         }
 
         if self.line_len(row) == 0 {
-            if self.empty_doc_line_adjacent_to_table(row) {
-                return self.delete_empty_doc_line_adjacent_to_table(false, Some(window), cx);
+            if self.empty_doc_line_adjacent_to_block(row) {
+                return self.delete_empty_doc_line_adjacent_to_block(false, Some(window), cx);
             }
         }
 
         false
     }
 
-    fn delete_table_from_anchor_row(
+    fn delete_block_object_from_row(
         &mut self,
-        anchor_row: usize,
+        row: usize,
+        block_index: usize,
+        cursor_col: usize,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> bool {
-        let Some(anchor) = self.rows.get(anchor_row) else {
-            return false;
-        };
-        let table_id = anchor.item.id;
         let old_top = reconstruct_top_level(&self.rows);
         let mut new_top = old_top.clone();
-        let Some(pos) = new_top.iter().position(|item| item.id == table_id) else {
+        let Some(pos) = top_level_index_for_flat_row(&self.rows, row) else {
             return false;
         };
-        let Some(table_pos) = new_top[pos]
-            .content
-            .iter()
-            .position(|inline| matches!(inline, Inline::Table(_)))
-        else {
+        let Some(item) = new_top.get_mut(pos) else {
             return false;
         };
-        new_top[pos].content.remove(table_pos);
+        let mut seen = 0;
+        let Some(inline_pos) = item.content.iter().position(|inline| {
+            if inline.is_text() {
+                return false;
+            }
+            let matches = seen == block_index;
+            seen += 1;
+            matches
+        }) else {
+            return false;
+        };
+        item.content.remove(inline_pos);
 
         let (text, rows) = build_buffer(&new_top);
         self.text = text;
@@ -636,7 +652,7 @@ impl SchemeEditor {
         let row = flat_row_for_top_level_index(&self.rows, pos);
         self.selection = TextSelection::collapsed(TextLocation {
             row,
-            col: self.line_len(row),
+            col: cursor_col.min(self.line_len(row)),
         });
         self.marked_range = None;
         self.reset_cursor_blink(cx);
@@ -646,7 +662,30 @@ impl SchemeEditor {
         true
     }
 
-    fn merge_adjacent_table_if_boundary(
+    fn block_object_before_or_at(&self, row: usize, col: usize) -> Option<(Range<usize>, usize)> {
+        let line = self
+            .line_range(row)
+            .and_then(|range| self.text.get(range))?;
+        block_object_ranges(line)
+            .into_iter()
+            .enumerate()
+            .take_while(|(_, object)| object.end <= col)
+            .last()
+            .map(|(index, object)| (object, index))
+    }
+
+    fn block_object_after_or_at(&self, row: usize, col: usize) -> Option<(Range<usize>, usize)> {
+        let line = self
+            .line_range(row)
+            .and_then(|range| self.text.get(range))?;
+        block_object_ranges(line)
+            .into_iter()
+            .enumerate()
+            .find(|(_, object)| col <= object.start)
+            .map(|(index, object)| (object, index))
+    }
+
+    fn merge_adjacent_block_if_boundary(
         &mut self,
         prefer_backward: bool,
         window: &mut Window,
@@ -666,7 +705,11 @@ impl SchemeEditor {
         let Some((target_top, table_top, cursor_col)) = (if prefer_backward {
             if col != 0 {
                 None
-            } else if path.is_table_anchor() {
+            } else if self
+                .rows
+                .get(row)
+                .is_some_and(|row| item_has_block_object(&row.item))
+            {
                 top_level_index_for_flat_row(&self.rows, row).and_then(|table_top| {
                     table_top.checked_sub(1).map(|target_top| {
                         let target_row = flat_row_for_top_level_index(&self.rows, target_top);
@@ -679,7 +722,7 @@ impl SchemeEditor {
                     let table_row = flat_row_for_top_level_index(&self.rows, table_top);
                     self.rows
                         .get(table_row)
-                        .filter(|row| row.path.is_table_anchor())
+                        .filter(|row| item_has_block_object(&row.item))
                         .map(|_| (item_top, table_top, self.line_len(table_row)))
                 })
             } else {
@@ -693,7 +736,7 @@ impl SchemeEditor {
                 let table_row = flat_row_for_top_level_index(&self.rows, table_top);
                 self.rows
                     .get(table_row)
-                    .filter(|row| row.path.is_table_anchor())
+                    .filter(|row| item_has_block_object(&row.item))
                     .map(|_| (target_top, table_top, col))
             })
         }) else {
@@ -729,7 +772,7 @@ impl SchemeEditor {
     }
 }
 
-fn is_empty_doc_line_adjacent_to_table(rows: &[EditorRow], row: usize, line_len: usize) -> bool {
+fn is_empty_doc_line_adjacent_to_block(rows: &[EditorRow], row: usize, line_len: usize) -> bool {
     let Some(editor_row) = rows.get(row) else {
         return false;
     };
@@ -744,8 +787,8 @@ fn is_empty_doc_line_adjacent_to_table(rows: &[EditorRow], row: usize, line_len:
     top_index
         .checked_sub(1)
         .and_then(|previous| top.get(previous))
-        .is_some_and(|item| item.has_table())
-        || top.get(top_index + 1).is_some_and(|item| item.has_table())
+        .is_some_and(item_has_block_object)
+        || top.get(top_index + 1).is_some_and(item_has_block_object)
 }
 
 #[cfg(test)]
@@ -765,7 +808,7 @@ mod tests {
             .expect("blank doc row after table");
 
         assert!(!rows[blank_row - 1].path.is_table_anchor());
-        assert!(is_empty_doc_line_adjacent_to_table(&rows, blank_row, 0));
+        assert!(is_empty_doc_line_adjacent_to_block(&rows, blank_row, 0));
     }
 
     #[test]
@@ -776,8 +819,8 @@ mod tests {
         let (_, rows) = build_buffer(&[blank, table]);
 
         assert!(rows[1].path.is_table_anchor());
-        assert!(is_empty_doc_line_adjacent_to_table(&rows, 0, 0));
-        assert!(!is_empty_doc_line_adjacent_to_table(&rows, 0, 1));
+        assert!(is_empty_doc_line_adjacent_to_block(&rows, 0, 0));
+        assert!(!is_empty_doc_line_adjacent_to_block(&rows, 0, 1));
     }
 }
 

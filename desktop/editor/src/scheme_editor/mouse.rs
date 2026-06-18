@@ -286,7 +286,9 @@ impl SchemeEditor {
         _window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let hovered_table_control = self.table_control_at(event.position).map(|hitbox| hitbox.kind);
+        let hovered_table_control = self
+            .table_control_at(event.position)
+            .map(|hitbox| hitbox.kind);
         if hovered_table_control != self.hovered_table_control {
             self.hovered_table_control = hovered_table_control;
             cx.notify();

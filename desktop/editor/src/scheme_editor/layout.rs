@@ -72,8 +72,8 @@ impl SchemeEditor {
                 wrap_width - px(TEXT_LEFT_PAD + 18.0) - self.row_indent_x(row) - row_layout_offset
             }
             .max(px(40.0));
-            let line_without_table = line_without_table_object(&line);
-            let has_line_text = !line_without_table.is_empty();
+            let line_without_block = line_without_table_object(&line);
+            let has_line_text = !line_without_block.is_empty();
             let media_height = if is_cell || is_anchor {
                 px(0.0)
             } else {
@@ -89,17 +89,16 @@ impl SchemeEditor {
             } else {
                 token_hsla(self.theme.text_primary)
             };
-            let (font_size, mut line_height) =
-                if !is_cell {
-                    match markdown_heading_level(&line_without_table) {
-                        Some(1) => (HEADING_FONT_SIZE, HEADING_LINE_HEIGHT),
-                        Some(2) => (HEADING2_FONT_SIZE, HEADING2_LINE_HEIGHT),
-                        Some(_) => (HEADING3_FONT_SIZE, HEADING3_LINE_HEIGHT),
-                        None => (TEXT_FONT_SIZE, TEXT_LINE_HEIGHT),
-                    }
-                } else {
-                    (TEXT_FONT_SIZE, TEXT_LINE_HEIGHT)
-                };
+            let (font_size, mut line_height) = if !is_cell {
+                match markdown_heading_level(&line_without_block) {
+                    Some(1) => (HEADING_FONT_SIZE, HEADING_LINE_HEIGHT),
+                    Some(2) => (HEADING2_FONT_SIZE, HEADING2_LINE_HEIGHT),
+                    Some(_) => (HEADING3_FONT_SIZE, HEADING3_LINE_HEIGHT),
+                    None => (TEXT_FONT_SIZE, TEXT_LINE_HEIGHT),
+                }
+            } else {
+                (TEXT_FONT_SIZE, TEXT_LINE_HEIGHT)
+            };
             // Collapse the empty text band for a line whose only content is a
             // block inline (a table anchor, or an image-only line) so the image
             // or table renders in place instead of hanging below a full-height
@@ -111,12 +110,10 @@ impl SchemeEditor {
             if (is_anchor && !has_line_text) || media_only {
                 line_height = 2.0;
             }
-            let suffix_range = if is_anchor {
-                table_object_range(&line)
-                    .filter(|object| object.end < line.len())
-                    .map(|object| object.end..line.len())
-            } else {
+            let suffix_range = if is_cell {
                 None
+            } else {
+                block_suffix_range(&line)
             };
             let table_suffix = suffix_range.as_ref().and_then(|range| {
                 let suffix = line[range.clone()].to_string();
@@ -423,11 +420,5 @@ fn push_visible_line_layout_segment(
         return;
     }
     shaped.push_str(&line[range.clone()]);
-    runs.push(editor.text_run(
-        range.end - range.start,
-        font,
-        default_color,
-        style,
-        is_done,
-    ));
+    runs.push(editor.text_run(range.end - range.start, font, default_color, style, is_done));
 }

@@ -136,19 +136,18 @@ pub(super) fn build_buffer(items: &[Item]) -> (String, Vec<EditorRow>) {
 }
 
 pub(super) fn display_line_for_row(row: &EditorRow) -> String {
-    if row.path.is_table_anchor() && row.item.has_table() {
-        return display_line(&item_inline_text_with_table_object(&row.item));
+    if item_has_block_object(&row.item) {
+        return display_line(&item_inline_text_with_block_objects(&row.item));
     }
     display_line(&row.item.text())
 }
 
-fn item_inline_text_with_table_object(item: &Item) -> String {
+fn item_inline_text_with_block_objects(item: &Item) -> String {
     let mut line = String::new();
     for inline in &item.content {
         match inline {
             Inline::Text { text } => line.push_str(text),
-            Inline::Table(_) => line.push(TABLE_OBJECT_CHAR),
-            Inline::Image(_) => {}
+            Inline::Table(_) | Inline::Image(_) => line.push(TABLE_OBJECT_CHAR),
         }
     }
     line
@@ -213,31 +212,72 @@ pub(super) fn reconstruct_top_level(rows: &[EditorRow]) -> Vec<Item> {
 }
 
 pub(super) fn set_table_anchor_content_from_line(item: &mut Item, line: &str, table: Table) {
+    let mut line = clean_display_line_text(line);
+    if table_object_range(&line).is_none() {
+        line.push(TABLE_OBJECT_CHAR);
+    }
+    set_item_content_from_block_line(item, &line, Some(table));
+}
+
+pub(super) fn set_item_content_from_block_line(item: &mut Item, line: &str, table: Option<Table>) {
     let line = clean_display_line_text(line);
-    let object = table_object_range(&line).unwrap_or(line.len()..line.len());
-    let before = line_without_table_object(&line[..object.start]);
-    let after = line_without_table_object(&line[object.end..]);
-    let mut preserved_non_table = item
+    let mut blocks = block_inlines_for_item(item, table).into_iter();
+    item.content = content_from_block_line(&line, &mut blocks);
+}
+
+fn block_inlines_for_item(item: &Item, table: Option<Table>) -> Vec<Inline> {
+    let mut used_table_override = false;
+    let mut blocks = item
         .content
         .iter()
-        .filter(|inline| !matches!(inline, Inline::Text { .. } | Inline::Table(_)))
-        .cloned()
+        .filter_map(|inline| match inline {
+            Inline::Image(image) => Some(Inline::Image(image.clone())),
+            Inline::Table(existing) => {
+                let table = if !used_table_override {
+                    used_table_override = true;
+                    table.clone().unwrap_or_else(|| existing.clone())
+                } else {
+                    existing.clone()
+                };
+                Some(Inline::Table(table))
+            }
+            Inline::Text { .. } => None,
+        })
         .collect::<Vec<_>>();
-
-    let mut content = Vec::new();
-    if !before.is_empty() {
-        content.push(Inline::text(before));
+    if !used_table_override {
+        if let Some(table) = table {
+            blocks.push(Inline::Table(table));
+        }
     }
-    content.append(&mut preserved_non_table);
-    content.push(Inline::Table(table));
+    blocks
+}
+
+fn content_from_block_line(line: &str, blocks: &mut impl Iterator<Item = Inline>) -> Vec<Inline> {
+    let mut content = Vec::new();
+    let mut cursor = 0;
+    for object in block_object_ranges(line) {
+        let before = line_without_table_object(&line[cursor..object.start]);
+        if !before.is_empty() {
+            content.push(Inline::text(before));
+        }
+        if let Some(block) = blocks.next() {
+            content.push(block);
+        }
+        cursor = object.end;
+    }
+    let after = line_without_table_object(&line[cursor..]);
     if !after.is_empty() {
         content.push(Inline::text(after));
     }
-    item.content = content;
+    content
 }
 
-pub(super) fn rows_have_table(rows: &[EditorRow]) -> bool {
-    rows.iter().any(|row| row.path.is_table_anchor())
+pub(super) fn item_has_block_object(item: &Item) -> bool {
+    item.has_table() || item.has_images()
+}
+
+pub(super) fn rows_have_block_object(rows: &[EditorRow]) -> bool {
+    rows.iter().any(|row| item_has_block_object(&row.item))
 }
 
 pub(super) fn flat_row_for_top_level_index(rows: &[EditorRow], top_level_index: usize) -> usize {
@@ -289,8 +329,8 @@ pub(super) fn merge_table_item_into(
     if target_index == table_index
         || target_index >= items.len()
         || table_index >= items.len()
-        || !items[table_index].has_table()
-        || items[target_index].has_table()
+        || !item_has_block_object(&items[table_index])
+        || (items[table_index].has_table() && items[target_index].has_table())
     {
         return None;
     }
@@ -320,8 +360,8 @@ pub(super) fn append_item_into_table(
     if table_index == item_index
         || table_index >= items.len()
         || item_index >= items.len()
-        || !items[table_index].has_table()
-        || items[item_index].has_table()
+        || !item_has_block_object(&items[table_index])
+        || (items[table_index].has_table() && items[item_index].has_table())
     {
         return None;
     }
@@ -349,13 +389,17 @@ pub(super) fn split_table_item_at_text_col(
     col: usize,
 ) -> Option<TableSplitResult> {
     let item = items.get(item_index)?.clone();
-    if !item.has_table() {
+    if !item_has_block_object(&item) {
         return None;
     }
 
     let display = display_line_for_row(&EditorRow {
         item: item.clone(),
-        path: RowPath::anchor(),
+        path: if item.has_table() {
+            RowPath::anchor()
+        } else {
+            RowPath::doc()
+        },
     });
     if col > display.len() || !display.is_char_boundary(col) {
         return None;
@@ -371,18 +415,14 @@ pub(super) fn split_table_item_at_text_col(
         });
     }
 
-    let table = item.table().cloned()?;
-
     let mut before_item = item.clone();
-    before_item.set_text(line_without_table_object(&display[..col]));
-    before_item
-        .content
-        .retain(|inline| !matches!(inline, Inline::Table(_)));
+    let mut blocks = block_inlines_for_item(&item, None).into_iter();
+    before_item.content = content_from_block_line(&display[..col], &mut blocks);
 
     let mut table_item = Item::new("");
     table_item.indent = item.indent;
     table_item.marker = item.marker;
-    set_table_anchor_content_from_line(&mut table_item, &display[col..], table);
+    table_item.content = content_from_block_line(&display[col..], &mut blocks);
     let table = table_item.id;
 
     items[item_index] = before_item;
@@ -437,6 +477,17 @@ pub(super) fn line_without_table_object(line: &str) -> String {
 pub(super) fn table_object_range(line: &str) -> Option<Range<usize>> {
     line.find(TABLE_OBJECT_CHAR)
         .map(|start| start..start + TABLE_OBJECT_LEN)
+}
+
+pub(super) fn block_object_ranges(line: &str) -> Vec<Range<usize>> {
+    line.match_indices(TABLE_OBJECT_CHAR)
+        .map(|(start, _)| start..start + TABLE_OBJECT_LEN)
+        .collect()
+}
+
+pub(super) fn block_suffix_range(line: &str) -> Option<Range<usize>> {
+    let object = block_object_ranges(line).into_iter().last()?;
+    (object.end < line.len()).then_some(object.end..line.len())
 }
 
 pub(super) fn item_is_done(item: &Item) -> bool {
@@ -651,8 +702,7 @@ mod tests {
         let suffix_id = suffix.id;
         let mut top = vec![table, suffix];
 
-        let result =
-            append_item_into_table(&mut top, 0, 1).expect("suffix merges into table item");
+        let result = append_item_into_table(&mut top, 0, 1).expect("suffix merges into table item");
 
         assert_eq!(result.target, table_id);
         assert_eq!(result.deleted, suffix_id);
@@ -728,6 +778,70 @@ mod tests {
     }
 
     #[test]
+    fn image_buffer_uses_object_char_and_preserves_order() {
+        let mut item = Item::new("");
+        item.content.push(Inline::text("Before"));
+        item.content.push(Inline::Image(test_image()));
+        item.content.push(Inline::text("After"));
+
+        let (text, rows) = build_buffer(&[item]);
+        assert_eq!(text, format!("Before{}After", TABLE_OBJECT_CHAR));
+        assert_eq!(
+            block_object_ranges(&text),
+            vec!["Before".len().."Before".len() + TABLE_OBJECT_LEN]
+        );
+
+        let rebuilt = reconstruct_top_level(&rows);
+        assert_eq!(rebuilt.len(), 1);
+        assert!(matches!(rebuilt[0].content[0], Inline::Text { .. }));
+        assert!(matches!(rebuilt[0].content[1], Inline::Image(_)));
+        assert!(matches!(rebuilt[0].content[2], Inline::Text { .. }));
+        assert_eq!(rebuilt[0].text(), "BeforeAfter");
+    }
+
+    #[test]
+    fn image_backward_merge_appends_following_text_after_image() {
+        let mut image = Item::new("");
+        image.content.push(Inline::Image(test_image()));
+        let image_id = image.id;
+        let suffix = Item::new("After");
+        let suffix_id = suffix.id;
+        let mut top = vec![image, suffix];
+
+        let result = append_item_into_table(&mut top, 0, 1).expect("suffix merges into image item");
+
+        assert_eq!(result.target, image_id);
+        assert_eq!(result.deleted, suffix_id);
+        assert_eq!(result.target_index, 0);
+        assert_eq!(top.len(), 1);
+        assert!(matches!(top[0].content[0], Inline::Image(_)));
+        assert!(matches!(&top[0].content[1], Inline::Text { text } if text == "After"));
+    }
+
+    #[test]
+    fn image_split_moves_image_to_new_item_after_text() {
+        let mut item = Item::new("");
+        item.indent = 2;
+        item.content.push(Inline::text("Before"));
+        item.content.push(Inline::Image(test_image()));
+        item.content.push(Inline::text("After"));
+        let mut top = vec![item.clone()];
+
+        let result =
+            split_table_item_at_text_col(&mut top, 0, "Before".len()).expect("image splits");
+
+        assert_eq!(top.len(), 2);
+        assert_eq!(top[0].id, item.id);
+        assert_eq!(top[0].text(), "Before");
+        assert!(!top[0].has_images());
+        assert_eq!(top[1].id, result.table);
+        assert_eq!(top[1].text(), "After");
+        assert_eq!(top[1].indent, 2);
+        assert!(matches!(top[1].content[0], Inline::Image(_)));
+        assert!(matches!(top[1].content[1], Inline::Text { .. }));
+    }
+
+    #[test]
     fn row_equality_tracks_done_state() {
         let open = Item::new("task");
         let done = Item::new("task").done();
@@ -766,5 +880,14 @@ mod tests {
             &[EditorRow::doc(base)],
             &[EditorRow::doc(with_media)]
         ));
+    }
+
+    fn test_image() -> ImageInline {
+        ImageInline {
+            asset: Uuid::nil(),
+            format: ImageAssetFormat::Png,
+            width: Some(320),
+            height: Some(200),
+        }
     }
 }

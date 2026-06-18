@@ -322,24 +322,23 @@ impl SchemeEditor {
 
             let local_x = position.x - origin.x;
             let local_y = position.y - origin.y;
-            let column = layout
-                .col_x
-                .iter()
-                .zip(&layout.col_w)
-                .enumerate()
-                .find_map(|(c, (left, width))| {
-                    (local_x >= *left && local_x < *left + *width).then_some(c)
-                });
+            let column = layout.col_x.iter().zip(&layout.col_w).enumerate().find_map(
+                |(c, (left, width))| (local_x >= *left && local_x < *left + *width).then_some(c),
+            );
             let row = if local_y < layout.header_h {
                 None
             } else {
                 let body_y = local_y - layout.header_h;
                 let mut top = px(0.0);
-                layout.body_band_h.iter().enumerate().find_map(|(r, height)| {
-                    let in_row = body_y >= top && body_y < top + *height;
-                    top += *height;
-                    in_row.then_some(r)
-                })
+                layout
+                    .body_band_h
+                    .iter()
+                    .enumerate()
+                    .find_map(|(r, height)| {
+                        let in_row = body_y >= top && body_y < top + *height;
+                        top += *height;
+                        in_row.then_some(r)
+                    })
             };
 
             return Some(TableContext {
@@ -616,7 +615,11 @@ impl SchemeEditor {
         let color = if hovered {
             token_hsla(theme.text_primary)
         } else {
-            token_hsla(if theme.is_dark { 0xffffff2a } else { 0x00000026 })
+            token_hsla(if theme.is_dark {
+                0xffffff2a
+            } else {
+                0x00000026
+            })
         };
         let mut font = window.text_style().font().clone();
         font.family = SharedString::new(FONT_UI);
