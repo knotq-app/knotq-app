@@ -197,7 +197,11 @@ fn signed_out_entry(_t: Theme, cx: &mut Context<KnotQApp>) -> gpui::AnyElement {
 fn resync_button(syncing: bool, t: Theme, cx: &mut Context<KnotQApp>) -> gpui::AnyElement {
     account_icon_button(
         "sync-resync",
-        Some(if syncing { "Resyncing\u{2026}" } else { "Resync" }),
+        Some(if syncing {
+            "Resyncing\u{2026}"
+        } else {
+            "Resync"
+        }),
         "Sync now",
         IconName::Redo2,
         false,
@@ -235,7 +239,9 @@ fn signed_in_account_actions(
                 .flex()
                 .items_center()
                 .gap(px(6.0))
-                .when(!supports_sync, |s| s.child(subscribe_button(in_progress, t, cx)))
+                .when(!supports_sync, |s| {
+                    s.child(subscribe_button(in_progress, t, cx))
+                })
                 .when(supports_sync && cancelled, |s| {
                     s.child(reenable_button(in_progress, t, cx))
                 })

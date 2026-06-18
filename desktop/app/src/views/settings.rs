@@ -197,17 +197,18 @@ impl KnotQApp {
             .unwrap_or(default_detail);
         // When cancelled, spell out the consequence (and the date access ends) right
         // under the email so it can't be mistaken for an active subscription.
-        let cancel_notice = cancelled.then(|| {
-            match status.and_then(|status| status.current_period_end) {
-                Some(end) => format!(
-                    "Cancelled — sync stays active until {}, then stops renewing.",
-                    end.with_timezone(&Local).format("%b %-d, %Y")
-                ),
-                None => {
-                    "Cancelled — sync stays active until your billing period ends.".to_string()
-                }
-            }
-        });
+        let cancel_notice =
+            cancelled.then(
+                || match status.and_then(|status| status.current_period_end) {
+                    Some(end) => format!(
+                        "Cancelled — sync stays active until {}, then stops renewing.",
+                        end.with_timezone(&Local).format("%b %-d, %Y")
+                    ),
+                    None => {
+                        "Cancelled — sync stays active until your billing period ends.".to_string()
+                    }
+                },
+            );
 
         // Left block: the icon and the title/email, vertically centered together as
         // one unit over the full height of the card.

@@ -257,8 +257,8 @@ impl SchemeEditor {
         let y = line_origin.y + self.line_map.line_text_height(row_ix) - px(2.0);
         let text_left = line_origin.x + self.first_text_x(row_ix);
         let checkbox_left = self.marker_left_for_text_left(&row.item, text_left);
-        let mut x = checkbox_left - px(ANNOTATION_BAR_GAP + INDENT_GUIDE_X_SHIFT)
-            + px(ANNOTATION_TEXT_GAP);
+        let mut x =
+            checkbox_left - px(ANNOTATION_BAR_GAP + INDENT_GUIDE_X_SHIFT) + px(ANNOTATION_TEXT_GAP);
         let annotation_color = self.annotation_color();
         let mut painted = false;
 

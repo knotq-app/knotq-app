@@ -298,10 +298,7 @@ fn compare_ranked_hits(left: &RankedSearchHit, right: &RankedSearchHit) -> Order
 }
 
 fn best_rank<const N: usize>(ranks: [Option<SearchRank>; N]) -> Option<SearchRank> {
-    ranks
-        .into_iter()
-        .flatten()
-        .max_by(compare_ranks)
+    ranks.into_iter().flatten().max_by(compare_ranks)
 }
 
 fn compare_ranks(left: &SearchRank, right: &SearchRank) -> Ordering {

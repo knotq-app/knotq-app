@@ -1,11 +1,11 @@
 use anyhow::{bail, Context, Result};
 use chrono::{DateTime, SecondsFormat, Utc};
+#[cfg(test)]
+use knotq_model::Scheme;
 use knotq_model::{
     ExternalItemSource, ImageAssetFormat, ImageInline, Inline, Item, ItemId, ItemMarker,
     OccurrenceId, OccurrenceState, Recurrence, SchemeId,
 };
-#[cfg(test)]
-use knotq_model::Scheme;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::path::Path;

@@ -891,9 +891,11 @@ pub fn scenario_m_carryover_basic(h: &mut Harness) {
         yesterday,
         vec![
             Item::new("carry me").with_marker(ItemMarker::Checkbox), // incomplete -> carried
-            Item::new("finished").with_marker(ItemMarker::Checkbox).done(), // done -> NOT carried
+            Item::new("finished")
+                .with_marker(ItemMarker::Checkbox)
+                .done(), // done -> NOT carried
             Item::new("loose note"),                                 // plain -> carried
-            Item::new("call dentist").with_start(due),               // dated -> carried, source stripped
+            Item::new("call dentist").with_start(due), // dated -> carried, source stripped
         ],
     );
     // A freshly opened today is a single blank placeholder row.
@@ -902,7 +904,9 @@ pub fn scenario_m_carryover_basic(h: &mut Harness) {
     h.assert_all_converged();
 
     // Roll yesterday's open work into today.
-    let carried = h.carryover_daily_queue(D0, today).expect("something to carry");
+    let carried = h
+        .carryover_daily_queue(D0, today)
+        .expect("something to carry");
     assert_eq!(
         carried.iter().map(String::as_str).collect::<Vec<_>>(),
         vec!["carry me", "loose note", "call dentist"],
@@ -1011,7 +1015,10 @@ pub fn scenario_m3_carryover_concurrent_independent_today(h: &mut Harness) {
     // placeholder ItemId, no sync in between.
     let today_id = h.set_daily_queue(D0, today, &[""]);
     let today_id_d1 = h.set_daily_queue(D1, today, &[""]);
-    assert_eq!(today_id, today_id_d1, "daily SchemeId must be deterministic");
+    assert_eq!(
+        today_id, today_id_d1,
+        "daily SchemeId must be deterministic"
+    );
 
     h.carryover_daily_queue(D0, today).expect("D0 carries");
     h.carryover_daily_queue(D1, today).expect("D1 carries");
@@ -1024,11 +1031,7 @@ pub fn scenario_m3_carryover_concurrent_independent_today(h: &mut Harness) {
 
     // Two independent placeholders => every row duplicates: {A x2, B x2}.
     for key in h.device_keys() {
-        h.assert_scheme_items_unordered(
-            key,
-            today_id,
-            &["task A", "task A", "task B", "task B"],
-        );
+        h.assert_scheme_items_unordered(key, today_id, &["task A", "task A", "task B", "task B"]);
         assert_no_duplicate_item_ids(h, key, today_id);
         assert!(
             h.device(key).is_fully_pushed(),

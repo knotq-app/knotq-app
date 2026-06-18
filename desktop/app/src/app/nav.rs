@@ -107,7 +107,8 @@ impl KnotQApp {
         match self.settings.last_view {
             Some(SavedView::Scheme) => {
                 if let Some(id) = self.settings.last_scheme_id {
-                    if self.workspace.scheme(id).is_some() && !self.workspace.is_scheme_deleted(id) {
+                    if self.workspace.scheme(id).is_some() && !self.workspace.is_scheme_deleted(id)
+                    {
                         self.open_scheme(id, None);
                     }
                 }

@@ -7,8 +7,8 @@ use gpui::{
 use gpui_component::scroll::Scrollbar;
 
 use crate::app::{daily_queue_scheme_is_blank, last_nonempty_daily_queue_day, KnotQApp};
-use knotq_date_util::format_contextual_date;
 use crate::theme_gpui::{token_hsla, FONT_UI};
+use knotq_date_util::format_contextual_date;
 use knotq_editor::SchemeEditor;
 
 const DAILY_EDITOR_BOTTOM_PAD: f32 = 4.0;
@@ -108,9 +108,11 @@ impl KnotQApp {
                             .pt(px(DAILY_EDITOR_TOP_PAD))
                             .child(editor)
                             .when_some(carryover_source, |editor_container, source_date| {
-                                editor_container.child(
-                                    self.render_daily_carryover_button(source_date, today, cx),
-                                )
+                                editor_container.child(self.render_daily_carryover_button(
+                                    source_date,
+                                    today,
+                                    cx,
+                                ))
                             }),
                     )
                     .into_any_element(),
@@ -335,7 +337,10 @@ impl KnotQApp {
         let label = if (today - source_date).num_days() == 1 {
             "roll over yesterday".to_string()
         } else {
-            format!("roll over from {}", format_contextual_date(source_date, today.year()))
+            format!(
+                "roll over from {}",
+                format_contextual_date(source_date, today.year())
+            )
         };
 
         div()

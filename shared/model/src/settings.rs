@@ -171,9 +171,7 @@ impl SyncAccountStatus {
             subscription_status: Some(
                 if supports_sync { "active" } else { "inactive" }.to_string(),
             ),
-            subscription_state: Some(
-                if supports_sync { "active" } else { "inactive" }.to_string(),
-            ),
+            subscription_state: Some(if supports_sync { "active" } else { "inactive" }.to_string()),
             subscription_provider: None,
             current_period_end: None,
             checked_at: None,

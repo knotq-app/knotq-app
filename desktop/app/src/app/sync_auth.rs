@@ -9,9 +9,7 @@ use knotq_model::{SyncAccountSettings, SyncAccountStatus};
 use knotq_sync::AccountStatusResponse;
 use serde::Deserialize;
 
-use super::{
-    KnotQApp, SyncAccountAction, SyncAuthMode, SyncAuthStatus, SyncRunStatus,
-};
+use super::{KnotQApp, SyncAccountAction, SyncAuthMode, SyncAuthStatus, SyncRunStatus};
 use crate::app::google_oauth::{code_challenge, open_browser, random_token, wait_for_oauth_code};
 
 const DEFAULT_SYNC_API_BASE: &str = "https://api.knotq.com";

@@ -37,8 +37,14 @@ impl SchemeEditor {
             if let Some(line) = self.line_map.line(row).cloned() {
                 let line_origin = point(text_origin.x + self.row_layout_x(row), text_origin.y + y);
                 let line_height = self.line_map.row_line_height(row);
-                let _ =
-                    line.paint_background(line_origin, line_height, TextAlign::Left, None, window, cx);
+                let _ = line.paint_background(
+                    line_origin,
+                    line_height,
+                    TextAlign::Left,
+                    None,
+                    window,
+                    cx,
+                );
             }
         }
 

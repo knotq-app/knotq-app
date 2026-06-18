@@ -382,11 +382,7 @@ mod tests {
     #[test]
     fn text_concatenates_text_runs_only() {
         let item = Item {
-            content: vec![
-                Inline::text("a"),
-                Inline::Image(image()),
-                Inline::text("b"),
-            ],
+            content: vec![Inline::text("a"), Inline::Image(image()), Inline::text("b")],
             ..Item::new("")
         };
         assert_eq!(item.text(), "ab");

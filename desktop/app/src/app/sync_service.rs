@@ -10,8 +10,8 @@ use chrono::Utc;
 use futures::{pin_mut, select, FutureExt};
 use gpui::{Context, Task};
 use knotq_model::{
-    DocumentId, ImageAssetFormat, OperationId, ReplicaId, SyncAccountSettings,
-    SyncAccountStatus, Workspace, WorkspaceId,
+    DocumentId, ImageAssetFormat, OperationId, ReplicaId, SyncAccountSettings, SyncAccountStatus,
+    Workspace, WorkspaceId,
 };
 use knotq_storage_json::{
     image_asset_path, load_crdt_state, load_local_sync_state, load_workspace_with_options,

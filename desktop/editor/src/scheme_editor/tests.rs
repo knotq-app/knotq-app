@@ -384,8 +384,12 @@ fn markdown_runs_mark_emphasis_without_removing_markers() {
     );
     assert!(runs.iter().any(|run| run.len == 4 && run.style == bold));
     assert!(runs.iter().any(|run| run.len == 4 && run.style == italic));
-    assert!(runs.iter().any(|run| run.len == 2 && run.style == highlight));
-    assert!(runs.iter().any(|run| run.len == 2 && run.style == strikethrough));
+    assert!(runs
+        .iter()
+        .any(|run| run.len == 2 && run.style == highlight));
+    assert!(runs
+        .iter()
+        .any(|run| run.len == 2 && run.style == strikethrough));
 }
 
 #[test]

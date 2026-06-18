@@ -1269,7 +1269,8 @@ impl TestDevice {
                             let Inline::Image(media) = inline else {
                                 return None;
                             };
-                            let image_name = format!("{}.{}", media.asset, media.format.extension());
+                            let image_name =
+                                format!("{}.{}", media.asset, media.format.extension());
                             Some((document, image_name))
                         }
                     })
@@ -1542,13 +1543,16 @@ impl TestDevice {
         // Mirrors restoring a folder unit: re-home it (and any surviving subtree)
         // under root and clear archival on its schemes.
         let root = self.workspace.root;
-        self.workspace.folders.entry(folder_id).or_insert_with(|| Folder {
-                    id: folder_id,
-                    name: "Restored".to_string(),
-                    parent: Some(root),
-                    children: Vec::new(),
-                    expanded: true,
-                });
+        self.workspace
+            .folders
+            .entry(folder_id)
+            .or_insert_with(|| Folder {
+                id: folder_id,
+                name: "Restored".to_string(),
+                parent: Some(root),
+                children: Vec::new(),
+                expanded: true,
+            });
         let already_present = self
             .workspace
             .folders
@@ -1696,7 +1700,8 @@ impl TestDevice {
         // first carried row (the `daily_queue_carryover_command` placeholder branch).
         {
             let today_scheme = self.scheme_mut(today_id);
-            let replace_placeholder = dq_scheme_is_blank(today_scheme) && !today_scheme.items.is_empty();
+            let replace_placeholder =
+                dq_scheme_is_blank(today_scheme) && !today_scheme.items.is_empty();
             let mut position = today_scheme.items.len();
             let mut carried = carried_items.into_iter();
             if replace_placeholder {
@@ -2009,7 +2014,8 @@ impl TestDevice {
                             let Inline::Image(media) = inline else {
                                 return None;
                             };
-                            let image_name = format!("{}.{}", media.asset, media.format.extension());
+                            let image_name =
+                                format!("{}.{}", media.asset, media.format.extension());
                             Some((document, image_name))
                         }
                     })
@@ -2454,7 +2460,11 @@ fn dq_scheme_is_blank(scheme: &Scheme) -> bool {
     if scheme.items.is_empty() {
         return true;
     }
-    scheme.items.first().is_some_and(dq_item_is_blank_placeholder) && scheme.items.len() == 1
+    scheme
+        .items
+        .first()
+        .is_some_and(dq_item_is_blank_placeholder)
+        && scheme.items.len() == 1
 }
 
 fn dq_item_is_blank_placeholder(item: &Item) -> bool {

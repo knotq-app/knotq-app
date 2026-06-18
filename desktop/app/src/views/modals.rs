@@ -170,12 +170,10 @@ fn onboarding_account_choice(
                 let c = t.button_hover;
                 move |s| s.bg(token_rgba(c))
             }),
-        AccountChoiceVariant::Ghost => button
-            .text_color(token_hsla(t.text_primary))
-            .hover({
-                let bg = t.button_hover;
-                move |s| s.bg(token_rgba(bg))
-            }),
+        AccountChoiceVariant::Ghost => button.text_color(token_hsla(t.text_primary)).hover({
+            let bg = t.button_hover;
+            move |s| s.bg(token_rgba(bg))
+        }),
     };
     button
         .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {

@@ -1,8 +1,8 @@
 use chrono::{NaiveDate, TimeZone, Utc};
 use knotq_model::{
     AppSettings, CalendarProvider, CalendarWeekRange, ExternalItemSource, Folder, FolderId,
-    GoogleOAuthAccount, ImageAssetFormat, ImageInline, Item, ItemMarker, NodeRef, Scheme, ThemeMode,
-    Workspace,
+    GoogleOAuthAccount, ImageAssetFormat, ImageInline, Item, ItemMarker, NodeRef, Scheme,
+    ThemeMode, Workspace,
 };
 use knotq_storage_json::{
     load_app_settings, load_daily_queue_scheme, load_daily_queue_schemes_for_calendar_range,
@@ -492,7 +492,10 @@ fn version_history_restores_saved_workspace_files() {
     restore_workspace_snapshot(&dir, &first_snapshot).unwrap();
     let restored = load_workspace(&workspace_file).unwrap().unwrap();
 
-    assert_eq!(restored.schemes[&scheme_id].items[0].text(), "first version");
+    assert_eq!(
+        restored.schemes[&scheme_id].items[0].text(),
+        "first version"
+    );
     assert!(fs::read_to_string(&first_scheme_path)
         .unwrap()
         .contains("first version"));

@@ -90,7 +90,8 @@ impl DurableNotificationSchedule {
             self.requests
                 .iter()
                 .filter(|request| cutoff.is_none_or(|cutoff| request.fire_at <= cutoff))
-                .take(policy.os_pending_limit).cloned(),
+                .take(policy.os_pending_limit)
+                .cloned(),
             now,
         )
     }
