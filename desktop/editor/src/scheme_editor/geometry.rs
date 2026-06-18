@@ -72,12 +72,24 @@ impl SchemeEditor {
     pub(super) fn visual_point_for_location(&self, loc: TextLocation) -> Point<Pixels> {
         let loc = self.clamp_location(loc);
         if let Some(object) = self.table_object_range_for_row(loc.row) {
-            if loc.col >= object.end {
-                let (base_x, base_y) = self.row_base_xy(loc.row);
-                let y_range = self.line_map.y_range(loc.row..loc.row + 1);
-                let row_height = self.line_map.row_line_height(loc.row);
-                let block_bottom = (y_range.end - y_range.start - row_height).max(px(0.0));
-                return point(base_x, base_y + block_bottom);
+            if loc.col > object.end {
+                if let Some(point) = self.table_suffix_point_for_location(loc, object.end) {
+                    return point;
+                }
+            }
+            if loc.col == object.start || loc.col == object.end {
+                if let Some(layout) = self.table_layouts.get(&loc.row) {
+                    let x = self.table_grid_left_content(loc.row)
+                        + if loc.col == object.end {
+                            layout.grid_w
+                        } else {
+                            px(0.0)
+                        };
+                    let y = self.line_map.y_range(loc.row..loc.row + 1).start
+                        + self.line_map.line_text_height(loc.row)
+                        + px(super::table::GRID_TOP_GAP);
+                    return point(x, y);
+                }
             }
         }
         let intra = self
@@ -88,12 +100,38 @@ impl SchemeEditor {
         point(base_x + intra.x, base_y + intra.y)
     }
 
+    fn table_suffix_point_for_location(
+        &self,
+        loc: TextLocation,
+        suffix_start: usize,
+    ) -> Option<Point<Pixels>> {
+        let item_line = self.line_map.item_line(loc.row)?;
+        let suffix = item_line.block_suffix.as_ref()?;
+        let layout = self.table_layouts.get(&loc.row)?;
+        let suffix_col = loc.col.saturating_sub(suffix_start);
+        let suffix_pos = suffix
+            .position_for_index(suffix_col, self.line_map.row_line_height(loc.row))
+            .unwrap_or_else(|| point(px(0.0), px(0.0)));
+        let line_top = self.line_map.y_range(loc.row..loc.row + 1).start;
+        Some(point(
+            self.table_grid_left_content(loc.row) + suffix_pos.x,
+            line_top
+                + self.line_map.line_text_height(loc.row)
+                + layout.block_height
+                + item_line.block_suffix_gap
+                + suffix_pos.y,
+        ))
+    }
+
     pub(super) fn location_for_local_point(&self, local: Point<Pixels>) -> TextLocation {
         if self.line_map.line_count() == 0 {
             return TextLocation { row: 0, col: 0 };
         }
 
         if let Some(loc) = self.cell_location_for_local_point(local) {
+            return loc;
+        }
+        if let Some(loc) = self.table_suffix_location_for_local_point(local) {
             return loc;
         }
 
@@ -134,6 +172,43 @@ impl SchemeEditor {
         }
 
         best.map(|(_, loc)| loc)
+    }
+
+    fn table_suffix_location_for_local_point(&self, local: Point<Pixels>) -> Option<TextLocation> {
+        for row in 0..self.rows.len() {
+            let Some(object) = self.table_object_range_for_row(row) else {
+                continue;
+            };
+            let Some(item_line) = self.line_map.item_line(row) else {
+                continue;
+            };
+            let Some(suffix) = item_line.block_suffix.as_ref() else {
+                continue;
+            };
+            let Some(layout) = self.table_layouts.get(&row) else {
+                continue;
+            };
+            let left = self.table_grid_left_content(row);
+            let top = self.line_map.y_range(row..row + 1).start
+                + self.line_map.line_text_height(row)
+                + layout.block_height
+                + item_line.block_suffix_gap;
+            let height = suffix.size(self.line_map.row_line_height(row)).height;
+            if local.y < top || local.y >= top + height {
+                continue;
+            }
+            let local_point = point(local.x - left, local.y - top);
+            let suffix_col = match suffix
+                .closest_index_for_position(local_point, self.line_map.row_line_height(row))
+            {
+                Ok(col) | Err(col) => col,
+            };
+            return Some(self.clamp_location(TextLocation {
+                row,
+                col: object.end + suffix_col,
+            }));
+        }
+        None
     }
 
     pub(super) fn paint_selection(&self, text_origin: Point<Pixels>, window: &mut Window) {

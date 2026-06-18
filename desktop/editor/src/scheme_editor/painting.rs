@@ -84,6 +84,9 @@ impl SchemeEditor {
                 let line_origin = point(text_origin.x + base_x, text_origin.y + base_y);
                 let line_height = self.line_map.row_line_height(row);
                 let _ = line.paint(line_origin, line_height, TextAlign::Left, None, window, cx);
+                if path.is_table_anchor() {
+                    self.paint_table_suffix(row, text_origin, window, cx);
+                }
                 if let Some(editor_row) = self.rows.get(row).cloned() {
                     self.paint_line_marker(&editor_row, row, line_origin, window, cx);
                     if self
@@ -102,6 +105,10 @@ impl SchemeEditor {
         }
 
         if focused && self.selection.is_empty() && self.cursor_blink_state {
+            if let Some(caret) = self.table_object_caret_bounds(self.selection.head, bounds) {
+                window.paint_quad(fill(caret, token_hsla(theme.caret_color)));
+                return;
+            }
             let pos = self.visual_point_for_location(self.selection.head);
             let row_height = self.line_map.row_line_height(self.selection.head.row);
             // Scale the caret with the line so it grows on larger heading rows.
@@ -118,6 +125,62 @@ impl SchemeEditor {
                 token_hsla(theme.caret_color),
             ));
         }
+    }
+
+    fn paint_table_suffix(
+        &self,
+        row: usize,
+        text_origin: Point<Pixels>,
+        window: &mut Window,
+        cx: &mut App,
+    ) {
+        let Some(item_line) = self.line_map.item_line(row) else {
+            return;
+        };
+        let Some(suffix) = item_line.block_suffix.as_ref() else {
+            return;
+        };
+        let Some(layout) = self.table_layouts.get(&row) else {
+            return;
+        };
+        let line_top = self.line_map.y_range(row..row + 1).start;
+        let origin = point(
+            text_origin.x + self.table_grid_left_content(row),
+            text_origin.y
+                + line_top
+                + self.line_map.line_text_height(row)
+                + layout.block_height
+                + item_line.block_suffix_gap,
+        );
+        let _ = suffix.paint(
+            origin,
+            self.line_map.row_line_height(row),
+            TextAlign::Left,
+            None,
+            window,
+            cx,
+        );
+    }
+
+    fn table_object_caret_bounds(
+        &self,
+        loc: TextLocation,
+        bounds: Bounds<Pixels>,
+    ) -> Option<Bounds<Pixels>> {
+        let object = self.table_object_range_for_row(loc.row)?;
+        if loc.col != object.start && loc.col != object.end {
+            return None;
+        }
+        let (origin, grid_w, grid_h) = self.table_grid_geom(loc.row, bounds)?;
+        let x = if loc.col == object.end {
+            origin.x + grid_w
+        } else {
+            origin.x
+        };
+        Some(Bounds::new(
+            point(x, origin.y),
+            size(px(1.5), grid_h.max(px(12.0))),
+        ))
     }
 
     pub(super) fn marker_left_for_text_left(&self, item: &Item, text_left: Pixels) -> Pixels {

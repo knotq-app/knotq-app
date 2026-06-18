@@ -41,21 +41,6 @@ impl SchemeEditor {
         if start > end || !text.is_char_boundary(start) || !text.is_char_boundary(end) {
             return;
         }
-        let cursor_after_table_object = if start == end
-            && !replacement.is_empty()
-            && !replacement.contains('\n')
-        {
-            let loc = self.offset_to_location(start);
-            self.table_object_range_for_row(loc.row)
-                .is_some_and(|object| loc.col >= object.end)
-        } else {
-            false
-        };
-        if cursor_after_table_object {
-            self.insert_text_after_table_object(start, replacement, window, cx);
-            return;
-        }
-
         let inserted_line_hint = if infer_inserted_line_style && replacement.contains('\n') {
             let start_loc = self.offset_to_location(start);
             let insert_before_current = start_loc.col == 0 && self.line_len(start_loc.row) > 0;
@@ -85,53 +70,6 @@ impl SchemeEditor {
             window,
             cx,
         );
-    }
-
-    fn insert_text_after_table_object(
-        &mut self,
-        offset: usize,
-        replacement: &str,
-        window: Option<&mut Window>,
-        cx: &mut Context<Self>,
-    ) {
-        let loc = self.offset_to_location(offset);
-        let row = loc.row;
-        let Some(object) = self.table_object_range_for_row(row) else {
-            return;
-        };
-        if loc.col < object.end {
-            return;
-        }
-
-        let Some(anchor) = self.rows.get(row) else {
-            return;
-        };
-        let table_id = anchor.item.id;
-        let old_top = reconstruct_top_level(&self.rows);
-        let mut new_top = old_top.clone();
-        let Some(pos) = new_top.iter().position(|item| item.id == table_id) else {
-            return;
-        };
-
-        let mut item = Item::new(clean_line_text(replacement));
-        item.indent = anchor.item.indent;
-        let inserted_len = item.text().len();
-        new_top.insert(pos + 1, item);
-
-        let (text, rows) = build_buffer(&new_top);
-        self.text = text;
-        self.rows = rows;
-        self.refresh_layout_after_content_change(window);
-        let row = flat_row_for_top_level_index(&self.rows, pos + 1);
-        self.selection = TextSelection::collapsed(TextLocation {
-            row,
-            col: inserted_len.min(self.line_len(row)),
-        });
-        self.marked_range = None;
-        self.reset_cursor_blink(cx);
-        self.scroll_to_cursor(cx);
-        cx.notify();
-        self.emit_top_level_diff(&old_top, &new_top, cx);
     }
 
     pub(super) fn sync_text_from_buffer(
@@ -306,9 +244,9 @@ impl SchemeEditor {
         let old_rows = self.rows.clone();
         let old_lines: Vec<String> = old_rows
             .iter()
-            .map(|row| clean_line_text(&row.item.text()))
+            .map(display_line_for_row)
             .collect();
-        let new_lines: Vec<String> = new_text.split('\n').map(clean_line_text).collect();
+        let new_lines: Vec<String> = new_text.split('\n').map(clean_display_line_text).collect();
         let old_refs: Vec<&str> = old_lines.iter().map(String::as_str).collect();
         let new_refs: Vec<&str> = new_lines.iter().map(String::as_str).collect();
         let change = line_change(&old_refs, &new_refs);
@@ -469,7 +407,7 @@ fn rebuild_tabled_rows_after_text_change(
             continue;
         };
         let mut row = old_row.clone();
-        row.item.set_text(line.clone());
+        set_row_text_from_buffer_line(&mut row, line);
         new_rows.push(row);
     }
 
@@ -481,7 +419,7 @@ fn rebuild_tabled_rows_after_text_change(
         if offset < old_changed {
             if let Some(old_row) = old_rows.get(change.prefix + offset) {
                 let mut row = old_row.clone();
-                row.item.set_text(line.clone());
+                set_row_text_from_buffer_line(&mut row, line);
                 new_rows.push(row);
                 continue;
             }
@@ -497,12 +435,25 @@ fn rebuild_tabled_rows_after_text_change(
         let mut row = old_rows[i].clone();
         let new_index = change.new_suffix + (i - change.old_suffix);
         if let Some(line) = new_lines.get(new_index) {
-            row.item.set_text(line.clone());
+            set_row_text_from_buffer_line(&mut row, line);
         }
         new_rows.push(row);
     }
 
     new_rows
+}
+
+fn set_row_text_from_buffer_line(row: &mut EditorRow, line: &str) {
+    if row.path.is_table_anchor() {
+        let table = row
+            .item
+            .table()
+            .cloned()
+            .unwrap_or_else(|| knotq_model::Table::new(1, 1));
+        set_table_anchor_content_from_line(&mut row.item, line, table);
+    } else {
+        row.item.set_text(clean_line_text(line));
+    }
 }
 
 fn table_inserted_row_path(

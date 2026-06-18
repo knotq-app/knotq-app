@@ -111,9 +111,28 @@ impl SchemeEditor {
             if (is_anchor && !has_line_text) || media_only {
                 line_height = 2.0;
             }
+            let suffix_range = if is_anchor {
+                table_object_range(&line)
+                    .filter(|object| object.end < line.len())
+                    .map(|object| object.end..line.len())
+            } else {
+                None
+            };
+            let table_suffix = suffix_range.as_ref().and_then(|range| {
+                let suffix = line[range.clone()].to_string();
+                (!suffix.is_empty()).then_some(suffix)
+            });
+            let extra_collapsed = suffix_range.iter().cloned().collect::<Vec<_>>();
             let reveal = self.row_reveals_markers(row);
-            let (shaped_text, runs, collapsed) =
-                self.build_line_layout(&font, hidden_prefix, &line, color, is_done, reveal);
+            let (shaped_text, runs, collapsed) = self.build_line_layout(
+                &font,
+                hidden_prefix,
+                &line,
+                color,
+                is_done,
+                reveal,
+                &extra_collapsed,
+            );
             let mut shaped = window
                 .text_system()
                 .shape_text(
@@ -124,6 +143,32 @@ impl SchemeEditor {
                     None,
                 )
                 .unwrap_or_default();
+            let block_suffix = table_suffix.map(|suffix| {
+                let suffix_width = new_table_layouts
+                    .get(&row)
+                    .map(|layout| layout.grid_w)
+                    .unwrap_or(text_width)
+                    .max(px(40.0));
+                let run = self.text_run(
+                    suffix.len(),
+                    &font,
+                    token_hsla(self.theme.text_primary),
+                    MarkdownStyle::default(),
+                    is_done,
+                );
+                window
+                    .text_system()
+                    .shape_text(
+                        SharedString::new(suffix),
+                        px(TEXT_FONT_SIZE),
+                        &[run],
+                        Some(suffix_width),
+                        None,
+                    )
+                    .unwrap_or_default()
+                    .pop()
+                    .unwrap_or_default()
+            });
             wrapped.push(
                 SchemeItemLine::new(
                     shaped.pop().unwrap_or_default(),
@@ -132,6 +177,7 @@ impl SchemeEditor {
                 )
                 .with_media_height(media_height)
                 .with_block_height(block_height)
+                .with_block_suffix(block_suffix, px(6.0))
                 .in_grid(is_cell)
                 .with_layout_mapping(hidden_prefix.len(), collapsed, line.len()),
             );
@@ -168,6 +214,7 @@ impl SchemeEditor {
         default_color: gpui::Hsla,
         is_done: bool,
         reveal: bool,
+        extra_collapsed: &[Range<usize>],
     ) -> (String, Vec<TextRun>, Vec<Range<usize>>) {
         let mut shaped = String::with_capacity(hidden_prefix.len() + line.len());
         let mut runs = Vec::new();
@@ -207,6 +254,7 @@ impl SchemeEditor {
                     &mut shaped,
                     &mut runs,
                     &mut collapsed,
+                    extra_collapsed,
                 );
                 collapsed.push(object_start..object_start + TABLE_OBJECT_LEN);
                 segment_start = object_start + TABLE_OBJECT_LEN;
@@ -224,6 +272,7 @@ impl SchemeEditor {
                 &mut shaped,
                 &mut runs,
                 &mut collapsed,
+                extra_collapsed,
             );
             pos = end;
         }
@@ -295,6 +344,64 @@ impl SchemeEditor {
 }
 
 fn push_line_layout_segment(
+    editor: &SchemeEditor,
+    line: &str,
+    range: Range<usize>,
+    is_marker: bool,
+    reveal: bool,
+    style: MarkdownStyle,
+    font: &gpui::Font,
+    default_color: gpui::Hsla,
+    is_done: bool,
+    shaped: &mut String,
+    runs: &mut Vec<TextRun>,
+    collapsed: &mut Vec<Range<usize>>,
+    extra_collapsed: &[Range<usize>],
+) {
+    if range.is_empty() {
+        return;
+    }
+    let mut start = range.start;
+    for hidden in extra_collapsed {
+        let hidden_start = hidden.start.max(range.start);
+        let hidden_end = hidden.end.min(range.end);
+        if hidden_start >= hidden_end {
+            continue;
+        }
+        push_visible_line_layout_segment(
+            editor,
+            line,
+            start..hidden_start,
+            is_marker,
+            reveal,
+            style,
+            font,
+            default_color,
+            is_done,
+            shaped,
+            runs,
+            collapsed,
+        );
+        collapsed.push(hidden_start..hidden_end);
+        start = hidden_end;
+    }
+    push_visible_line_layout_segment(
+        editor,
+        line,
+        start..range.end,
+        is_marker,
+        reveal,
+        style,
+        font,
+        default_color,
+        is_done,
+        shaped,
+        runs,
+        collapsed,
+    );
+}
+
+fn push_visible_line_layout_segment(
     editor: &SchemeEditor,
     line: &str,
     range: Range<usize>,

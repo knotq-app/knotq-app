@@ -391,7 +391,7 @@ impl SchemeEditor {
         let Some(object) = self.table_object_range_for_row(row) else {
             return false;
         };
-        if self.selection.head.col < object.end {
+        if self.selection.head.col != object.end {
             return false;
         }
         self.delete_table_from_anchor_row(row, window, cx)

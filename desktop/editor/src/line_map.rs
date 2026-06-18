@@ -20,6 +20,10 @@ pub struct SchemeItemLine {
     /// Extra vertical space reserved below the row for block inlines such as
     /// tables. The editor paints the block; the line map owns vertical flow.
     pub block_height: Pixels,
+    /// Optional text that renders after a block inline while remaining part of
+    /// the same logical source row.
+    pub block_suffix: Option<WrappedLine>,
+    pub block_suffix_gap: Pixels,
     /// Rows placed inside a table grid are positioned by explicit cell slots and
     /// do not contribute to normal document height.
     in_grid: bool,
@@ -53,6 +57,8 @@ impl SchemeItemLine {
             annotation,
             media_height: px(0.0),
             block_height: px(0.0),
+            block_suffix: None,
+            block_suffix_gap: px(0.0),
             in_grid: false,
             prefix_len: 0,
             collapsed: Vec::new(),
@@ -68,6 +74,16 @@ impl SchemeItemLine {
 
     pub fn with_block_height(mut self, block_height: Pixels) -> Self {
         self.block_height = block_height;
+        self
+    }
+
+    pub fn with_block_suffix(mut self, suffix: Option<WrappedLine>, gap: Pixels) -> Self {
+        self.block_suffix = suffix;
+        self.block_suffix_gap = if self.block_suffix.is_some() {
+            gap
+        } else {
+            px(0.0)
+        };
         self
     }
 
@@ -107,6 +123,11 @@ impl SchemeItemLine {
                 .unwrap_or(px(0.0))
             + self.media_height
             + self.block_height
+            + self
+                .block_suffix
+                .as_ref()
+                .map(|suffix| self.block_suffix_gap + suffix.size(self.line_height).height)
+                .unwrap_or(px(0.0))
     }
 
     fn text_height(&self) -> Pixels {
