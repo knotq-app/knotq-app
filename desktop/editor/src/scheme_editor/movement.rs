@@ -572,6 +572,15 @@ impl SchemeEditor {
         line_ranges(&self.text).get(row).cloned()
     }
 
+    pub(super) fn table_object_range_for_row(&self, row: usize) -> Option<Range<usize>> {
+        let editor_row = self.rows.get(row)?;
+        if !editor_row.path.is_table_anchor() || !editor_row.item.has_table() {
+            return None;
+        }
+        let range = self.line_range(row)?;
+        table_object_range(self.text.get(range)?)
+    }
+
     pub(super) fn text_lines(&self) -> Vec<String> {
         self.text.split('\n').map(ToString::to_string).collect()
     }
@@ -630,7 +639,7 @@ impl SchemeEditor {
             return None;
         }
         let (start, end) = self.selection_offsets();
-        self.text.get(start..end).map(ToString::to_string)
+        self.text.get(start..end).map(line_without_table_object)
     }
 
     pub(super) fn selected_whole_rows(&self) -> Option<Range<usize>> {

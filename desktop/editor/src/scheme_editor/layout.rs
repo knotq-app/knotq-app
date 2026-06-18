@@ -72,7 +72,8 @@ impl SchemeEditor {
                 wrap_width - px(TEXT_LEFT_PAD + 18.0) - self.row_indent_x(row) - row_layout_offset
             }
             .max(px(40.0));
-            let has_line_text = !line.is_empty();
+            let line_without_table = line_without_table_object(&line);
+            let has_line_text = !line_without_table.is_empty();
             let media_height = if is_cell || is_anchor {
                 px(0.0)
             } else {
@@ -90,7 +91,7 @@ impl SchemeEditor {
             };
             let (font_size, mut line_height) =
                 if !is_cell {
-                    match markdown_heading_level(&line) {
+                    match markdown_heading_level(&line_without_table) {
                         Some(1) => (HEADING_FONT_SIZE, HEADING_LINE_HEIGHT),
                         Some(2) => (HEADING2_FONT_SIZE, HEADING2_LINE_HEIGHT),
                         Some(_) => (HEADING3_FONT_SIZE, HEADING3_LINE_HEIGHT),
@@ -107,7 +108,7 @@ impl SchemeEditor {
                 && !is_anchor
                 && !has_line_text
                 && row_item.map(|item| item.has_images()).unwrap_or(false);
-            if (is_anchor && line.is_empty()) || media_only {
+            if (is_anchor && !has_line_text) || media_only {
                 line_height = 2.0;
             }
             let reveal = self.row_reveals_markers(row);
@@ -187,18 +188,43 @@ impl SchemeEditor {
         for markdown_run in parse_markdown_runs(line) {
             let end = pos + markdown_run.len;
             let is_marker = markdown_run.kind == MarkdownRunKind::Marker;
-            if is_marker && !reveal {
-                collapsed.push(pos..end);
-            } else {
-                shaped.push_str(&line[pos..end]);
-                runs.push(self.text_run(
-                    markdown_run.len,
+            let mut segment_start = pos;
+            for (relative, ch) in line[pos..end].char_indices() {
+                if ch != TABLE_OBJECT_CHAR {
+                    continue;
+                }
+                let object_start = pos + relative;
+                push_line_layout_segment(
+                    self,
+                    line,
+                    segment_start..object_start,
+                    is_marker,
+                    reveal,
+                    markdown_run.style,
                     font,
                     default_color,
-                    markdown_run.style,
                     is_done,
-                ));
+                    &mut shaped,
+                    &mut runs,
+                    &mut collapsed,
+                );
+                collapsed.push(object_start..object_start + TABLE_OBJECT_LEN);
+                segment_start = object_start + TABLE_OBJECT_LEN;
             }
+            push_line_layout_segment(
+                self,
+                line,
+                segment_start..end,
+                is_marker,
+                reveal,
+                markdown_run.style,
+                font,
+                default_color,
+                is_done,
+                &mut shaped,
+                &mut runs,
+                &mut collapsed,
+            );
             pos = end;
         }
 
@@ -266,4 +292,35 @@ impl SchemeEditor {
         let shaped = self.line_map.total_height();
         px(self.top_pad + self.bottom_pad) + shaped.max(rough).max(px(TEXT_LINE_HEIGHT))
     }
+}
+
+fn push_line_layout_segment(
+    editor: &SchemeEditor,
+    line: &str,
+    range: Range<usize>,
+    is_marker: bool,
+    reveal: bool,
+    style: MarkdownStyle,
+    font: &gpui::Font,
+    default_color: gpui::Hsla,
+    is_done: bool,
+    shaped: &mut String,
+    runs: &mut Vec<TextRun>,
+    collapsed: &mut Vec<Range<usize>>,
+) {
+    if range.is_empty() {
+        return;
+    }
+    if is_marker && !reveal {
+        collapsed.push(range);
+        return;
+    }
+    shaped.push_str(&line[range.clone()]);
+    runs.push(editor.text_run(
+        range.end - range.start,
+        font,
+        default_color,
+        style,
+        is_done,
+    ));
 }

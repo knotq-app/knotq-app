@@ -13,7 +13,7 @@ impl SchemeEditor {
                     }
                     return;
                 }
-                if path.is_table_anchor() && self.split_table_before_enter(window, cx) {
+                if path.is_table_anchor() && self.handle_table_anchor_enter(window, cx) {
                     return;
                 }
             }
@@ -21,7 +21,7 @@ impl SchemeEditor {
         self.replace_selection("\n", Some(window), cx);
     }
 
-    fn split_table_before_enter(&mut self, window: &mut Window, cx: &mut Context<Self>) -> bool {
+    fn handle_table_anchor_enter(&mut self, window: &mut Window, cx: &mut Context<Self>) -> bool {
         if !self.selection.is_empty() {
             return false;
         }
@@ -38,7 +38,13 @@ impl SchemeEditor {
 
         let old_top = reconstruct_top_level(&self.rows);
         let mut new_top = old_top.clone();
-        let col = self.selection.head.col.min(self.line_len(row));
+        let mut col = self.selection.head.col.min(self.line_len(row));
+        if let Some(object) = self.table_object_range_for_row(row) {
+            if col > object.start {
+                return self.insert_blank_after_table_anchor(row, window, cx);
+            }
+            col = col.min(object.start);
+        }
         let Some(result) = split_table_item_at_text_col(&mut new_top, top_index, col) else {
             return false;
         };
@@ -52,6 +58,40 @@ impl SchemeEditor {
             .iter()
             .position(|row| row.path.is_table_anchor() && row.item.id == result.table)
             .unwrap_or_else(|| flat_row_for_top_level_index(&self.rows, result.table_index));
+        self.selection = TextSelection::collapsed(TextLocation { row, col: 0 });
+        self.marked_range = None;
+        self.reset_cursor_blink(cx);
+        self.scroll_to_cursor(cx);
+        cx.notify();
+        self.emit_top_level_diff(&old_top, &new_top, cx);
+        true
+    }
+
+    fn insert_blank_after_table_anchor(
+        &mut self,
+        anchor_row: usize,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let Some(anchor) = self.rows.get(anchor_row) else {
+            return false;
+        };
+        let table_id = anchor.item.id;
+        let old_top = reconstruct_top_level(&self.rows);
+        let mut new_top = old_top.clone();
+        let Some(pos) = new_top.iter().position(|item| item.id == table_id) else {
+            return false;
+        };
+
+        let mut blank = Item::new("");
+        blank.indent = anchor.item.indent;
+        new_top.insert(pos + 1, blank);
+
+        let (text, rows) = build_buffer(&new_top);
+        self.text = text;
+        self.rows = rows;
+        self.refresh_layout_after_content_change(Some(window));
+        let row = flat_row_for_top_level_index(&self.rows, pos + 1);
         self.selection = TextSelection::collapsed(TextLocation { row, col: 0 });
         self.marked_range = None;
         self.reset_cursor_blink(cx);
@@ -249,6 +289,9 @@ impl SchemeEditor {
         if self.read_only {
             return true;
         }
+        if self.delete_selected_table_object(window, cx) {
+            return true;
+        }
         if !self.selection.is_empty() {
             self.replace_selection("", Some(window), cx);
             return true;
@@ -258,9 +301,30 @@ impl SchemeEditor {
             || self.delete_empty_line_boundary_if_possible(prefer_backward, Some(window), cx)
     }
 
+    fn delete_selected_table_object(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        if self.selection.is_empty() {
+            return false;
+        }
+        let (start, end) = self.selection.ordered();
+        if start.row != end.row {
+            return false;
+        }
+        let Some(object) = self.table_object_range_for_row(start.row) else {
+            return false;
+        };
+        if start.col != object.start || end.col != object.end {
+            return false;
+        }
+        self.delete_table_from_anchor_row(start.row, window, cx)
+    }
+
     pub(super) fn backspace(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.merge_adjacent_table_if_boundary(true, window, cx)
-            || self.delete_table_if_on_empty_anchor(window, cx)
+            || self.delete_table_at_backward_boundary(window, cx)
         {
             return;
         }
@@ -309,10 +373,7 @@ impl SchemeEditor {
         self.replace_byte_range(prev..offset, "", Some(window), cx);
     }
 
-    /// Backspace on a table's own line (the anchor) with no title text deletes
-    /// the whole table — the natural "there's nothing else on this line" action,
-    /// and the only way to remove a table that is the document's first line.
-    fn delete_table_if_on_empty_anchor(
+    fn delete_table_at_backward_boundary(
         &mut self,
         window: &mut Window,
         cx: &mut Context<Self>,
@@ -324,42 +385,22 @@ impl SchemeEditor {
         let Some(editor_row) = self.rows.get(row) else {
             return false;
         };
-        if !editor_row.path.is_table_anchor() || !editor_row.item.text().is_empty() {
+        if !editor_row.path.is_table_anchor() {
             return false;
         }
-        let table_id = editor_row.item.id;
-
-        let mut top = reconstruct_top_level(&self.rows);
-        let Some(pos) = top.iter().position(|item| item.id == table_id) else {
+        let Some(object) = self.table_object_range_for_row(row) else {
             return false;
         };
-        top.remove(pos);
-        if top.is_empty() {
-            top.push(Item::new(""));
+        if self.selection.head.col < object.end {
+            return false;
         }
-
-        let (text, rows) = build_buffer(&top);
-        self.text = text;
-        self.rows = rows;
-        self.refresh_layout_after_content_change(Some(window));
-        let new_row = pos.min(self.rows.len().saturating_sub(1));
-        self.selection = TextSelection::collapsed(TextLocation {
-            row: new_row,
-            col: self.line_len(new_row),
-        });
-        self.marked_range = None;
-        self.reset_cursor_blink(cx);
-        self.scroll_to_cursor(cx);
-        cx.emit(EditorEvent::Command(Command::DeleteItem {
-            scheme: self.scheme_id,
-            item: table_id,
-        }));
-        cx.notify();
-        true
+        self.delete_table_from_anchor_row(row, window, cx)
     }
 
     pub(super) fn backspace_word(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.merge_adjacent_table_if_boundary(true, window, cx) {
+        if self.merge_adjacent_table_if_boundary(true, window, cx)
+            || self.delete_table_at_backward_boundary(window, cx)
+        {
             return;
         }
         if self.boundary_delete_blocked(true) {
@@ -374,7 +415,9 @@ impl SchemeEditor {
     }
 
     pub(super) fn backspace_line(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.merge_adjacent_table_if_boundary(true, window, cx) {
+        if self.merge_adjacent_table_if_boundary(true, window, cx)
+            || self.delete_table_at_backward_boundary(window, cx)
+        {
             return;
         }
         if self.boundary_delete_blocked(true) {
@@ -416,7 +459,9 @@ impl SchemeEditor {
     }
 
     pub(super) fn delete_word(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.merge_adjacent_table_if_boundary(false, window, cx) {
+        if self.delete_table_at_forward_boundary(window, cx)
+            || self.merge_adjacent_table_if_boundary(false, window, cx)
+        {
             return;
         }
         if self.boundary_delete_blocked(false) {
@@ -431,7 +476,9 @@ impl SchemeEditor {
     }
 
     pub(super) fn delete_line(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.merge_adjacent_table_if_boundary(false, window, cx) {
+        if self.delete_table_at_forward_boundary(window, cx)
+            || self.merge_adjacent_table_if_boundary(false, window, cx)
+        {
             return;
         }
         if self.boundary_delete_blocked(false) {
@@ -464,12 +511,22 @@ impl SchemeEditor {
         let Some(editor_row) = self.rows.get(row) else {
             return false;
         };
-        if editor_row.path.is_cell() || self.selection.head.col != self.line_len(row) {
+        if editor_row.path.is_cell() {
             return false;
         }
 
         if editor_row.path.is_table_anchor() {
-            return self.delete_table_from_anchor_row(row, window, cx);
+            let Some(object) = self.table_object_range_for_row(row) else {
+                return false;
+            };
+            if self.selection.head.col <= object.start {
+                return self.delete_table_from_anchor_row(row, window, cx);
+            }
+            return false;
+        }
+
+        if self.selection.head.col != self.line_len(row) {
+            return false;
         }
 
         if self.line_len(row) == 0 {

@@ -41,6 +41,20 @@ impl SchemeEditor {
         if start > end || !text.is_char_boundary(start) || !text.is_char_boundary(end) {
             return;
         }
+        let cursor_after_table_object = if start == end
+            && !replacement.is_empty()
+            && !replacement.contains('\n')
+        {
+            let loc = self.offset_to_location(start);
+            self.table_object_range_for_row(loc.row)
+                .is_some_and(|object| loc.col >= object.end)
+        } else {
+            false
+        };
+        if cursor_after_table_object {
+            self.insert_text_after_table_object(start, replacement, window, cx);
+            return;
+        }
 
         let inserted_line_hint = if infer_inserted_line_style && replacement.contains('\n') {
             let start_loc = self.offset_to_location(start);
@@ -71,6 +85,53 @@ impl SchemeEditor {
             window,
             cx,
         );
+    }
+
+    fn insert_text_after_table_object(
+        &mut self,
+        offset: usize,
+        replacement: &str,
+        window: Option<&mut Window>,
+        cx: &mut Context<Self>,
+    ) {
+        let loc = self.offset_to_location(offset);
+        let row = loc.row;
+        let Some(object) = self.table_object_range_for_row(row) else {
+            return;
+        };
+        if loc.col < object.end {
+            return;
+        }
+
+        let Some(anchor) = self.rows.get(row) else {
+            return;
+        };
+        let table_id = anchor.item.id;
+        let old_top = reconstruct_top_level(&self.rows);
+        let mut new_top = old_top.clone();
+        let Some(pos) = new_top.iter().position(|item| item.id == table_id) else {
+            return;
+        };
+
+        let mut item = Item::new(clean_line_text(replacement));
+        item.indent = anchor.item.indent;
+        let inserted_len = item.text().len();
+        new_top.insert(pos + 1, item);
+
+        let (text, rows) = build_buffer(&new_top);
+        self.text = text;
+        self.rows = rows;
+        self.refresh_layout_after_content_change(window);
+        let row = flat_row_for_top_level_index(&self.rows, pos + 1);
+        self.selection = TextSelection::collapsed(TextLocation {
+            row,
+            col: inserted_len.min(self.line_len(row)),
+        });
+        self.marked_range = None;
+        self.reset_cursor_blink(cx);
+        self.scroll_to_cursor(cx);
+        cx.notify();
+        self.emit_top_level_diff(&old_top, &new_top, cx);
     }
 
     pub(super) fn sync_text_from_buffer(

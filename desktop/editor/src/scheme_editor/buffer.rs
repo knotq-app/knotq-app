@@ -3,6 +3,9 @@ use std::ops::Range;
 use knotq_model::{ColumnId, Inline, Item, ItemId, ItemMarker, Table};
 use uuid::Uuid;
 
+pub(super) const TABLE_OBJECT_CHAR: char = '\u{fffc}';
+pub(super) const TABLE_OBJECT_LEN: usize = TABLE_OBJECT_CHAR.len_utf8();
+
 /// Sentinel table-row index for a header cell. Header cells map to a column's
 /// *name* rather than a body row, so they live "above" body row 0 — and
 /// `HEADER_ROW as isize == -1` makes vertical navigation fall out naturally.
@@ -126,10 +129,18 @@ pub(super) fn build_buffer(items: &[Item]) -> (String, Vec<EditorRow>) {
     }
     let text = rows
         .iter()
-        .map(|row| display_line(&row.item.text()))
+        .map(display_line_for_row)
         .collect::<Vec<_>>()
         .join("\n");
     (text, rows)
+}
+
+fn display_line_for_row(row: &EditorRow) -> String {
+    let mut line = display_line(&row.item.text());
+    if row.path.is_table_anchor() && row.item.has_table() {
+        line.push(TABLE_OBJECT_CHAR);
+    }
+    line
 }
 
 fn header_item(column: ColumnId, name: &str) -> Item {
@@ -368,7 +379,18 @@ fn display_line(text: &str) -> String {
 }
 
 pub(super) fn clean_line_text(text: &str) -> String {
-    text.trim_start_matches([' ', '\t']).replace('\t', " ")
+    text.trim_start_matches([' ', '\t'])
+        .replace('\t', " ")
+        .replace(TABLE_OBJECT_CHAR, "")
+}
+
+pub(super) fn line_without_table_object(line: &str) -> String {
+    line.replace(TABLE_OBJECT_CHAR, "")
+}
+
+pub(super) fn table_object_range(line: &str) -> Option<Range<usize>> {
+    line.find(TABLE_OBJECT_CHAR)
+        .map(|start| start..start + TABLE_OBJECT_LEN)
 }
 
 pub(super) fn item_is_done(item: &Item) -> bool {
@@ -473,10 +495,12 @@ mod tests {
         let (text, rows) = build_buffer(&[item.clone()]);
         let (_, rebuilt_rows) = build_buffer(&[item]);
 
-        assert_eq!(
-            text.lines().take(3).collect::<Vec<_>>(),
-            ["", "Column 1", "Column 2"]
-        );
+        let lines = text.lines().take(3).collect::<Vec<_>>();
+        assert_eq!(lines[0], TABLE_OBJECT_CHAR.to_string());
+        assert_eq!(lines[1], "Column 1");
+        assert_eq!(lines[2], "Column 2");
+        assert_eq!(table_object_range(lines[0]), Some(0..TABLE_OBJECT_LEN));
+        assert_eq!(clean_line_text(lines[0]), "");
         assert!(rows[1].path.is_header_cell());
         assert_eq!((rows[1].path.r, rows[1].path.c), (HEADER_ROW, 0));
         assert!(rows[2].path.is_header_cell());
@@ -520,9 +544,13 @@ mod tests {
         assert_eq!(top[1].id, after.id);
 
         let (text, rows) = build_buffer(&top);
+        let lines = text.lines().take(3).collect::<Vec<_>>();
+        assert_eq!(lines[0], format!("Before{}", TABLE_OBJECT_CHAR));
+        assert_eq!(lines[1], "Column 1");
+        assert_eq!(lines[2], "Column 2");
         assert_eq!(
-            text.lines().take(3).collect::<Vec<_>>(),
-            ["Before", "Column 1", "Column 2"]
+            table_object_range(lines[0]),
+            Some("Before".len().."Before".len() + TABLE_OBJECT_LEN)
         );
         assert!(rows[0].path.is_table_anchor());
         assert!(rows[1].path.is_header_cell());

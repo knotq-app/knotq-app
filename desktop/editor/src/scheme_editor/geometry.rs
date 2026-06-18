@@ -71,6 +71,15 @@ impl SchemeEditor {
 
     pub(super) fn visual_point_for_location(&self, loc: TextLocation) -> Point<Pixels> {
         let loc = self.clamp_location(loc);
+        if let Some(object) = self.table_object_range_for_row(loc.row) {
+            if loc.col >= object.end {
+                let (base_x, base_y) = self.row_base_xy(loc.row);
+                let y_range = self.line_map.y_range(loc.row..loc.row + 1);
+                let row_height = self.line_map.row_line_height(loc.row);
+                let block_bottom = (y_range.end - y_range.start - row_height).max(px(0.0));
+                return point(base_x, base_y + block_bottom);
+            }
+        }
         let intra = self
             .line_map
             .position_for_index(loc.row, loc.col)
