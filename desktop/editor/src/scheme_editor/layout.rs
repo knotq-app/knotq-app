@@ -80,7 +80,7 @@ impl SchemeEditor {
             let color = if is_done {
                 token_hsla(self.theme.done_text)
             } else if path.is_header_cell() {
-                token_hsla(self.theme.text_muted)
+                self.table_header_text_color()
             } else {
                 token_hsla(self.theme.text_primary)
             };

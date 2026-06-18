@@ -66,6 +66,14 @@ pub(super) struct TableControlHitbox {
 }
 
 impl SchemeEditor {
+    pub(super) fn table_header_text_color(&self) -> Hsla {
+        token_hsla(if self.theme.is_dark {
+            self.theme.text_soft
+        } else {
+            self.theme.text_muted
+        })
+    }
+
     pub(super) fn table_content_width(&self, wrap_width: Pixels) -> Pixels {
         (wrap_width - px(TEXT_LEFT_PAD) + px(CHECKBOX_SIZE + CHECKBOX_GAP) - px(RIGHT_MARGIN))
             .max(px(MIN_COL_W))
@@ -99,7 +107,7 @@ impl SchemeEditor {
         }
         let grid_w = acc;
 
-        let header_color = token_hsla(self.theme.text_muted);
+        let header_color = self.table_header_text_color();
         let mut header_h = px(ROW_MIN_H);
         for (c, col) in table.columns.iter().enumerate() {
             let text_w = (col_w[c] - px(CELL_PAD_X * 2.0)).max(px(16.0));
