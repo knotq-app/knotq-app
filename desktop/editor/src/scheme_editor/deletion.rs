@@ -13,9 +13,52 @@ impl SchemeEditor {
                     }
                     return;
                 }
+                if path.is_table_anchor() && self.split_table_before_enter(window, cx) {
+                    return;
+                }
             }
         }
         self.replace_selection("\n", Some(window), cx);
+    }
+
+    fn split_table_before_enter(&mut self, window: &mut Window, cx: &mut Context<Self>) -> bool {
+        if !self.selection.is_empty() {
+            return false;
+        }
+        let row = self.current_row_index();
+        let Some(editor_row) = self.rows.get(row) else {
+            return false;
+        };
+        if !editor_row.path.is_table_anchor() {
+            return false;
+        }
+        let Some(top_index) = top_level_index_for_flat_row(&self.rows, row) else {
+            return false;
+        };
+
+        let old_top = reconstruct_top_level(&self.rows);
+        let mut new_top = old_top.clone();
+        let col = self.selection.head.col.min(self.line_len(row));
+        let Some(result) = split_table_item_at_text_col(&mut new_top, top_index, col) else {
+            return false;
+        };
+
+        let (text, rows) = build_buffer(&new_top);
+        self.text = text;
+        self.rows = rows;
+        self.refresh_layout_after_content_change(Some(window));
+        let row = self
+            .rows
+            .iter()
+            .position(|row| row.path.is_table_anchor() && row.item.id == result.table)
+            .unwrap_or_else(|| flat_row_for_top_level_index(&self.rows, result.table_index));
+        self.selection = TextSelection::collapsed(TextLocation { row, col: 0 });
+        self.marked_range = None;
+        self.reset_cursor_blink(cx);
+        self.scroll_to_cursor(cx);
+        cx.notify();
+        self.emit_top_level_diff(&old_top, &new_top, cx);
+        true
     }
 
     fn boundary_delete_blocked(&self, backward: bool) -> bool {
@@ -472,34 +515,6 @@ impl SchemeEditor {
         self.emit_top_level_diff(&old_top, &new_top, cx);
         true
     }
-}
-
-fn flat_row_for_top_level_index(rows: &[EditorRow], top_level_index: usize) -> usize {
-    let mut top = 0;
-    for (row, editor_row) in rows.iter().enumerate() {
-        if editor_row.path.is_cell() {
-            continue;
-        }
-        if top == top_level_index {
-            return row;
-        }
-        top += 1;
-    }
-    rows.len().saturating_sub(1)
-}
-
-fn top_level_index_for_flat_row(rows: &[EditorRow], target_row: usize) -> Option<usize> {
-    let mut top = 0;
-    for (row, editor_row) in rows.iter().enumerate() {
-        if editor_row.path.is_cell() {
-            continue;
-        }
-        if row == target_row {
-            return Some(top);
-        }
-        top += 1;
-    }
-    None
 }
 
 fn same_region(a: RowPath, b: RowPath) -> bool {

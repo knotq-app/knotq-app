@@ -51,6 +51,9 @@ impl SchemeEditor {
                 self.move_cursor_to(target, false, cx);
                 return;
             }
+            if self.insert_trailing_line_after_table_boundary(cx) {
+                return;
+            }
         }
         let offset = self.location_to_offset(self.selection.head);
         let next = next_char_boundary(&self.text, offset);
@@ -239,6 +242,55 @@ impl SchemeEditor {
             }
         }
         None
+    }
+
+    fn insert_trailing_line_after_table_boundary(&mut self, cx: &mut Context<Self>) -> bool {
+        if self.read_only {
+            return false;
+        }
+        if !self.selection.is_empty() {
+            return false;
+        }
+        let row = self
+            .selection
+            .head
+            .row
+            .min(self.rows.len().saturating_sub(1));
+        let Some(editor_row) = self.rows.get(row) else {
+            return false;
+        };
+        if !editor_row.path.is_table_anchor() || self.selection.head.col != self.line_len(row) {
+            return false;
+        }
+        if self.row_after_table(row).is_some() {
+            return false;
+        }
+
+        let table_id = editor_row.item.id;
+        let mut top = reconstruct_top_level(&self.rows);
+        let Some(position) = top.iter().position(|item| item.id == table_id) else {
+            return false;
+        };
+        let mut blank = Item::new("");
+        blank.indent = editor_row.item.indent;
+        top.insert(position + 1, blank.clone());
+
+        let (text, rows) = build_buffer(&top);
+        self.text = text;
+        self.rows = rows;
+        self.refresh_layout_after_content_change(None);
+        let row = flat_row_for_top_level_index(&self.rows, position + 1);
+        self.selection = TextSelection::collapsed(TextLocation { row, col: 0 });
+        self.marked_range = None;
+        self.reset_cursor_blink(cx);
+        self.scroll_to_cursor(cx);
+        cx.emit(EditorEvent::Command(Command::InsertItem {
+            scheme: self.scheme_id,
+            position: position + 1,
+            item: blank,
+        }));
+        cx.notify();
+        true
     }
 
     pub(super) fn cell_line_span(&self, row: usize) -> Option<(usize, usize)> {

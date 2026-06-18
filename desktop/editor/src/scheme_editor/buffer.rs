@@ -205,11 +205,45 @@ pub(super) fn rows_have_table(rows: &[EditorRow]) -> bool {
     rows.iter().any(|row| row.path.is_table_anchor())
 }
 
+pub(super) fn flat_row_for_top_level_index(rows: &[EditorRow], top_level_index: usize) -> usize {
+    let mut top = 0;
+    for (row, editor_row) in rows.iter().enumerate() {
+        if editor_row.path.is_cell() {
+            continue;
+        }
+        if top == top_level_index {
+            return row;
+        }
+        top += 1;
+    }
+    rows.len().saturating_sub(1)
+}
+
+pub(super) fn top_level_index_for_flat_row(rows: &[EditorRow], target_row: usize) -> Option<usize> {
+    let mut top = 0;
+    for (row, editor_row) in rows.iter().enumerate() {
+        if editor_row.path.is_cell() {
+            continue;
+        }
+        if row == target_row {
+            return Some(top);
+        }
+        top += 1;
+    }
+    None
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) struct TableMergeResult {
     pub(super) target: ItemId,
     pub(super) deleted: ItemId,
     pub(super) target_index: usize,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) struct TableSplitResult {
+    pub(super) table: ItemId,
+    pub(super) table_index: usize,
 }
 
 pub(super) fn merge_table_item_into(
@@ -240,6 +274,67 @@ pub(super) fn merge_table_item_into(
         target: target.id,
         deleted,
         target_index,
+    })
+}
+
+pub(super) fn split_table_item_at_text_col(
+    items: &mut Vec<Item>,
+    item_index: usize,
+    col: usize,
+) -> Option<TableSplitResult> {
+    let item = items.get(item_index)?.clone();
+    if !item.has_table() {
+        return None;
+    }
+
+    let text = item.text();
+    if col > text.len() || !text.is_char_boundary(col) {
+        return None;
+    }
+
+    if col == 0 {
+        let mut blank = Item::new("");
+        blank.indent = item.indent;
+        items.insert(item_index, blank);
+        return Some(TableSplitResult {
+            table: item.id,
+            table_index: item_index + 1,
+        });
+    }
+
+    let before_text = &text[..col];
+    let after_text = &text[col..];
+    let mut before_content = Vec::new();
+    if !before_text.is_empty() {
+        before_content.push(Inline::text(before_text));
+    }
+
+    let mut table_inlines = Vec::new();
+    for inline in item.content.iter().filter(|inline| !inline.is_text()) {
+        if matches!(inline, Inline::Table(_)) {
+            table_inlines.push(inline.clone());
+        } else {
+            before_content.push(inline.clone());
+        }
+    }
+    if table_inlines.is_empty() {
+        return None;
+    }
+
+    let mut before_item = item.clone();
+    before_item.content = before_content;
+
+    let mut table_item = Item::new(after_text.to_string());
+    table_item.indent = item.indent;
+    table_item.marker = item.marker;
+    table_item.content.extend(table_inlines);
+    let table = table_item.id;
+
+    items[item_index] = before_item;
+    items.insert(item_index + 1, table_item);
+    Some(TableSplitResult {
+        table,
+        table_index: item_index + 1,
     })
 }
 
@@ -451,6 +546,48 @@ mod tests {
         assert_eq!(top.len(), 2);
         assert!(top[0].has_table());
         assert!(top[1].has_table());
+    }
+
+    #[test]
+    fn table_split_moves_table_to_new_item_after_text() {
+        let mut item = Item::new("BeforeAfter");
+        item.indent = 2;
+        item.content.push(Inline::Table(Table::new(1, 1)));
+        let mut top = vec![item.clone()];
+
+        let result =
+            split_table_item_at_text_col(&mut top, 0, 6).expect("table splits from text item");
+
+        assert_eq!(top.len(), 2);
+        assert_eq!(top[0].id, item.id);
+        assert_eq!(top[0].text(), "Before");
+        assert!(!top[0].has_table());
+        assert_eq!(top[1].id, result.table);
+        assert_eq!(top[1].text(), "After");
+        assert_eq!(top[1].indent, 2);
+        assert!(top[1].has_table());
+        assert_eq!(result.table_index, 1);
+    }
+
+    #[test]
+    fn table_split_at_start_inserts_blank_before_existing_table() {
+        let mut item = Item::new("");
+        item.indent = 1;
+        item.content.push(Inline::Table(Table::new(1, 1)));
+        let table_id = item.id;
+        let mut top = vec![item];
+
+        let result =
+            split_table_item_at_text_col(&mut top, 0, 0).expect("blank inserts before table");
+
+        assert_eq!(top.len(), 2);
+        assert_eq!(top[0].text(), "");
+        assert!(!top[0].has_table());
+        assert_eq!(top[0].indent, 1);
+        assert_eq!(top[1].id, table_id);
+        assert!(top[1].has_table());
+        assert_eq!(result.table, table_id);
+        assert_eq!(result.table_index, 1);
     }
 
     #[test]
