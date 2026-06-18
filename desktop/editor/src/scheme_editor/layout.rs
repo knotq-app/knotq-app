@@ -43,7 +43,11 @@ impl SchemeEditor {
             let block_height = if is_anchor {
                 row_item
                     .and_then(|item| {
-                        self.build_table_layout(item, self.table_content_width(wrap_width), window)
+                        self.build_table_layout(
+                            item,
+                            self.table_content_width(row, wrap_width),
+                            window,
+                        )
                     })
                     .map(|layout| {
                         let height = layout.block_height;

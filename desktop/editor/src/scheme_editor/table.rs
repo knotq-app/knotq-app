@@ -26,6 +26,16 @@ pub(super) fn grid_left_content() -> Pixels {
     px(-(CHECKBOX_SIZE + CHECKBOX_GAP))
 }
 
+fn grid_left_content_for_indent(indent_x: Pixels) -> Pixels {
+    grid_left_content() + indent_x
+}
+
+fn table_content_width_for_indent(wrap_width: Pixels, indent_x: Pixels) -> Pixels {
+    (wrap_width - px(TEXT_LEFT_PAD) - indent_x + px(CHECKBOX_SIZE + CHECKBOX_GAP)
+        - px(RIGHT_MARGIN))
+    .max(px(MIN_COL_W))
+}
+
 #[derive(Clone, Copy, Debug)]
 pub(super) struct CellSlot {
     pub(super) text_left: Pixels,
@@ -74,9 +84,12 @@ impl SchemeEditor {
         })
     }
 
-    pub(super) fn table_content_width(&self, wrap_width: Pixels) -> Pixels {
-        (wrap_width - px(TEXT_LEFT_PAD) + px(CHECKBOX_SIZE + CHECKBOX_GAP) - px(RIGHT_MARGIN))
-            .max(px(MIN_COL_W))
+    pub(super) fn table_grid_left_content(&self, anchor_row: usize) -> Pixels {
+        grid_left_content_for_indent(self.row_indent_x(anchor_row))
+    }
+
+    pub(super) fn table_content_width(&self, anchor_row: usize, wrap_width: Pixels) -> Pixels {
+        table_content_width_for_indent(wrap_width, self.row_indent_x(anchor_row))
     }
 
     pub(super) fn build_table_layout(
@@ -187,7 +200,6 @@ impl SchemeEditor {
 
     pub(super) fn compute_cell_slots(&mut self) {
         self.cell_slots.clear();
-        let grid_left = grid_left_content();
         let mut i = 0;
         while i < self.rows.len() {
             if !self.rows[i].path.is_table_anchor() {
@@ -199,6 +211,7 @@ impl SchemeEditor {
                 i += 1;
                 continue;
             };
+            let grid_left = self.table_grid_left_content(anchor);
             let anchor_top = self.line_map.y_range(anchor..anchor + 1).start;
             let header_top = anchor_top + self.line_map.line_text_height(anchor) + px(GRID_TOP_GAP);
             let body_top = header_top + layout.header_h;
@@ -260,7 +273,7 @@ impl SchemeEditor {
         let layout = self.table_layouts.get(&anchor_row)?;
         let origin = self.content_to_window(
             point(
-                grid_left_content(),
+                self.table_grid_left_content(anchor_row),
                 self.line_map.y_range(anchor_row..anchor_row + 1).start
                     + self.line_map.line_text_height(anchor_row)
                     + px(GRID_TOP_GAP),
@@ -570,5 +583,25 @@ impl SchemeEditor {
             );
             let _ = line.paint(origin, px(CONTROL_BTN), TextAlign::Left, None, window, cx);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn indented_table_geometry_shifts_and_shrinks_with_anchor_indent() {
+        let wrap_width = px(720.0);
+        let indent = px(INDENT_WIDTH * 2.0);
+
+        assert_eq!(
+            grid_left_content_for_indent(indent),
+            grid_left_content() + indent
+        );
+        assert_eq!(
+            table_content_width_for_indent(wrap_width, indent),
+            table_content_width_for_indent(wrap_width, px(0.0)) - indent
+        );
     }
 }

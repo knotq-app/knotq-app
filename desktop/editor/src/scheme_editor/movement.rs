@@ -466,7 +466,7 @@ impl SchemeEditor {
         let Some(layout) = self.table_layouts.get(&anchor) else {
             return 0;
         };
-        let grid_left = super::table::grid_left_content();
+        let grid_left = self.table_grid_left_content(anchor);
         let local = prefer_x - grid_left;
         for c in 0..layout.col_w.len() {
             if local >= layout.col_x[c] && local < layout.col_x[c] + layout.col_w[c] {
