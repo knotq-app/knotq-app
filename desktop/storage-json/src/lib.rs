@@ -6,6 +6,7 @@ mod paths;
 mod schema;
 mod scheme_file;
 mod scheme_markdown;
+mod scheme_xml;
 pub mod secrets;
 mod settings;
 mod sync_state;

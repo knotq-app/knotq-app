@@ -2,8 +2,10 @@ use anyhow::{bail, Context, Result};
 use chrono::{DateTime, SecondsFormat, Utc};
 use knotq_model::{
     ExternalItemSource, ImageAssetFormat, ImageInline, Inline, Item, ItemId, ItemMarker,
-    OccurrenceId, OccurrenceState, Recurrence, Scheme, SchemeId,
+    OccurrenceId, OccurrenceState, Recurrence, SchemeId,
 };
+#[cfg(test)]
+use knotq_model::Scheme;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -29,6 +31,7 @@ enum StoredMedia {
     },
 }
 
+#[cfg(test)]
 impl From<&ImageInline> for StoredMedia {
     fn from(image: &ImageInline) -> Self {
         StoredMedia::Image {
@@ -57,6 +60,7 @@ impl From<StoredMedia> for ImageInline {
     }
 }
 
+#[cfg(test)]
 pub(crate) fn encode_scheme_file(scheme: &Scheme) -> Result<String> {
     let mut out = String::new();
     for item in &scheme.items {
@@ -77,6 +81,7 @@ pub(crate) fn decode_scheme_file(raw: &str, path: &Path, id: SchemeId) -> Result
     Ok(SchemeFile { id, items })
 }
 
+#[cfg(test)]
 fn encode_item(item: &Item) -> Result<String> {
     let indent = "  ".repeat(item.indent as usize);
     let checked = item.marker == ItemMarker::Checkbox && item.single_state().is_done();
@@ -98,6 +103,7 @@ fn encode_item(item: &Item) -> Result<String> {
     Ok(format!("{indent}{marker}{body}"))
 }
 
+#[cfg(test)]
 fn encode_item_attrs(
     item: &Item,
     checked_marker_represents_state: bool,
@@ -253,6 +259,7 @@ fn split_trailing_attrs(body: &str) -> Result<(&str, BTreeMap<String, String>)> 
     Ok((&body[..text_end], attrs))
 }
 
+#[cfg(test)]
 fn escape_text(text: &str) -> String {
     let mut out = text.replace('\\', "\\\\");
     if out.starts_with(ATTR_PREFIX) {
@@ -384,6 +391,7 @@ fn parse_attr_block(input: &str) -> Result<BTreeMap<String, String>> {
     Ok(attrs)
 }
 
+#[cfg(test)]
 fn format_attr_block(attrs: &[(&'static str, String)]) -> Result<String> {
     let mut out = String::from(ATTR_PREFIX);
     for (index, (key, value)) in attrs.iter().enumerate() {
@@ -398,15 +406,15 @@ fn format_attr_block(attrs: &[(&'static str, String)]) -> Result<String> {
     Ok(out)
 }
 
-fn encode_datetime(value: DateTime<Utc>) -> String {
+pub(crate) fn encode_datetime(value: DateTime<Utc>) -> String {
     value.to_rfc3339_opts(SecondsFormat::Secs, true)
 }
 
-fn parse_datetime(value: &str) -> Result<DateTime<Utc>> {
+pub(crate) fn parse_datetime(value: &str) -> Result<DateTime<Utc>> {
     Ok(DateTime::parse_from_rfc3339(value)?.with_timezone(&Utc))
 }
 
-fn single_rrule(repeats: &Recurrence) -> Option<&str> {
+pub(crate) fn single_rrule(repeats: &Recurrence) -> Option<&str> {
     if repeats.rrules.len() == 1
         && repeats.rdates.is_empty()
         && repeats.exdates.is_empty()
@@ -419,14 +427,16 @@ fn single_rrule(repeats: &Recurrence) -> Option<&str> {
     }
 }
 
-fn state_is_default(state: &[OccurrenceState]) -> bool {
+pub(crate) fn state_is_default(state: &[OccurrenceState]) -> bool {
     state.len() == 1 && state[0].occurrence == OccurrenceId::Single && state[0].state.is_default()
 }
 
+#[cfg(test)]
 fn state_is_single_done(state: &[OccurrenceState]) -> bool {
     state.len() == 1 && state[0].occurrence == OccurrenceId::Single && state[0].state.is_done()
 }
 
+#[cfg(test)]
 fn item_needs_stable_id(item: &Item, checked_marker_represents_state: bool) -> bool {
     let _ = (item, checked_marker_represents_state);
     true

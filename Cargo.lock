@@ -3255,6 +3255,7 @@ dependencies = [
  "knotq-model",
  "knotq-storage",
  "knotq-sync",
+ "quick-xml 0.39.4",
  "serde",
  "serde_json",
  "uuid",

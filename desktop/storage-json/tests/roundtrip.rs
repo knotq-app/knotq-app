@@ -122,24 +122,28 @@ fn save_workspace_splits_scheme_files_and_omits_empty_item_fields() {
         scheme_path,
         dir.join("schemes").join(format!("{scheme_id}.knotq"))
     );
-    let scheme_markdown = fs::read_to_string(scheme_path).unwrap();
-    assert!(scheme_markdown.starts_with("plain !knotq"));
-    assert!(scheme_markdown.contains("- [x] done !knotq"));
-    assert!(scheme_markdown.contains("image !knotq"));
-    assert!(!scheme_markdown.starts_with("!knotq{type=\"scheme\""));
-    assert!(!scheme_markdown.contains("\"items\""));
-    assert!(!scheme_markdown.contains("start="));
-    assert!(!scheme_markdown.contains("available="));
-    assert!(!scheme_markdown.contains("priority="));
-    assert!(scheme_markdown.contains("media="));
-    assert!(scheme_markdown.contains("external="));
-    assert!(scheme_markdown.contains("google"));
-    assert!(scheme_markdown.contains("png"));
-    assert_eq!(scheme_markdown.matches("id=").count(), 3);
-    assert!(scheme_markdown.contains(&format!("id=\"{plain_item_id}\"")));
-    assert!(scheme_markdown.contains(&format!("id=\"{done_item_id}\"")));
-    assert!(scheme_markdown.contains(&format!("id=\"{image_item_id}\"")));
-    assert!(scheme_markdown.contains("- [x] done"));
+    let scheme_xml = fs::read_to_string(scheme_path).unwrap();
+    assert!(scheme_xml.starts_with("<?xml"));
+    assert!(scheme_xml.contains(&format!("<scheme id=\"{scheme_id}\"")));
+    assert!(scheme_xml.contains("<text>plain</text>"));
+    assert!(scheme_xml.contains("<text>done</text>"));
+    assert!(scheme_xml.contains("<text>image</text>"));
+    // A done checkbox carries its done-ness in <state>, not in the marker text.
+    assert!(scheme_xml.contains("marker=\"checkbox\""));
+    assert!(scheme_xml.contains("<state>"));
+    // Empty single-valued fields are omitted as item attributes.
+    assert!(!scheme_xml.contains(" start=\""));
+    assert!(!scheme_xml.contains(" available=\""));
+    assert!(!scheme_xml.contains(" priority=\""));
+    // Inline image + external source.
+    assert!(scheme_xml.contains("<image asset="));
+    assert!(scheme_xml.contains("format=\"png\""));
+    assert!(scheme_xml.contains("width=\"320\""));
+    assert!(scheme_xml.contains("<external>"));
+    assert!(scheme_xml.contains("google"));
+    assert!(scheme_xml.contains(&format!("id=\"{plain_item_id}\"")));
+    assert!(scheme_xml.contains(&format!("id=\"{done_item_id}\"")));
+    assert!(scheme_xml.contains(&format!("id=\"{image_item_id}\"")));
 
     let loaded = load_workspace(&workspace_file).unwrap().unwrap();
     assert_eq!(loaded.id, workspace.id);

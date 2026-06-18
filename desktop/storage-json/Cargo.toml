@@ -13,6 +13,7 @@ knotq-history = { workspace = true }
 knotq-model = { workspace = true }
 knotq-storage = { workspace = true }
 knotq-sync = { workspace = true }
+quick-xml = "0.39"
 serde = { workspace = true }
 serde_json = { workspace = true }
 uuid = { workspace = true }

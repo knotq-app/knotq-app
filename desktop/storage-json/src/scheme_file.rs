@@ -12,7 +12,8 @@ use crate::{
     files::write_atomic,
     paths::schemes_dir,
     schema::{DailyQueueIndexEntry, SchemeIndex},
-    scheme_markdown::{decode_scheme_file, encode_scheme_file},
+    scheme_markdown::decode_scheme_file,
+    scheme_xml::{decode_scheme_xml, encode_scheme_xml},
 };
 
 const SCHEME_EXT: &str = "knotq";
@@ -51,9 +52,19 @@ pub(crate) fn read_existing_daily_queue_index(path: &Path) -> Result<Vec<DailyQu
     Ok(env.workspace.daily_queue)
 }
 
+/// Decode a scheme file, detecting its format. Files written by this version are
+/// XML; the markdown reader is kept only to migrate pre-XML files in place.
+fn decode_scheme_any(raw: &str, path: &Path, id: SchemeId) -> Result<SchemeFile> {
+    if raw.trim_start().starts_with("<?xml") {
+        decode_scheme_xml(raw, path, id)
+    } else {
+        decode_scheme_file(raw, path, id)
+    }
+}
+
 pub(crate) fn read_scheme_file(path: &Path, id: SchemeId) -> Result<SchemeFile> {
     let raw = fs::read_to_string(path).with_context(|| format!("read {}", path.display()))?;
-    decode_scheme_file(&raw, path, id)
+    decode_scheme_any(&raw, path, id)
 }
 
 pub(crate) fn read_daily_queue_file(
@@ -63,7 +74,7 @@ pub(crate) fn read_daily_queue_file(
 ) -> Result<SchemeFile> {
     let path = scheme_file_path(base_dir, id);
     let raw = fs::read_to_string(&path).with_context(|| format!("read {}", path.display()))?;
-    decode_scheme_file(&raw, &path, id)
+    decode_scheme_any(&raw, &path, id)
         .with_context(|| format!("read daily queue scheme for {date}"))
 }
 
@@ -78,8 +89,8 @@ pub(crate) fn write_scheme_file(
             scheme.id
         )
     })?;
-    let markdown = encode_scheme_file(scheme)?;
-    write_atomic(&path, markdown.as_bytes())
+    let xml = encode_scheme_xml(scheme)?;
+    write_atomic(&path, xml.as_bytes())
 }
 
 pub fn scheme_path_for_workspace(
@@ -130,11 +141,11 @@ pub(crate) fn write_daily_backup(base_dir: &Path, workspace_json: &str, workspac
         let Ok(Some(path)) = scheme_path_for_workspace(&backup_dir, workspace, scheme.id) else {
             continue;
         };
-        if let Ok(markdown) = encode_scheme_file(scheme) {
+        if let Ok(xml) = encode_scheme_xml(scheme) {
             if let Some(parent) = path.parent() {
                 let _ = fs::create_dir_all(parent);
             }
-            let _ = fs::write(path, markdown);
+            let _ = fs::write(path, xml);
         }
     }
 }
