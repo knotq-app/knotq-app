@@ -1,30 +1,182 @@
 use std::ops::Range;
 
-use knotq_model::{Item, ItemMarker};
+use knotq_model::{Inline, Item, ItemMarker, Table};
+
+/// Where a buffer row lives in the document tree. The editor keeps one flat
+/// text buffer so the ordinary text pipeline can edit table cells too.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub(super) enum RowKind {
+    #[default]
+    Doc,
+    TableAnchor,
+    Cell,
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub(super) struct RowPath {
+    pub(super) kind: RowKind,
+    /// Buffer index of the owning table's anchor row. Rebuilt on every
+    /// `build_buffer`, so it is valid only against the current row vector.
+    pub(super) anchor: usize,
+    pub(super) r: usize,
+    pub(super) c: usize,
+    pub(super) sub: usize,
+    pub(super) cell_lines: usize,
+}
+
+impl RowPath {
+    fn doc() -> Self {
+        Self::default()
+    }
+
+    fn anchor() -> Self {
+        Self {
+            kind: RowKind::TableAnchor,
+            ..Default::default()
+        }
+    }
+
+    fn cell(anchor: usize, r: usize, c: usize, sub: usize, cell_lines: usize) -> Self {
+        Self {
+            kind: RowKind::Cell,
+            anchor,
+            r,
+            c,
+            sub,
+            cell_lines,
+        }
+    }
+
+    pub(super) fn is_cell(&self) -> bool {
+        self.kind == RowKind::Cell
+    }
+
+    pub(super) fn is_doc(&self) -> bool {
+        self.kind == RowKind::Doc
+    }
+
+    pub(super) fn is_table_anchor(&self) -> bool {
+        self.kind == RowKind::TableAnchor
+    }
+
+    pub(super) fn is_first_in_cell(&self) -> bool {
+        self.kind == RowKind::Cell && self.sub == 0
+    }
+
+    pub(super) fn is_last_in_cell(&self) -> bool {
+        self.kind == RowKind::Cell && self.sub + 1 >= self.cell_lines
+    }
+}
 
 #[derive(Clone)]
 pub(super) struct EditorRow {
     pub(super) item: Item,
+    pub(super) path: RowPath,
+}
+
+impl EditorRow {
+    pub(super) fn doc(item: Item) -> Self {
+        Self {
+            item,
+            path: RowPath::doc(),
+        }
+    }
 }
 
 pub(super) fn build_buffer(items: &[Item]) -> (String, Vec<EditorRow>) {
-    let text = items
+    let mut rows = Vec::with_capacity(items.len());
+    for item in items {
+        if let Some(table) = item.table() {
+            let anchor = rows.len();
+            rows.push(EditorRow {
+                item: item.clone(),
+                path: RowPath::anchor(),
+            });
+            for (r, table_row) in table.rows.iter().enumerate() {
+                for (c, cell) in table_row.cells.iter().enumerate() {
+                    let cell_lines = cell.items.len().max(1);
+                    for (sub, sub_item) in cell.items.iter().enumerate() {
+                        rows.push(EditorRow {
+                            item: sub_item.clone(),
+                            path: RowPath::cell(anchor, r, c, sub, cell_lines),
+                        });
+                    }
+                }
+            }
+        } else {
+            rows.push(EditorRow::doc(item.clone()));
+        }
+    }
+    let text = rows
         .iter()
-        .map(|item| display_line(&item.text()))
+        .map(|row| display_line(&row.item.text()))
         .collect::<Vec<_>>()
         .join("\n");
-    let rows = items
-        .iter()
-        .cloned()
-        .map(|item| EditorRow { item })
-        .collect();
     (text, rows)
+}
+
+pub(super) fn reconstruct_top_level(rows: &[EditorRow]) -> Vec<Item> {
+    let mut out = Vec::new();
+    let mut i = 0;
+    while i < rows.len() {
+        match rows[i].path.kind {
+            RowKind::Doc => {
+                out.push(rows[i].item.clone());
+                i += 1;
+            }
+            RowKind::TableAnchor => {
+                let mut item = rows[i].item.clone();
+                let mut table = item.table().cloned().unwrap_or_else(|| Table::new(1, 1));
+                for table_row in &mut table.rows {
+                    for cell in &mut table_row.cells {
+                        cell.items.clear();
+                    }
+                }
+                i += 1;
+                while i < rows.len() && rows[i].path.is_cell() {
+                    let path = rows[i].path;
+                    if let Some(table_row) = table.rows.get_mut(path.r) {
+                        if let Some(cell) = table_row.cells.get_mut(path.c) {
+                            cell.items.push(rows[i].item.clone());
+                        }
+                    }
+                    i += 1;
+                }
+                table.normalize();
+                replace_or_append_table(&mut item, table);
+                out.push(item);
+            }
+            RowKind::Cell => {
+                // Preserve unexpected stray cell rows as plain document lines.
+                out.push(rows[i].item.clone());
+                i += 1;
+            }
+        }
+    }
+    out
+}
+
+fn replace_or_append_table(item: &mut Item, table: Table) {
+    if let Some(slot) = item
+        .content
+        .iter_mut()
+        .find(|inline| matches!(inline, Inline::Table(_)))
+    {
+        *slot = Inline::Table(table);
+    } else {
+        item.content.push(Inline::Table(table));
+    }
+}
+
+pub(super) fn rows_have_table(rows: &[EditorRow]) -> bool {
+    rows.iter().any(|row| row.path.is_table_anchor())
 }
 
 pub(super) fn same_rows(a: &[EditorRow], b: &[EditorRow]) -> bool {
     a.len() == b.len()
         && a.iter().zip(b).all(|(a, b)| {
             a.item.id == b.item.id
+                && a.path == b.path
                 && a.item.content == b.item.content
                 && a.item.marker == b.item.marker
                 && a.item.indent == b.item.indent
@@ -152,8 +304,8 @@ mod tests {
         let open = Item::new("task");
         let done = Item::new("task").done();
         assert!(!same_rows(
-            &[EditorRow { item: open }],
-            &[EditorRow { item: done.clone() }]
+            &[EditorRow::doc(open)],
+            &[EditorRow::doc(done.clone())]
         ));
         assert!(item_is_done(&done));
     }
@@ -166,8 +318,8 @@ mod tests {
         dated.marker = ItemMarker::Checkbox;
 
         assert!(!same_rows(
-            &[EditorRow { item: base }],
-            &[EditorRow { item: dated }]
+            &[EditorRow::doc(base)],
+            &[EditorRow::doc(dated)]
         ));
     }
 
@@ -183,8 +335,8 @@ mod tests {
         });
 
         assert!(!same_rows(
-            &[EditorRow { item: base }],
-            &[EditorRow { item: with_media }]
+            &[EditorRow::doc(base)],
+            &[EditorRow::doc(with_media)]
         ));
     }
 }

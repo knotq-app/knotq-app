@@ -315,7 +315,7 @@ fn numbered_marker_ordinals_reset_at_same_indent_boundaries() {
     fn row(marker: ItemMarker, indent: u8) -> EditorRow {
         let mut item = Item::new("row").with_indent(indent);
         item.marker = marker;
-        EditorRow { item }
+        EditorRow::doc(item)
     }
 
     let rows = vec![

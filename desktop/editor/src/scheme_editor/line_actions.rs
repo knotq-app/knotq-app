@@ -5,6 +5,15 @@ impl SchemeEditor {
         if self.read_only {
             return;
         }
+        if self
+            .rows
+            .get(self.selection.head.row)
+            .is_some_and(|row| row.path.is_cell())
+        {
+            self.cell_tab_nav(delta > 0, cx);
+            return;
+        }
+
         let (start_row, end_row) = self.selected_row_range();
         let mut commands = Vec::new();
 
@@ -106,15 +115,15 @@ impl SchemeEditor {
     }
 
     pub(super) fn date_anchor_for_row(&self, row: usize) -> Point<Pixels> {
-        let row_y = self.line_map.y_range(row..row + 1).start;
+        let pos = self.visual_point_for_location(TextLocation { row, col: 0 });
         let text_height = self.line_map.line_text_height(row);
         let bounds_origin = self
             .last_bounds
             .map(|bounds| point(bounds.left(), bounds.top()))
             .unwrap_or_else(|| point(px(0.0), px(0.0)));
         point(
-            bounds_origin.x + px(TEXT_LEFT_PAD) + self.row_layout_x(row) + self.first_text_x(row),
-            bounds_origin.y + px(self.top_pad) + row_y + text_height + px(ANNOTATION_HEIGHT + 3.0),
+            bounds_origin.x + px(TEXT_LEFT_PAD) + pos.x,
+            bounds_origin.y + px(self.top_pad) + pos.y + text_height + px(ANNOTATION_HEIGHT + 3.0),
         )
     }
 }

@@ -43,6 +43,7 @@ mod render;
 mod scrolling;
 mod selection;
 mod state;
+mod table;
 mod text_edit;
 mod utf16;
 
@@ -57,6 +58,7 @@ use markdown::*;
 use media::*;
 use navigation::*;
 use selection::TextSelection;
+use table::{CellSlot, TableControlHitbox, TableLayout};
 
 actions!(
     scheme_editor,
@@ -71,6 +73,7 @@ actions!(
         DeleteWord,
         Enter,
         IndentLine,
+        InsertTable,
         MoveDocumentEnd,
         MoveDocumentStart,
         MoveDown,
@@ -244,6 +247,9 @@ pub struct SchemeEditor {
     /// Tracks the last auto-bulletize conversion so backspace can undo it.
     /// Stores (row, original_text, original_marker) before the conversion.
     auto_bullet_undo: Option<(usize, String, ItemMarker)>,
+    table_layouts: HashMap<usize, TableLayout>,
+    cell_slots: HashMap<usize, CellSlot>,
+    table_control_hitboxes: Vec<TableControlHitbox>,
 }
 
 #[derive(Clone, Copy, Debug)]

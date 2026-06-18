@@ -8,6 +8,32 @@ impl SchemeEditor {
         self.replace_selection("\n", Some(window), cx);
     }
 
+    fn boundary_delete_blocked(&self, backward: bool) -> bool {
+        if !self.selection.is_empty() {
+            return false;
+        }
+        let head = self.selection.head;
+        let path = self
+            .rows
+            .get(head.row)
+            .map(|row| row.path)
+            .unwrap_or_default();
+
+        if backward {
+            if head.col != 0 || head.row == 0 {
+                return false;
+            }
+            let previous = self.rows[head.row - 1].path;
+            !same_region(previous, path)
+        } else {
+            if head.col != self.line_len(head.row) || head.row + 1 >= self.rows.len() {
+                return false;
+            }
+            let next = self.rows[head.row + 1].path;
+            !same_region(next, path)
+        }
+    }
+
     pub(super) fn clear_current_line_attributes_if_empty(
         &mut self,
         cx: &mut Context<Self>,
@@ -118,6 +144,10 @@ impl SchemeEditor {
             return false;
         }
 
+        if rows_have_table(&self.rows) {
+            return false;
+        }
+
         let row = self.current_row_index();
         if self.line_len(row) != 0 {
             return false;
@@ -176,6 +206,9 @@ impl SchemeEditor {
     }
 
     pub(super) fn backspace(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.boundary_delete_blocked(true) {
+            return;
+        }
         // Check auto-bulletize undo before anything else.
         if let Some((undo_row, original_text, original_marker)) = self.auto_bullet_undo.take() {
             if self.selection.is_empty() && self.selection.head.row == undo_row {
@@ -219,6 +252,9 @@ impl SchemeEditor {
     }
 
     pub(super) fn backspace_word(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.boundary_delete_blocked(true) {
+            return;
+        }
         if self.delete_preflight(true, window, cx) {
             return;
         }
@@ -228,6 +264,9 @@ impl SchemeEditor {
     }
 
     pub(super) fn backspace_line(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.boundary_delete_blocked(true) {
+            return;
+        }
         if self.delete_preflight(true, window, cx) {
             return;
         }
@@ -244,6 +283,9 @@ impl SchemeEditor {
     }
 
     pub(super) fn delete_forward(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.boundary_delete_blocked(false) {
+            return;
+        }
         if self.delete_preflight(false, window, cx) {
             return;
         }
@@ -256,6 +298,9 @@ impl SchemeEditor {
     }
 
     pub(super) fn delete_word(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.boundary_delete_blocked(false) {
+            return;
+        }
         if self.delete_preflight(false, window, cx) {
             return;
         }
@@ -265,6 +310,9 @@ impl SchemeEditor {
     }
 
     pub(super) fn delete_line(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.boundary_delete_blocked(false) {
+            return;
+        }
         if self.delete_preflight(false, window, cx) {
             return;
         }
@@ -278,5 +326,13 @@ impl SchemeEditor {
         } else {
             self.replace_byte_range(offset..line_end, "", Some(window), cx);
         }
+    }
+}
+
+fn same_region(a: RowPath, b: RowPath) -> bool {
+    if a.is_cell() && b.is_cell() {
+        a.anchor == b.anchor && a.r == b.r && a.c == b.c
+    } else {
+        a.is_doc() && b.is_doc()
     }
 }

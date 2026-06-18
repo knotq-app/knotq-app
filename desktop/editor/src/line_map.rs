@@ -17,6 +17,12 @@ pub struct SchemeItemLine {
     pub text: WrappedLine,
     pub annotation: Option<SchemeItemAnnotation>,
     pub media_height: Pixels,
+    /// Extra vertical space reserved below the row for block inlines such as
+    /// tables. The editor paints the block; the line map owns vertical flow.
+    pub block_height: Pixels,
+    /// Rows placed inside a table grid are positioned by explicit cell slots and
+    /// do not contribute to normal document height.
+    in_grid: bool,
     /// Number of synthetic, layout-only bytes prepended to `text` (e.g. the
     /// hanging-wrap prefix). These occupy visual space but map to buffer col 0.
     prefix_len: usize,
@@ -46,6 +52,8 @@ impl SchemeItemLine {
             text,
             annotation,
             media_height: px(0.0),
+            block_height: px(0.0),
+            in_grid: false,
             prefix_len: 0,
             collapsed: Vec::new(),
             buffer_len,
@@ -55,6 +63,16 @@ impl SchemeItemLine {
 
     pub fn with_media_height(mut self, media_height: Pixels) -> Self {
         self.media_height = media_height;
+        self
+    }
+
+    pub fn with_block_height(mut self, block_height: Pixels) -> Self {
+        self.block_height = block_height;
+        self
+    }
+
+    pub fn in_grid(mut self, in_grid: bool) -> Self {
+        self.in_grid = in_grid;
         self
     }
 
@@ -78,6 +96,9 @@ impl SchemeItemLine {
     }
 
     pub(crate) fn height(&self) -> Pixels {
+        if self.in_grid {
+            return px(0.0);
+        }
         self.text.size(self.line_height).height
             + self
                 .annotation
@@ -85,6 +106,7 @@ impl SchemeItemLine {
                 .map(|annotation| annotation.height)
                 .unwrap_or(px(0.0))
             + self.media_height
+            + self.block_height
     }
 
     fn text_height(&self) -> Pixels {
@@ -326,6 +348,13 @@ impl LineMap {
         self.lines
             .get(row)
             .and_then(|line| line.position_for_index(index))
+    }
+
+    pub fn closest_col(&self, row: usize, local: Point<Pixels>) -> usize {
+        self.lines
+            .get(row)
+            .map(|line| line.closest_index_for_position(local))
+            .unwrap_or(0)
     }
 
     pub fn wrapped_line_ranges(&self, row: usize) -> Vec<Range<usize>> {

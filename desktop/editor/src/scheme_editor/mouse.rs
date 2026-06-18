@@ -23,8 +23,50 @@ impl SchemeEditor {
         }
     }
 
+    pub(super) fn clamp_to_anchor_region(
+        &self,
+        anchor: TextLocation,
+        loc: TextLocation,
+    ) -> TextLocation {
+        if let Some((first, last)) = self.cell_line_span(anchor.row) {
+            if loc.row < first {
+                return TextLocation { row: first, col: 0 };
+            }
+            if loc.row > last {
+                return TextLocation {
+                    row: last,
+                    col: self.line_len(last),
+                };
+            }
+            return loc;
+        }
+
+        if self.rows.get(loc.row).is_some_and(|row| row.path.is_doc()) {
+            return loc;
+        }
+
+        let mut row = loc.row.min(self.rows.len().saturating_sub(1));
+        if loc.row > anchor.row {
+            while row > anchor.row && !self.rows.get(row).is_some_and(|row| row.path.is_doc()) {
+                row -= 1;
+            }
+        } else {
+            while row < anchor.row && !self.rows.get(row).is_some_and(|row| row.path.is_doc()) {
+                row += 1;
+            }
+        }
+
+        TextLocation {
+            row,
+            col: loc.col.min(self.line_len(row)),
+        }
+    }
+
     pub(super) fn update_mouse_selection_to_position(&mut self, position: Point<Pixels>) {
-        let loc = self.location_for_window_position(position);
+        let loc = self.clamp_to_anchor_region(
+            self.selection.anchor,
+            self.location_for_window_position(position),
+        );
         match self.mouse_selection_mode {
             Some(MouseSelectionMode::Word {
                 anchor_start,
@@ -93,6 +135,18 @@ impl SchemeEditor {
             return;
         }
         self.focus_handle.focus(window);
+
+        if event.button == MouseButton::Left {
+            if let Some(hitbox) = self.table_control_at(event.position) {
+                self.apply_table_control(hitbox, window, cx);
+                self.is_selecting = false;
+                self.mouse_selection_mode = None;
+                cx.stop_propagation();
+                cx.notify();
+                return;
+            }
+        }
+
         if event.button == MouseButton::Right {
             let loc = self.location_for_window_position(event.position);
             if let Some(row) = self.rows.get(loc.row) {
@@ -176,7 +230,7 @@ impl SchemeEditor {
         self.start_responding_to_mouse_movements(cx);
         let loc = self.location_for_window_position(event.position);
         if event.modifiers.shift {
-            self.selection.head = loc;
+            self.selection.head = self.clamp_to_anchor_region(self.selection.anchor, loc);
             self.mouse_selection_mode = Some(MouseSelectionMode::Character);
         } else if event.click_count == 2 {
             let range = self.select_word_at(loc);

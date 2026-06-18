@@ -30,7 +30,8 @@ impl SchemeEditor {
         }
         let offset = self.location_to_offset(self.selection.head);
         let prev = previous_char_boundary(&self.text, offset);
-        self.move_cursor_to(self.offset_to_location(prev), select, cx);
+        let target = self.clamp_horizontal(self.selection.head, self.offset_to_location(prev));
+        self.move_cursor_to(target, select, cx);
     }
 
     pub(super) fn move_right(&mut self, select: bool, cx: &mut Context<Self>) {
@@ -41,48 +42,40 @@ impl SchemeEditor {
         }
         let offset = self.location_to_offset(self.selection.head);
         let next = next_char_boundary(&self.text, offset);
-        self.move_cursor_to(self.offset_to_location(next), select, cx);
+        let target = self.clamp_horizontal(self.selection.head, self.offset_to_location(next));
+        self.move_cursor_to(target, select, cx);
     }
 
     pub(super) fn move_vertical(&mut self, delta: isize, select: bool, cx: &mut Context<Self>) {
-        if self.line_map.line_count() > 0 {
-            let current = self.visual_point_for_location(self.selection.head);
-            let current_row = self.selection.head.row.min(self.line_map.line_count() - 1);
-            let current_row_top = self.line_map.y_range(current_row..current_row + 1).start;
-            let local_y = current.y - current_row_top;
-            let target_row = (current_row as isize + delta)
-                .clamp(0, self.line_map.line_count().saturating_sub(1) as isize)
-                as usize;
-            let target_row_top = self.line_map.y_range(target_row..target_row + 1).start;
-            let target_text_height =
-                (self.line_map.line_text_height(target_row) - px(1.0)).max(px(0.0));
-            let target = point(current.x, target_row_top + local_y.min(target_text_height));
-            self.move_cursor_to(self.location_for_local_point(target), select, cx);
-        } else {
+        if self.line_map.line_count() == 0 {
             let row_count = self.render_line_count();
             let row = (self.selection.head.row as isize + delta)
                 .clamp(0, row_count.saturating_sub(1) as isize) as usize;
             let col = self.selection.head.col.min(self.line_len(row));
             self.move_cursor_to(TextLocation { row, col }, select, cx);
+            return;
         }
+
+        let target = self.vertical_target(self.selection.head, delta);
+        self.move_cursor_to(target, select, cx);
     }
 
     pub(super) fn move_word_left(&mut self, select: bool, cx: &mut Context<Self>) {
         let offset = self.location_to_offset(self.selection.head);
-        self.move_cursor_to(
+        let target = self.clamp_horizontal(
+            self.selection.head,
             self.offset_to_location(previous_word_offset(&self.text, offset)),
-            select,
-            cx,
         );
+        self.move_cursor_to(target, select, cx);
     }
 
     pub(super) fn move_word_right(&mut self, select: bool, cx: &mut Context<Self>) {
         let offset = self.location_to_offset(self.selection.head);
-        self.move_cursor_to(
+        let target = self.clamp_horizontal(
+            self.selection.head,
             self.offset_to_location(next_word_offset(&self.text, offset)),
-            select,
-            cx,
         );
+        self.move_cursor_to(target, select, cx);
     }
 
     pub(super) fn move_line_start(&mut self, select: bool, cx: &mut Context<Self>) {
@@ -109,20 +102,275 @@ impl SchemeEditor {
     }
 
     pub(super) fn move_document_start(&mut self, select: bool, cx: &mut Context<Self>) {
+        if let Some((first, _)) = self.cell_line_span(self.selection.head.row) {
+            self.move_cursor_to(TextLocation { row: first, col: 0 }, select, cx);
+            return;
+        }
         self.move_cursor_to(TextLocation { row: 0, col: 0 }, select, cx);
     }
 
     pub(super) fn move_document_end(&mut self, select: bool, cx: &mut Context<Self>) {
+        if let Some((_, last)) = self.cell_line_span(self.selection.head.row) {
+            self.move_cursor_to(
+                TextLocation {
+                    row: last,
+                    col: self.line_len(last),
+                },
+                select,
+                cx,
+            );
+            return;
+        }
         self.move_cursor_to(self.offset_to_location(self.text.len()), select, cx);
     }
 
     pub(super) fn select_all(&mut self, cx: &mut Context<Self>) {
-        self.selection = TextSelection {
-            anchor: TextLocation { row: 0, col: 0 },
-            head: self.offset_to_location(self.text.len()),
-        };
+        if let Some((first, last)) = self.cell_line_span(self.selection.head.row) {
+            self.selection = TextSelection {
+                anchor: TextLocation { row: first, col: 0 },
+                head: TextLocation {
+                    row: last,
+                    col: self.line_len(last),
+                },
+            };
+        } else {
+            self.selection = TextSelection {
+                anchor: TextLocation { row: 0, col: 0 },
+                head: self.offset_to_location(self.text.len()),
+            };
+        }
         self.reset_cursor_blink(cx);
         cx.notify();
+    }
+
+    pub(super) fn clamp_horizontal(&self, from: TextLocation, to: TextLocation) -> TextLocation {
+        if to.row == from.row {
+            return to;
+        }
+        let from_path = self
+            .rows
+            .get(from.row)
+            .map(|row| row.path)
+            .unwrap_or_default();
+        let to_path = self
+            .rows
+            .get(to.row)
+            .map(|row| row.path)
+            .unwrap_or_default();
+        let allowed = if from_path.is_cell() {
+            to_path.is_cell()
+                && to_path.anchor == from_path.anchor
+                && to_path.r == from_path.r
+                && to_path.c == from_path.c
+        } else {
+            to_path.is_doc()
+        };
+        if allowed {
+            to
+        } else if to.row < from.row {
+            TextLocation {
+                row: from.row,
+                col: 0,
+            }
+        } else {
+            TextLocation {
+                row: from.row,
+                col: self.line_len(from.row),
+            }
+        }
+    }
+
+    pub(super) fn cell_line_span(&self, row: usize) -> Option<(usize, usize)> {
+        let path = self.rows.get(row)?.path;
+        if !path.is_cell() {
+            return None;
+        }
+
+        let mut first = row;
+        while first > 0 {
+            let p = self.rows[first - 1].path;
+            if p.is_cell() && p.anchor == path.anchor && p.r == path.r && p.c == path.c {
+                first -= 1;
+            } else {
+                break;
+            }
+        }
+
+        let mut last = row;
+        while last + 1 < self.rows.len() {
+            let p = self.rows[last + 1].path;
+            if p.is_cell() && p.anchor == path.anchor && p.r == path.r && p.c == path.c {
+                last += 1;
+            } else {
+                break;
+            }
+        }
+
+        Some((first, last))
+    }
+
+    fn vertical_target(&self, cur: TextLocation, delta: isize) -> TextLocation {
+        let prefer_x = self.visual_point_for_location(cur).x;
+        let pick = |row: usize| TextLocation {
+            row,
+            col: self.col_at_x_in_row(row, prefer_x),
+        };
+        let n = self.rows.len();
+        let path = self
+            .rows
+            .get(cur.row)
+            .map(|row| row.path)
+            .unwrap_or_default();
+
+        if path.is_cell() {
+            if delta > 0 && !path.is_last_in_cell() {
+                return pick(cur.row + 1);
+            }
+            if delta < 0 && !path.is_first_in_cell() {
+                return pick(cur.row - 1);
+            }
+
+            let table_rows = self.table_nrows(path.anchor);
+            let target_table_row = path.r as isize + delta;
+            if target_table_row >= 0 && (target_table_row as usize) < table_rows {
+                let want_last = delta < 0;
+                if let Some(row) =
+                    self.find_cell_row(path.anchor, target_table_row as usize, path.c, want_last)
+                {
+                    return pick(row);
+                }
+            }
+
+            return self
+                .exit_table_row(path.anchor, delta)
+                .map(pick)
+                .unwrap_or(cur);
+        }
+
+        let next = cur.row as isize + delta;
+        if next < 0 || next as usize >= n {
+            return cur;
+        }
+        let next = next as usize;
+        let next_path = self.rows[next].path;
+        if next_path.is_table_anchor() || next_path.is_cell() {
+            let anchor = if next_path.is_table_anchor() {
+                next
+            } else {
+                next_path.anchor
+            };
+            let target_table_row = if delta > 0 {
+                0
+            } else {
+                self.table_nrows(anchor).saturating_sub(1)
+            };
+            let col = self.column_for_x(anchor, prefer_x);
+            let want_last = delta < 0;
+            if let Some(row) = self.find_cell_row(anchor, target_table_row, col, want_last) {
+                return pick(row);
+            }
+            return cur;
+        }
+
+        pick(next)
+    }
+
+    fn col_at_x_in_row(&self, row: usize, prefer_x: Pixels) -> usize {
+        let (base_x, _) = self.row_base_xy(row);
+        self.line_map
+            .closest_col(row, point(prefer_x - base_x, px(0.0)))
+            .min(self.line_len(row))
+    }
+
+    fn table_nrows(&self, anchor: usize) -> usize {
+        self.rows
+            .get(anchor)
+            .and_then(|row| row.item.table())
+            .map(|table| table.row_count())
+            .unwrap_or(0)
+    }
+
+    fn find_cell_row(&self, anchor: usize, r: usize, c: usize, want_last: bool) -> Option<usize> {
+        let mut found = None;
+        for (row, editor_row) in self.rows.iter().enumerate() {
+            let path = editor_row.path;
+            if path.is_cell() && path.anchor == anchor && path.r == r && path.c == c {
+                if want_last {
+                    found = Some(row);
+                } else {
+                    return Some(row);
+                }
+            }
+        }
+        found
+    }
+
+    fn exit_table_row(&self, anchor: usize, delta: isize) -> Option<usize> {
+        if delta < 0 {
+            (anchor > 0).then_some(anchor - 1)
+        } else {
+            let mut row = anchor + 1;
+            while row < self.rows.len() && self.rows[row].path.is_cell() {
+                row += 1;
+            }
+            (row < self.rows.len()).then_some(row)
+        }
+    }
+
+    pub(super) fn cell_tab_nav(&mut self, forward: bool, cx: &mut Context<Self>) {
+        let head = self.selection.head;
+        let Some(path) = self
+            .rows
+            .get(head.row)
+            .map(|row| row.path)
+            .filter(|path| path.is_cell())
+        else {
+            return;
+        };
+
+        let ncols = self
+            .rows
+            .get(path.anchor)
+            .and_then(|row| row.item.table())
+            .map(|table| table.column_count())
+            .unwrap_or(1);
+        let nrows = self.table_nrows(path.anchor);
+        let (mut r, mut c) = (path.r, path.c);
+        if forward {
+            if c + 1 < ncols {
+                c += 1;
+            } else if r + 1 < nrows {
+                c = 0;
+                r += 1;
+            } else {
+                return;
+            }
+        } else if c > 0 {
+            c -= 1;
+        } else if r > 0 {
+            c = ncols.saturating_sub(1);
+            r -= 1;
+        } else {
+            return;
+        }
+
+        if let Some(row) = self.find_cell_row(path.anchor, r, c, false) {
+            self.move_cursor_to(TextLocation { row, col: 0 }, false, cx);
+        }
+    }
+
+    fn column_for_x(&self, anchor: usize, prefer_x: Pixels) -> usize {
+        let Some(layout) = self.table_layouts.get(&anchor) else {
+            return 0;
+        };
+        let grid_left = super::table::grid_left_content();
+        let local = prefer_x - grid_left;
+        for c in 0..layout.col_w.len() {
+            if local >= layout.col_x[c] && local < layout.col_x[c] + layout.col_w[c] {
+                return c;
+            }
+        }
+        layout.col_w.len().saturating_sub(1)
     }
 
     pub(super) fn current_row_index(&self) -> usize {

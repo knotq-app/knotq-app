@@ -11,6 +11,7 @@ impl SchemeEditor {
         self.checkbox_hitboxes.clear();
         self.date_annotation_hitboxes.clear();
         self.repeat_annotation_hitboxes.clear();
+        self.table_control_hitboxes.clear();
         let theme = self.theme;
         let text_origin = point(
             bounds.left() + px(TEXT_LEFT_PAD),
@@ -22,8 +23,22 @@ impl SchemeEditor {
             .head
             .row
             .min(self.render_line_count().saturating_sub(1));
+        let active_in_cell = self
+            .rows
+            .get(active_row)
+            .is_some_and(|row| row.path.is_cell());
 
-        if focused {
+        for row in 0..self.line_map.line_count() {
+            if self
+                .rows
+                .get(row)
+                .is_some_and(|row| row.path.is_table_anchor())
+            {
+                self.paint_table_chrome(row, bounds, window, cx);
+            }
+        }
+
+        if focused && !active_in_cell {
             if let Some(row_bounds) = self.row_bounds(active_row, bounds) {
                 window.paint_quad(fill(row_bounds, token_rgba(theme.row_hover)));
             }
@@ -33,9 +48,16 @@ impl SchemeEditor {
         // sit *below* the selection — otherwise a selected highlight would paint
         // over the selection quad and the selection would be invisible on it.
         for row in 0..self.line_map.line_count() {
-            let y = self.line_map.y_range(row..row + 1).start;
+            if self
+                .rows
+                .get(row)
+                .is_some_and(|row| row.path.is_table_anchor())
+            {
+                continue;
+            }
+            let (base_x, base_y) = self.row_base_xy(row);
             if let Some(line) = self.line_map.line(row).cloned() {
-                let line_origin = point(text_origin.x + self.row_layout_x(row), text_origin.y + y);
+                let line_origin = point(text_origin.x + base_x, text_origin.y + base_y);
                 let line_height = self.line_map.row_line_height(row);
                 let _ = line.paint_background(
                     line_origin,
@@ -53,9 +75,13 @@ impl SchemeEditor {
         }
 
         for row in 0..self.line_map.line_count() {
-            let y = self.line_map.y_range(row..row + 1).start;
+            let path = self.rows.get(row).map(|row| row.path).unwrap_or_default();
+            if path.is_table_anchor() {
+                continue;
+            }
+            let (base_x, base_y) = self.row_base_xy(row);
             if let Some(line) = self.line_map.line(row).cloned() {
-                let line_origin = point(text_origin.x + self.row_layout_x(row), text_origin.y + y);
+                let line_origin = point(text_origin.x + base_x, text_origin.y + base_y);
                 let line_height = self.line_map.row_line_height(row);
                 let _ = line.paint(line_origin, line_height, TextAlign::Left, None, window, cx);
                 if let Some(editor_row) = self.rows.get(row).cloned() {
@@ -68,7 +94,9 @@ impl SchemeEditor {
                     {
                         self.paint_date_annotation(&editor_row, row, line_origin, window, cx);
                     }
-                    self.paint_item_media(&editor_row.item, row, line_origin, window, cx);
+                    if !path.is_cell() {
+                        self.paint_item_media(&editor_row.item, row, line_origin, window, cx);
+                    }
                 }
             }
         }

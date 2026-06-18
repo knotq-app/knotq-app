@@ -55,16 +55,37 @@ impl SchemeEditor {
             .unwrap_or(px(0.0))
     }
 
+    /// Content-space (relative to the text origin) base offset to add to a
+    /// line's intra-line position. Cell rows live inside their table slot;
+    /// ordinary rows keep the vertical flow position from the line map.
+    pub(super) fn row_base_xy(&self, row: usize) -> (Pixels, Pixels) {
+        if let Some(slot) = self.cell_slots.get(&row) {
+            (slot.text_left + self.row_layout_x(row), slot.top)
+        } else {
+            (
+                self.row_layout_x(row),
+                self.line_map.y_range(row..row + 1).start,
+            )
+        }
+    }
+
     pub(super) fn visual_point_for_location(&self, loc: TextLocation) -> Point<Pixels> {
         let loc = self.clamp_location(loc);
-        let mut point = self.line_map.point_for_location(loc);
-        point.x += self.row_layout_x(loc.row);
-        point
+        let intra = self
+            .line_map
+            .position_for_index(loc.row, loc.col)
+            .unwrap_or_else(|| point(px(0.0), px(0.0)));
+        let (base_x, base_y) = self.row_base_xy(loc.row);
+        point(base_x + intra.x, base_y + intra.y)
     }
 
     pub(super) fn location_for_local_point(&self, local: Point<Pixels>) -> TextLocation {
         if self.line_map.line_count() == 0 {
             return TextLocation { row: 0, col: 0 };
+        }
+
+        if let Some(loc) = self.cell_location_for_local_point(local) {
+            return loc;
         }
 
         let probe = self.line_map.location_for_point(point(px(0.0), local.y));
@@ -75,6 +96,37 @@ impl SchemeEditor {
         )
     }
 
+    fn cell_location_for_local_point(&self, local: Point<Pixels>) -> Option<TextLocation> {
+        let pad = px(super::table::CELL_PAD_X);
+        let mut best: Option<(Pixels, TextLocation)> = None;
+
+        for (&row, slot) in &self.cell_slots {
+            let height = self
+                .line_map
+                .line_text_height(row)
+                .max(self.line_map.row_line_height(row));
+            let col_left = slot.col_left;
+            let col_right = slot.col_left + slot.width + pad * 2.0;
+            if local.y < slot.top || local.y >= slot.top + height {
+                continue;
+            }
+            if local.x < col_left || local.x >= col_right {
+                continue;
+            }
+
+            let base_x = slot.text_left + self.row_layout_x(row);
+            let line_local = point(local.x - base_x, local.y - slot.top);
+            let col = self.line_map.closest_col(row, line_local);
+            let score = local.y - slot.top;
+            let loc = self.clamp_location(TextLocation { row, col });
+            if best.as_ref().is_none_or(|(current, _)| score < *current) {
+                best = Some((score, loc));
+            }
+        }
+
+        best.map(|(_, loc)| loc)
+    }
+
     pub(super) fn paint_selection(&self, text_origin: Point<Pixels>, window: &mut Window) {
         let (start, end) = self.selection.ordered();
         let selection_bg = text_selection_rgba(self.theme);
@@ -82,7 +134,7 @@ impl SchemeEditor {
             if row >= self.line_map.line_count() {
                 continue;
             }
-            let indent_x = self.row_layout_x(row);
+            let (base_x, base_y) = self.row_base_xy(row);
             let line_len = self.line_map.line_len(row);
             let selection_start = (if row == start.row { start.col } else { 0 }).min(line_len);
             let selection_end = (if row == end.row { end.col } else { line_len }).min(line_len);
@@ -93,10 +145,9 @@ impl SchemeEditor {
                         .position_for_index(row, selection_start)
                         .map(|pos| pos.x)
                         .unwrap_or(px(0.0));
-                    let y = self.line_map.y_range(row..row + 1).start;
                     window.paint_quad(fill(
                         Bounds::new(
-                            point(text_origin.x + indent_x + x, text_origin.y + y),
+                            point(text_origin.x + base_x + x, text_origin.y + base_y),
                             size(
                                 px(EMPTY_SELECTION_WIDTH),
                                 self.line_map.row_line_height(row),
@@ -111,7 +162,7 @@ impl SchemeEditor {
             if self.line_map.line(row).is_none() {
                 continue;
             }
-            let line_y = self.line_map.y_range(row..row + 1).start;
+            let line_y = base_y;
             let lh = self.line_map.row_line_height(row);
             for (wrap_ix, wrap_range) in self
                 .line_map
@@ -144,7 +195,7 @@ impl SchemeEditor {
                 let y = line_y + lh * wrap_ix as f32;
                 window.paint_quad(fill(
                     Bounds::new(
-                        point(text_origin.x + indent_x + x1, text_origin.y + y),
+                        point(text_origin.x + base_x + x1, text_origin.y + y),
                         size((x2 - x1).max(px(4.0)), lh),
                     ),
                     selection_bg,

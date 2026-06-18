@@ -73,6 +73,9 @@ impl gpui::Render for SchemeEditor {
             .on_action(
                 cx.listener(|this, _: &UnindentLine, _w, cx| this.indent_current_line(-1, cx)),
             )
+            .on_action(
+                cx.listener(|this, _: &InsertTable, window, cx| this.insert_table(window, cx)),
+            )
             .on_action(cx.listener(|this, _: &SelectAll, _w, cx| this.select_all(cx)))
             .on_action(cx.listener(|this, _: &Copy, _w, cx| this.copy(cx)))
             .on_action(cx.listener(|this, _: &Cut, window, cx| this.cut(Some(window), cx)))

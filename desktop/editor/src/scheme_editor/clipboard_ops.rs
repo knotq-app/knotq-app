@@ -222,30 +222,30 @@ impl SchemeEditor {
             return false;
         }
         let row = row.min(self.rows.len().saturating_sub(1));
+        let insert_col = if self.selection.head.row == row {
+            self.selection.head.col.min(self.line_len(row))
+        } else {
+            self.line_len(row)
+        };
+        let old_top = reconstruct_top_level(&self.rows);
         let Some(editor_row) = self.rows.get_mut(row) else {
             return false;
         };
-        editor_row
-            .item
-            .content
-            .extend(media.into_iter().map(Inline::Image));
-        let item = editor_row.item.clone();
-        let items: Vec<Item> = self.rows.iter().map(|row| row.item.clone()).collect();
-        let (text, rows) = build_buffer(&items);
+        insert_images_at_text_col(&mut editor_row.item, insert_col, media);
+
+        let new_top = reconstruct_top_level(&self.rows);
+        let (text, rows) = build_buffer(&new_top);
         self.text = text;
         self.rows = rows;
         self.refresh_layout_after_content_change(window);
         self.selection = TextSelection::collapsed(TextLocation {
             row,
-            col: self.line_len(row),
+            col: insert_col.min(self.line_len(row)),
         });
         self.marked_range = None;
         self.reset_cursor_blink(cx);
         self.scroll_to_cursor(cx);
-        cx.emit(EditorEvent::Command(Command::ReplaceItem {
-            scheme: self.scheme_id,
-            item,
-        }));
+        self.emit_top_level_diff(&old_top, &new_top, cx);
         cx.notify();
         true
     }
@@ -345,4 +345,47 @@ impl SchemeEditor {
             row + 1..row + 1
         }
     }
+}
+
+fn insert_images_at_text_col(item: &mut Item, col: usize, images: Vec<ImageInline>) {
+    let mut remaining = col;
+    let mut inserted = false;
+    let mut output = Vec::with_capacity(item.content.len() + images.len());
+    let mut image_inlines = images.into_iter().map(Inline::Image).collect::<Vec<_>>();
+
+    for inline in std::mem::take(&mut item.content) {
+        match inline {
+            Inline::Text { text } if !inserted => {
+                if remaining <= text.len() {
+                    let split = previous_char_boundary_at(&text, remaining);
+                    if split > 0 {
+                        output.push(Inline::text(text[..split].to_string()));
+                    }
+                    output.append(&mut image_inlines);
+                    if split < text.len() {
+                        output.push(Inline::text(text[split..].to_string()));
+                    }
+                    inserted = true;
+                } else {
+                    remaining = remaining.saturating_sub(text.len());
+                    output.push(Inline::text(text));
+                }
+            }
+            other => output.push(other),
+        }
+    }
+
+    if !inserted {
+        output.append(&mut image_inlines);
+    }
+
+    item.content = output;
+}
+
+fn previous_char_boundary_at(text: &str, mut offset: usize) -> usize {
+    offset = offset.min(text.len());
+    while offset > 0 && !text.is_char_boundary(offset) {
+        offset -= 1;
+    }
+    offset
 }

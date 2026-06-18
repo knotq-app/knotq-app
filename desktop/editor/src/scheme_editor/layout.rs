@@ -20,9 +20,13 @@ impl SchemeEditor {
     pub(super) fn relayout(&mut self, wrap_width: Pixels, window: &mut Window) {
         let font = window.text_style().font();
         let mut wrapped = Vec::new();
+        let mut new_table_layouts = HashMap::new();
         self.last_active_rows = self.active_preview_rows();
 
         for (row, line) in self.text_lines().into_iter().enumerate() {
+            let path = self.rows.get(row).map(|row| row.path).unwrap_or_default();
+            let is_anchor = path.is_table_anchor();
+            let is_cell = path.is_cell();
             let row_item = self.rows.get(row).map(|row| &row.item);
             let annotation = row_item.and_then(|item| {
                 annotation_text(item, self.time_format).map(|text| SchemeItemAnnotation {
@@ -35,26 +39,56 @@ impl SchemeEditor {
             } else {
                 HANGING_WRAP_PREFIX
             };
+
+            let block_height = if is_anchor {
+                row_item
+                    .and_then(|item| {
+                        self.build_table_layout(item, self.table_content_width(wrap_width), window)
+                    })
+                    .map(|layout| {
+                        let height = layout.block_height;
+                        new_table_layouts.insert(row, layout);
+                        height
+                    })
+                    .unwrap_or(px(0.0))
+            } else {
+                px(0.0)
+            };
+
             let row_layout_offset = px(HANGING_WRAP_X_OFFSET);
-            let text_width = (wrap_width
-                - px(TEXT_LEFT_PAD + 18.0)
-                - self.row_indent_x(row)
-                - row_layout_offset)
-                .max(px(120.0));
-            let media_height = row_item
-                .map(|item| self.media_stack_height(item, text_width))
-                .unwrap_or(px(0.0));
+            let text_width = if is_cell {
+                self.table_layouts_lookup(&new_table_layouts, path.anchor, path.c)
+                    - self.row_indent_x(row)
+                    - if hidden_prefix.is_empty() {
+                        px(0.0)
+                    } else {
+                        px(CHECKBOX_SIZE + CHECKBOX_GAP)
+                    }
+            } else {
+                wrap_width - px(TEXT_LEFT_PAD + 18.0) - self.row_indent_x(row) - row_layout_offset
+            }
+            .max(px(40.0));
+            let media_height = if is_cell || is_anchor {
+                px(0.0)
+            } else {
+                row_item
+                    .map(|item| self.media_stack_height(item, text_width))
+                    .unwrap_or(px(0.0))
+            };
             let is_done = row_item.map(item_is_done).unwrap_or(false);
             let color = if is_done {
                 token_hsla(self.theme.done_text)
             } else {
                 token_hsla(self.theme.text_primary)
             };
-            let (font_size, line_height) = if is_markdown_heading(&line) {
+            let (font_size, mut line_height) = if !is_cell && is_markdown_heading(&line) {
                 (HEADING_FONT_SIZE, HEADING_LINE_HEIGHT)
             } else {
                 (TEXT_FONT_SIZE, TEXT_LINE_HEIGHT)
             };
+            if is_anchor && line.is_empty() {
+                line_height = 2.0;
+            }
             let reveal = self.row_reveals_markers(row);
             let (shaped_text, runs, collapsed) =
                 self.build_line_layout(&font, hidden_prefix, &line, color, is_done, reveal);
@@ -75,12 +109,29 @@ impl SchemeEditor {
                     px(line_height),
                 )
                 .with_media_height(media_height)
+                .with_block_height(block_height)
+                .in_grid(is_cell)
                 .with_layout_mapping(hidden_prefix.len(), collapsed, line.len()),
             );
         }
 
         self.line_map.replace_lines(wrapped);
+        self.table_layouts = new_table_layouts;
+        self.compute_cell_slots();
         self.line_map_dirty = false;
+    }
+
+    fn table_layouts_lookup(
+        &self,
+        layouts: &HashMap<usize, super::table::TableLayout>,
+        anchor: usize,
+        col: usize,
+    ) -> Pixels {
+        layouts
+            .get(&anchor)
+            .and_then(|layout| layout.col_w.get(col).copied())
+            .map(|width| (width - px(super::table::CELL_PAD_X * 2.0)).max(px(16.0)))
+            .unwrap_or(px(120.0))
     }
 
     /// Builds the shaped string, its text runs, and the set of collapsed buffer

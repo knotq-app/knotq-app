@@ -60,6 +60,9 @@ impl SchemeEditor {
             auto_scroll_last_mouse_position: None,
             image_cache: HashMap::new(),
             auto_bullet_undo: None,
+            table_layouts: HashMap::new(),
+            cell_slots: HashMap::new(),
+            table_control_hitboxes: Vec::new(),
         }
     }
 

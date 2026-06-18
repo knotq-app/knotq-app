@@ -93,6 +93,11 @@ impl SchemeEditor {
             return;
         }
 
+        if rows_have_table(&self.rows) {
+            self.sync_tabled_buffer(new_text, cursor_after, window, cx);
+            return;
+        }
+
         let old_text_lines: Vec<String> = self
             .rows
             .iter()
@@ -201,8 +206,125 @@ impl SchemeEditor {
         cx.notify();
     }
 
+    fn sync_tabled_buffer(
+        &mut self,
+        new_text: String,
+        cursor_after: TextLocation,
+        window: Option<&mut Window>,
+        cx: &mut Context<Self>,
+    ) {
+        let old_rows = self.rows.clone();
+        let old_lines: Vec<String> = old_rows
+            .iter()
+            .map(|row| clean_line_text(&row.item.text()))
+            .collect();
+        let new_lines: Vec<String> = new_text.split('\n').map(clean_line_text).collect();
+        let old_refs: Vec<&str> = old_lines.iter().map(String::as_str).collect();
+        let new_refs: Vec<&str> = new_lines.iter().map(String::as_str).collect();
+        let change = line_change(&old_refs, &new_refs);
+
+        let ref_row = if change.prefix > 0 {
+            old_rows.get(change.prefix - 1)
+        } else {
+            old_rows.get(change.old_suffix)
+        };
+        let mut ref_path = ref_row.map(|row| row.path).unwrap_or_default();
+        if ref_path.is_table_anchor() {
+            ref_path = RowPath::default();
+        }
+        let ref_item = ref_row.map(|row| row.item.clone());
+
+        let mut new_rows = Vec::with_capacity(new_lines.len());
+        for (i, line) in new_lines.iter().enumerate().take(change.prefix) {
+            let mut row = old_rows[i].clone();
+            row.item.set_text(line.clone());
+            new_rows.push(row);
+        }
+
+        for line in new_lines.iter().take(change.new_suffix).skip(change.prefix) {
+            let style = ref_item.as_ref().map(InsertedLineStyle::from_item);
+            new_rows.push(EditorRow {
+                item: item_for_inserted_line(line.clone(), style),
+                path: ref_path,
+            });
+        }
+
+        for i in change.old_suffix..old_rows.len() {
+            let mut row = old_rows[i].clone();
+            let new_index = change.new_suffix + (i - change.old_suffix);
+            if let Some(line) = new_lines.get(new_index) {
+                row.item.set_text(line.clone());
+            }
+            new_rows.push(row);
+        }
+
+        let old_top = reconstruct_top_level(&old_rows);
+        let new_top = reconstruct_top_level(&new_rows);
+
+        let (text, rows) = build_buffer(&new_top);
+        self.text = text;
+        self.rows = rows;
+        self.refresh_layout_after_content_change(window);
+        self.selection = TextSelection::collapsed(self.clamp_location(cursor_after));
+        self.marked_range = None;
+        self.reset_cursor_blink(cx);
+        self.scroll_to_cursor(cx);
+        cx.notify();
+
+        self.emit_top_level_diff(&old_top, &new_top, cx);
+    }
+
+    pub(super) fn emit_top_level_diff(
+        &mut self,
+        old: &[Item],
+        new: &[Item],
+        cx: &mut Context<Self>,
+    ) {
+        use std::collections::{HashMap, HashSet};
+
+        let new_ids: HashSet<ItemId> = new.iter().map(|item| item.id).collect();
+        let old_by_id: HashMap<ItemId, &Item> = old.iter().map(|item| (item.id, item)).collect();
+        let mut commands = Vec::new();
+
+        for item in old {
+            if !new_ids.contains(&item.id) {
+                commands.push(Command::DeleteItem {
+                    scheme: self.scheme_id,
+                    item: item.id,
+                });
+            }
+        }
+
+        for (position, item) in new.iter().enumerate() {
+            match old_by_id.get(&item.id) {
+                Some(previous) => {
+                    if **previous != *item {
+                        commands.push(Command::ReplaceItem {
+                            scheme: self.scheme_id,
+                            item: item.clone(),
+                        });
+                    }
+                }
+                None => {
+                    commands.push(Command::InsertItem {
+                        scheme: self.scheme_id,
+                        position,
+                        item: item.clone(),
+                    });
+                }
+            }
+        }
+
+        if let Some(command) = Command::from_vec(commands) {
+            cx.emit(EditorEvent::Command(command));
+        }
+    }
+
     fn try_auto_bulletize(&mut self, cx: &mut Context<Self>) {
         if self.read_only {
+            return;
+        }
+        if rows_have_table(&self.rows) {
             return;
         }
         // Only act when cursor is collapsed (no selection).
