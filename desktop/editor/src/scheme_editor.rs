@@ -186,6 +186,12 @@ pub enum EditorEvent {
     SelectionChanged {
         scheme_id: SchemeId,
     },
+    /// A transient message for the user (e.g. an image drop/paste that was
+    /// rejected). The host surfaces this however it shows notices.
+    Notice {
+        title: String,
+        message: String,
+    },
 }
 
 impl EventEmitter<EditorEvent> for SchemeEditor {}

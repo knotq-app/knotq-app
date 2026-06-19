@@ -6,7 +6,7 @@
 
 use std::collections::HashMap;
 
-use gpui::{Hsla, WrappedLine};
+use gpui::{Corners, Hsla, WrappedLine};
 use knotq_model::Table;
 
 use super::*;
@@ -75,11 +75,9 @@ pub(super) struct TableControlHitbox {
 
 impl SchemeEditor {
     pub(super) fn table_header_text_color(&self) -> Hsla {
-        token_hsla(if self.theme.is_dark {
-            self.theme.text_soft
-        } else {
-            self.theme.text_muted
-        })
+        // `text_soft` (vs the fainter `text_muted`) keeps column headers legible
+        // in light themes; the semibold weight applied in layout does the rest.
+        token_hsla(self.theme.text_soft)
     }
 
     pub(super) fn table_grid_left_content(&self, anchor_row: usize) -> Pixels {
@@ -378,9 +376,25 @@ impl SchemeEditor {
             border,
             BorderStyle::default(),
         ));
-        window.paint_quad(fill(
-            Bounds::new(origin, size(grid_w, layout.header_h)),
+        // Inset the header fill inside the frame's 1px border and round only its
+        // top corners so it follows the frame's rounded top instead of leaving
+        // square nubs over the corners.
+        let inset = px(1.0);
+        window.paint_quad(quad(
+            Bounds::new(
+                point(origin.x + inset, origin.y + inset),
+                size(grid_w - inset * 2.0, layout.header_h - inset),
+            ),
+            Corners {
+                top_left: px(6.0),
+                top_right: px(6.0),
+                bottom_left: px(0.0),
+                bottom_right: px(0.0),
+            },
             header_bg,
+            px(0.0),
+            border,
+            BorderStyle::default(),
         ));
 
         for c in 1..layout.col_w.len() {
@@ -396,12 +410,18 @@ impl SchemeEditor {
             Bounds::new(point(origin.x, y), size(grid_w, px(1.0))),
             token_hsla(theme.border_main),
         ));
-        for height in &layout.body_band_h {
+        // Separators sit *between* body rows; the final row's bottom edge is the
+        // frame border itself, so drawing it here would double the line and poke
+        // past the rounded bottom corners.
+        let last_band = layout.body_band_h.len().saturating_sub(1);
+        for (i, height) in layout.body_band_h.iter().enumerate() {
             y += *height;
-            window.paint_quad(fill(
-                Bounds::new(point(origin.x, y), size(grid_w, px(1.0))),
-                border,
-            ));
+            if i < last_band {
+                window.paint_quad(fill(
+                    Bounds::new(point(origin.x, y), size(grid_w, px(1.0))),
+                    border,
+                ));
+            }
         }
 
         self.paint_table_controls(anchor_row, origin, grid_w, grid_h, &layout, window, cx);

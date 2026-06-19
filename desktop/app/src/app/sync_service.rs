@@ -351,8 +351,13 @@ async fn run_sync_once(weak: &gpui::WeakEntity<KnotQApp>, cx: &mut gpui::AsyncAp
                     app.service_bus.signal_timeline();
                 }
                 if media_downloaded {
+                    // Drop cached load failures so freshly downloaded assets are
+                    // re-read on the repaint below instead of staying blank.
                     if let Some((_, editor)) = app.scheme_editor.clone() {
-                        editor.update(cx, |_, cx| cx.notify());
+                        editor.update(cx, |editor, cx| {
+                            editor.forget_missing_images();
+                            cx.notify();
+                        });
                     }
                     for editor in app
                         .daily_queue_editors
@@ -360,7 +365,10 @@ async fn run_sync_once(weak: &gpui::WeakEntity<KnotQApp>, cx: &mut gpui::AsyncAp
                         .cloned()
                         .collect::<Vec<_>>()
                     {
-                        editor.update(cx, |_, cx| cx.notify());
+                        editor.update(cx, |editor, cx| {
+                            editor.forget_missing_images();
+                            cx.notify();
+                        });
                     }
                     app.service_bus.signal_timeline();
                 }

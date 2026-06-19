@@ -435,10 +435,17 @@ impl SchemeEditor {
             return cached.clone();
         }
 
+        // Cache the result either way: a missing asset stays `None` so we don't
+        // hit the disk again on every repaint.
         let image = load_image_for_media(media);
-        if image.is_some() {
-            self.image_cache.insert(media.asset, image.clone());
-        }
+        self.image_cache.insert(media.asset, image.clone());
         image
+    }
+
+    /// Forget cached image-load failures so assets that have since appeared on
+    /// disk (e.g. downloaded by sync) are retried on the next paint. Successful
+    /// loads stay cached because assets are immutable (keyed by a fresh UUID).
+    pub fn forget_missing_images(&mut self) {
+        self.image_cache.retain(|_, image| image.is_some());
     }
 }

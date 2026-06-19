@@ -110,17 +110,18 @@ impl SchemeEditor {
             return false;
         };
         let path = current.path;
-        // A whole-line block (image/table) is atomic: a collapsed-cursor delete at
-        // its edge would delete the object, and merging an adjacent text line into
-        // it would silently eat that text. Both are blocked — remove a block by
-        // selecting it instead. (`!is_cell` keeps this to document-level blocks;
-        // inside a table cell, editing is ordinary.)
+        // A whole-line block (image/table) is atomic. A collapsed-cursor delete at
+        // its edge is handled earlier by `delete_block_object_at_caret`, which
+        // removes the block and leaves an empty text line; what stays blocked here
+        // is merging an adjacent *text* line into a block, which would silently eat
+        // that text. (`!is_cell` keeps this to document-level blocks; inside a
+        // table cell, editing is ordinary.)
         let current_is_block = !path.is_cell() && item_has_block_object(&current.item);
 
         if backward {
             if head.col != 0 {
                 // The only other caret position on a block line is after the
-                // object, where backspace would delete it.
+                // object; that backspace is handled by the caret deletion above.
                 return current_is_block;
             }
             if head.row == 0 {
@@ -421,6 +422,9 @@ impl SchemeEditor {
         if self.merge_adjacent_block_if_boundary(true, window, cx) {
             return;
         }
+        if self.delete_block_object_at_caret(true, window, cx) {
+            return;
+        }
         if self.boundary_delete_blocked(true) {
             return;
         }
@@ -470,6 +474,9 @@ impl SchemeEditor {
         if self.merge_adjacent_block_if_boundary(true, window, cx) {
             return;
         }
+        if self.delete_block_object_at_caret(true, window, cx) {
+            return;
+        }
         if self.boundary_delete_blocked(true) {
             return;
         }
@@ -483,6 +490,9 @@ impl SchemeEditor {
 
     pub(super) fn backspace_line(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.merge_adjacent_block_if_boundary(true, window, cx) {
+            return;
+        }
+        if self.delete_block_object_at_caret(true, window, cx) {
             return;
         }
         if self.boundary_delete_blocked(true) {
@@ -507,6 +517,9 @@ impl SchemeEditor {
         if self.merge_adjacent_block_if_boundary(false, window, cx) {
             return;
         }
+        if self.delete_block_object_at_caret(false, window, cx) {
+            return;
+        }
         if self.boundary_delete_blocked(false) {
             return;
         }
@@ -525,6 +538,9 @@ impl SchemeEditor {
         if self.merge_adjacent_block_if_boundary(false, window, cx) {
             return;
         }
+        if self.delete_block_object_at_caret(false, window, cx) {
+            return;
+        }
         if self.boundary_delete_blocked(false) {
             return;
         }
@@ -538,6 +554,9 @@ impl SchemeEditor {
 
     pub(super) fn delete_line(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.merge_adjacent_block_if_boundary(false, window, cx) {
+            return;
+        }
+        if self.delete_block_object_at_caret(false, window, cx) {
             return;
         }
         if self.boundary_delete_blocked(false) {
@@ -615,6 +634,43 @@ impl SchemeEditor {
             .enumerate()
             .find(|(_, object)| col <= object.start)
             .map(|(index, object)| (object, index))
+    }
+
+    /// A collapsed-caret delete sitting at the edge of a whole-line block
+    /// (image/table) removes the block, leaving an empty text line in its place
+    /// (the line keeps its identity/marker/dates). Backspace deletes the block
+    /// just before the caret; forward-delete the block just after it.
+    fn delete_block_object_at_caret(
+        &mut self,
+        prefer_backward: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        if self.read_only || !self.selection.is_empty() {
+            return false;
+        }
+        let head = self.selection.head;
+        let Some(current) = self.rows.get(head.row) else {
+            return false;
+        };
+        // Only document-level blocks are atomic this way; inside a table cell,
+        // editing is ordinary text.
+        if current.path.is_cell() || !item_has_block_object(&current.item) {
+            return false;
+        }
+        let col = head.col.min(self.line_len(head.row));
+        let Some(line) = self
+            .line_range(head.row)
+            .and_then(|range| self.text.get(range))
+        else {
+            return false;
+        };
+        let Some((object, block_index)) =
+            block_object_adjacent_to_caret(line, col, prefer_backward)
+        else {
+            return false;
+        };
+        self.delete_block_object_from_row(head.row, block_index, object.start, window, cx)
     }
 
     fn merge_adjacent_block_if_boundary(
@@ -754,6 +810,59 @@ mod tests {
         assert!(is_empty_doc_line_adjacent_to_block(&rows, 0, 0));
         assert!(!is_empty_doc_line_adjacent_to_block(&rows, 0, 1));
     }
+
+    #[test]
+    fn caret_after_block_targets_object_for_backspace() {
+        let line = TABLE_OBJECT_CHAR.to_string();
+        assert_eq!(
+            block_object_adjacent_to_caret(&line, TABLE_OBJECT_LEN, true),
+            Some((0..TABLE_OBJECT_LEN, 0))
+        );
+        // Caret before the object is not a backspace target.
+        assert_eq!(block_object_adjacent_to_caret(&line, 0, true), None);
+    }
+
+    #[test]
+    fn caret_before_block_targets_object_for_forward_delete() {
+        let line = TABLE_OBJECT_CHAR.to_string();
+        assert_eq!(
+            block_object_adjacent_to_caret(&line, 0, false),
+            Some((0..TABLE_OBJECT_LEN, 0))
+        );
+        // Caret after the object is not a forward-delete target.
+        assert_eq!(
+            block_object_adjacent_to_caret(&line, TABLE_OBJECT_LEN, false),
+            None
+        );
+    }
+
+    #[test]
+    fn caret_in_plain_text_has_no_block_object() {
+        assert_eq!(block_object_adjacent_to_caret("hello", 5, true), None);
+        assert_eq!(block_object_adjacent_to_caret("hello", 0, false), None);
+    }
+}
+
+/// The block object a collapsed-caret delete at `col` would remove: the one
+/// ending at `col` for a backward delete (caret just after it) or starting at
+/// `col` for a forward delete (caret just before it). Returns the object's byte
+/// range and its index among the line's block objects.
+fn block_object_adjacent_to_caret(
+    line: &str,
+    col: usize,
+    backward: bool,
+) -> Option<(Range<usize>, usize)> {
+    block_object_ranges(line)
+        .into_iter()
+        .enumerate()
+        .find(|(_, object)| {
+            if backward {
+                object.end == col
+            } else {
+                object.start == col
+            }
+        })
+        .map(|(index, object)| (object, index))
 }
 
 fn same_region(a: RowPath, b: RowPath) -> bool {

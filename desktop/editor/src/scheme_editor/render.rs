@@ -133,11 +133,11 @@ impl gpui::Render for SchemeEditor {
             .on_mouse_down(MouseButton::Right, cx.listener(SchemeEditor::on_mouse_down))
             .on_mouse_move(cx.listener(SchemeEditor::on_mouse_move))
             .on_mouse_up(MouseButton::Left, cx.listener(SchemeEditor::on_mouse_up))
-            .can_drop(|dragged, _window, _cx| {
-                dragged
-                    .downcast_ref::<ExternalPaths>()
-                    .is_some_and(external_paths_have_supported_image)
-            })
+            // Accept any external file drop so the drop handler can report why a
+            // file couldn't be added (unsupported format, too large) rather than
+            // silently doing nothing — macOS already shows the copy cursor for
+            // any file regardless of this predicate.
+            .can_drop(|dragged, _window, _cx| dragged.downcast_ref::<ExternalPaths>().is_some())
             .on_drop(cx.listener(|this, paths: &ExternalPaths, window, cx| {
                 let position = window.mouse_position();
                 this.drop_image_paths(paths, position, Some(window), cx);

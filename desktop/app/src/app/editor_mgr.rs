@@ -84,6 +84,17 @@ impl KnotQApp {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        // A notice (e.g. a rejected image) is always worth showing, regardless
+        // of which editor raised it.
+        if let EditorEvent::Notice { title, message } = event.clone() {
+            self.notice_modal = Some(super::NoticeModal {
+                title,
+                message,
+                button_label: "OK".to_string(),
+            });
+            cx.notify();
+            return;
+        }
         if !self.editor_event_is_from_active_view(editor) {
             return;
         }
@@ -152,6 +163,7 @@ impl KnotQApp {
                 }
                 cx.notify();
             }
+            EditorEvent::Notice { .. } => {}
         }
     }
 

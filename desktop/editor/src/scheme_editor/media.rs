@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 use crate::assets::image_asset_path;
 use gpui::{
-    px, size, ClipboardEntry, ClipboardItem, ExternalPaths, Image, ImageFormat as GpuiImageFormat,
+    px, size, ClipboardEntry, ClipboardItem, Image, ImageFormat as GpuiImageFormat,
     Pixels,
 };
 use image::GenericImageView;
@@ -13,7 +13,19 @@ use uuid::Uuid;
 
 use super::{IMAGE_FALLBACK_HEIGHT, IMAGE_FALLBACK_WIDTH, IMAGE_MAX_HEIGHT};
 
-const MAX_IMAGE_ASSET_BYTES: usize = 3 * 1024 * 1024;
+pub(super) const MAX_IMAGE_ASSET_BYTES: usize = 3 * 1024 * 1024;
+
+/// Why an image couldn't be added, so the host can tell the user instead of
+/// failing silently.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(super) enum MediaError {
+    /// The format isn't one we can store/render.
+    UnsupportedFormat,
+    /// The source bytes exceed [`MAX_IMAGE_ASSET_BYTES`].
+    TooLarge { bytes: usize },
+    /// Reading the source file or writing the asset failed.
+    IoFailed,
+}
 
 pub(super) fn clipboard_image(item: &ClipboardItem) -> Option<&Image> {
     item.entries().iter().find_map(|entry| match entry {
@@ -22,74 +34,94 @@ pub(super) fn clipboard_image(item: &ClipboardItem) -> Option<&Image> {
     })
 }
 
-pub(super) fn persist_clipboard_image(image: &Image) -> Option<ImageInline> {
-    let format = image_asset_format(image.format())?;
-    if image.bytes().len() > MAX_IMAGE_ASSET_BYTES {
-        eprintln!(
-            "image paste rejected: {} bytes exceeds {} byte sync limit",
-            image.bytes().len(),
-            MAX_IMAGE_ASSET_BYTES
-        );
-        return None;
-    }
-    let asset = Uuid::new_v4();
-    let path = image_asset_path(asset, format.extension());
-    if let Some(parent) = path.parent() {
-        if let Err(err) = fs::create_dir_all(parent) {
-            eprintln!("image paste failed to create {}: {err}", parent.display());
-            return None;
-        }
-    }
-    if let Err(err) = fs::write(&path, image.bytes()) {
-        eprintln!("image paste failed to write {}: {err}", path.display());
-        return None;
-    }
-    let (width, height) = image_dimensions(format, image.bytes());
-    Some(ImageInline {
-        asset,
-        format,
-        width,
-        height,
-    })
+pub(super) fn persist_clipboard_image(image: &Image) -> Result<ImageInline, MediaError> {
+    let Some(format) = image_asset_format(image.format()) else {
+        return Err(MediaError::UnsupportedFormat);
+    };
+    persist_image_bytes(format, image.bytes())
 }
 
-pub(super) fn external_paths_have_supported_image(paths: &ExternalPaths) -> bool {
-    paths
-        .paths()
-        .iter()
-        .any(|path| image_asset_format_from_path(path).is_some())
+pub(super) fn persist_image_file(path: &Path) -> Result<ImageInline, MediaError> {
+    let Some(format) = image_asset_format_from_path(path) else {
+        return Err(MediaError::UnsupportedFormat);
+    };
+    let bytes = fs::read(path).map_err(|err| {
+        eprintln!("image drop failed to read {}: {err}", path.display());
+        MediaError::IoFailed
+    })?;
+    persist_image_bytes(format, &bytes)
 }
 
-pub(super) fn persist_image_file(path: &Path) -> Option<ImageInline> {
-    let format = image_asset_format_from_path(path)?;
-    let bytes = fs::read(path).ok()?;
+fn persist_image_bytes(format: ImageAssetFormat, bytes: &[u8]) -> Result<ImageInline, MediaError> {
     if bytes.len() > MAX_IMAGE_ASSET_BYTES {
-        eprintln!(
-            "image drop rejected: {} bytes exceeds {} byte sync limit",
-            bytes.len(),
-            MAX_IMAGE_ASSET_BYTES
-        );
-        return None;
+        return Err(MediaError::TooLarge { bytes: bytes.len() });
     }
     let asset = Uuid::new_v4();
     let out_path = image_asset_path(asset, format.extension());
     if let Some(parent) = out_path.parent() {
         if let Err(err) = fs::create_dir_all(parent) {
-            eprintln!("image drop failed to create {}: {err}", parent.display());
-            return None;
+            eprintln!("image save failed to create {}: {err}", parent.display());
+            return Err(MediaError::IoFailed);
         }
     }
-    if let Err(err) = fs::write(&out_path, &bytes) {
-        eprintln!("image drop failed to write {}: {err}", out_path.display());
-        return None;
+    if let Err(err) = fs::write(&out_path, bytes) {
+        eprintln!("image save failed to write {}: {err}", out_path.display());
+        return Err(MediaError::IoFailed);
     }
-    let (width, height) = image_dimensions(format, &bytes);
-    Some(ImageInline {
+    let (width, height) = image_dimensions(format, bytes);
+    Ok(ImageInline {
         asset,
         format,
         width,
         height,
     })
+}
+
+/// A user-facing explanation for one or more rejected images, paired with the
+/// source file name when known (clipboard pastes have none).
+pub(super) fn media_rejection_message(rejections: &[(Option<String>, MediaError)]) -> String {
+    if let [(name, error)] = rejections {
+        return single_media_rejection_message(name.as_deref(), error);
+    }
+    let lines = rejections
+        .iter()
+        .map(|(name, error)| {
+            let label = name.as_deref().unwrap_or("Image");
+            format!("\u{2022} {label}: {}", short_media_reason(error))
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    format!("{} images couldn't be added:\n{lines}", rejections.len())
+}
+
+fn single_media_rejection_message(name: Option<&str>, error: &MediaError) -> String {
+    let subject = match name {
+        Some(name) => format!("'{name}'"),
+        None => "That image".to_string(),
+    };
+    match error {
+        MediaError::TooLarge { bytes } => format!(
+            "{subject} is {} - images must be under {} to be added.",
+            megabytes(*bytes),
+            megabytes(MAX_IMAGE_ASSET_BYTES)
+        ),
+        MediaError::UnsupportedFormat => format!("{subject} isn't a supported image format."),
+        MediaError::IoFailed => format!("{subject} couldn't be saved."),
+    }
+}
+
+fn short_media_reason(error: &MediaError) -> String {
+    match error {
+        MediaError::TooLarge { bytes } => {
+            format!("{} (limit {})", megabytes(*bytes), megabytes(MAX_IMAGE_ASSET_BYTES))
+        }
+        MediaError::UnsupportedFormat => "unsupported format".to_string(),
+        MediaError::IoFailed => "couldn't be saved".to_string(),
+    }
+}
+
+fn megabytes(bytes: usize) -> String {
+    format!("{:.1} MB", bytes as f64 / (1024.0 * 1024.0))
 }
 
 pub(super) fn gpui_image_format(format: ImageAssetFormat) -> GpuiImageFormat {

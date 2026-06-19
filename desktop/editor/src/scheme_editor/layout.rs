@@ -19,6 +19,13 @@ impl SchemeEditor {
 
     pub(super) fn relayout(&mut self, wrap_width: Pixels, window: &mut Window) {
         let font = window.text_style().font();
+        // Column headers render in a semibold weight so they stand out from the
+        // body cells beyond just the (muted) header text color.
+        let header_font = {
+            let mut header_font = font.clone();
+            header_font.weight = gpui::FontWeight::SEMIBOLD;
+            header_font
+        };
         let mut wrapped = Vec::new();
         let mut new_table_layouts = HashMap::new();
         self.last_active_rows = self.active_preview_rows();
@@ -121,8 +128,13 @@ impl SchemeEditor {
             });
             let extra_collapsed = suffix_range.iter().cloned().collect::<Vec<_>>();
             let reveal = self.row_reveals_markers(row);
+            let line_font = if path.is_header_cell() {
+                &header_font
+            } else {
+                &font
+            };
             let (shaped_text, runs, collapsed) = self.build_line_layout(
-                &font,
+                line_font,
                 hidden_prefix,
                 &line,
                 color,

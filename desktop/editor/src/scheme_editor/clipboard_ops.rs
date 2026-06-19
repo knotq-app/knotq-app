@@ -19,16 +19,16 @@ impl SchemeEditor {
                     Ok(Ok(Some(paths))) => paths,
                     _ => return,
                 };
-                let media = paths
-                    .iter()
-                    .filter_map(|path| persist_image_file(path))
-                    .collect::<Vec<_>>();
-                if media.is_empty() {
+                let (media, rejections) = persist_image_files(&paths);
+                if media.is_empty() && rejections.is_empty() {
                     return;
                 }
                 let _ = editor.update(cx, |editor, cx| {
-                    let row = editor.current_row_index();
-                    editor.append_media_to_row(row, media, None, cx);
+                    editor.notify_media_rejections(&rejections, cx);
+                    if !media.is_empty() {
+                        let row = editor.current_row_index();
+                        editor.append_media_to_row(row, media, None, cx);
+                    }
                 });
             },
         )
@@ -300,6 +300,22 @@ impl SchemeEditor {
         }
     }
 
+    /// Surface rejected images to the host as a notice so a failed
+    /// drop/paste/insert tells the user why instead of doing nothing.
+    fn notify_media_rejections(
+        &self,
+        rejections: &[(Option<String>, MediaError)],
+        cx: &mut Context<Self>,
+    ) {
+        if rejections.is_empty() {
+            return;
+        }
+        cx.emit(EditorEvent::Notice {
+            title: "Image not added".to_string(),
+            message: media_rejection_message(rejections),
+        });
+    }
+
     pub(super) fn paste_image(
         &mut self,
         image: &Image,
@@ -309,8 +325,12 @@ impl SchemeEditor {
         if self.read_only {
             return false;
         }
-        let Some(media) = persist_clipboard_image(image) else {
-            return false;
+        let media = match persist_clipboard_image(image) {
+            Ok(media) => media,
+            Err(error) => {
+                self.notify_media_rejections(&[(None, error)], cx);
+                return false;
+            }
         };
         let row = self.current_row_index();
         self.append_media_to_row(row, vec![media], window, cx)
@@ -326,11 +346,8 @@ impl SchemeEditor {
         if self.read_only {
             return false;
         }
-        let media = paths
-            .paths()
-            .iter()
-            .filter_map(|path| persist_image_file(path))
-            .collect::<Vec<_>>();
+        let (media, rejections) = persist_image_files(paths.paths());
+        self.notify_media_rejections(&rejections, cx);
         if media.is_empty() {
             return false;
         }
@@ -729,4 +746,25 @@ fn previous_char_boundary_at(text: &str, mut offset: usize) -> usize {
         offset -= 1;
     }
     offset
+}
+
+/// Persist a batch of image files, splitting them into the stored media and the
+/// per-file rejections (with their source file name) to report to the user.
+fn persist_image_files(
+    paths: &[std::path::PathBuf],
+) -> (Vec<ImageInline>, Vec<(Option<String>, MediaError)>) {
+    let mut media = Vec::new();
+    let mut rejections = Vec::new();
+    for path in paths {
+        match persist_image_file(path) {
+            Ok(inline) => media.push(inline),
+            Err(error) => {
+                let name = path
+                    .file_name()
+                    .map(|name| name.to_string_lossy().into_owned());
+                rejections.push((name, error));
+            }
+        }
+    }
+    (media, rejections)
 }
