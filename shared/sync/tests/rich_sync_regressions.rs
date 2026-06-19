@@ -17,6 +17,7 @@ use knotq_notifications::{
     compute_due_notifications_with_lead_times, notification_keys_for_item, NotificationLeadTimes,
 };
 use knotq_sync::WorkspaceCrdtChangeSet;
+use sha2::{Digest, Sha256};
 
 #[test]
 fn rich_daily_queue_payload_and_nested_media_survive_late_peer_sync() {
@@ -84,6 +85,52 @@ fn rich_daily_queue_payload_and_nested_media_survive_late_peer_sync() {
         );
     }
     h.assert_all_converged();
+}
+
+#[test]
+fn media_recovery_reuploads_local_bytes_after_stale_uploaded_cursor() {
+    let mut h = Harness::new(2);
+    h.login_all();
+
+    let scheme = h.add_scheme(D0, "Recovered Media", &["photo"]);
+    h.settle();
+
+    let image_bytes = patterned_bytes(1280, 251);
+    let (_, image_name) = h.attach_image_to_device(D0, scheme, 0, image_bytes.clone());
+    h.sync(D0);
+    let document = h.device(D0).workspace.scheme_sync[&scheme].id;
+    let remote_latest = std::collections::HashMap::from([(document, 1)]);
+    let sha256 = sha256_hex(&image_bytes);
+    h.device_mut_for_surgery(D0)
+        .local_state_mut()
+        .mark_media_uploaded(
+            image_name.clone(),
+            document,
+            image_bytes.len() as u64,
+            sha256,
+        );
+
+    h.upload_media(D0, &remote_latest)
+        .expect("pre-recovery upload");
+    assert_eq!(
+        h.server_media_asset_count(),
+        0,
+        "stale upload cursor should suppress upload before recovery"
+    );
+
+    h.device_mut_for_surgery(D0)
+        .local_state_mut()
+        .heal_for_recovery_version();
+    h.upload_media(D0, &remote_latest).expect("recovery upload");
+    assert_eq!(h.server_media_asset_count(), 1);
+
+    h.sync(D1);
+    h.download_media(D1);
+    assert_eq!(
+        h.device(D1).media_assets.get(&image_name),
+        Some(&image_bytes),
+        "peer should download image bytes re-uploaded by recovery"
+    );
 }
 
 #[test]
@@ -321,4 +368,9 @@ fn due_notifications(
         trigger - Duration::minutes(1),
         trigger + Duration::minutes(1),
     )
+}
+
+fn sha256_hex(bytes: &[u8]) -> String {
+    let digest = Sha256::digest(bytes);
+    digest.iter().map(|byte| format!("{byte:02x}")).collect()
 }

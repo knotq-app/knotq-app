@@ -914,4 +914,30 @@ mod tests {
             &remote_latest,
         ));
     }
+
+    #[test]
+    fn legacy_media_cursor_without_sha_reuploads_asset() {
+        let document = DocumentId::new();
+        let image_name = "legacy.png";
+        let raw = serde_json::json!({
+            "media_cursors": {
+                image_name: {
+                    "image_name": image_name,
+                    "document": document,
+                    "byte_length": 11,
+                    "uploaded_at": "2026-06-19T00:00:00Z"
+                }
+            }
+        });
+        let state: LocalSyncState = serde_json::from_value(raw).unwrap();
+        let remote_latest = HashMap::from([(document, 3)]);
+
+        assert!(state.should_upload_media_asset(
+            image_name,
+            document,
+            11,
+            "current-sha256",
+            &remote_latest,
+        ));
+    }
 }
