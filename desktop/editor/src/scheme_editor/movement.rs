@@ -509,8 +509,19 @@ impl SchemeEditor {
             r -= 1;
         }
 
-        if let Some(row) = self.find_cell_row(path.anchor, r, c, false) {
-            self.move_cursor_to(TextLocation { row, col: 0 }, false, cx);
+        if let Some(first) = self.find_cell_row(path.anchor, r, c, false) {
+            // Highlight the whole target cell (start to end, across its lines) so
+            // typing replaces its contents — collapse at the start, then extend.
+            let last = self.find_cell_row(path.anchor, r, c, true).unwrap_or(first);
+            self.move_cursor_to(TextLocation { row: first, col: 0 }, false, cx);
+            self.move_cursor_to(
+                TextLocation {
+                    row: last,
+                    col: self.line_len(last),
+                },
+                true,
+                cx,
+            );
         }
     }
 

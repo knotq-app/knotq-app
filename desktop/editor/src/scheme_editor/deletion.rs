@@ -106,30 +106,57 @@ impl SchemeEditor {
             return false;
         }
         let head = self.selection.head;
-        let path = self
-            .rows
-            .get(head.row)
-            .map(|row| row.path)
-            .unwrap_or_default();
+        let Some(current) = self.rows.get(head.row) else {
+            return false;
+        };
+        let path = current.path;
+        // A whole-line block (image/table) is atomic: a collapsed-cursor delete at
+        // its edge would delete the object, and merging an adjacent text line into
+        // it would silently eat that text. Both are blocked — remove a block by
+        // selecting it instead. (`!is_cell` keeps this to document-level blocks;
+        // inside a table cell, editing is ordinary.)
+        let current_is_block = !path.is_cell() && item_has_block_object(&current.item);
 
         if backward {
-            if head.col != 0 || head.row == 0 {
+            if head.col != 0 {
+                // The only other caret position on a block line is after the
+                // object, where backspace would delete it.
+                return current_is_block;
+            }
+            if head.row == 0 {
                 return false;
             }
+            // Deleting an *empty* line that sits against a block just removes the
+            // empty line — allowed, handled by the empty-line boundary path.
             if self.empty_doc_line_adjacent_to_block(head.row) {
                 return false;
             }
-            let previous = self.rows[head.row - 1].path;
-            !same_region(previous, path)
+            if current_is_block {
+                return true;
+            }
+            let previous = &self.rows[head.row - 1];
+            if !previous.path.is_cell() && item_has_block_object(&previous.item) {
+                return true;
+            }
+            !same_region(previous.path, path)
         } else {
-            if head.col != self.line_len(head.row) || head.row + 1 >= self.rows.len() {
+            if head.col != self.line_len(head.row) {
+                return current_is_block;
+            }
+            if head.row + 1 >= self.rows.len() {
                 return false;
             }
             if self.empty_doc_line_adjacent_to_block(head.row) {
                 return false;
             }
-            let next = self.rows[head.row + 1].path;
-            !same_region(next, path)
+            if current_is_block {
+                return true;
+            }
+            let next = &self.rows[head.row + 1];
+            if !next.path.is_cell() && item_has_block_object(&next.item) {
+                return true;
+            }
+            !same_region(next.path, path)
         }
     }
 
@@ -391,9 +418,7 @@ impl SchemeEditor {
     }
 
     pub(super) fn backspace(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.merge_adjacent_block_if_boundary(true, window, cx)
-            || self.delete_block_at_backward_boundary(window, cx)
-        {
+        if self.merge_adjacent_block_if_boundary(true, window, cx) {
             return;
         }
         if self.boundary_delete_blocked(true) {
@@ -441,36 +466,8 @@ impl SchemeEditor {
         self.replace_byte_range(prev..offset, "", Some(window), cx);
     }
 
-    fn delete_block_at_backward_boundary(
-        &mut self,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) -> bool {
-        if !self.selection.is_empty() {
-            return false;
-        }
-        let row = self.selection.head.row;
-        let Some(editor_row) = self.rows.get(row) else {
-            return false;
-        };
-        if editor_row.path.is_cell() || !item_has_block_object(&editor_row.item) {
-            return false;
-        }
-        let Some((object, block_index)) =
-            self.block_object_before_or_at(row, self.selection.head.col)
-        else {
-            return false;
-        };
-        if self.selection.head.col != object.end {
-            return false;
-        }
-        self.delete_block_object_from_row(row, block_index, object.start, window, cx)
-    }
-
     pub(super) fn backspace_word(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.merge_adjacent_block_if_boundary(true, window, cx)
-            || self.delete_block_at_backward_boundary(window, cx)
-        {
+        if self.merge_adjacent_block_if_boundary(true, window, cx) {
             return;
         }
         if self.boundary_delete_blocked(true) {
@@ -485,9 +482,7 @@ impl SchemeEditor {
     }
 
     pub(super) fn backspace_line(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.merge_adjacent_block_if_boundary(true, window, cx)
-            || self.delete_block_at_backward_boundary(window, cx)
-        {
+        if self.merge_adjacent_block_if_boundary(true, window, cx) {
             return;
         }
         if self.boundary_delete_blocked(true) {
@@ -509,9 +504,7 @@ impl SchemeEditor {
     }
 
     pub(super) fn delete_forward(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.delete_block_at_forward_boundary(window, cx)
-            || self.merge_adjacent_block_if_boundary(false, window, cx)
-        {
+        if self.merge_adjacent_block_if_boundary(false, window, cx) {
             return;
         }
         if self.boundary_delete_blocked(false) {
@@ -529,9 +522,7 @@ impl SchemeEditor {
     }
 
     pub(super) fn delete_word(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.delete_block_at_forward_boundary(window, cx)
-            || self.merge_adjacent_block_if_boundary(false, window, cx)
-        {
+        if self.merge_adjacent_block_if_boundary(false, window, cx) {
             return;
         }
         if self.boundary_delete_blocked(false) {
@@ -546,9 +537,7 @@ impl SchemeEditor {
     }
 
     pub(super) fn delete_line(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.delete_block_at_forward_boundary(window, cx)
-            || self.merge_adjacent_block_if_boundary(false, window, cx)
-        {
+        if self.merge_adjacent_block_if_boundary(false, window, cx) {
             return;
         }
         if self.boundary_delete_blocked(false) {
@@ -569,53 +558,6 @@ impl SchemeEditor {
         }
     }
 
-    fn delete_block_at_forward_boundary(
-        &mut self,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) -> bool {
-        if !self.selection.is_empty() {
-            return false;
-        }
-        let row = self.current_row_index();
-        let Some(editor_row) = self.rows.get(row) else {
-            return false;
-        };
-        if editor_row.path.is_cell() {
-            return false;
-        }
-
-        if item_has_block_object(&editor_row.item) {
-            let Some((object, block_index)) =
-                self.block_object_after_or_at(row, self.selection.head.col)
-            else {
-                return false;
-            };
-            if self.selection.head.col <= object.start {
-                return self.delete_block_object_from_row(
-                    row,
-                    block_index,
-                    object.start,
-                    window,
-                    cx,
-                );
-            }
-            return false;
-        }
-
-        if self.selection.head.col != self.line_len(row) {
-            return false;
-        }
-
-        if self.line_len(row) == 0 {
-            if self.empty_doc_line_adjacent_to_block(row) {
-                return self.delete_empty_doc_line_adjacent_to_block(false, Some(window), cx);
-            }
-        }
-
-        false
-    }
-
     fn delete_block_object_from_row(
         &mut self,
         row: usize,
@@ -633,7 +575,8 @@ impl SchemeEditor {
             return false;
         };
         let mut seen = 0;
-        let Some(inline_pos) = item.content.iter().position(|inline| {
+        let mut inlines = item.content.to_inlines();
+        let Some(inline_pos) = inlines.iter().position(|inline| {
             if inline.is_text() {
                 return false;
             }
@@ -643,7 +586,8 @@ impl SchemeEditor {
         }) else {
             return false;
         };
-        item.content.remove(inline_pos);
+        inlines.remove(inline_pos);
+        item.content = ItemContent::from_inlines(inlines);
 
         let (text, rows) = build_buffer(&new_top);
         self.text = text;
@@ -660,18 +604,6 @@ impl SchemeEditor {
         cx.notify();
         self.emit_top_level_diff(&old_top, &new_top, cx);
         true
-    }
-
-    fn block_object_before_or_at(&self, row: usize, col: usize) -> Option<(Range<usize>, usize)> {
-        let line = self
-            .line_range(row)
-            .and_then(|range| self.text.get(range))?;
-        block_object_ranges(line)
-            .into_iter()
-            .enumerate()
-            .take_while(|(_, object)| object.end <= col)
-            .last()
-            .map(|(index, object)| (object, index))
     }
 
     fn block_object_after_or_at(&self, row: usize, col: usize) -> Option<(Range<usize>, usize)> {
@@ -799,7 +731,7 @@ mod tests {
     #[test]
     fn empty_doc_line_after_table_is_boundary_across_cell_rows() {
         let mut table = Item::new("");
-        table.content.push(Inline::Table(Table::new(2, 2)));
+        table.set_table(Table::new(2, 2));
         let blank = Item::new("");
         let (_, rows) = build_buffer(&[table, blank]);
         let blank_row = rows
@@ -815,7 +747,7 @@ mod tests {
     fn empty_doc_line_before_table_is_boundary() {
         let blank = Item::new("");
         let mut table = Item::new("");
-        table.content.push(Inline::Table(Table::new(1, 2)));
+        table.set_table(Table::new(1, 2));
         let (_, rows) = build_buffer(&[blank, table]);
 
         assert!(rows[1].path.is_table_anchor());

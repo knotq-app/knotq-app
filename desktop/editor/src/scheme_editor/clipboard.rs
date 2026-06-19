@@ -10,6 +10,11 @@ pub(super) struct SchemeClipboardPayload {
     pub(super) items: Vec<Item>,
     #[serde(default)]
     pub(super) object_selection: bool,
+    /// The first/last items are partial line fragments (a selection that spanned
+    /// text and a block). Paste splices them into the caret line so a cut
+    /// immediately followed by a paste restores the original.
+    #[serde(default)]
+    pub(super) splice: bool,
 }
 
 impl SchemeClipboardPayload {
@@ -18,6 +23,7 @@ impl SchemeClipboardPayload {
             format: KNOTQ_CLIPBOARD_FORMAT.to_string(),
             items,
             object_selection: false,
+            splice: false,
         }
     }
 
@@ -26,6 +32,16 @@ impl SchemeClipboardPayload {
             format: KNOTQ_CLIPBOARD_FORMAT.to_string(),
             items,
             object_selection: true,
+            splice: false,
+        }
+    }
+
+    pub(super) fn new_spliced(items: Vec<Item>) -> Self {
+        Self {
+            format: KNOTQ_CLIPBOARD_FORMAT.to_string(),
+            items,
+            object_selection: false,
+            splice: true,
         }
     }
 }

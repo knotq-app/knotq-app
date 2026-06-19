@@ -1,11 +1,12 @@
 use serde::{Deserialize, Serialize};
 
-use crate::{ColumnId, Inline, Item, RowId};
+use crate::{ColumnId, Item, RowId};
 
-/// A table, carried inline in a line's content as [`Inline::Table`]. Cells are
-/// themselves *lists* of [`Item`]s — each cell is a small sub-document, so every
-/// line in it is a full [`Item`] (checkbox, date, image, indent, …) exactly
-/// like a top-level line.
+/// A table, carried as a line's whole content via [`ItemContent::Table`].
+/// [`ItemContent`]: crate::ItemContent
+/// Cells are themselves *lists* of [`Item`]s — each cell is a small sub-document,
+/// so every line in it is a full [`Item`] (checkbox, date, image, indent, …)
+/// exactly like a top-level line.
 ///
 /// Invariants (restored by [`Table::normalize`]):
 /// - the table is rectangular — every [`TableRow::cells`] has exactly
@@ -117,11 +118,13 @@ impl TableCell {
     }
 
     fn normalize(&mut self) {
-        // Cells never nest tables for v1: strip any table inlines from the
-        // cell's line items so the document stays at most two levels deep.
+        // Cells never nest tables for v1: any cell line that is itself a table
+        // collapses to an empty text line, so the document stays at most two
+        // levels deep.
         for item in &mut self.items {
-            item.content
-                .retain(|inline| !matches!(inline, Inline::Table(_)));
+            if item.has_table() {
+                item.content = crate::ItemContent::default();
+            }
         }
         if self.items.is_empty() {
             self.items.push(Item::new(""));
@@ -288,11 +291,9 @@ mod tests {
     #[test]
     fn normalize_strips_nested_tables_from_cells() {
         let mut table = Table::new(1, 1);
-        // Put a nested table inside a cell's line item, then normalize.
+        // Make a cell's line item itself a table, then normalize.
         let nested = Table::new(1, 1);
-        table.rows[0].cells[0].items[0]
-            .content
-            .push(Inline::Table(nested));
+        table.rows[0].cells[0].items[0].set_table(nested);
         table.normalize();
         assert!(table.rows[0].cells[0]
             .items

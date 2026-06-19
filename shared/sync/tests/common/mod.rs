@@ -39,8 +39,8 @@ use anyhow::anyhow;
 use chrono::{Duration, NaiveDate, Utc};
 use knotq_model::{
     daily_queue_scheme_id, CalendarProvider, DocumentId, Folder, FolderId, ImageAssetFormat,
-    ImageInline, ImportedCalendarSource, Inline, Item, ItemId, ItemMarker, NodeRef, OperationId,
-    ReplicaId, Scheme, SchemeId, SchemeSource, SyncDocumentKind, Workspace, WorkspaceId,
+    ImageInline, ImportedCalendarSource, Item, ItemId, ItemMarker, NodeRef, OperationId, ReplicaId,
+    Scheme, SchemeId, SchemeSource, SyncDocumentKind, Workspace, WorkspaceId,
 };
 use knotq_sync::{
     batch_pull_and_apply, batch_push_pending, queue_workspace_bootstrap_updates,
@@ -79,16 +79,13 @@ fn item_image_assets(item: &Item) -> Vec<ImageInline> {
 }
 
 fn collect_item_image_assets(item: &Item, images: &mut Vec<ImageInline>) {
-    for inline in &item.content {
-        match inline {
-            Inline::Text { .. } => {}
-            Inline::Image(image) => images.push(*image),
-            Inline::Table(table) => {
-                for cell in table.cells() {
-                    for item in &cell.items {
-                        collect_item_image_assets(item, images);
-                    }
-                }
+    if let Some(image) = item.content.image() {
+        images.push(*image);
+    }
+    if let Some(table) = item.table() {
+        for cell in table.cells() {
+            for item in &cell.items {
+                collect_item_image_assets(item, images);
             }
         }
     }
@@ -1200,7 +1197,7 @@ impl TestDevice {
         {
             let items = &mut self.scheme_mut(scheme_id).items;
             if item_index < items.len() {
-                items[item_index].push_image(ImageInline {
+                items[item_index].set_image(ImageInline {
                     asset,
                     format,
                     width: Some(64),

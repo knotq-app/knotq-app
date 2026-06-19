@@ -4,7 +4,7 @@ use gpui::Context;
 use knotq_commands::{
     filter_recurring_occurrence_toggles, Command, CommandError, CommandOrigin, CommandReceipt,
 };
-use knotq_model::{Item, ItemId, ItemKind, SchemeId, Workspace};
+use knotq_model::{Item, ItemId, ItemKind, OccurrenceId, SchemeId, Workspace};
 
 use super::{
     calendar_toggle_keys, editor_undo_key, recurrence_undo_key, should_coalesce_editor_undo,
@@ -44,9 +44,11 @@ impl KnotQApp {
         let toggled = calendar_toggle_keys(&cmd);
         let service_signals = service_signals_for_command(&cmd, &self.workspace);
         self.clear_deleted_item_notifications(&cmd);
+        let completed_clear_cmd = cmd.clone();
         match self.apply_workspace_store_command(cmd, CommandOrigin::User) {
             Ok(receipt) => {
                 self.sync_retained_completed_calendar_items(&toggled);
+                self.clear_completed_occurrence_notifications(&completed_clear_cmd);
                 self.recurrence_undo_group = recurrence_key.map(|key| EditorUndoGroup {
                     key,
                     last_edit: Instant::now(),
@@ -86,9 +88,11 @@ impl KnotQApp {
         let toggled = calendar_toggle_keys(&cmd);
         let service_signals = service_signals_for_command(&cmd, &self.workspace);
         self.clear_deleted_item_notifications(&cmd);
+        let completed_clear_cmd = cmd.clone();
         match self.apply_workspace_store_command(cmd, CommandOrigin::User) {
             Ok(receipt) => {
                 self.sync_retained_completed_calendar_items(&toggled);
+                self.clear_completed_occurrence_notifications(&completed_clear_cmd);
                 self.redo_stack.clear();
                 self.redo_navigation_stack.clear();
                 self.reconcile_workspace_ui_state();
@@ -143,9 +147,11 @@ impl KnotQApp {
         let toggled = calendar_toggle_keys(&cmd);
         let service_signals = service_signals_for_command(&cmd, &self.workspace);
         self.clear_deleted_item_notifications(&cmd);
+        let completed_clear_cmd = cmd.clone();
         match self.apply_workspace_store_command(cmd, CommandOrigin::User) {
             Ok(receipt) => {
                 self.sync_retained_completed_calendar_items(&toggled);
+                self.clear_completed_occurrence_notifications(&completed_clear_cmd);
                 self.editor_undo_group = key.map(|key| EditorUndoGroup {
                     key,
                     last_edit: now,
@@ -199,6 +205,31 @@ impl KnotQApp {
             self.service_bus.signal_clear_item_notifications(
                 scheme,
                 item,
+                self.notification_defaults,
+            );
+        }
+    }
+
+    fn clear_completed_occurrence_notifications(&self, cmd: &Command) {
+        let mut completed = Vec::new();
+        collect_completion_candidates(cmd, &mut completed);
+        completed.sort_by_key(|(scheme, item, occurrence)| (scheme.0, item.0, occurrence.clone()));
+        completed.dedup();
+
+        for (scheme_id, item_id, occurrence) in completed {
+            let Some(item) = workspace_item(&self.workspace, scheme_id, item_id) else {
+                continue;
+            };
+            if !item_may_schedule_notifications(item) {
+                continue;
+            }
+            if !item.state_for_occurrence(&occurrence).is_done() {
+                continue;
+            }
+            self.service_bus.signal_clear_occurrence_notifications(
+                scheme_id,
+                item.clone(),
+                occurrence,
                 self.notification_defaults,
             );
         }
@@ -297,11 +328,13 @@ impl KnotQApp {
         self.editor_undo_group = None;
         self.recurrence_undo_group = None;
         if let Some(inv) = self.undo_stack.pop_back() {
+            let completed_clear_cmd = inv.clone();
             let navigation = self.undo_navigation_stack.pop_back();
             let toggled = calendar_toggle_keys(&inv);
             let service_signals = service_signals_for_command(&inv, &self.workspace);
             if let Ok(receipt) = self.apply_workspace_store_command(inv, CommandOrigin::User) {
                 self.sync_retained_completed_calendar_items(&toggled);
+                self.clear_completed_occurrence_notifications(&completed_clear_cmd);
                 self.redo_stack.push_back(receipt.inverse);
                 if let Some(navigation) = navigation.as_ref() {
                     self.redo_navigation_stack.push_back(navigation.clone());
@@ -320,11 +353,13 @@ impl KnotQApp {
         self.editor_undo_group = None;
         self.recurrence_undo_group = None;
         if let Some(inv) = self.redo_stack.pop_back() {
+            let completed_clear_cmd = inv.clone();
             let navigation = self.redo_navigation_stack.pop_back();
             let toggled = calendar_toggle_keys(&inv);
             let service_signals = service_signals_for_command(&inv, &self.workspace);
             if let Ok(receipt) = self.apply_workspace_store_command(inv, CommandOrigin::User) {
                 self.sync_retained_completed_calendar_items(&toggled);
+                self.clear_completed_occurrence_notifications(&completed_clear_cmd);
                 if let Some(navigation) = navigation.as_ref() {
                     self.push_undo(receipt.inverse, navigation.clone());
                 } else {
@@ -403,6 +438,37 @@ fn collect_deleted_items(cmd: &Command, out: &mut Vec<(SchemeId, ItemId)>) {
             }
         }
         _ => {}
+    }
+}
+
+fn collect_completion_candidates(cmd: &Command, out: &mut Vec<(SchemeId, ItemId, OccurrenceId)>) {
+    match cmd {
+        Command::ToggleOccurrence {
+            scheme,
+            item,
+            occurrence,
+        } => out.push((*scheme, *item, occurrence.clone())),
+        Command::ReplaceItem { scheme, item } | Command::InsertItem { scheme, item, .. } => {
+            collect_done_occurrences(*scheme, item, out);
+        }
+        Command::Batch(cmds) => {
+            for cmd in cmds {
+                collect_completion_candidates(cmd, out);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn collect_done_occurrences(
+    scheme: SchemeId,
+    item: &Item,
+    out: &mut Vec<(SchemeId, ItemId, OccurrenceId)>,
+) {
+    for state in &item.state {
+        if state.state.is_done() {
+            out.push((scheme, item.id, state.occurrence.clone()));
+        }
     }
 }
 

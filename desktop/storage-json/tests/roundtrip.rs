@@ -77,7 +77,7 @@ fn save_workspace_splits_scheme_files_and_omits_empty_item_fields() {
     done.marker = ItemMarker::Checkbox;
     done.state[0].state.progress = -1;
     scheme.items.push(done);
-    let mut image_item = Item::new("image");
+    let mut image_item = Item::new("");
     let image_item_id = image_item.id;
     image_item.external = Some(ExternalItemSource {
         provider: CalendarProvider::Google,
@@ -87,7 +87,7 @@ fn save_workspace_splits_scheme_files_and_omits_empty_item_fields() {
         instance_id: None,
         updated_at: Some(Utc.with_ymd_and_hms(2026, 5, 18, 12, 0, 0).unwrap()),
     });
-    image_item.push_image(ImageInline {
+    image_item.set_image(ImageInline {
         asset: uuid::Uuid::new_v4(),
         format: ImageAssetFormat::Png,
         width: Some(320),
@@ -127,7 +127,6 @@ fn save_workspace_splits_scheme_files_and_omits_empty_item_fields() {
     assert!(scheme_xml.contains(&format!("<scheme id=\"{scheme_id}\"")));
     assert!(scheme_xml.contains("<text>plain</text>"));
     assert!(scheme_xml.contains("<text>done</text>"));
-    assert!(scheme_xml.contains("<text>image</text>"));
     // A done checkbox carries its done-ness in <state>, not in the marker text.
     assert!(scheme_xml.contains("marker=\"checkbox\""));
     assert!(scheme_xml.contains("<state>"));
@@ -135,7 +134,7 @@ fn save_workspace_splits_scheme_files_and_omits_empty_item_fields() {
     assert!(!scheme_xml.contains(" start=\""));
     assert!(!scheme_xml.contains(" available=\""));
     assert!(!scheme_xml.contains(" priority=\""));
-    // Inline image + external source.
+    // Image block + external source.
     assert!(scheme_xml.contains("<image asset="));
     assert!(scheme_xml.contains("format=\"png\""));
     assert!(scheme_xml.contains("width=\"320\""));

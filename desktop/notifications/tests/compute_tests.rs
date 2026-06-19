@@ -1,10 +1,13 @@
 use chrono::{Duration, TimeZone, Utc};
 use knotq_date_util::DateRange;
-use knotq_model::{Item, ItemKind, NodeRef, Occurrence, OccurrenceId, Scheme, Workspace};
+use knotq_model::{
+    CalendarRecurrence, Item, ItemKind, NodeRef, Occurrence, OccurrenceId, Scheme, Workspace,
+};
 use knotq_notifications::{
-    compute_due_notifications, compute_due_notifications_with_expander,
-    compute_due_notifications_with_lead_times, expired_event_notification_keys,
-    notification_keys_for_item, NotificationKind, NotificationLeadTimes,
+    completed_notification_keys, compute_due_notifications,
+    compute_due_notifications_with_expander, compute_due_notifications_with_lead_times,
+    expired_event_notification_keys, notification_keys_for_item, notification_keys_for_occurrence,
+    NotificationKind, NotificationLeadTimes,
 };
 use knotq_rrule::OccurrenceExpander;
 
@@ -146,6 +149,51 @@ fn completed_items_do_not_schedule_but_keys_are_available_for_cleanup() {
     // with the same time do not collide.
     assert!(keys[0].contains(&scheme_id.0.to_string()));
     assert!(keys[0].contains(&item_id.0.to_string()));
+}
+
+#[test]
+fn completed_recurring_occurrence_keys_only_target_that_instance() {
+    let first = Utc.with_ymd_and_hms(2026, 5, 10, 12, 0, 0).unwrap();
+    let second = first + Duration::days(1);
+    let completed = OccurrenceId::recurring_utc(first);
+    let open = OccurrenceId::recurring_utc(second);
+    let mut item = Item::new("standup")
+        .with_start(first)
+        .with_repeats(CalendarRecurrence {
+            rrules: vec!["FREQ=DAILY;COUNT=2".to_string()],
+            ..CalendarRecurrence::default()
+        });
+    item.state_for_occurrence_mut(completed.clone()).progress = -1;
+    let item_id = item.id;
+    let (workspace, scheme_id) = workspace_and_scheme_with_item(item);
+    let from = first - Duration::minutes(1);
+    let to = second + Duration::minutes(1);
+
+    let completed_keys =
+        completed_notification_keys(&workspace, NotificationLeadTimes::default(), from, to);
+    let occurrence_keys = notification_keys_for_occurrence(
+        &workspace,
+        NotificationLeadTimes::default(),
+        scheme_id,
+        item_id,
+        &completed,
+        from,
+        to,
+    );
+    let open_occurrence_keys = notification_keys_for_occurrence(
+        &workspace,
+        NotificationLeadTimes::default(),
+        scheme_id,
+        item_id,
+        &open,
+        from,
+        to,
+    );
+
+    assert_eq!(completed_keys, occurrence_keys);
+    assert_eq!(completed_keys.len(), 1);
+    assert_eq!(open_occurrence_keys.len(), 1);
+    assert_ne!(completed_keys, open_occurrence_keys);
 }
 
 #[test]

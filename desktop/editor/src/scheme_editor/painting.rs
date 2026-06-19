@@ -258,10 +258,9 @@ impl SchemeEditor {
             .and_then(|range| self.text.get(range))?;
         let mut block_index = 0;
         let mut image_index = 0;
+        let inlines = editor_row.item.content.to_inlines();
         for object in block_object_ranges(line) {
-            let inline = editor_row
-                .item
-                .content
+            let inline = inlines
                 .iter()
                 .filter(|inline| !inline.is_text())
                 .nth(block_index)?;

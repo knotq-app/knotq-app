@@ -60,6 +60,12 @@ impl EntityInputHandler for SchemeEditor {
                 let (start, end) = self.selection_offsets();
                 start..end
             });
+        // Typing right before/after a whole-line block inserts an adjacent text
+        // line instead of collapsing into the block.
+        if range.start == range.end && self.try_type_adjacent_to_block(range.start, text, cx) {
+            self.marked_range = None;
+            return;
+        }
         self.replace_byte_range(range, text, None, cx);
         self.marked_range = None;
     }

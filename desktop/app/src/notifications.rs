@@ -3,8 +3,9 @@ use gpui::Context;
 use knotq_commands::Command;
 use knotq_model::{Item, ItemId, ItemKind, OccurrenceId, Scheme, SchemeId, Workspace};
 use knotq_notifications::{
-    compute_due_notifications_with_lead_times, delivered_backlog_exceeds, delivered_cleanup_ids,
-    expired_event_notification_keys, notification_keys_for_item, DurableNotificationSchedule,
+    completed_notification_keys, compute_due_notifications_with_lead_times,
+    delivered_backlog_exceeds, delivered_cleanup_ids, expired_event_notification_keys,
+    notification_keys_for_item, notification_keys_for_occurrence, DurableNotificationSchedule,
     NotificationLeadTimes, PlatformSchedulePolicy, PlatformScheduleSnapshot, ReconciliationMode,
     RetentionReport, ScheduleManifest, ScheduleReconciliationPlan, ScheduledNotification,
     DEFAULT_DURABLE_NOTIFICATION_LIMIT,
@@ -302,6 +303,23 @@ pub fn clear_expired_event_notifications(
             Some(msg)
         }
     }
+}
+
+pub fn clear_completed_notifications(
+    workspace: &Workspace,
+    defaults: NotificationDefaults,
+    now: DateTime<Utc>,
+) -> Option<String> {
+    let ids = completed_notification_keys(
+        workspace,
+        lead_times(defaults),
+        now - Duration::days(NOTIFICATION_LOOKBACK_DAYS),
+        now + Duration::days(SCHEDULE_HORIZON_DAYS),
+    )
+    .into_iter()
+    .map(|key| os_notification_id(&key))
+    .collect::<Vec<_>>();
+    clear_os_notification_ids(ids, "completed occurrence")
 }
 
 fn schedule_os_notifications_reconciled(
@@ -658,16 +676,7 @@ pub fn clear_item_notifications(
     .into_iter()
     .map(|key| os_notification_id(&key))
     .collect::<Vec<_>>();
-    if ids.is_empty() {
-        return;
-    }
-    let scheduler = NotificationScheduler::new(APP_ID);
-    if let Err(err) = scheduler.cancel(&ids) {
-        eprintln!("failed to cancel item notifications: {err}");
-    }
-    if let Err(err) = scheduler.remove_delivered(&ids) {
-        eprintln!("failed to clear delivered item notifications: {err}");
-    }
+    let _ = clear_os_notification_ids(ids, "item");
 }
 
 pub(crate) fn clear_item_notifications_for_item(
@@ -682,6 +691,70 @@ pub(crate) fn clear_item_notifications_for_item(
     scheme.items.push(item);
     workspace.schemes.insert(scheme_id, scheme);
     clear_item_notifications(&workspace, defaults, scheme_id, item_id);
+}
+
+pub(crate) fn clear_occurrence_notifications_for_item(
+    scheme_id: SchemeId,
+    item: Item,
+    occurrence: OccurrenceId,
+    defaults: NotificationDefaults,
+) {
+    let item_id = item.id;
+    let mut workspace = Workspace::empty();
+    let mut scheme = Scheme::new("", 0);
+    scheme.id = scheme_id;
+    scheme.items.push(item);
+    workspace.schemes.insert(scheme_id, scheme);
+
+    let now = Utc::now();
+    let ids = notification_keys_for_occurrence(
+        &workspace,
+        lead_times(defaults),
+        scheme_id,
+        item_id,
+        &occurrence,
+        now - Duration::days(NOTIFICATION_LOOKBACK_DAYS),
+        now + Duration::days(SCHEDULE_HORIZON_DAYS),
+    )
+    .into_iter()
+    .map(|key| os_notification_id(&key))
+    .collect::<Vec<_>>();
+    let _ = clear_os_notification_ids(ids, "completed occurrence");
+}
+
+fn clear_os_notification_ids(mut ids: Vec<String>, context: &str) -> Option<String> {
+    ids.sort();
+    ids.dedup();
+    if ids.is_empty() {
+        return None;
+    }
+
+    let scheduler = NotificationScheduler::new(APP_ID);
+    let cancel_error = match scheduler.cancel(&ids) {
+        Ok(()) => None,
+        Err(err) => {
+            let msg = format!("{err}");
+            notif_log(&format!(
+                "failed to cancel {context} notification(s): {msg}"
+            ));
+            Some(msg)
+        }
+    };
+    if let Err(err) = scheduler.remove_delivered(&ids) {
+        notif_log(&format!(
+            "failed to clear delivered {context} notification(s): {err}"
+        ));
+        if cancel_error.is_none() {
+            return Some(format!("{err}"));
+        }
+    }
+    if cancel_error.is_none() {
+        notif_log(&format!(
+            "OS cleared {} {context} notification(s)",
+            ids.len()
+        ));
+    }
+    cancel_error
 }
 
 #[derive(Clone, Debug)]

@@ -5,7 +5,7 @@ use async_channel::{Receiver, Sender};
 use chrono::{DateTime, Duration, Local, TimeZone, Utc};
 use futures::{pin_mut, select, FutureExt};
 use gpui::{Context, Task};
-use knotq_model::{Item, ItemId, ItemKind, SchemeId, Workspace};
+use knotq_model::{Item, ItemId, ItemKind, OccurrenceId, SchemeId, Workspace};
 use knotq_rrule::ItemOccurrenceExt;
 use knotq_storage_json::{save_crdt_state, save_pending_crdt_edits, NotificationDefaults};
 
@@ -39,6 +39,7 @@ pub(crate) enum NotificationSignal {
     Recompute,
     RefreshItem(NotificationItemRefresh),
     ClearItem(NotificationItemRefresh),
+    ClearOccurrence(NotificationOccurrenceClear),
     Action,
 }
 
@@ -46,6 +47,14 @@ pub(crate) enum NotificationSignal {
 pub(crate) struct NotificationItemRefresh {
     pub(crate) scheme_id: SchemeId,
     pub(crate) item: Item,
+    pub(crate) defaults: NotificationDefaults,
+}
+
+#[derive(Clone)]
+pub(crate) struct NotificationOccurrenceClear {
+    pub(crate) scheme_id: SchemeId,
+    pub(crate) item: Item,
+    pub(crate) occurrence: OccurrenceId,
     pub(crate) defaults: NotificationDefaults,
 }
 
@@ -132,6 +141,25 @@ impl AppServiceBus {
                     item,
                     defaults,
                 }));
+    }
+
+    pub(crate) fn signal_clear_occurrence_notifications(
+        &self,
+        scheme_id: SchemeId,
+        item: Item,
+        occurrence: OccurrenceId,
+        defaults: NotificationDefaults,
+    ) {
+        let _ = self
+            .notification_tx
+            .try_send(NotificationSignal::ClearOccurrence(
+                NotificationOccurrenceClear {
+                    scheme_id,
+                    item,
+                    occurrence,
+                    defaults,
+                },
+            ));
     }
 
     pub(crate) fn signal_timeline(&self) {
@@ -247,6 +275,7 @@ pub(crate) fn spawn_notification_task(
                 if batch.needs_recompute
                     || !batch.item_refreshes.is_empty()
                     || !batch.item_clears.is_empty()
+                    || !batch.occurrence_clears.is_empty()
                 {
                     cx.background_executor().timer(NOTIFICATION_DEBOUNCE).await;
                 }
@@ -262,6 +291,9 @@ pub(crate) fn spawn_notification_task(
                 }
                 if !batch.item_clears.is_empty() {
                     clear_item_os_notifications(batch.item_clears, cx).await;
+                }
+                if !batch.occurrence_clears.is_empty() {
+                    clear_occurrence_os_notifications(batch.occurrence_clears, cx).await;
                 }
                 if batch.needs_recompute {
                     refresh_os_notifications(&weak, cx).await;
@@ -395,12 +427,17 @@ async fn refresh_os_notifications(weak: &gpui::WeakEntity<KnotQApp>, cx: &mut gp
         .spawn(async move {
             let update = crate::notifications::recompute_pending(&workspace, defaults);
             let schedule_error = crate::notifications::schedule_os_notifications(&update.requests);
+            let completed_cleanup_error = crate::notifications::clear_completed_notifications(
+                &workspace,
+                defaults,
+                Utc::now(),
+            );
             let cleanup_error = crate::notifications::clear_expired_event_notifications(
                 &workspace,
                 defaults,
                 Utc::now(),
             );
-            schedule_error.or(cleanup_error)
+            schedule_error.or(completed_cleanup_error).or(cleanup_error)
         })
         .await;
     let _ = weak.update(cx, |app, cx| {
@@ -448,6 +485,24 @@ async fn clear_item_os_notifications(
                 crate::notifications::clear_item_notifications_for_item(
                     clear.scheme_id,
                     clear.item,
+                    clear.defaults,
+                );
+            }
+        })
+        .await;
+}
+
+async fn clear_occurrence_os_notifications(
+    occurrence_clears: HashMap<(SchemeId, ItemId, OccurrenceId), NotificationOccurrenceClear>,
+    cx: &mut gpui::AsyncApp,
+) {
+    cx.background_executor()
+        .spawn(async move {
+            for clear in occurrence_clears.into_values() {
+                crate::notifications::clear_occurrence_notifications_for_item(
+                    clear.scheme_id,
+                    clear.item,
+                    clear.occurrence,
                     clear.defaults,
                 );
             }
@@ -536,6 +591,7 @@ struct NotificationBatch {
     has_actions: bool,
     item_refreshes: HashMap<(SchemeId, ItemId), NotificationItemRefresh>,
     item_clears: HashMap<(SchemeId, ItemId), NotificationItemRefresh>,
+    occurrence_clears: HashMap<(SchemeId, ItemId, OccurrenceId), NotificationOccurrenceClear>,
 }
 
 impl NotificationBatch {
@@ -549,6 +605,12 @@ impl NotificationBatch {
             NotificationSignal::ClearItem(clear) => {
                 self.item_clears
                     .insert((clear.scheme_id, clear.item.id), clear);
+            }
+            NotificationSignal::ClearOccurrence(clear) => {
+                self.occurrence_clears.insert(
+                    (clear.scheme_id, clear.item.id, clear.occurrence.clone()),
+                    clear,
+                );
             }
             NotificationSignal::Action => self.has_actions = true,
         }
@@ -605,12 +667,17 @@ impl KnotQApp {
             crate::notifications::recompute_pending(&self.workspace, self.notification_defaults);
         let schedule_error =
             crate::notifications::schedule_os_notifications_for_shutdown(&update.requests);
+        let completed_cleanup_error = crate::notifications::clear_completed_notifications(
+            &self.workspace,
+            self.notification_defaults,
+            Utc::now(),
+        );
         let cleanup_error = crate::notifications::clear_expired_event_notifications(
             &self.workspace,
             self.notification_defaults,
             Utc::now(),
         );
-        if let Some(err) = schedule_error.or(cleanup_error) {
+        if let Some(err) = schedule_error.or(completed_cleanup_error).or(cleanup_error) {
             crate::notifications::notif_log(&format!(
                 "shutdown OS notification schedule flush failed: {err}"
             ));

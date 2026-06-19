@@ -1,8 +1,7 @@
 use chrono::{Datelike, Duration, Local, LocalResult, NaiveDate, TimeZone, Utc};
 use knotq_model::{
-    daily_queue_scheme_id, AppSettings, CalendarViewMode, Item, ItemMarker, NodeRef,
-    SavedView, SavedWindowPosition, SavedWindowSize, Scheme, ThemeMode, Workspace,
-    DAILY_QUEUE_COLOR_INDEX,
+    daily_queue_scheme_id, AppSettings, CalendarViewMode, Item, ItemMarker, NodeRef, SavedView,
+    SavedWindowPosition, SavedWindowSize, Scheme, ThemeMode, Workspace, DAILY_QUEUE_COLOR_INDEX,
 };
 use knotq_storage_json::{save_app_settings, save_workspace};
 use std::{env, path::PathBuf};
@@ -62,7 +61,12 @@ fn main() -> anyhow::Result<()> {
         heading("# Product Roadmap"),
         plain("Planning doc for the beta launch milestones"),
         assignment("Beta launch prep doc", today + Duration::days(12), 23, 0),
-        reminder("Send weekly status update", today + Duration::days(3), 17, 0),
+        reminder(
+            "Send weekly status update",
+            today + Duration::days(3),
+            17,
+            0,
+        ),
         plain(""),
         heading("## Launch checklist"),
         checkbox("Finalize onboarding flow"),

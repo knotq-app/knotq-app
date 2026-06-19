@@ -1,6 +1,6 @@
 use std::ops::Range;
 
-use knotq_model::{ColumnId, Inline, Item, ItemId, ItemMarker, Table};
+use knotq_model::{ColumnId, Inline, Item, ItemContent, ItemId, ItemMarker, Table};
 use uuid::Uuid;
 
 pub(super) const TABLE_OBJECT_CHAR: char = '\u{fffc}';
@@ -143,14 +143,12 @@ pub(super) fn display_line_for_row(row: &EditorRow) -> String {
 }
 
 fn item_inline_text_with_block_objects(item: &Item) -> String {
-    let mut line = String::new();
-    for inline in &item.content {
-        match inline {
-            Inline::Text { text } => line.push_str(text),
-            Inline::Table(_) | Inline::Image(_) => line.push(TABLE_OBJECT_CHAR),
-        }
+    // A line is single-content: a block (image/table) renders as one sentinel
+    // object char; text renders as itself.
+    match &item.content {
+        ItemContent::Text { text } => text.clone(),
+        ItemContent::Image(_) | ItemContent::Table(_) => TABLE_OBJECT_CHAR.to_string(),
     }
-    line
 }
 
 fn header_item(column: ColumnId, name: &str) -> Item {
@@ -222,14 +220,15 @@ pub(super) fn set_table_anchor_content_from_line(item: &mut Item, line: &str, ta
 pub(super) fn set_item_content_from_block_line(item: &mut Item, line: &str, table: Option<Table>) {
     let line = clean_display_line_text(line);
     let mut blocks = block_inlines_for_item(item, table).into_iter();
-    item.content = content_from_block_line(&line, &mut blocks);
+    item.content = ItemContent::from_inlines(content_from_block_line(&line, &mut blocks));
 }
 
 fn block_inlines_for_item(item: &Item, table: Option<Table>) -> Vec<Inline> {
     let mut used_table_override = false;
     let mut blocks = item
         .content
-        .iter()
+        .to_inlines()
+        .into_iter()
         .filter_map(|inline| match inline {
             Inline::Image(image) => Some(Inline::Image(image.clone())),
             Inline::Table(existing) => {
@@ -308,7 +307,8 @@ pub(super) fn replace_block_range_with_inlines(
         blocks.append(&mut inserted);
     }
 
-    item.content = content_from_block_line(&new_line, &mut blocks.into_iter());
+    item.content =
+        ItemContent::from_inlines(content_from_block_line(&new_line, &mut blocks.into_iter()));
     true
 }
 
@@ -330,6 +330,137 @@ fn content_from_block_line(line: &str, blocks: &mut impl Iterator<Item = Inline>
         content.push(Inline::text(after));
     }
     content
+}
+
+/// Split a text line at byte offset `col` and interleave whole-line block items,
+/// yielding the resulting single-content items in document order. Leading and
+/// trailing text each become their own line *only when non-empty*; every block is
+/// its own line. The original item keeps its identity and line metadata on the
+/// surviving text part — or, for a text-less line, on the first block — so the
+/// line's CRDT identity stays stable. Used when an image/table is inserted into
+/// the middle of a text line (paste, drop) so the line splits instead of the
+/// block clobbering the text.
+pub(super) fn split_line_with_blocks(orig: &Item, col: usize, blocks: Vec<Inline>) -> Vec<Item> {
+    let block_items: Vec<Item> = blocks
+        .into_iter()
+        .map(|block| {
+            let mut item = Item::new("");
+            item.indent = orig.indent;
+            item.content = ItemContent::from_inlines(vec![block]);
+            item
+        })
+        .collect();
+    if block_items.is_empty() {
+        return vec![orig.clone()];
+    }
+    // A block line has no text to split around — keep it and add the new blocks
+    // after it as their own lines.
+    if orig.content.is_block() {
+        let mut result = Vec::with_capacity(block_items.len() + 1);
+        result.push(orig.clone());
+        result.extend(block_items);
+        return result;
+    }
+
+    let text = orig.text();
+    let mut split = col.min(text.len());
+    while split > 0 && !text.is_char_boundary(split) {
+        split -= 1;
+    }
+    let before = text[..split].to_string();
+    let after = text[split..].to_string();
+
+    let mut result = Vec::with_capacity(block_items.len() + 2);
+    if before.is_empty() {
+        // No leading text: the blocks lead. The original line (its id + metadata)
+        // carries the trailing text; if there is none, the first block inherits
+        // the original line's identity so the line stays stable.
+        result.extend(block_items);
+        if after.is_empty() {
+            if let Some(first) = result.first_mut() {
+                first.id = orig.id;
+                first.marker = orig.marker;
+                first.indent = orig.indent;
+                first.start = orig.start;
+                first.end = orig.end;
+                first.available = orig.available;
+                first.repeats = orig.repeats.clone();
+                first.state = orig.state.clone();
+                first.priority = orig.priority;
+                first.external = orig.external.clone();
+            }
+        } else {
+            let mut after_item = orig.clone();
+            after_item.set_text(after);
+            result.push(after_item);
+        }
+    } else {
+        let mut before_item = orig.clone();
+        before_item.set_text(before);
+        result.push(before_item);
+        result.extend(block_items);
+        if !after.is_empty() {
+            let mut after_item = Item::new("");
+            after_item.indent = orig.indent;
+            after_item.set_text(after);
+            result.push(after_item);
+        }
+    }
+    result
+}
+
+/// Splice a cut/copied run of `items` (whose first and last entries may be
+/// *partial* line fragments — a selection that spanned text and a block) into
+/// `current` at byte offset `col`. The leading fragment merges into the text
+/// before the caret and the trailing fragment into the text after it, so a cut
+/// immediately followed by a paste restores the original line structure.
+///
+/// Returns the replacement items plus `(cursor_index, cursor_col)` — the item
+/// index (within the returned items) and column where the caret should land,
+/// which is the end of the spliced content (the original selection end), before
+/// any trailing remainder.
+pub(super) fn splice_items_into_line(
+    current: &Item,
+    col: usize,
+    items: Vec<Item>,
+) -> (Vec<Item>, usize, usize) {
+    let text = current.text();
+    let mut split = col.min(text.len());
+    while split > 0 && !text.is_char_boundary(split) {
+        split -= 1;
+    }
+    let before = text[..split].to_string();
+    let after = text[split..].to_string();
+
+    let mut result = items;
+    // Merge `before` into the first item: a leading text fragment extends the
+    // caret line (keeping its identity); a leading block keeps `before` as its
+    // own line.
+    if result.first().is_some_and(|item| item.content.is_text()) {
+        let merged = format!("{before}{}", result[0].text());
+        let mut first = current.clone();
+        first.set_text(merged);
+        result[0] = first;
+    } else if !before.is_empty() {
+        let mut before_item = current.clone();
+        before_item.set_text(before);
+        result.insert(0, before_item);
+    }
+
+    // The caret lands at the end of the last spliced item's own content.
+    let cursor_index = result.len() - 1;
+    let cursor_col = result[cursor_index].text().len();
+
+    // Merge `after` into the last item, mirroring the leading rule.
+    if result[cursor_index].content.is_text() {
+        let mut tail = result[cursor_index].text();
+        tail.push_str(&after);
+        result[cursor_index].set_text(tail);
+    } else if !after.is_empty() {
+        result.push(Item::new(after));
+    }
+
+    (result, cursor_index, cursor_col)
 }
 
 pub(super) fn item_has_block_object(item: &Item) -> bool {
@@ -390,12 +521,15 @@ pub(super) fn merge_table_item_into(
         || target_index >= items.len()
         || table_index >= items.len()
         || !item_has_block_object(&items[table_index])
-        || (items[table_index].has_table() && items[target_index].has_table())
+        // Single-content: a block fills its whole line, so it can only absorb an
+        // *empty* neighbour. Refuse to merge it onto a line that still has its
+        // own content (which would silently drop that content).
+        || !items[target_index].is_content_empty()
     {
         return None;
     }
 
-    let mut table_item = items.remove(table_index);
+    let table_item = items.remove(table_index);
     let target_index = if table_index < target_index {
         target_index.checked_sub(1)?
     } else {
@@ -403,13 +537,22 @@ pub(super) fn merge_table_item_into(
     };
     let deleted = table_item.id;
     let target = items.get_mut(target_index)?;
-    target.content.append(&mut table_item.content);
+    append_content(target, &table_item);
 
     Some(TableMergeResult {
         target: target.id,
         deleted,
         target_index,
     })
+}
+
+/// Merge `source`'s content onto `target`. A line is single-content, so the
+/// flat inline runs are concatenated and collapsed (a block wins over text),
+/// matching the old "append the trailing content" join behavior.
+fn append_content(target: &mut Item, source: &Item) {
+    let mut combined = target.content.to_inlines();
+    combined.extend(source.content.to_inlines());
+    target.content = ItemContent::from_inlines(combined);
 }
 
 pub(super) fn append_item_into_table(
@@ -421,12 +564,14 @@ pub(super) fn append_item_into_table(
         || table_index >= items.len()
         || item_index >= items.len()
         || !item_has_block_object(&items[table_index])
-        || (items[table_index].has_table() && items[item_index].has_table())
+        // Single-content: the block can only absorb an *empty* neighbour, never
+        // a line that still carries its own text/image/table.
+        || !items[item_index].is_content_empty()
     {
         return None;
     }
 
-    let mut item = items.remove(item_index);
+    let item = items.remove(item_index);
     let table_index = if item_index < table_index {
         table_index.checked_sub(1)?
     } else {
@@ -434,7 +579,7 @@ pub(super) fn append_item_into_table(
     };
     let deleted = item.id;
     let target = items.get_mut(table_index)?;
-    target.content.append(&mut item.content);
+    append_content(target, &item);
 
     Some(TableMergeResult {
         target: target.id,
@@ -477,12 +622,14 @@ pub(super) fn split_table_item_at_text_col(
 
     let mut before_item = item.clone();
     let mut blocks = block_inlines_for_item(&item, None).into_iter();
-    before_item.content = content_from_block_line(&display[..col], &mut blocks);
+    before_item.content =
+        ItemContent::from_inlines(content_from_block_line(&display[..col], &mut blocks));
 
     let mut table_item = Item::new("");
     table_item.indent = item.indent;
     table_item.marker = item.marker;
-    table_item.content = content_from_block_line(&display[col..], &mut blocks);
+    table_item.content =
+        ItemContent::from_inlines(content_from_block_line(&display[col..], &mut blocks));
     let table = table_item.id;
 
     items[item_index] = before_item;
@@ -647,7 +794,7 @@ mod tests {
     #[test]
     fn table_headers_are_editable_buffer_rows() {
         let mut item = Item::new("");
-        item.content.push(Inline::Table(Table::new(1, 2)));
+        item.set_table(Table::new(1, 2));
 
         let (text, rows) = build_buffer(&[item.clone()]);
         let (_, rebuilt_rows) = build_buffer(&[item]);
@@ -669,82 +816,78 @@ mod tests {
     #[test]
     fn edited_header_rows_reconstruct_to_column_names() {
         let mut item = Item::new("");
-        item.content.push(Inline::Table(Table::new(1, 2)));
+        item.set_table(Table::new(1, 2));
         let (_, mut rows) = build_buffer(&[item]);
 
         rows[1].item.set_text("Project".to_string());
         rows[2].item.set_text("Owner".to_string());
         let top = reconstruct_top_level(&rows);
-        let table = top[0].table().expect("table remains inline");
+        let table = top[0].table().expect("table remains the line content");
 
         assert_eq!(table.columns[0].name, "Project");
         assert_eq!(table.columns[1].name, "Owner");
     }
 
     #[test]
-    fn table_anchor_buffer_preserves_inline_order() {
+    fn table_line_renders_as_single_object_and_round_trips() {
+        // A table is the whole content of its line: it renders as one object
+        // sentinel with no surrounding text, and round-trips as a block.
         let mut item = Item::new("");
-        item.content.push(Inline::text("Before"));
-        item.content.push(Inline::Table(Table::new(1, 1)));
-        item.content.push(Inline::text("After"));
+        item.set_table(Table::new(1, 1));
 
         let (text, rows) = build_buffer(&[item]);
         let line = text.lines().next().unwrap();
-        assert_eq!(line, format!("Before{}After", TABLE_OBJECT_CHAR));
+        assert_eq!(line, TABLE_OBJECT_CHAR.to_string());
 
         let rebuilt = reconstruct_top_level(&rows);
         assert_eq!(rebuilt.len(), 1);
-        assert_eq!(rebuilt[0].content.len(), 3);
-        assert!(matches!(rebuilt[0].content[0], Inline::Text { .. }));
-        assert!(matches!(rebuilt[0].content[1], Inline::Table(_)));
-        assert!(matches!(rebuilt[0].content[2], Inline::Text { .. }));
-        assert_eq!(rebuilt[0].text(), "BeforeAfter");
+        assert!(rebuilt[0].has_table());
+        assert_eq!(rebuilt[0].text(), "");
+        assert!(rebuilt[0].content.is_block());
     }
 
     #[test]
-    fn table_merge_keeps_table_inline_as_a_single_object() {
-        let before = Item::new("Before");
+    fn empty_line_merges_into_following_table() {
+        // Backspacing an empty line that sits above a table folds it away and
+        // leaves the table as a single object — no content is lost.
+        let empty = Item::new("");
+        let empty_id = empty.id;
         let mut table = Item::new("");
-        table.content.push(Inline::Table(Table::new(1, 2)));
-        let after = Item::new("After");
+        table.set_table(Table::new(1, 2));
         let table_id = table.id;
 
-        let mut top = vec![before.clone(), table, after.clone()];
-        let result = merge_table_item_into(&mut top, 0, 1).expect("table merges into text item");
+        let mut top = vec![empty, table];
+        let result = merge_table_item_into(&mut top, 0, 1).expect("empty line absorbs table");
 
-        assert_eq!(result.target, before.id);
+        assert_eq!(result.target, empty_id);
         assert_eq!(result.deleted, table_id);
         assert_eq!(result.target_index, 0);
-        assert_eq!(top.len(), 2);
-        assert_eq!(top[0].text(), "Before");
+        assert_eq!(top.len(), 1);
         assert!(top[0].has_table());
-        assert_eq!(top[1].id, after.id);
-
-        let (text, rows) = build_buffer(&top);
-        let lines = text.lines().take(3).collect::<Vec<_>>();
-        assert_eq!(lines[0], format!("Before{}", TABLE_OBJECT_CHAR));
-        assert_eq!(lines[1], "Column 1");
-        assert_eq!(lines[2], "Column 2");
-        assert_eq!(
-            table_object_range(lines[0]),
-            Some("Before".len().."Before".len() + TABLE_OBJECT_LEN)
-        );
-        assert!(rows[0].path.is_table_anchor());
-        assert!(rows[1].path.is_header_cell());
-        assert!(rows[2].path.is_header_cell());
-        let rebuilt = reconstruct_top_level(&rows);
-        assert_eq!(rebuilt.len(), 2);
-        assert_eq!(rebuilt[0].text(), "Before");
-        assert!(rebuilt[0].has_table());
-        assert_eq!(rebuilt[1].text(), "After");
+        assert_eq!(top[0].text(), "");
     }
 
     #[test]
-    fn table_merge_does_not_create_multiple_tables_on_one_item() {
-        let mut first = Item::new("First");
-        first.content.push(Inline::Table(Table::new(1, 1)));
-        let mut second = Item::new("Second");
-        second.content.push(Inline::Table(Table::new(1, 1)));
+    fn non_empty_line_refuses_to_merge_with_table() {
+        // A line that still has text cannot merge with a block — they stay on
+        // separate lines so nothing is silently dropped.
+        let before = Item::new("Before");
+        let mut table = Item::new("");
+        table.set_table(Table::new(1, 2));
+        let mut top = vec![before, table];
+
+        assert!(merge_table_item_into(&mut top, 0, 1).is_none());
+        assert_eq!(top.len(), 2);
+        assert_eq!(top[0].text(), "Before");
+        assert!(top[1].has_table());
+    }
+
+    #[test]
+    fn table_merge_does_not_combine_two_tables() {
+        let mut first = Item::new("");
+        first.set_table(Table::new(1, 1));
+        let mut second = Item::new("");
+        second.set_table(Table::new(1, 1));
         let mut top = vec![first, second];
 
         assert!(merge_table_item_into(&mut top, 0, 1).is_none());
@@ -754,73 +897,41 @@ mod tests {
     }
 
     #[test]
-    fn table_backward_merge_appends_following_text_after_table() {
+    fn empty_line_below_table_merges_backward_into_it() {
         let mut table = Item::new("");
-        table.content.push(Inline::Table(Table::new(1, 1)));
+        table.set_table(Table::new(1, 1));
         let table_id = table.id;
-        let suffix = Item::new("After");
-        let suffix_id = suffix.id;
-        let mut top = vec![table, suffix];
+        let empty = Item::new("");
+        let empty_id = empty.id;
+        let mut top = vec![table, empty];
 
-        let result = append_item_into_table(&mut top, 0, 1).expect("suffix merges into table item");
+        let result = append_item_into_table(&mut top, 0, 1).expect("empty line folds into table");
 
         assert_eq!(result.target, table_id);
-        assert_eq!(result.deleted, suffix_id);
+        assert_eq!(result.deleted, empty_id);
         assert_eq!(result.target_index, 0);
         assert_eq!(top.len(), 1);
-        assert!(matches!(top[0].content[0], Inline::Table(_)));
-        assert!(matches!(&top[0].content[1], Inline::Text { text } if text == "After"));
+        assert!(top[0].has_table());
     }
 
     #[test]
-    fn table_split_moves_table_to_new_item_after_text() {
-        let mut item = Item::new("BeforeAfter");
-        item.indent = 2;
-        item.content.push(Inline::Table(Table::new(1, 1)));
-        let mut top = vec![item.clone()];
+    fn non_empty_line_refuses_backward_merge_into_table() {
+        let mut table = Item::new("");
+        table.set_table(Table::new(1, 1));
+        let suffix = Item::new("After");
+        let mut top = vec![table, suffix];
 
-        let result =
-            split_table_item_at_text_col(&mut top, 0, 6).expect("table splits from text item");
-
+        assert!(append_item_into_table(&mut top, 0, 1).is_none());
         assert_eq!(top.len(), 2);
-        assert_eq!(top[0].id, item.id);
-        assert_eq!(top[0].text(), "Before");
-        assert!(!top[0].has_table());
-        assert_eq!(top[1].id, result.table);
+        assert!(top[0].has_table());
         assert_eq!(top[1].text(), "After");
-        assert_eq!(top[1].indent, 2);
-        assert!(top[1].has_table());
-        assert_eq!(result.table_index, 1);
-    }
-
-    #[test]
-    fn table_split_keeps_suffix_after_table() {
-        let mut item = Item::new("");
-        item.indent = 2;
-        item.content.push(Inline::text("Before"));
-        item.content.push(Inline::Table(Table::new(1, 1)));
-        item.content.push(Inline::text("After"));
-        let mut top = vec![item.clone()];
-
-        let result =
-            split_table_item_at_text_col(&mut top, 0, "Before".len()).expect("table splits");
-
-        assert_eq!(top.len(), 2);
-        assert_eq!(top[0].id, item.id);
-        assert_eq!(top[0].text(), "Before");
-        assert!(!top[0].has_table());
-        assert_eq!(top[1].id, result.table);
-        assert_eq!(top[1].text(), "After");
-        assert_eq!(top[1].indent, 2);
-        assert!(matches!(top[1].content[0], Inline::Table(_)));
-        assert!(matches!(top[1].content[1], Inline::Text { .. }));
     }
 
     #[test]
     fn table_split_at_start_inserts_blank_before_existing_table() {
         let mut item = Item::new("");
         item.indent = 1;
-        item.content.push(Inline::Table(Table::new(1, 1)));
+        item.set_table(Table::new(1, 1));
         let table_id = item.id;
         let mut top = vec![item];
 
@@ -838,96 +949,63 @@ mod tests {
     }
 
     #[test]
-    fn image_buffer_uses_object_char_and_preserves_order() {
+    fn image_line_renders_as_single_object_and_round_trips() {
         let mut item = Item::new("");
-        item.content.push(Inline::text("Before"));
-        item.content.push(Inline::Image(test_image()));
-        item.content.push(Inline::text("After"));
+        item.set_image(test_image());
 
         let (text, rows) = build_buffer(&[item]);
-        assert_eq!(text, format!("Before{}After", TABLE_OBJECT_CHAR));
-        assert_eq!(
-            block_object_ranges(&text),
-            vec!["Before".len().."Before".len() + TABLE_OBJECT_LEN]
-        );
+        assert_eq!(text, TABLE_OBJECT_CHAR.to_string());
+        assert_eq!(block_object_ranges(&text), vec![0..TABLE_OBJECT_LEN]);
 
         let rebuilt = reconstruct_top_level(&rows);
         assert_eq!(rebuilt.len(), 1);
-        assert!(matches!(rebuilt[0].content[0], Inline::Text { .. }));
-        assert!(matches!(rebuilt[0].content[1], Inline::Image(_)));
-        assert!(matches!(rebuilt[0].content[2], Inline::Text { .. }));
-        assert_eq!(rebuilt[0].text(), "BeforeAfter");
+        assert!(rebuilt[0].has_images());
+        assert_eq!(rebuilt[0].text(), "");
+        assert!(rebuilt[0].content.is_block());
     }
 
     #[test]
-    fn image_backward_merge_appends_following_text_after_image() {
+    fn empty_line_merges_backward_into_image() {
         let mut image = Item::new("");
-        image.content.push(Inline::Image(test_image()));
+        image.set_image(test_image());
         let image_id = image.id;
-        let suffix = Item::new("After");
-        let suffix_id = suffix.id;
-        let mut top = vec![image, suffix];
+        let empty = Item::new("");
+        let empty_id = empty.id;
+        let mut top = vec![image, empty];
 
-        let result = append_item_into_table(&mut top, 0, 1).expect("suffix merges into image item");
+        let result = append_item_into_table(&mut top, 0, 1).expect("empty line folds into image");
 
         assert_eq!(result.target, image_id);
-        assert_eq!(result.deleted, suffix_id);
+        assert_eq!(result.deleted, empty_id);
         assert_eq!(result.target_index, 0);
         assert_eq!(top.len(), 1);
-        assert!(matches!(top[0].content[0], Inline::Image(_)));
-        assert!(matches!(&top[0].content[1], Inline::Text { text } if text == "After"));
+        assert!(top[0].has_images());
     }
 
     #[test]
-    fn image_split_moves_image_to_new_item_after_text() {
-        let mut item = Item::new("");
-        item.indent = 2;
-        item.content.push(Inline::text("Before"));
-        item.content.push(Inline::Image(test_image()));
-        item.content.push(Inline::text("After"));
-        let mut top = vec![item.clone()];
-
-        let result =
-            split_table_item_at_text_col(&mut top, 0, "Before".len()).expect("image splits");
-
-        assert_eq!(top.len(), 2);
-        assert_eq!(top[0].id, item.id);
-        assert_eq!(top[0].text(), "Before");
-        assert!(!top[0].has_images());
-        assert_eq!(top[1].id, result.table);
-        assert_eq!(top[1].text(), "After");
-        assert_eq!(top[1].indent, 2);
-        assert!(matches!(top[1].content[0], Inline::Image(_)));
-        assert!(matches!(top[1].content[1], Inline::Text { .. }));
-    }
-
-    #[test]
-    fn selected_block_inlines_extracts_selected_image_or_table() {
+    fn selected_block_inlines_extracts_the_line_block() {
+        // Each block is its own line, so selecting that line's object yields the
+        // single block the line carries.
         let image = test_image();
-        let mut item = Item::new("");
-        item.content.push(Inline::text("Before"));
-        item.content.push(Inline::Image(image));
-        item.content.push(Inline::Table(Table::new(1, 1)));
-        item.content.push(Inline::text("After"));
-
-        let (text, _) = build_buffer(&[item.clone()]);
-        let image_start = "Before".len();
-        let image_range = image_start..image_start + TABLE_OBJECT_LEN;
-        let table_start = image_range.end;
-        let table_range = table_start..table_start + TABLE_OBJECT_LEN;
-
+        let mut image_item = Item::new("");
+        image_item.set_image(image);
+        let (image_text, _) = build_buffer(&[image_item.clone()]);
         assert_eq!(
-            selected_block_inlines(&item, &text, image_range),
+            selected_block_inlines(&image_item, &image_text, 0..TABLE_OBJECT_LEN),
             vec![Inline::Image(image)]
         );
+
+        let mut table_item = Item::new("");
+        table_item.set_table(Table::new(1, 1));
+        let (table_text, _) = build_buffer(&[table_item.clone()]);
         assert!(matches!(
-            selected_block_inlines(&item, &text, table_range).as_slice(),
+            selected_block_inlines(&table_item, &table_text, 0..TABLE_OBJECT_LEN).as_slice(),
             [Inline::Table(_)]
         ));
     }
 
     #[test]
-    fn replace_block_range_with_inlines_replaces_selected_object_only() {
+    fn replace_block_range_swaps_the_line_block() {
         let first = test_image();
         let second = ImageInline {
             asset: Uuid::new_v4(),
@@ -936,50 +1014,16 @@ mod tests {
             height: Some(480),
         };
         let mut item = Item::new("");
-        item.content.push(Inline::text("Before"));
-        item.content.push(Inline::Image(first));
-        item.content.push(Inline::text("After"));
+        item.set_image(first);
 
         let (text, _) = build_buffer(&[item.clone()]);
-        let image_start = "Before".len();
-        let image_range = image_start..image_start + TABLE_OBJECT_LEN;
-
         assert!(replace_block_range_with_inlines(
             &mut item,
             &text,
-            image_range,
+            0..TABLE_OBJECT_LEN,
             vec![Inline::Image(second)]
         ));
-        assert_eq!(
-            item.content,
-            vec![
-                Inline::text("Before"),
-                Inline::Image(second),
-                Inline::text("After")
-            ]
-        );
-    }
-
-    #[test]
-    fn replace_block_range_with_inlines_inserts_object_at_cursor() {
-        let image = test_image();
-        let mut item = Item::new("BeforeAfter");
-        let line = item.text();
-
-        assert!(replace_block_range_with_inlines(
-            &mut item,
-            &line,
-            "Before".len().."Before".len(),
-            vec![Inline::Image(image)]
-        ));
-        assert_eq!(
-            item.content,
-            vec![
-                Inline::text("Before"),
-                Inline::Image(image),
-                Inline::text("After")
-            ]
-        );
+        assert_eq!(item.content, ItemContent::Image(second));
     }
 
     #[test]
@@ -1009,8 +1053,8 @@ mod tests {
     #[test]
     fn row_equality_tracks_media_metadata() {
         let base = Item::new("image");
-        let mut with_media = Item::new("image");
-        with_media.push_image(ImageInline {
+        let mut with_media = Item::new("");
+        with_media.set_image(ImageInline {
             asset: Uuid::new_v4(),
             format: ImageAssetFormat::Png,
             width: Some(32),
@@ -1021,6 +1065,125 @@ mod tests {
             &[EditorRow::doc(base)],
             &[EditorRow::doc(with_media)]
         ));
+    }
+
+    #[test]
+    fn split_line_with_blocks_splits_text_around_a_mid_line_image() {
+        let mut orig = Item::new("hello");
+        orig.indent = 2;
+        let id = orig.id;
+        let result = split_line_with_blocks(&orig, 3, vec![Inline::Image(test_image())]);
+
+        assert_eq!(result.len(), 3);
+        assert_eq!(result[0].id, id, "leading text keeps the original identity");
+        assert_eq!(result[0].text(), "hel");
+        assert_eq!(result[0].indent, 2);
+        assert!(result[1].has_images());
+        assert_eq!(result[1].indent, 2);
+        assert_eq!(result[2].text(), "lo");
+        assert_ne!(result[2].id, id);
+    }
+
+    #[test]
+    fn split_line_with_blocks_at_start_keeps_text_after_block() {
+        let orig = Item::new("hello");
+        let id = orig.id;
+        let result = split_line_with_blocks(&orig, 0, vec![Inline::Image(test_image())]);
+
+        assert_eq!(result.len(), 2);
+        assert!(result[0].has_images());
+        // The original text line keeps its identity, now after the block.
+        assert_eq!(result[1].id, id);
+        assert_eq!(result[1].text(), "hello");
+    }
+
+    #[test]
+    fn split_line_with_blocks_at_end_keeps_text_before_block() {
+        let orig = Item::new("hello");
+        let id = orig.id;
+        let result = split_line_with_blocks(&orig, 5, vec![Inline::Image(test_image())]);
+
+        assert_eq!(result.len(), 2);
+        assert_eq!(result[0].id, id);
+        assert_eq!(result[0].text(), "hello");
+        assert!(result[1].has_images());
+    }
+
+    #[test]
+    fn split_line_with_blocks_on_empty_line_becomes_the_block() {
+        let orig = Item::new("");
+        let id = orig.id;
+        let result = split_line_with_blocks(&orig, 0, vec![Inline::Image(test_image())]);
+
+        assert_eq!(result.len(), 1);
+        assert!(result[0].has_images());
+        assert_eq!(
+            result[0].id, id,
+            "empty line keeps its identity as the block"
+        );
+    }
+
+    #[test]
+    fn split_line_with_blocks_on_block_line_appends_after() {
+        let mut orig = Item::new("");
+        orig.set_table(Table::new(1, 1));
+        let id = orig.id;
+        let result = split_line_with_blocks(&orig, 0, vec![Inline::Image(test_image())]);
+
+        assert_eq!(result.len(), 2);
+        assert_eq!(result[0].id, id);
+        assert!(result[0].has_table());
+        assert!(result[1].has_images());
+    }
+
+    fn image_item() -> Item {
+        let mut item = Item::new("");
+        item.set_image(test_image());
+        item
+    }
+
+    #[test]
+    fn splice_restores_a_cut_text_image_text_run() {
+        // "hello" / [image] / "world": cutting "lo[image]wo" leaves the joined
+        // line "helrld" with the caret at col 3; pasting the captured run must
+        // restore the three original lines (a no-op).
+        let current = Item::new("helrld");
+        let items = vec![Item::new("lo"), image_item(), Item::new("wo")];
+        let (result, cursor_index, cursor_col) = splice_items_into_line(&current, 3, items);
+
+        assert_eq!(result.len(), 3);
+        assert_eq!(result[0].text(), "hello");
+        assert!(result[1].has_images());
+        assert_eq!(result[2].text(), "world");
+        // The first restored line keeps the caret line's identity.
+        assert_eq!(result[0].id, current.id);
+        // Caret lands at the original selection end (inside "world", after "wo").
+        assert_eq!(cursor_index, 2);
+        assert_eq!(cursor_col, 2);
+    }
+
+    #[test]
+    fn splice_with_leading_block_restores_run() {
+        // [image] / "world": cutting "[image]wor" leaves "ld" with caret at col 0.
+        let current = Item::new("ld");
+        let items = vec![image_item(), Item::new("wor")];
+        let (result, _, _) = splice_items_into_line(&current, 0, items);
+
+        assert_eq!(result.len(), 2);
+        assert!(result[0].has_images());
+        assert_eq!(result[1].text(), "world");
+    }
+
+    #[test]
+    fn splice_with_trailing_block_restores_run() {
+        // "hello" / [image]: cutting "lo[image]" leaves "hel" with caret at col 3.
+        let current = Item::new("hel");
+        let items = vec![Item::new("lo"), image_item()];
+        let (result, _, _) = splice_items_into_line(&current, 3, items);
+
+        assert_eq!(result.len(), 2);
+        assert_eq!(result[0].text(), "hello");
+        assert!(result[1].has_images());
     }
 
     fn test_image() -> ImageInline {

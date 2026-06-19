@@ -1,5 +1,6 @@
 use chrono::{DateTime, Utc};
-use serde::{Deserialize, Serialize};
+use serde::{de, Deserialize, Deserializer, Serialize, Serializer};
+use std::fmt;
 use uuid::Uuid;
 
 use crate::{
@@ -10,11 +11,12 @@ use crate::{
 pub struct Item {
     #[serde(default)]
     pub id: crate::ItemId,
-    /// The line's content as an ordered run of inline pieces: text, inline
-    /// images, and tables. Replaces the old `text` + `media` split — a line is
-    /// one content stream, so images and tables live *in* the text flow.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub content: Vec<Inline>,
+    /// The line's content. A line is *exactly one* of: plain text, a single
+    /// image, or a single table. Images and tables are whole-line block objects
+    /// — they never share a line with text or with each other. The cursor treats
+    /// a block line as an atomic object (select/delete the whole line).
+    #[serde(default, skip_serializing_if = "ItemContent::is_empty_text")]
+    pub content: ItemContent,
     #[serde(default, skip_serializing_if = "is_default_marker")]
     pub marker: ItemMarker,
     #[serde(default, skip_serializing_if = "is_zero_u8")]
@@ -36,8 +38,115 @@ pub struct Item {
     pub external: Option<ExternalItemSource>,
 }
 
-/// One piece of a line's content. Most lines are a single [`Inline::Text`]; an
-/// image or table is just another inline that flows with the text.
+/// The whole content of a single line: exactly one of plain text, one image, or
+/// one table. This is the model's per-line content type — a line can never mix
+/// these, so an image or table always occupies a line by itself.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum ItemContent {
+    Text { text: String },
+    Image(ImageInline),
+    Table(Table),
+}
+
+impl Default for ItemContent {
+    fn default() -> Self {
+        ItemContent::Text {
+            text: String::new(),
+        }
+    }
+}
+
+impl ItemContent {
+    pub fn text(text: impl Into<String>) -> Self {
+        ItemContent::Text { text: text.into() }
+    }
+
+    /// The text of a text line, or `None` for an image/table line.
+    pub fn as_text(&self) -> Option<&str> {
+        match self {
+            ItemContent::Text { text } => Some(text.as_str()),
+            _ => None,
+        }
+    }
+
+    pub fn is_text(&self) -> bool {
+        matches!(self, ItemContent::Text { .. })
+    }
+
+    /// True for an image or table line (a whole-line block object).
+    pub fn is_block(&self) -> bool {
+        matches!(self, ItemContent::Image(_) | ItemContent::Table(_))
+    }
+
+    /// True for an empty text line — the default "blank" content.
+    pub fn is_empty_text(&self) -> bool {
+        matches!(self, ItemContent::Text { text } if text.is_empty())
+    }
+
+    pub fn image(&self) -> Option<&ImageInline> {
+        match self {
+            ItemContent::Image(image) => Some(image),
+            _ => None,
+        }
+    }
+
+    pub fn table(&self) -> Option<&Table> {
+        match self {
+            ItemContent::Table(table) => Some(table),
+            _ => None,
+        }
+    }
+
+    pub fn table_mut(&mut self) -> Option<&mut Table> {
+        match self {
+            ItemContent::Table(table) => Some(table),
+            _ => None,
+        }
+    }
+
+    // ── CRDT bridge ─────────────────────────────────────────────────────────
+    //
+    // The collaborative engine still represents a line as a run of [`Inline`]
+    // units (text characters plus image/table embeds) so its character-level
+    // merge machinery is unchanged. These convert between that flat run and the
+    // model's single-content form at the boundary.
+
+    /// Flatten to the CRDT's inline run. An empty text line is the empty run.
+    pub fn to_inlines(&self) -> Vec<Inline> {
+        match self {
+            ItemContent::Text { text } if text.is_empty() => Vec::new(),
+            ItemContent::Text { text } => vec![Inline::Text { text: text.clone() }],
+            ItemContent::Image(image) => vec![Inline::Image(*image)],
+            ItemContent::Table(table) => vec![Inline::Table(table.clone())],
+        }
+    }
+
+    /// Collapse a CRDT inline run back to single-content. If a merge ever yields
+    /// a mix, the first block (image/table) in document order wins; otherwise the
+    /// text runs are concatenated. This keeps convergence deterministic.
+    pub fn from_inlines(inlines: Vec<Inline>) -> Self {
+        for inline in &inlines {
+            match inline {
+                Inline::Image(image) => return ItemContent::Image(*image),
+                Inline::Table(table) => return ItemContent::Table(table.clone()),
+                Inline::Text { .. } => {}
+            }
+        }
+        let mut text = String::new();
+        for inline in inlines {
+            if let Inline::Text { text: chunk } = inline {
+                text.push_str(&chunk);
+            }
+        }
+        ItemContent::Text { text }
+    }
+}
+
+/// One unit of a line in the collaborative engine: a text run or an image/table
+/// embed. This is an *internal* representation used only by the sync CRDT and
+/// the `ItemContent` bridge above — the model field is [`ItemContent`], which
+/// constrains a line to a single content kind.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum Inline {
@@ -80,11 +189,7 @@ impl Item {
         let text = text.into();
         Self {
             id: crate::ItemId::new(),
-            content: if text.is_empty() {
-                Vec::new()
-            } else {
-                vec![Inline::Text { text }]
-            },
+            content: ItemContent::Text { text },
             marker: ItemMarker::Blank,
             indent: 0,
             start: None,
@@ -135,80 +240,52 @@ impl Item {
 
     // ── Content accessors ───────────────────────────────────────────────────
 
-    /// The line's plain text: every [`Inline::Text`] run concatenated. Images
-    /// and tables contribute nothing. This is the analog of the old `text`
-    /// field and the value most non-editor consumers want.
+    /// The line's plain text, or the empty string for an image/table line. This
+    /// is the value most non-editor consumers want.
     pub fn text(&self) -> String {
-        let mut out = String::new();
-        for inline in &self.content {
-            if let Inline::Text { text } = inline {
-                out.push_str(text);
-            }
-        }
-        out
+        self.content.as_text().unwrap_or("").to_string()
     }
 
-    /// True when the line has no text and no images/tables.
+    /// True when the line is an empty text line (no text, no image/table).
     pub fn is_content_empty(&self) -> bool {
-        self.content.iter().all(|inline| match inline {
-            Inline::Text { text } => text.is_empty(),
-            _ => false,
-        })
+        self.content.is_empty_text()
     }
 
-    /// Replace the line's text with a single run, preserving any images/tables
-    /// (kept after the text, matching the old "text and media are independent"
-    /// behavior). Callers doing fine-grained inline editing manipulate
-    /// `content` directly instead.
+    /// Make this a text line with the given text (replacing any image/table).
     pub fn set_text(&mut self, text: impl Into<String>) {
-        let text = text.into();
-        let mut rest: Vec<Inline> = std::mem::take(&mut self.content)
-            .into_iter()
-            .filter(|inline| !inline.is_text())
-            .collect();
-        if text.is_empty() {
-            self.content = rest;
-        } else {
-            self.content = Vec::with_capacity(rest.len() + 1);
-            self.content.push(Inline::Text { text });
-            self.content.append(&mut rest);
-        }
+        self.content = ItemContent::Text { text: text.into() };
     }
 
-    /// Iterator over the inline images on this line, in order.
+    /// Iterator over the line's image (zero or one — a line holds at most one).
     pub fn images(&self) -> impl Iterator<Item = &ImageInline> {
-        self.content.iter().filter_map(|inline| match inline {
-            Inline::Image(image) => Some(image),
-            _ => None,
-        })
+        self.content.image().into_iter()
     }
 
     pub fn has_images(&self) -> bool {
-        self.content.iter().any(|i| matches!(i, Inline::Image(_)))
+        matches!(self.content, ItemContent::Image(_))
     }
 
-    /// The first table on this line, if any.
+    /// This line's table, if it is a table line.
     pub fn table(&self) -> Option<&Table> {
-        self.content.iter().find_map(|inline| match inline {
-            Inline::Table(table) => Some(table),
-            _ => None,
-        })
+        self.content.table()
     }
 
     pub fn table_mut(&mut self) -> Option<&mut Table> {
-        self.content.iter_mut().find_map(|inline| match inline {
-            Inline::Table(table) => Some(table),
-            _ => None,
-        })
+        self.content.table_mut()
     }
 
     pub fn has_table(&self) -> bool {
-        self.content.iter().any(|i| matches!(i, Inline::Table(_)))
+        matches!(self.content, ItemContent::Table(_))
     }
 
-    /// Append an inline image to the end of the content.
-    pub fn push_image(&mut self, image: ImageInline) {
-        self.content.push(Inline::Image(image));
+    /// Make this an image line (replacing any prior text/image/table content).
+    pub fn set_image(&mut self, image: ImageInline) {
+        self.content = ItemContent::Image(image);
+    }
+
+    /// Make this a table line (replacing any prior text/image/table content).
+    pub fn set_table(&mut self, table: Table) {
+        self.content = ItemContent::Table(table);
     }
 
     pub fn kind(&self) -> ItemKind {
@@ -305,14 +382,80 @@ pub struct ExternalItemSource {
     pub updated_at: Option<DateTime<Utc>>,
 }
 
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub enum ItemMarker {
     #[default]
     Blank,
     Bullet,
     Numbered,
     Checkbox,
+}
+
+impl ItemMarker {
+    pub fn parse(value: &str) -> Result<Self, ParseItemMarkerError> {
+        let base = marker_base(value).ok_or_else(|| ParseItemMarkerError {
+            value: value.to_string(),
+        })?;
+        match base {
+            "blank" => Ok(Self::Blank),
+            "bullet" => Ok(Self::Bullet),
+            "numbered" => Ok(Self::Numbered),
+            "checkbox" => Ok(Self::Checkbox),
+            _ => Err(ParseItemMarkerError {
+                value: value.to_string(),
+            }),
+        }
+    }
+
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Blank => "blank",
+            Self::Bullet => "bullet",
+            Self::Numbered => "numbered",
+            Self::Checkbox => "checkbox",
+        }
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ParseItemMarkerError {
+    value: String,
+}
+
+impl fmt::Display for ParseItemMarkerError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "unknown item marker {:?}", self.value)
+    }
+}
+
+impl std::error::Error for ParseItemMarkerError {}
+
+impl Serialize for ItemMarker {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        serializer.serialize_str(self.as_str())
+    }
+}
+
+impl<'de> Deserialize<'de> for ItemMarker {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let value = String::deserialize(deserializer)?;
+        Self::parse(&value).map_err(de::Error::custom)
+    }
+}
+
+fn marker_base(value: &str) -> Option<&str> {
+    match value.split_once('.') {
+        Some((base, subtype)) if !base.is_empty() && !subtype.is_empty() => Some(base),
+        Some(_) => None,
+        None if !value.is_empty() => Some(value),
+        None => None,
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq, Serialize, Deserialize)]
@@ -374,44 +517,59 @@ mod tests {
     #[test]
     fn new_empty_text_has_no_content() {
         let item = Item::new("");
-        assert!(item.content.is_empty());
+        assert!(item.content.is_empty_text());
         assert_eq!(item.text(), "");
         assert!(item.is_content_empty());
     }
 
     #[test]
-    fn text_concatenates_text_runs_only() {
-        let item = Item {
-            content: vec![Inline::text("a"), Inline::Image(image()), Inline::text("b")],
-            ..Item::new("")
-        };
+    fn text_line_reports_text_and_no_block() {
+        let item = Item::new("ab");
         assert_eq!(item.text(), "ab");
+        assert!(!item.is_content_empty());
+        assert_eq!(item.images().count(), 0);
+        assert!(!item.has_images());
+        assert!(!item.has_table());
+    }
+
+    #[test]
+    fn image_line_is_a_block_with_no_text() {
+        let mut item = Item::new("");
+        item.set_image(image());
+        assert_eq!(item.text(), "");
         assert!(!item.is_content_empty());
         assert_eq!(item.images().count(), 1);
         assert!(item.has_images());
+        assert!(item.content.is_block());
     }
 
     #[test]
-    fn set_text_replaces_text_but_keeps_images() {
-        let mut item = Item::new("hello");
-        let img = image();
-        item.push_image(img);
+    fn set_text_replaces_any_block_with_text() {
+        let mut item = Item::new("");
+        item.set_image(image());
         item.set_text("world");
         assert_eq!(item.text(), "world");
-        // The image survives and now follows the new text run.
-        assert_eq!(
-            item.content,
-            vec![Inline::text("world"), Inline::Image(img)]
-        );
+        assert!(!item.has_images());
+        assert_eq!(item.content, ItemContent::text("world"));
     }
 
     #[test]
-    fn set_text_empty_drops_text_run_keeps_images() {
-        let mut item = Item::new("hello");
-        item.push_image(image());
-        item.set_text("");
-        assert_eq!(item.text(), "");
-        assert_eq!(item.images().count(), 1);
+    fn content_inline_bridge_roundtrips_each_kind() {
+        for content in [
+            ItemContent::text("hi"),
+            ItemContent::text(""),
+            ItemContent::Image(image()),
+        ] {
+            let back = ItemContent::from_inlines(content.to_inlines());
+            assert_eq!(content, back);
+        }
+    }
+
+    #[test]
+    fn from_inlines_prefers_block_on_mixed_run() {
+        let img = image();
+        let mixed = vec![Inline::text("a"), Inline::Image(img), Inline::text("b")];
+        assert_eq!(ItemContent::from_inlines(mixed), ItemContent::Image(img));
     }
 
     #[test]
@@ -420,5 +578,38 @@ mod tests {
         let json = serde_json::to_string(&inlines).unwrap();
         let back: Vec<Inline> = serde_json::from_str(&json).unwrap();
         assert_eq!(inlines, back);
+    }
+
+    #[test]
+    fn marker_deserializes_dotted_subtypes_as_base_markers() {
+        for (raw, marker) in [
+            ("\"blank.legacy\"", ItemMarker::Blank),
+            ("\"bullet.disc\"", ItemMarker::Bullet),
+            ("\"numbered.alphabet\"", ItemMarker::Numbered),
+            ("\"checkbox.square\"", ItemMarker::Checkbox),
+        ] {
+            let parsed: ItemMarker = serde_json::from_str(raw).unwrap();
+            assert_eq!(parsed, marker);
+        }
+    }
+
+    #[test]
+    fn marker_serializes_base_marker_name() {
+        assert_eq!(
+            serde_json::to_string(&ItemMarker::Numbered).unwrap(),
+            "\"numbered\""
+        );
+    }
+
+    #[test]
+    fn marker_rejects_unknown_or_empty_dotted_markers() {
+        for raw in [
+            "\"list.alphabet\"",
+            "\"numbered.\"",
+            "\".alphabet\"",
+            "\"\"",
+        ] {
+            assert!(serde_json::from_str::<ItemMarker>(raw).is_err());
+        }
     }
 }

@@ -159,7 +159,10 @@ pub fn make_default_workspace_for_date(today: NaiveDate) -> Workspace {
     );
     past_daily.id = knotq_model::daily_queue_scheme_id(yesterday);
     past_daily.items = vec![
-        fixed_item("00000000-0000-8000-8000-000000000402", "Past daily pages stay available here"),
+        fixed_item(
+            "00000000-0000-8000-8000-000000000402",
+            "Past daily pages stay available here",
+        ),
         fixed_item(
             "00000000-0000-8000-8000-000000000403",
             "Completed work stays behind as a record",
@@ -205,21 +208,15 @@ fn make_start_here_scheme(today: NaiveDate) -> Scheme {
     let mut scheme = Scheme::new("Coursework", 0);
     scheme.id = fixed_scheme_id("00000000-0000-8000-8000-000000000101");
     scheme.items = vec![
-        fixed_item(
-            "00000000-0000-8000-8000-000000001003",
-            "### Thesis",
-        ),
+        fixed_item("00000000-0000-8000-8000-000000001003", "### Thesis"),
         fixed_item(
             "00000000-0000-8000-8000-000000001004",
             "==Argument:== compare economic pressure and *public trust*",
         )
         .with_marker(ItemMarker::Bullet),
-        fixed_item(
-            "00000000-0000-8000-8000-000000001005",
-            "Final draft",
-        )
-        .with_marker(ItemMarker::Checkbox)
-        .with_end(local_dt(today + Duration::days(2), 17, 0)),
+        fixed_item("00000000-0000-8000-8000-000000001005", "Final draft")
+            .with_marker(ItemMarker::Checkbox)
+            .with_end(local_dt(today + Duration::days(2), 17, 0)),
         fixed_item(
             "00000000-0000-8000-8000-000000001006",
             "Finish source notes",
@@ -232,12 +229,9 @@ fn make_start_here_scheme(today: NaiveDate) -> Scheme {
         )
         .with_marker(ItemMarker::Checkbox)
         .with_indent(1),
-        fixed_item(
-            "00000000-0000-8000-8000-000000001008",
-            "Citation question",
-        )
-        .with_marker(ItemMarker::Checkbox)
-        .with_start(local_dt(today + Duration::days(1), 15, 30)),
+        fixed_item("00000000-0000-8000-8000-000000001008", "Citation question")
+            .with_marker(ItemMarker::Checkbox)
+            .with_start(local_dt(today + Duration::days(1), 15, 30)),
         fixed_item(
             "00000000-0000-8000-8000-000000001009",
             "Old outline moved into final draft",
@@ -255,13 +249,10 @@ fn make_start_here_scheme(today: NaiveDate) -> Scheme {
             "Make flashcards for *key terms*",
         )
         .with_marker(ItemMarker::Checkbox),
-        fixed_item(
-            "00000000-0000-8000-8000-000000001013",
-            "Study block",
-        )
-        .with_marker(ItemMarker::Checkbox)
-        .with_start(local_dt(today + Duration::days(1), 19, 0))
-        .with_end(local_dt(today + Duration::days(1), 20, 30)),
+        fixed_item("00000000-0000-8000-8000-000000001013", "Study block")
+            .with_marker(ItemMarker::Checkbox)
+            .with_start(local_dt(today + Duration::days(1), 19, 0))
+            .with_end(local_dt(today + Duration::days(1), 20, 30)),
         fixed_item(
             "00000000-0000-8000-8000-000000001014",
             "Questions for office hours",
@@ -285,24 +276,18 @@ fn make_scheduling_scheme(today: NaiveDate) -> Scheme {
             "**Events** have a start and end",
         )
         .with_marker(ItemMarker::Bullet),
-        fixed_item(
-            "00000000-0000-8000-8000-000000002004",
-            "Focus block",
-        )
-        .with_marker(ItemMarker::Checkbox)
-        .with_start(local_dt(today, 10, 0))
-        .with_end(local_dt(today, 11, 0)),
+        fixed_item("00000000-0000-8000-8000-000000002004", "Focus block")
+            .with_marker(ItemMarker::Checkbox)
+            .with_start(local_dt(today, 10, 0))
+            .with_end(local_dt(today, 11, 0)),
         fixed_item(
             "00000000-0000-8000-8000-000000002005",
             "**Assignments** have a deadline",
         )
         .with_marker(ItemMarker::Bullet),
-        fixed_item(
-            "00000000-0000-8000-8000-000000002006",
-            "First draft",
-        )
-        .with_marker(ItemMarker::Checkbox)
-        .with_end(local_dt(today + Duration::days(1), 17, 0)),
+        fixed_item("00000000-0000-8000-8000-000000002006", "First draft")
+            .with_marker(ItemMarker::Checkbox)
+            .with_end(local_dt(today + Duration::days(1), 17, 0)),
         fixed_item(
             "00000000-0000-8000-8000-000000002007",
             "**Reminders** happen at one time",
@@ -342,12 +327,12 @@ fn make_projects_scheme(today: NaiveDate) -> Scheme {
             .with_marker(ItemMarker::Checkbox)
             .done(),
         fixed_item("00000000-0000-8000-8000-000000003005", "Open questions")
-        .with_marker(ItemMarker::Checkbox)
-        .with_end(local_dt(today + Duration::days(2), 12, 0)),
+            .with_marker(ItemMarker::Checkbox)
+            .with_end(local_dt(today + Duration::days(2), 12, 0)),
         fixed_item("00000000-0000-8000-8000-000000003006", "Work session")
-        .with_marker(ItemMarker::Checkbox)
-        .with_start(local_dt(today + Duration::days(1), 14, 0))
-        .with_end(local_dt(today + Duration::days(1), 15, 0)),
+            .with_marker(ItemMarker::Checkbox)
+            .with_start(local_dt(today + Duration::days(1), 14, 0))
+            .with_end(local_dt(today + Duration::days(1), 15, 0)),
         fixed_item(
             "00000000-0000-8000-8000-000000003007",
             "Nested notes keep context close",

@@ -469,7 +469,7 @@ impl SchemeEditor {
         let mut top = reconstruct_top_level(&self.rows);
         let insert_pos = (self.current_top_level_index() + 1).min(top.len());
         let mut table_item = Item::new("");
-        table_item.content.push(Inline::Table(Table::new(2, 2)));
+        table_item.set_table(Table::new(2, 2));
         let table_id = table_item.id;
         top.insert(insert_pos, table_item.clone());
 

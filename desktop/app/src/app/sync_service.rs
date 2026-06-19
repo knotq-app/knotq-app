@@ -10,7 +10,7 @@ use chrono::Utc;
 use futures::{pin_mut, select, FutureExt};
 use gpui::{Context, Task};
 use knotq_model::{
-    DocumentId, ImageAssetFormat, ImageInline, Inline, Item, OperationId, ReplicaId,
+    DocumentId, ImageAssetFormat, ImageInline, Item, ItemContent, OperationId, ReplicaId,
     SyncAccountSettings, SyncAccountStatus, Workspace, WorkspaceId,
 };
 use knotq_storage_json::{
@@ -758,15 +758,13 @@ fn item_image_assets(item: &Item) -> Vec<ImageInline> {
 }
 
 fn collect_item_image_assets(item: &Item, images: &mut Vec<ImageInline>) {
-    for inline in &item.content {
-        match inline {
-            Inline::Text { .. } => {}
-            Inline::Image(image) => images.push(*image),
-            Inline::Table(table) => {
-                for cell in table.cells() {
-                    for item in &cell.items {
-                        collect_item_image_assets(item, images);
-                    }
+    match &item.content {
+        ItemContent::Text { .. } => {}
+        ItemContent::Image(image) => images.push(*image),
+        ItemContent::Table(table) => {
+            for cell in table.cells() {
+                for item in &cell.items {
+                    collect_item_image_assets(item, images);
                 }
             }
         }

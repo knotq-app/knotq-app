@@ -81,7 +81,11 @@ pub(super) fn empty_line_delete_plan(
 
 pub(super) fn item_for_rich_paste(mut item: Item) -> Item {
     item.id = knotq_model::ItemId::new();
-    item.set_text(clean_line_text(&item.text()));
+    // Only normalize a *text* line's text — an image/table line is a whole-line
+    // block, and `set_text` would clobber it (single-content), so leave it intact.
+    if item.content.is_text() {
+        item.set_text(clean_line_text(&item.text()));
+    }
     item.indent = item.indent.min(MAX_INDENT);
     item.enforce_marker_constraints();
     item

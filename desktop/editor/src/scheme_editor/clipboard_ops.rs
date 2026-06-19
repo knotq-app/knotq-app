@@ -61,8 +61,57 @@ impl SchemeEditor {
             ));
             return None;
         }
+        // A selection that spans text *and* a block (image/table) but isn't a
+        // clean whole-row range: capture the selected line fragments plus the
+        // whole-line blocks as items, so the block survives the round-trip
+        // instead of being dropped to a text-only copy.
+        if let Some(items) = self.selected_block_line_items() {
+            cx.write_to_clipboard(ClipboardItem::new_string_with_json_metadata(
+                text,
+                SchemeClipboardPayload::new_spliced(items),
+            ));
+            return None;
+        }
         cx.write_to_clipboard(ClipboardItem::new_string(text));
         None
+    }
+
+    /// Items for a selection that includes at least one whole-line block: each
+    /// selected text line contributes its selected substring, and each block its
+    /// whole-line content. Returns `None` when no block is in the selection (so a
+    /// pure-text selection keeps the inline-text clipboard behavior) or when the
+    /// selection dips into a table cell.
+    fn selected_block_line_items(&self) -> Option<Vec<Item>> {
+        let (start, end) = self.selection.ordered();
+        let mut items = Vec::new();
+        let mut saw_block = false;
+        for row in start.row..=end.row {
+            let Some(editor_row) = self.rows.get(row) else {
+                continue;
+            };
+            if editor_row.path.is_cell() {
+                return None;
+            }
+            let line_len = self.line_len(row);
+            let sel_start = (if row == start.row { start.col } else { 0 }).min(line_len);
+            let sel_end = (if row == end.row { end.col } else { line_len }).min(line_len);
+            if sel_start >= sel_end {
+                continue;
+            }
+            let mut item = editor_row.item.clone();
+            item.id = knotq_model::ItemId::new();
+            if item_has_block_object(&editor_row.item) {
+                saw_block = true;
+            } else {
+                let text = editor_row.item.text();
+                let from = previous_char_boundary_at(&text, sel_start);
+                let to = previous_char_boundary_at(&text, sel_end);
+                item.set_text(text[from..to].to_string());
+            }
+            items.push(item);
+        }
+
+        (saw_block && !items.is_empty()).then_some(items)
     }
 
     fn selected_block_object_clipboard_items(&self, selected_text: &str) -> Option<Vec<Item>> {
@@ -93,7 +142,7 @@ impl SchemeEditor {
             {
                 let mut item = Item::new("");
                 item.indent = editor_row.item.indent;
-                item.content.push(block);
+                item.content = ItemContent::from_inlines(vec![block]);
                 items.push(item);
             }
         }
@@ -239,6 +288,10 @@ impl SchemeEditor {
                 self.paste_rich_objects(payload.items, window, cx);
                 return;
             }
+            if payload.splice {
+                self.paste_spliced_items(payload.items, window, cx);
+                return;
+            }
             self.paste_rich_items(payload.items, window, cx);
             return;
         }
@@ -308,6 +361,19 @@ impl SchemeEditor {
         } else {
             self.line_len(row)
         };
+        let is_cell = self
+            .rows
+            .get(row)
+            .map(|r| r.path.is_cell())
+            .unwrap_or(false);
+        if !is_cell {
+            // Inserting an image into a normal line splits it: leading/trailing
+            // text stay as their own lines and the image lands on a line of its own.
+            let blocks = media.into_iter().map(Inline::Image).collect::<Vec<_>>();
+            return self.insert_block_lines_at_doc_row(row, insert_col, blocks, window, cx);
+        }
+
+        // Table cell line: insert in place (cells are sub-documents).
         let old_top = reconstruct_top_level(&self.rows);
         let Some(editor_row) = self.rows.get_mut(row) else {
             return false;
@@ -322,6 +388,125 @@ impl SchemeEditor {
         self.selection = TextSelection::collapsed(TextLocation {
             row,
             col: insert_col.min(self.line_len(row)),
+        });
+        self.marked_range = None;
+        self.reset_cursor_blink(cx);
+        self.scroll_to_cursor(cx);
+        self.emit_top_level_diff(&old_top, &new_top, cx);
+        cx.notify();
+        true
+    }
+
+    /// Insert `blocks` (image/table inlines) at `col` on a *document* line,
+    /// splitting the line's text around them so each block becomes its own line.
+    pub(super) fn insert_block_lines_at_doc_row(
+        &mut self,
+        row: usize,
+        col: usize,
+        blocks: Vec<Inline>,
+        window: Option<&mut Window>,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        if self.read_only || blocks.is_empty() || self.rows.is_empty() {
+            return false;
+        }
+        let row = row.min(self.rows.len() - 1);
+        let old_top = reconstruct_top_level(&self.rows);
+        let Some(pos) = top_level_index_for_flat_row(&self.rows, row) else {
+            return false;
+        };
+        let mut new_top = old_top.clone();
+        let Some(orig) = new_top.get(pos) else {
+            return false;
+        };
+        let replacement = split_line_with_blocks(orig, col, blocks);
+        let inserted = replacement.len();
+        new_top.splice(pos..=pos, replacement);
+
+        let (text, rows) = build_buffer(&new_top);
+        self.text = text;
+        self.rows = rows;
+        self.refresh_layout_after_content_change(window);
+        // Caret just after the inserted block(s): the start of the trailing text
+        // line when one exists, otherwise the end of the last block line.
+        let cursor_top = pos + inserted.saturating_sub(1);
+        let target_row = flat_row_for_top_level_index(&self.rows, cursor_top);
+        let col = if self
+            .rows
+            .get(target_row)
+            .is_some_and(|r| item_has_block_object(&r.item))
+        {
+            self.line_len(target_row)
+        } else {
+            0
+        };
+        self.selection = TextSelection::collapsed(TextLocation {
+            row: target_row,
+            col,
+        });
+        self.marked_range = None;
+        self.reset_cursor_blink(cx);
+        self.scroll_to_cursor(cx);
+        self.emit_top_level_diff(&old_top, &new_top, cx);
+        cx.notify();
+        true
+    }
+
+    /// Paste a run captured from a text+block selection, splicing it into the
+    /// caret line so a cut immediately followed by a paste restores the original.
+    pub(super) fn paste_spliced_items(
+        &mut self,
+        items: Vec<Item>,
+        mut window: Option<&mut Window>,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        if self.read_only || items.is_empty() {
+            return false;
+        }
+        // Replace any active selection first, then splice at the resulting caret.
+        if !self.selection.is_empty() {
+            self.replace_selection("", window.as_deref_mut(), cx);
+        }
+        let row = self
+            .current_row_index()
+            .min(self.rows.len().saturating_sub(1));
+        let Some(editor_row) = self.rows.get(row) else {
+            return false;
+        };
+        // A table cell or block line has no text position to splice into — fall
+        // back to inserting the items as their own lines.
+        if editor_row.path.is_cell() || item_has_block_object(&editor_row.item) {
+            return self.paste_rich_items(items, window, cx);
+        }
+        let col = self.selection.head.col.min(self.line_len(row));
+
+        let old_top = reconstruct_top_level(&self.rows);
+        let Some(pos) = top_level_index_for_flat_row(&self.rows, row) else {
+            return false;
+        };
+        let Some(current) = old_top.get(pos) else {
+            return false;
+        };
+        // Re-id so the pasted items stay distinct from any originals still present.
+        let mut items = items;
+        for item in &mut items {
+            item.id = knotq_model::ItemId::new();
+        }
+        let (replacement, cursor_index, cursor_col) = splice_items_into_line(current, col, items);
+        let inserted = replacement.len();
+
+        let mut new_top = old_top.clone();
+        new_top.splice(pos..=pos, replacement);
+
+        let (text, rows) = build_buffer(&new_top);
+        self.text = text;
+        self.rows = rows;
+        self.refresh_layout_after_content_change(window);
+        let cursor_top = pos + cursor_index.min(inserted.saturating_sub(1));
+        let target_row = flat_row_for_top_level_index(&self.rows, cursor_top);
+        self.selection = TextSelection::collapsed(TextLocation {
+            row: target_row,
+            col: cursor_col.min(self.line_len(target_row)),
         });
         self.marked_range = None;
         self.reset_cursor_blink(cx);
@@ -366,7 +551,7 @@ impl SchemeEditor {
         }
         let blocks = items
             .into_iter()
-            .flat_map(|item| item.content)
+            .flat_map(|item| item.content.to_inlines())
             .filter(|inline| !inline.is_text())
             .collect::<Vec<_>>();
         if blocks.is_empty() {
@@ -383,6 +568,12 @@ impl SchemeEditor {
         };
         if editor_row.path.is_cell() {
             return false;
+        }
+        // Pasting block objects at a caret (no selection) on a normal line splits
+        // the line so leading/trailing text survive as their own lines.
+        if start.col == end.col {
+            let col = start.col.min(self.line_len(row));
+            return self.insert_block_lines_at_doc_row(row, col, blocks, window, cx);
         }
         let Some(line) = self
             .line_range(row)
@@ -499,10 +690,11 @@ impl SchemeEditor {
 fn insert_images_at_text_col(item: &mut Item, col: usize, images: Vec<ImageInline>) {
     let mut remaining = col;
     let mut inserted = false;
-    let mut output = Vec::with_capacity(item.content.len() + images.len());
+    let existing = std::mem::take(&mut item.content).to_inlines();
+    let mut output = Vec::with_capacity(existing.len() + images.len());
     let mut image_inlines = images.into_iter().map(Inline::Image).collect::<Vec<_>>();
 
-    for inline in std::mem::take(&mut item.content) {
+    for inline in existing {
         match inline {
             Inline::Text { text } if !inserted => {
                 if remaining <= text.len() {
@@ -528,7 +720,7 @@ fn insert_images_at_text_col(item: &mut Item, col: usize, images: Vec<ImageInlin
         output.append(&mut image_inlines);
     }
 
-    item.content = output;
+    item.content = ItemContent::from_inlines(output);
 }
 
 fn previous_char_boundary_at(text: &str, mut offset: usize) -> usize {

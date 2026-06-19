@@ -368,6 +368,24 @@ impl KnotQApp {
         if changed == 0 {
             return 0;
         }
+        for key in keys {
+            let Some(item) = self
+                .workspace
+                .scheme(key.scheme_id)
+                .and_then(|scheme| scheme.item(key.item_id))
+            else {
+                continue;
+            };
+            if !item.state_for_occurrence(&key.occurrence).is_done() {
+                continue;
+            }
+            self.service_bus.signal_clear_occurrence_notifications(
+                key.scheme_id,
+                item.clone(),
+                key.occurrence.clone(),
+                self.notification_defaults,
+            );
+        }
         // Completion keys can come from any scheme in the background snapshot.
         let all_ids: Vec<_> = self.workspace.schemes.keys().copied().collect();
         for id in all_ids {

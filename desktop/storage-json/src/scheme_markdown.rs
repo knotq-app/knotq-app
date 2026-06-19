@@ -3,8 +3,8 @@ use chrono::{DateTime, SecondsFormat, Utc};
 #[cfg(test)]
 use knotq_model::Scheme;
 use knotq_model::{
-    ExternalItemSource, ImageAssetFormat, ImageInline, Inline, Item, ItemId, ItemMarker,
-    OccurrenceId, OccurrenceState, Recurrence, SchemeId,
+    ExternalItemSource, ImageAssetFormat, ImageInline, Inline, Item, ItemContent, ItemId,
+    ItemMarker, OccurrenceId, OccurrenceState, Recurrence, SchemeId,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -185,8 +185,8 @@ fn decode_item(line: &str) -> Result<Item> {
     }
     if let Some(media) = attrs.get("media") {
         let media: Vec<StoredMedia> = serde_json::from_str(media).context("parse media")?;
-        item.content
-            .extend(media.into_iter().map(|m| Inline::Image(m.into())));
+        item.content =
+            ItemContent::from_inlines(media.into_iter().map(|m| Inline::Image(m.into())).collect());
     }
     if let Some(external) = attrs.get("external") {
         item.external =
@@ -477,7 +477,7 @@ mod tests {
             rrules: vec!["FREQ=WEEKLY;BYDAY=WE".to_string()],
             ..Default::default()
         });
-        item.push_image(ImageInline {
+        item.set_image(ImageInline {
             asset: uuid::Uuid::new_v4(),
             format: ImageAssetFormat::Png,
             width: Some(320),
@@ -494,7 +494,7 @@ mod tests {
         scheme.items.push(item);
 
         let encoded = encode_scheme_file(&scheme).unwrap();
-        assert!(encoded.contains("- [ ] Meet Professor"));
+        assert!(encoded.contains("- [ ] !knotq{"));
         assert!(encoded.contains("rrule=\"FREQ=WEEKLY;BYDAY=WE\""));
         assert!(encoded.contains("media="));
         assert!(encoded.contains("external="));

@@ -3,9 +3,9 @@ use std::collections::{HashMap, HashSet};
 use anyhow::{anyhow, Context};
 use chrono::{DateTime, NaiveDate};
 use knotq_model::{
-    DeletedFolderOrigin, DeletedSchemeOrigin, DocumentId, Folder, FolderId, Inline, Item, ItemId,
-    NodeRef, ReplicaId, Scheme, SchemeId, SchemeSource, SyncDocumentKind, SyncDocumentMeta,
-    Workspace,
+    DeletedFolderOrigin, DeletedSchemeOrigin, DocumentId, Folder, FolderId, Inline, Item,
+    ItemContent, ItemId, ItemMarker, NodeRef, ReplicaId, Scheme, SchemeId, SchemeSource,
+    SyncDocumentKind, SyncDocumentMeta, Workspace,
 };
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -829,10 +829,7 @@ fn validate_scheme_item(
     if require_str("position")?.is_empty() {
         return Err(anyhow!("item position missing: {item_id}"));
     }
-    if !matches!(
-        require_str("marker")?.as_str(),
-        "blank" | "bullet" | "numbered" | "checkbox"
-    ) {
+    if ItemMarker::parse(&require_str("marker")?).is_err() {
         return Err(anyhow!("item marker invalid: {item_id}"));
     }
     let indent = item_map
@@ -1064,7 +1061,7 @@ impl YrsSchemeDocument {
                                 Some(stored) => stored.content.clone(),
                                 None => read_text_content(&text_ref, &txn),
                             };
-                            let new_content = normalize_inline_content(&item.content);
+                            let new_content = normalize_inline_content(&item.content.to_inlines());
                             if current != new_content {
                                 apply_content_diff(&text_ref, &mut txn, &current, &new_content)?;
                             }
@@ -1158,7 +1155,7 @@ impl YrsSchemeDocument {
                 // stream comes from the Text CRDT, which is the source of truth.
                 let mut item: Item = serde_json::from_str(&entry.snapshot_json)
                     .with_context(|| format!("parse item snapshot {id}"))?;
-                item.content = entry.content;
+                item.content = ItemContent::from_inlines(entry.content);
                 Ok(item)
             })
             .collect()
@@ -1213,7 +1210,7 @@ fn read_stored_item(item_map: &MapRef, txn: &impl ReadTxn) -> StoredItem {
 /// the blob and the two representations cannot disagree.
 fn item_snapshot_json(item: &Item) -> anyhow::Result<String> {
     let mut snapshot = item.clone();
-    snapshot.content.clear();
+    snapshot.content = ItemContent::default();
     Ok(serde_json::to_string(&snapshot)?)
 }
 
@@ -1261,7 +1258,11 @@ fn write_item_fields(
     item_map.insert(txn, "position", position.to_string());
     if include_text {
         let text_ref = item_map.insert(txn, "text", TextPrelim::new(""));
-        insert_inline_content(&text_ref, txn, &normalize_inline_content(&item.content))?;
+        insert_inline_content(
+            &text_ref,
+            txn,
+            &normalize_inline_content(&item.content.to_inlines()),
+        )?;
     }
     item_map.insert(txn, "marker", serde_json_string_value(&item.marker)?);
     item_map.insert(txn, "indent", i64::from(item.indent));
@@ -1288,7 +1289,7 @@ fn write_item_fields(
     item_map.insert(
         txn,
         "content_json",
-        serde_json::to_string(&normalize_inline_content(&item.content))?,
+        serde_json::to_string(&normalize_inline_content(&item.content.to_inlines()))?,
     );
     Ok(())
 }
@@ -2461,7 +2462,7 @@ mod tests {
     }
 
     #[test]
-    fn inline_embeds_roundtrip_at_text_position() {
+    fn image_line_roundtrips_through_crdt() {
         let document = DocumentId::new();
         let image = ImageInline {
             asset: uuid::Uuid::new_v4(),
@@ -2469,12 +2470,9 @@ mod tests {
             width: Some(640),
             height: Some(360),
         };
+        // A line is a single block object: this is an image line, no text.
         let mut item = Item::new("");
-        item.content = vec![
-            Inline::text("before "),
-            Inline::Image(image),
-            Inline::text(" after"),
-        ];
+        item.set_image(image);
         let expected = item.content.clone();
         let mut scheme = Scheme::new("Plan", 0);
         scheme.items.push(item);
@@ -2483,6 +2481,7 @@ mod tests {
         let items = doc.scheme_items().unwrap();
 
         assert_eq!(items[0].content, expected);
+        assert!(items[0].content.is_block());
     }
 
     #[test]
@@ -2547,11 +2546,11 @@ mod tests {
         right.apply_update_v1(&base_update).unwrap();
 
         let mut scheme_left = base.clone();
-        scheme_left.items[0].push_image(image_a);
+        scheme_left.items[0].set_image(image_a);
         let delta_left = left.sync_scheme(&scheme_left).unwrap().unwrap().update_v1;
 
         let mut scheme_right = base.clone();
-        scheme_right.items[1].push_image(image_b);
+        scheme_right.items[1].set_image(image_b);
         let delta_right = right.sync_scheme(&scheme_right).unwrap().unwrap().update_v1;
 
         let merged = YrsSchemeDocument::new(document);
@@ -2793,6 +2792,23 @@ mod tests {
             [encode_full_update(&doc).as_slice()]
         )
         .is_err());
+    }
+
+    #[test]
+    fn crdt_schema_validation_accepts_dotted_marker_subtype() {
+        let doc = valid_single_item_scheme_doc();
+        let items_by_id = doc.get_or_insert_map("items_by_id");
+        let txn = doc.transact();
+        let item_key = items_by_id.keys(&txn).next().unwrap().to_string();
+        let item_map = item_map_ref(&items_by_id, &txn, &item_key).unwrap();
+        drop(txn);
+        item_map.insert(&mut doc.transact_mut(), "marker", "numbered.alphabet");
+
+        validate_crdt_update_sequence(
+            SyncDocumentKind::Scheme,
+            [encode_full_update(&doc).as_slice()],
+        )
+        .unwrap();
     }
 
     #[test]

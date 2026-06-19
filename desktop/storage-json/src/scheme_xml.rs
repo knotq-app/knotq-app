@@ -1,9 +1,10 @@
-//! XML on-disk format for scheme files (inline-content model).
+//! XML on-disk format for scheme files (single-content model).
 //!
-//! A scheme is a list of `<item>`s. An item's content is an ordered run of
-//! inline children — `<text>`, `<image>`, and `<table>` — mirroring
-//! [`knotq_model::Inline`], so the document is one uniform tree: a table cell is
-//! just a list of `<item>`s, encoded exactly like a top-level line.
+//! A scheme is a list of `<item>`s. An item's content is *exactly one* of a
+//! `<text>`, an `<image>`, or a `<table>` child — a line is one content kind, so
+//! images and tables are whole-line blocks. A table cell is just a list of
+//! `<item>`s, encoded exactly like a top-level line, so the document is one
+//! uniform tree.
 //!
 //! Single-valued fields are attributes; the rich nested fields (recurrence
 //! overrides, state, external source) ride as JSON inside child elements,
@@ -15,8 +16,8 @@
 
 use anyhow::{anyhow, bail, Context, Result};
 use knotq_model::{
-    ExternalItemSource, ImageAssetFormat, ImageInline, Inline, Item, ItemId, ItemMarker,
-    Recurrence, Scheme, SchemeId, Table, TableCell, TableColumn, TableRow,
+    ExternalItemSource, ImageAssetFormat, ImageInline, Inline, Item, ItemContent, ItemId,
+    ItemMarker, Recurrence, Scheme, SchemeId, Table, TableCell, TableColumn, TableRow,
 };
 use quick_xml::events::{BytesStart, Event};
 use quick_xml::reader::Reader;
@@ -48,46 +49,38 @@ fn encode_item_xml(out: &mut String, item: &Item, depth: usize) -> Result<()> {
     let attrs = encode_item_attrs(item)?;
     let meta = meta_children(item)?;
 
-    if item.has_table() {
-        // A table is a block, so emit every child on its own line. Inter-element
-        // whitespace is insignificant — only text *inside* <text> is content.
-        out.push_str(&format!("{indent}<item{attrs}>\n"));
-        let inner = "  ".repeat(depth + 1);
-        for inline in &item.content {
-            match inline {
-                Inline::Text { text } => {
-                    out.push_str(&format!("{inner}<text>{}</text>\n", xml_text_escape(text)));
-                }
-                Inline::Image(image) => {
-                    out.push_str(&format!("{inner}{}\n", encode_image(image)));
-                }
-                Inline::Table(table) => encode_table_xml(out, table, depth + 1)?,
+    match &item.content {
+        ItemContent::Table(table) => {
+            // A table is a block, so emit it on its own line. Inter-element
+            // whitespace is insignificant — only text *inside* <text> is content.
+            out.push_str(&format!("{indent}<item{attrs}>\n"));
+            let inner = "  ".repeat(depth + 1);
+            encode_table_xml(out, table, depth + 1)?;
+            for child in &meta {
+                out.push_str(&format!("{inner}{child}\n"));
             }
+            out.push_str(&format!("{indent}</item>\n"));
         }
-        for child in &meta {
-            out.push_str(&format!("{inner}{child}\n"));
-        }
-        out.push_str(&format!("{indent}</item>\n"));
-    } else {
-        // Inline form: content + meta concatenated with no whitespace, so
-        // adjacent text runs stay adjacent.
-        let mut inner = String::new();
-        for inline in &item.content {
-            match inline {
-                Inline::Text { text } => {
+        content => {
+            // Inline form: a single <text> or <image> plus meta, concatenated
+            // with no whitespace. An empty text line emits no content child.
+            let mut inner = String::new();
+            match content {
+                ItemContent::Text { text } if !text.is_empty() => {
                     inner.push_str(&format!("<text>{}</text>", xml_text_escape(text)));
                 }
-                Inline::Image(image) => inner.push_str(&encode_image(image)),
-                Inline::Table(_) => unreachable!("has_table() is false"),
+                ItemContent::Text { .. } => {}
+                ItemContent::Image(image) => inner.push_str(&encode_image(image)),
+                ItemContent::Table(_) => unreachable!("handled above"),
             }
-        }
-        for child in &meta {
-            inner.push_str(child);
-        }
-        if inner.is_empty() {
-            out.push_str(&format!("{indent}<item{attrs}/>\n"));
-        } else {
-            out.push_str(&format!("{indent}<item{attrs}>{inner}</item>\n"));
+            for child in &meta {
+                inner.push_str(child);
+            }
+            if inner.is_empty() {
+                out.push_str(&format!("{indent}<item{attrs}/>\n"));
+            } else {
+                out.push_str(&format!("{indent}<item{attrs}>{inner}</item>\n"));
+            }
         }
     }
     Ok(())
@@ -161,7 +154,7 @@ fn encode_table_xml(out: &mut String, table: &Table, depth: usize) -> Result<()>
 fn encode_item_attrs(item: &Item) -> Result<String> {
     let mut out = String::new();
     out.push_str(&format!(" id=\"{}\"", item.id));
-    out.push_str(&format!(" marker=\"{}\"", marker_str(item.marker)));
+    out.push_str(&format!(" marker=\"{}\"", item.marker.as_str()));
     if item.indent != 0 {
         out.push_str(&format!(" indent=\"{}\"", item.indent));
     }
@@ -188,15 +181,6 @@ fn encode_item_attrs(item: &Item) -> Result<String> {
 fn json_element<T: serde::Serialize>(tag: &str, value: &T) -> Result<String> {
     let json = serde_json::to_string(value)?;
     Ok(format!("<{tag}>{}</{tag}>", xml_text_escape(&json)))
-}
-
-fn marker_str(marker: ItemMarker) -> &'static str {
-    match marker {
-        ItemMarker::Blank => "blank",
-        ItemMarker::Bullet => "bullet",
-        ItemMarker::Numbered => "numbered",
-        ItemMarker::Checkbox => "checkbox",
-    }
 }
 
 fn image_format_str(format: ImageAssetFormat) -> &'static str {
@@ -274,22 +258,23 @@ pub(crate) fn decode_scheme_xml(raw: &str, path: &Path, id: SchemeId) -> Result<
 fn read_item(reader: &mut Reader<&[u8]>, start: &BytesStart, path: &Path) -> Result<Item> {
     let mut item = parse_item_attrs(start)
         .with_context(|| format!("parse item attributes in {}", path.display()))?;
+    let mut content: Vec<Inline> = Vec::new();
     loop {
         match reader.read_event()? {
             Event::Empty(e) if e.name().as_ref() == b"image" => {
-                item.content.push(Inline::Image(parse_image(&e)?));
+                content.push(Inline::Image(parse_image(&e)?));
             }
             Event::Start(e) => match e.name().as_ref() {
                 b"text" => {
                     let text = read_element_text(reader, b"text")?;
-                    item.content.push(Inline::Text { text });
+                    content.push(Inline::Text { text });
                 }
                 b"image" => {
                     let image = parse_image(&e)?;
                     skip_to_end(reader, b"image")?;
-                    item.content.push(Inline::Image(image));
+                    content.push(Inline::Image(image));
                 }
-                b"table" => item.content.push(Inline::Table(read_table(reader, path)?)),
+                b"table" => content.push(Inline::Table(read_table(reader, path)?)),
                 b"repeats" => {
                     let json = read_element_text(reader, b"repeats")?;
                     item.repeats =
@@ -313,6 +298,7 @@ fn read_item(reader: &mut Reader<&[u8]>, start: &BytesStart, path: &Path) -> Res
             _ => {}
         }
     }
+    item.content = ItemContent::from_inlines(content);
     item.enforce_marker_constraints();
     Ok(item)
 }
@@ -470,13 +456,7 @@ fn parse_row_id(e: &BytesStart) -> knotq_model::RowId {
 }
 
 fn parse_marker(value: &str) -> Result<ItemMarker> {
-    Ok(match value {
-        "blank" => ItemMarker::Blank,
-        "bullet" => ItemMarker::Bullet,
-        "numbered" => ItemMarker::Numbered,
-        "checkbox" => ItemMarker::Checkbox,
-        other => bail!("unknown marker {other:?}"),
-    })
+    ItemMarker::parse(value).map_err(|err| anyhow!(err))
 }
 
 /// Read character data up to `</end_name>`, concatenating text segments.
@@ -529,33 +509,19 @@ mod tests {
     use super::*;
     use chrono::TimeZone;
     use knotq_model::OccurrenceId;
-    use uuid::Uuid;
-
-    fn image() -> ImageInline {
-        ImageInline {
-            asset: Uuid::new_v4(),
-            format: ImageAssetFormat::Png,
-            width: Some(320),
-            height: Some(180),
-        }
-    }
 
     #[test]
-    fn roundtrips_lines_dates_and_inline_image() {
+    fn roundtrips_lines_dates_and_text() {
         let mut scheme = Scheme::new("Roundtrip", 2);
         scheme
             .items
             .push(Item::new("My <special> & \"quoted\" heading"));
 
-        let mut task = Item::new("Meet Professor");
+        let mut task = Item::new("Meet Professor see ");
         task.marker = ItemMarker::Checkbox;
         task.start = Some(chrono::Utc.with_ymd_and_hms(2026, 5, 20, 15, 0, 0).unwrap());
         task.end = Some(chrono::Utc.with_ymd_and_hms(2026, 5, 20, 16, 0, 0).unwrap());
         task.priority = Some(3);
-        // Inline image in the middle of the text flow.
-        let img = image();
-        task.content.push(Inline::text(" see "));
-        task.content.push(Inline::Image(img));
         scheme.items.push(task);
 
         let xml = encode_scheme_xml(&scheme).unwrap();
@@ -582,7 +548,7 @@ mod tests {
             Item::new("then celebrate").with_marker(ItemMarker::Bullet),
         ];
         let mut table_item = Item::new("");
-        table_item.content.push(Inline::Table(table));
+        table_item.set_table(table);
         let cell_id = table_item.table().unwrap().rows[0].cells[1].items[0].id;
         scheme.items.push(table_item);
 
@@ -613,5 +579,15 @@ mod tests {
         let decoded = decode_scheme_xml(&xml, Path::new("E.knotq"), scheme.id).unwrap();
         assert_eq!(decoded.items.len(), 1);
         assert!(decoded.items[0].is_content_empty());
+    }
+
+    #[test]
+    fn dotted_marker_subtypes_decode_as_base_markers() {
+        assert_eq!(parse_marker("bullet.disc").unwrap(), ItemMarker::Bullet);
+        assert_eq!(
+            parse_marker("numbered.alphabet").unwrap(),
+            ItemMarker::Numbered
+        );
+        assert!(parse_marker("list.alphabet").is_err());
     }
 }

@@ -195,7 +195,7 @@ fn is_wrapped_xml_text_item(item: &knotq_model::Item) -> bool {
         })
         && !item.has_images()
         && !item.has_table()
-        && item.content.iter().all(|inline| inline.is_text())
+        && item.content.is_text()
 }
 
 fn rewrite_recovered_scheme_file(path: &Path, decoded: &DecodedSchemeFile) -> Result<()> {

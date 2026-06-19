@@ -1,6 +1,6 @@
 use chrono::{DateTime, Duration, Utc};
 use knotq_date_util::DateRange;
-use knotq_model::{Item, Occurrence, SchemeId, Workspace};
+use knotq_model::{Item, Occurrence, OccurrenceId, SchemeId, Workspace};
 use knotq_rrule::{DefaultExpander, OccurrenceExpander};
 
 use crate::format::{body_for, title_for};
@@ -100,6 +100,103 @@ pub fn notification_keys_for_item_with_expander(
             }
         }
     }
+    out
+}
+
+/// Compute notification identifiers associated with one concrete occurrence in
+/// [from, to). This includes completed occurrences so callers can dismiss stale
+/// live notifications for the exact instance that was completed.
+pub fn notification_keys_for_occurrence(
+    workspace: &Workspace,
+    lead_times: NotificationLeadTimes,
+    scheme_id: SchemeId,
+    item_id: knotq_model::ItemId,
+    occurrence_id: &OccurrenceId,
+    from: DateTime<Utc>,
+    to: DateTime<Utc>,
+) -> Vec<String> {
+    notification_keys_for_occurrence_with_expander(
+        workspace,
+        lead_times,
+        scheme_id,
+        item_id,
+        occurrence_id,
+        from,
+        to,
+        &DefaultExpander,
+    )
+}
+
+pub fn notification_keys_for_occurrence_with_expander(
+    workspace: &Workspace,
+    lead_times: NotificationLeadTimes,
+    scheme_id: SchemeId,
+    item_id: knotq_model::ItemId,
+    occurrence_id: &OccurrenceId,
+    from: DateTime<Utc>,
+    to: DateTime<Utc>,
+    expander: &dyn OccurrenceExpander,
+) -> Vec<String> {
+    let range = expansion_range(lead_times, from, to);
+    let mut out = Vec::new();
+    for scheme in workspace
+        .iter_schemes()
+        .filter(|scheme| scheme.id == scheme_id)
+    {
+        for item in scheme.items.iter().filter(|item| item.id == item_id) {
+            for occurrence in expander
+                .expand(item, range)
+                .into_iter()
+                .filter(|occurrence| &occurrence.id == occurrence_id)
+            {
+                if let Some(note) =
+                    scheduled_notification(scheme.id, item, occurrence, lead_times, from, to, false)
+                {
+                    out.push(note.key);
+                }
+            }
+        }
+    }
+    out
+}
+
+/// Compute notification identifiers for completed occurrences in [from, to).
+/// This is used during full reconciliation to dismiss delivered notifications
+/// that no longer have a desired schedule entry.
+pub fn completed_notification_keys(
+    workspace: &Workspace,
+    lead_times: NotificationLeadTimes,
+    from: DateTime<Utc>,
+    to: DateTime<Utc>,
+) -> Vec<String> {
+    completed_notification_keys_with_expander(workspace, lead_times, from, to, &DefaultExpander)
+}
+
+pub fn completed_notification_keys_with_expander(
+    workspace: &Workspace,
+    lead_times: NotificationLeadTimes,
+    from: DateTime<Utc>,
+    to: DateTime<Utc>,
+    expander: &dyn OccurrenceExpander,
+) -> Vec<String> {
+    let range = expansion_range(lead_times, from, to);
+    let mut out = Vec::new();
+    for scheme in workspace.iter_schemes() {
+        for item in &scheme.items {
+            for occurrence in expander.expand(item, range) {
+                if !occurrence.state.is_done() {
+                    continue;
+                }
+                if let Some(note) =
+                    scheduled_notification(scheme.id, item, occurrence, lead_times, from, to, false)
+                {
+                    out.push(note.key);
+                }
+            }
+        }
+    }
+    out.sort();
+    out.dedup();
     out
 }
 
