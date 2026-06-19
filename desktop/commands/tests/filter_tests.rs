@@ -2,10 +2,14 @@ use chrono::{TimeZone, Utc};
 use knotq_commands::{filter_recurring_occurrence_toggles, Command, WorkspaceCommandExt};
 use knotq_model::{CalendarRecurrence, Item, OccurrenceId, Workspace};
 
+mod support;
+
+use support::create_root_scheme;
+
 #[test]
 fn recurring_items_only_accept_recurring_occurrence_toggles() {
     let mut workspace = Workspace::new();
-    let scheme_id = create_scheme(&mut workspace);
+    let scheme_id = create_root_scheme(&mut workspace);
     let recurrence = CalendarRecurrence {
         rrules: vec!["FREQ=DAILY;COUNT=3".to_string()],
         ..CalendarRecurrence::default()
@@ -45,7 +49,7 @@ fn recurring_items_only_accept_recurring_occurrence_toggles() {
 #[test]
 fn batch_filter_drops_invalid_recurring_toggles() {
     let mut workspace = Workspace::new();
-    let scheme_id = create_scheme(&mut workspace);
+    let scheme_id = create_root_scheme(&mut workspace);
     let recurrence = CalendarRecurrence {
         rrules: vec!["FREQ=DAILY;COUNT=3".to_string()],
         ..CalendarRecurrence::default()
@@ -90,26 +94,4 @@ fn batch_filter_drops_invalid_recurring_toggles() {
         panic!("expected batch");
     };
     assert_eq!(commands.len(), 1);
-}
-
-fn create_scheme(workspace: &mut Workspace) -> knotq_model::SchemeId {
-    let receipt = workspace
-        .apply(Command::CreateScheme {
-            folder: workspace.root,
-            name: "S".into(),
-            color_index: 1,
-            position: None,
-        })
-        .unwrap();
-    match receipt.inverse {
-        Command::DeleteScheme { id } => id,
-        Command::Batch(commands) => commands
-            .into_iter()
-            .find_map(|command| match command {
-                Command::DeleteScheme { id } => Some(id),
-                _ => None,
-            })
-            .unwrap(),
-        _ => unreachable!(),
-    }
 }

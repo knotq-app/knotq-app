@@ -1,11 +1,14 @@
 use chrono::{Duration, TimeZone, Utc};
 use knotq_model::{
-    CalendarProvider, CalendarRecurrence, ImportedCalendarSource, Item, NodeRef, OccurrenceId,
-    OccurrenceOverride, OccurrenceOverrideStatus, Scheme, SchemeSource, Workspace,
+    CalendarRecurrence, Item, OccurrenceId, OccurrenceOverride, OccurrenceOverrideStatus,
 };
 use knotq_state::{
     mark_past_event_completion_keys_done, mark_past_events_done, past_event_completion_keys,
 };
+
+mod support;
+
+use support::{read_only_workspace_with_item, workspace_with_item};
 
 #[test]
 fn mark_past_events_done_completes_elapsed_events() {
@@ -116,36 +119,4 @@ fn mark_past_events_done_completes_elapsed_overridden_recurring_occurrences() {
     let item = &workspace.iter_schemes().next().unwrap().items[0];
     assert_eq!(changed, 1);
     assert!(item.state_for_occurrence(&occurrence).is_done());
-}
-
-fn workspace_with_item(item: Item) -> Workspace {
-    workspace_with_scheme_item(Scheme::new("General", 0), item)
-}
-
-fn read_only_workspace_with_item(item: Item) -> Workspace {
-    let mut scheme = Scheme::new("Imported", 0);
-    scheme.source = SchemeSource::ImportedCalendar(ImportedCalendarSource {
-        provider: CalendarProvider::Google,
-        account_id: "acct".into(),
-        account_email: None,
-        calendar_id: "cal".into(),
-        sync_token: None,
-        read_only: true,
-        last_synced_at: None,
-    });
-    workspace_with_scheme_item(scheme, item)
-}
-
-fn workspace_with_scheme_item(mut scheme: Scheme, item: Item) -> Workspace {
-    let mut workspace = Workspace::new();
-    scheme.items.push(item);
-    let scheme_id = scheme.id;
-    workspace.schemes.insert(scheme_id, scheme);
-    workspace
-        .folders
-        .get_mut(&workspace.root)
-        .unwrap()
-        .children
-        .push(NodeRef::Scheme(scheme_id));
-    workspace
 }

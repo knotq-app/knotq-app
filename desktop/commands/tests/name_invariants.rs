@@ -1,15 +1,19 @@
 use knotq_commands::{Command, WorkspaceCommandExt};
-use knotq_model::{FolderId, NodeRef, Scheme, SchemeId, Workspace};
+use knotq_model::{NodeRef, Scheme, Workspace};
+
+mod support;
+
+use support::{create_folder_named, create_scheme_named};
 
 #[test]
 fn file_like_node_names_are_allowed_without_sanitizing() {
     let mut workspace = Workspace::new();
     let root = workspace.root;
 
-    let folder_id = create_folder(&mut workspace, root, " Bad/Folder? ");
+    let folder_id = create_folder_named(&mut workspace, root, " Bad/Folder? ");
     assert_eq!(workspace.folders[&folder_id].name, " Bad/Folder? ");
 
-    let scheme_id = create_scheme(&mut workspace, root, "Notes.knotq");
+    let scheme_id = create_scheme_named(&mut workspace, root, "Notes.knotq", 0);
     assert_eq!(workspace.schemes[&scheme_id].name, "Notes.knotq");
 
     workspace
@@ -37,8 +41,8 @@ fn duplicate_folder_and_scheme_names_are_allowed() {
     let mut workspace = Workspace::new();
     let root = workspace.root;
 
-    let first_folder = create_folder(&mut workspace, root, "Projects");
-    let second_folder = create_folder(&mut workspace, root, "projects");
+    let first_folder = create_folder_named(&mut workspace, root, "Projects");
+    let second_folder = create_folder_named(&mut workspace, root, "projects");
     assert_eq!(
         workspace.folders[&root].children,
         vec![
@@ -47,8 +51,8 @@ fn duplicate_folder_and_scheme_names_are_allowed() {
         ]
     );
 
-    let first_scheme = create_scheme(&mut workspace, first_folder, "Notes");
-    let second_scheme = create_scheme(&mut workspace, first_folder, "notes");
+    let first_scheme = create_scheme_named(&mut workspace, first_folder, "Notes", 0);
+    let second_scheme = create_scheme_named(&mut workspace, first_folder, "notes", 0);
     assert_eq!(
         workspace.folders[&first_folder].children,
         vec![
@@ -62,11 +66,11 @@ fn duplicate_folder_and_scheme_names_are_allowed() {
 fn rename_restore_and_move_can_create_duplicate_scheme_names() {
     let mut workspace = Workspace::new();
     let root = workspace.root;
-    let source_folder = create_folder(&mut workspace, root, "Source");
-    let target_folder = create_folder(&mut workspace, root, "Target");
-    let source_id = create_scheme(&mut workspace, source_folder, "Plan");
-    let target_id = create_scheme(&mut workspace, target_folder, "Plan");
-    let other_id = create_scheme(&mut workspace, source_folder, "Other");
+    let source_folder = create_folder_named(&mut workspace, root, "Source");
+    let target_folder = create_folder_named(&mut workspace, root, "Target");
+    let source_id = create_scheme_named(&mut workspace, source_folder, "Plan", 0);
+    let target_id = create_scheme_named(&mut workspace, target_folder, "Plan", 0);
+    let other_id = create_scheme_named(&mut workspace, source_folder, "Other", 0);
 
     workspace
         .apply(Command::RenameScheme {
@@ -101,47 +105,4 @@ fn rename_restore_and_move_can_create_duplicate_scheme_names() {
         workspace.folders[&source_folder].children,
         vec![NodeRef::Scheme(duplicate_id), NodeRef::Scheme(other_id)]
     );
-}
-
-fn create_folder(workspace: &mut Workspace, parent: FolderId, name: &str) -> FolderId {
-    let receipt = workspace
-        .apply(Command::CreateFolder {
-            parent,
-            name: name.into(),
-            position: None,
-        })
-        .unwrap();
-    match receipt.inverse {
-        Command::DeleteFolder { id } => id,
-        Command::Batch(commands) => commands
-            .into_iter()
-            .find_map(|command| match command {
-                Command::DeleteFolder { id } => Some(id),
-                _ => None,
-            })
-            .unwrap(),
-        _ => unreachable!(),
-    }
-}
-
-fn create_scheme(workspace: &mut Workspace, folder: FolderId, name: &str) -> SchemeId {
-    let receipt = workspace
-        .apply(Command::CreateScheme {
-            folder,
-            name: name.into(),
-            color_index: 0,
-            position: None,
-        })
-        .unwrap();
-    match receipt.inverse {
-        Command::DeleteScheme { id } => id,
-        Command::Batch(commands) => commands
-            .into_iter()
-            .find_map(|command| match command {
-                Command::DeleteScheme { id } => Some(id),
-                _ => None,
-            })
-            .unwrap(),
-        _ => unreachable!(),
-    }
 }

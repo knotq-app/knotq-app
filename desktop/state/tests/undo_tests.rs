@@ -1,8 +1,10 @@
-use chrono::NaiveDate;
 use knotq_commands::Command;
-use knotq_model::{AppSettings, Workspace};
-use knotq_state::{should_coalesce_editor_undo, AppState, EditorUndoGroup, EditorUndoKey};
+use knotq_state::{should_coalesce_editor_undo, EditorUndoGroup, EditorUndoKey};
 use std::time::{Duration, Instant};
+
+mod support;
+
+use support::test_state;
 
 #[test]
 fn undo_and_redo_restore_workspace_shape() {
@@ -36,16 +38,4 @@ fn editor_undo_coalesces_inside_time_window() {
     };
 
     assert!(should_coalesce_editor_undo(Some(key), Some(group), now));
-}
-
-fn test_state() -> AppState {
-    AppState::new(
-        Workspace::new(),
-        AppSettings::default(),
-        NaiveDate::from_ymd_opt(2026, 1, 1).unwrap(),
-        NaiveDate::from_ymd_opt(2025, 12, 1).unwrap(),
-        false,
-        Default::default(),
-        1,
-    )
 }

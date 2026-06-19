@@ -3269,6 +3269,7 @@ dependencies = [
  "base64",
  "chrono",
  "knotq-model",
+ "knotq-notifications",
  "serde",
  "serde_json",
  "sha2",

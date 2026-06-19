@@ -19,6 +19,7 @@ yrs = { workspace = true }
 # We reuse it here for the backend_integration tests rather than adding a new dep.
 # All other test dependencies (anyhow, serde, uuid, chrono, yrs) are already in
 # [dependencies] and are accessible from integration tests in tests/.
+knotq-notifications = { workspace = true }
 ureq = { workspace = true }
 
 [[test]]

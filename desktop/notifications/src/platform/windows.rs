@@ -1,3 +1,6 @@
+use crate::action_payload::{
+    action_payload_from_params, action_payload_pairs, request_has_action_payload,
+};
 use crate::{
     dispatch_response, AuthorizationStatus, Error, NotificationRequest, NotificationResponse,
     PlatformStatus, Result, ACTION_MARK_DONE, ACTION_SNOOZE_10_MINUTES,
@@ -401,13 +404,6 @@ fn windows_actions_xml(request: &NotificationRequest) -> String {
     xml
 }
 
-fn request_has_action_payload(request: &NotificationRequest) -> bool {
-    request.user_info.contains_key("scheme_id")
-        && request.user_info.contains_key("item_id")
-        && request.user_info.contains_key("occurrence_json")
-        && request.user_info.contains_key("trigger_at")
-}
-
 fn windows_activation_uri(request: &NotificationRequest, action_id: &str) -> String {
     format!(
         "{}?{}",
@@ -422,11 +418,7 @@ fn windows_activation_query(request: &NotificationRequest, action_id: &str) -> S
         ("notification_id", request.id.as_str()),
         ("action_id", action_id),
     ];
-    for key in ["scheme_id", "item_id", "occurrence_json", "trigger_at"] {
-        if let Some(value) = request.user_info.get(key) {
-            params.push((key, value.as_str()));
-        }
-    }
+    params.extend(action_payload_pairs(request));
     params
         .into_iter()
         .map(|(key, value)| format!("{}={}", key, percent_encode_argument(value)))
@@ -470,10 +462,7 @@ fn notification_response_from_windows_activation(raw: &str) -> Option<Notificati
     }
 
     let notification_id = params.get("notification_id")?.to_string();
-    let mut user_info = BTreeMap::new();
-    for key in ["scheme_id", "item_id", "occurrence_json", "trigger_at"] {
-        user_info.insert(key.to_string(), params.get(key)?.to_string());
-    }
+    let user_info = action_payload_from_params(&params)?;
 
     Some(NotificationResponse {
         notification_id,

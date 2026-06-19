@@ -1,6 +1,10 @@
 use knotq_commands::{Command, WorkspaceCommandExt};
 use knotq_model::{NodeRef, Workspace};
 
+mod support;
+
+use support::{create_folder, create_scheme};
+
 #[test]
 fn create_and_undo_folder() {
     let mut workspace = Workspace::new();
@@ -79,53 +83,4 @@ fn delete_folder_undo_redo_rearchives_restored_children() {
     assert!(!workspace.folders[&root]
         .children
         .contains(&NodeRef::Folder(folder_id)));
-}
-
-fn create_folder(
-    workspace: &mut Workspace,
-    parent: knotq_model::FolderId,
-) -> knotq_model::FolderId {
-    let receipt = workspace
-        .apply(Command::CreateFolder {
-            parent,
-            name: "Projects".into(),
-            position: None,
-        })
-        .unwrap();
-    match receipt.inverse {
-        Command::DeleteFolder { id } => id,
-        Command::Batch(commands) => commands
-            .into_iter()
-            .find_map(|command| match command {
-                Command::DeleteFolder { id } => Some(id),
-                _ => None,
-            })
-            .unwrap(),
-        _ => unreachable!(),
-    }
-}
-
-fn create_scheme(
-    workspace: &mut Workspace,
-    folder: knotq_model::FolderId,
-) -> knotq_model::SchemeId {
-    let receipt = workspace
-        .apply(Command::CreateScheme {
-            folder,
-            name: "S".into(),
-            color_index: 1,
-            position: None,
-        })
-        .unwrap();
-    match receipt.inverse {
-        Command::DeleteScheme { id } => id,
-        Command::Batch(commands) => commands
-            .into_iter()
-            .find_map(|command| match command {
-                Command::DeleteScheme { id } => Some(id),
-                _ => None,
-            })
-            .unwrap(),
-        _ => unreachable!(),
-    }
 }

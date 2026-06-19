@@ -2,6 +2,10 @@ use chrono::{TimeZone, Utc};
 use knotq_commands::{Command, DateKind, WorkspaceCommandExt};
 use knotq_model::{Item, ItemMarker, NodeRef, Workspace};
 
+mod support;
+
+use support::{create_folder, create_scheme, roundtrip, snapshot};
+
 #[test]
 fn apply_then_inverse_restores_folder_scheme_and_item_state() {
     let mut workspace = Workspace::new();
@@ -107,71 +111,4 @@ fn replace_item_inverse_restores_marker_constraints() {
         },
         original,
     );
-}
-
-fn roundtrip(workspace: &mut Workspace, command: Command, original: serde_json::Value) {
-    let receipt = workspace.apply(command).unwrap();
-    workspace.apply(receipt.inverse).unwrap();
-    assert_eq!(snapshot(workspace), original);
-}
-
-fn snapshot(workspace: &Workspace) -> serde_json::Value {
-    serde_json::to_value(workspace).unwrap()
-}
-
-fn create_folder(
-    workspace: &mut Workspace,
-    parent: knotq_model::FolderId,
-) -> knotq_model::FolderId {
-    let name = format!(
-        "Projects {}",
-        workspace
-            .folders
-            .get(&parent)
-            .map(|folder| folder.children.len() + 1)
-            .unwrap_or(1)
-    );
-    let receipt = workspace
-        .apply(Command::CreateFolder {
-            parent,
-            name,
-            position: None,
-        })
-        .unwrap();
-    match receipt.inverse {
-        Command::DeleteFolder { id } => id,
-        Command::Batch(commands) => commands
-            .into_iter()
-            .find_map(|command| match command {
-                Command::DeleteFolder { id } => Some(id),
-                _ => None,
-            })
-            .unwrap(),
-        _ => unreachable!(),
-    }
-}
-
-fn create_scheme(
-    workspace: &mut Workspace,
-    folder: knotq_model::FolderId,
-) -> knotq_model::SchemeId {
-    let receipt = workspace
-        .apply(Command::CreateScheme {
-            folder,
-            name: "S".into(),
-            color_index: 1,
-            position: None,
-        })
-        .unwrap();
-    match receipt.inverse {
-        Command::DeleteScheme { id } => id,
-        Command::Batch(commands) => commands
-            .into_iter()
-            .find_map(|command| match command {
-                Command::DeleteScheme { id } => Some(id),
-                _ => None,
-            })
-            .unwrap(),
-        _ => unreachable!(),
-    }
 }

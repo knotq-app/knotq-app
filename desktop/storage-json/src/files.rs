@@ -4,7 +4,10 @@ use knotq_model::{Scheme, SchemeId, Workspace};
 use std::collections::HashSet;
 use std::io;
 use std::sync::Mutex;
-use std::{fs, path::Path};
+use std::{
+    fs,
+    path::{Path, PathBuf},
+};
 
 use crate::{
     cal_index::daily_queue_calendar_index_matches_range,
@@ -125,64 +128,66 @@ pub fn load_daily_queue_schemes_for_calendar_range(
 
 pub fn save_workspace(path: &Path, workspace: &Workspace) -> Result<()> {
     let _guard = lock_workspace_save();
-    let mut workspace = workspace.clone();
-    workspace.ensure_sync_metadata();
-    let workspace = &workspace;
-    let base_dir = path.parent().unwrap_or_else(|| Path::new("."));
-    fs::create_dir_all(base_dir).with_context(|| format!("create {}", base_dir.display()))?;
-    ensure_workspace_gitignore(base_dir)?;
-    let schemes_dir = base_dir.join("schemes");
-    fs::create_dir_all(&schemes_dir)
-        .with_context(|| format!("create {}", schemes_dir.display()))?;
-    ensure_scheme_directories(base_dir, workspace)?;
+    let (base_dir, workspace) = prepare_workspace_save(path, workspace)?;
     for scheme in workspace.schemes.values() {
-        write_scheme_file(base_dir, workspace, scheme)
+        write_scheme_file(&base_dir, &workspace, scheme)
             .with_context(|| format!("write scheme {}", scheme.id))?;
     }
-    prune_removed_scheme_files(base_dir, workspace)?;
+    prune_removed_scheme_files(&base_dir, &workspace)?;
 
-    let existing_daily_queue = read_existing_daily_queue_index(path)?;
-    let env = WorkspaceEnvelope {
-        version: SCHEMA_VERSION,
-        workspace: WorkspaceIndex::from_workspace_preserving(workspace, existing_daily_queue),
-    };
-    let json = serde_json::to_string_pretty(&env)?;
-    write_atomic(path, json.as_bytes())?;
-    write_daily_backup(base_dir, &json, workspace);
-    record_history_snapshot(base_dir);
+    let json = write_workspace_index(path, &workspace)?;
+    write_daily_backup(&base_dir, &json, &workspace);
+    record_history_snapshot(&base_dir);
 
     Ok(())
 }
 
 /// Save only the specified dirty schemes and the workspace index.
-/// Skips the daily backup and file pruning for speed; those are done
-/// on full saves (e.g. at app shutdown).
+/// Skips the daily backup for speed; full saves also rewrite every scheme file.
 pub fn save_workspace_incremental(
     path: &Path,
     workspace: &Workspace,
     dirty_scheme_ids: &HashSet<SchemeId>,
 ) -> Result<()> {
     let _guard = lock_workspace_save();
+    let (base_dir, workspace) = prepare_workspace_save(path, workspace)?;
+    // Write only dirty scheme files.
+    for scheme_id in dirty_scheme_ids {
+        if let Some(scheme) = workspace.schemes.get(scheme_id) {
+            write_scheme_file(&base_dir, &workspace, scheme)
+                .with_context(|| format!("write scheme {}", scheme.id))?;
+        }
+    }
+    prune_removed_scheme_files(&base_dir, &workspace)?;
+
+    // Always rewrite the workspace index (it's small and metadata may have changed).
+    write_workspace_index(path, &workspace)?;
+    record_history_snapshot(&base_dir);
+
+    Ok(())
+}
+
+fn prepare_workspace_save(path: &Path, workspace: &Workspace) -> Result<(PathBuf, Workspace)> {
     let mut workspace = workspace.clone();
     workspace.ensure_sync_metadata();
-    let workspace = &workspace;
-    let base_dir = path.parent().unwrap_or_else(|| Path::new("."));
+    let base_dir = path
+        .parent()
+        .unwrap_or_else(|| Path::new("."))
+        .to_path_buf();
+    ensure_workspace_layout(&base_dir, &workspace)?;
+    Ok((base_dir, workspace))
+}
+
+fn ensure_workspace_layout(base_dir: &Path, workspace: &Workspace) -> Result<()> {
     fs::create_dir_all(base_dir).with_context(|| format!("create {}", base_dir.display()))?;
     ensure_workspace_gitignore(base_dir)?;
     let schemes_dir = base_dir.join("schemes");
     fs::create_dir_all(&schemes_dir)
         .with_context(|| format!("create {}", schemes_dir.display()))?;
-    ensure_scheme_directories(base_dir, workspace)?;
-    // Write only dirty scheme files.
-    for scheme_id in dirty_scheme_ids {
-        if let Some(scheme) = workspace.schemes.get(scheme_id) {
-            write_scheme_file(base_dir, workspace, scheme)
-                .with_context(|| format!("write scheme {}", scheme.id))?;
-        }
-    }
-    prune_removed_scheme_files(base_dir, workspace)?;
+    ensure_scheme_directories(base_dir, workspace)
+}
 
-    // Always rewrite the workspace index (it's small and metadata may have changed).
+fn write_workspace_index(path: &Path, workspace: &Workspace) -> Result<String> {
     let existing_daily_queue = read_existing_daily_queue_index(path)?;
     let env = WorkspaceEnvelope {
         version: SCHEMA_VERSION,
@@ -190,9 +195,7 @@ pub fn save_workspace_incremental(
     };
     let json = serde_json::to_string_pretty(&env)?;
     write_atomic(path, json.as_bytes())?;
-    record_history_snapshot(base_dir);
-
-    Ok(())
+    Ok(json)
 }
 
 pub(crate) fn read_workspace_envelope(path: &Path) -> Result<Option<WorkspaceEnvelope>> {

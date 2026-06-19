@@ -2,10 +2,14 @@ use chrono::Utc;
 use knotq_commands::{Command, DateKind, WorkspaceCommandExt};
 use knotq_model::{Item, ItemKind, ItemMarker, OccurrenceId, Workspace};
 
+mod support;
+
+use support::create_root_scheme;
+
 #[test]
 fn create_and_toggle_item_with_undo() {
     let mut workspace = Workspace::new();
-    let scheme_id = create_scheme(&mut workspace);
+    let scheme_id = create_root_scheme(&mut workspace);
     let item = Item::new("hello");
     let item_id = item.id;
     workspace
@@ -38,7 +42,7 @@ fn create_and_toggle_item_with_undo() {
 #[test]
 fn toggle_occurrence_promotes_non_checkbox_and_undo_restores_marker() {
     let mut workspace = Workspace::new();
-    let scheme_id = create_scheme(&mut workspace);
+    let scheme_id = create_root_scheme(&mut workspace);
     let mut item = Item::new("hello");
     item.marker = ItemMarker::Bullet;
     let item_id = item.id;
@@ -72,7 +76,7 @@ fn toggle_occurrence_promotes_non_checkbox_and_undo_restores_marker() {
 #[test]
 fn set_occurrence_notification_offset_is_undoable() {
     let mut workspace = Workspace::new();
-    let scheme_id = create_scheme(&mut workspace);
+    let scheme_id = create_root_scheme(&mut workspace);
     let item = Item::new("hello").with_start(Utc::now());
     let item_id = item.id;
     workspace
@@ -112,7 +116,7 @@ fn set_occurrence_notification_offset_is_undoable() {
 #[test]
 fn replace_item_is_undoable() {
     let mut workspace = Workspace::new();
-    let scheme_id = create_scheme(&mut workspace);
+    let scheme_id = create_root_scheme(&mut workspace);
     let dated = Item::new("").with_indent(2).with_start(Utc::now()).done();
     let item_id = dated.id;
     workspace
@@ -148,7 +152,7 @@ fn replace_item_is_undoable() {
 #[test]
 fn marker_constraints_clear_dates_for_non_checkbox_items() {
     let mut workspace = Workspace::new();
-    let scheme_id = create_scheme(&mut workspace);
+    let scheme_id = create_root_scheme(&mut workspace);
     let mut item = Item::new("plain").with_start(Utc::now());
     item.marker = ItemMarker::Blank;
     let item_id = item.id;
@@ -170,7 +174,7 @@ fn marker_constraints_clear_dates_for_non_checkbox_items() {
 #[test]
 fn setting_date_promotes_non_checkbox_to_checkbox() {
     let mut workspace = Workspace::new();
-    let scheme_id = create_scheme(&mut workspace);
+    let scheme_id = create_root_scheme(&mut workspace);
     let mut item = Item::new("plain");
     item.marker = ItemMarker::Bullet;
     let item_id = item.id;
@@ -206,7 +210,7 @@ fn setting_date_promotes_non_checkbox_to_checkbox() {
 #[test]
 fn removing_checkbox_marker_clears_date_annotations_and_undo_restores() {
     let mut workspace = Workspace::new();
-    let scheme_id = create_scheme(&mut workspace);
+    let scheme_id = create_root_scheme(&mut workspace);
     let item = Item::new("dated").with_start(Utc::now()).done();
     let item_id = item.id;
     workspace
@@ -235,26 +239,4 @@ fn removing_checkbox_marker_clears_date_annotations_and_undo_restores() {
     let item = &workspace.schemes[&scheme_id].items[0];
     assert_eq!(item.marker, ItemMarker::Checkbox);
     assert!(item.start.is_some());
-}
-
-fn create_scheme(workspace: &mut Workspace) -> knotq_model::SchemeId {
-    let receipt = workspace
-        .apply(Command::CreateScheme {
-            folder: workspace.root,
-            name: "S".into(),
-            color_index: 1,
-            position: None,
-        })
-        .unwrap();
-    match receipt.inverse {
-        Command::DeleteScheme { id } => id,
-        Command::Batch(commands) => commands
-            .into_iter()
-            .find_map(|command| match command {
-                Command::DeleteScheme { id } => Some(id),
-                _ => None,
-            })
-            .unwrap(),
-        _ => unreachable!(),
-    }
 }

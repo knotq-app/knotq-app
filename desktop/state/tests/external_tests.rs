@@ -1,7 +1,9 @@
-use chrono::NaiveDate;
 use knotq_commands::Command;
-use knotq_model::{AppSettings, Workspace};
 use knotq_state::{AppState, ExternalModification, ExternalModificationQueue};
+
+mod support;
+
+use support::test_state;
 
 #[test]
 fn external_modification_flows_through_queue() {
@@ -23,16 +25,4 @@ impl ExternalModification for MarkDirty {
         state.mark_index_dirty();
         Ok(None)
     }
-}
-
-fn test_state() -> AppState {
-    AppState::new(
-        Workspace::new(),
-        AppSettings::default(),
-        NaiveDate::from_ymd_opt(2026, 1, 1).unwrap(),
-        NaiveDate::from_ymd_opt(2025, 12, 1).unwrap(),
-        false,
-        Default::default(),
-        1,
-    )
 }

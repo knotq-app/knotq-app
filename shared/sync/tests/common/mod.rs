@@ -30,6 +30,7 @@
 #![allow(dead_code)]
 
 pub mod http_transport;
+pub mod rich_items;
 pub mod scenarios;
 
 use std::cell::RefCell;
@@ -2350,7 +2351,7 @@ impl TestDevice {
                 archived: self.workspace.is_scheme_deleted(*id),
                 gsync: scheme.gsync,
                 source: scheme_source_label(&scheme.source),
-                items: scheme.items.iter().map(item_content_summary).collect(),
+                items: scheme.items.iter().map(item_summary).collect(),
             })
             .collect::<Vec<_>>();
         schemes.sort_by(|left, right| left.id.cmp(&right.id));
@@ -2426,8 +2427,8 @@ fn node_ref_label(node: &NodeRef) -> String {
     }
 }
 
-fn item_content_summary(item: &Item) -> String {
-    serde_json::to_string(&item.content).expect("inline content should serialize")
+fn item_summary(item: &Item) -> String {
+    serde_json::to_string(item).expect("item should serialize")
 }
 
 /// A stable label for a scheme's source so the convergence check catches a lost or

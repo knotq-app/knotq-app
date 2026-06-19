@@ -1,14 +1,13 @@
 use std::collections::HashMap;
 
-use chrono::NaiveDate;
 use knotq_commands::{Command, CommandOrigin};
 use knotq_model::{AppSettings, DocumentId, Item, NodeRef, ReplicaId, Scheme, SchemeId, Workspace};
 use knotq_state::AppState;
 use knotq_sync::{WorkspaceCrdtChangeSet, WorkspaceCrdtDocuments};
 
-fn today() -> NaiveDate {
-    NaiveDate::from_ymd_opt(2026, 6, 11).unwrap()
-}
+mod support;
+
+use support::date;
 
 fn app_state_with_scheme(name: &str) -> (AppState, SchemeId) {
     let mut workspace = Workspace::new();
@@ -32,8 +31,8 @@ fn app_state_with_scheme(name: &str) -> (AppState, SchemeId) {
     let state = AppState::new(
         workspace,
         settings,
-        today(),
-        today(),
+        date(2026, 6, 11),
+        date(2026, 6, 11),
         false,
         initial_states,
         1,

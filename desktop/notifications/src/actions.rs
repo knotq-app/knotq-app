@@ -3,6 +3,10 @@ use knotq_commands::Command;
 use knotq_model::{ItemId, OccurrenceId, SchemeId};
 use uuid::Uuid;
 
+use crate::action_payload::{
+    ACTION_TARGET_ITEM_ID_KEY, ACTION_TARGET_OCCURRENCE_JSON_KEY, ACTION_TARGET_SCHEME_ID_KEY,
+    ACTION_TARGET_TRIGGER_AT_KEY,
+};
 use crate::platform_provider::{
     notification_snooze_action, notification_tomorrow_morning_utc_after, NotificationResponse,
     ACTION_MARK_DONE, ACTION_SNOOZE_TOMORROW_MORNING,
@@ -59,15 +63,17 @@ pub fn notification_action_target(
     response: NotificationResponse,
 ) -> Option<NotificationActionTarget> {
     let action = notification_action(&response.action_id)?;
-    let scheme_id = SchemeId(Uuid::parse_str(response.user_info.get("scheme_id")?).ok()?);
-    let item_id = ItemId(Uuid::parse_str(response.user_info.get("item_id")?).ok()?);
+    let scheme_id =
+        SchemeId(Uuid::parse_str(response.user_info.get(ACTION_TARGET_SCHEME_ID_KEY)?).ok()?);
+    let item_id = ItemId(Uuid::parse_str(response.user_info.get(ACTION_TARGET_ITEM_ID_KEY)?).ok()?);
     let occurrence = response
         .user_info
-        .get("occurrence_json")
+        .get(ACTION_TARGET_OCCURRENCE_JSON_KEY)
         .and_then(|raw| serde_json::from_str(raw).ok())?;
-    let trigger_at = DateTime::parse_from_rfc3339(response.user_info.get("trigger_at")?)
-        .ok()?
-        .with_timezone(&Utc);
+    let trigger_at =
+        DateTime::parse_from_rfc3339(response.user_info.get(ACTION_TARGET_TRIGGER_AT_KEY)?)
+            .ok()?
+            .with_timezone(&Utc);
     Some(NotificationActionTarget {
         notification_id: response.notification_id,
         action,

@@ -1,3 +1,4 @@
+use crate::action_payload::request_has_action_payload;
 use crate::{
     dispatch_response, AuthorizationStatus, Error, NotificationRequest, NotificationResponse,
     PlatformStatus, Result, ACTION_MARK_DONE, NOTIFICATION_SNOOZE_ACTIONS,
@@ -476,11 +477,7 @@ fn show_notification(app_id: &str, request: &NotificationRequest) -> Result<u32>
 }
 
 fn notification_actions(request: &NotificationRequest) -> Vec<&'static str> {
-    if !request.user_info.contains_key("scheme_id")
-        || !request.user_info.contains_key("item_id")
-        || !request.user_info.contains_key("occurrence_json")
-        || !request.user_info.contains_key("trigger_at")
-    {
+    if !request_has_action_payload(request) {
         return Vec::new();
     }
 

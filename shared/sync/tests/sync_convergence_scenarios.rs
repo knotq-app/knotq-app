@@ -13,12 +13,12 @@
 mod common;
 
 use chrono::NaiveDate;
-use common::{Harness, Rng, D0, D1, D2};
-use knotq_model::{
-    ImageAssetFormat, ImageInline, Inline, Item, ItemContent, NodeRef, SchemeId, Table, TableCell,
+use common::rich_items::{
+    first_table, image_name as rich_image_name, image_ref, item_content, item_with_content,
+    patterned_bytes, set_item_content, table_cell_texts, table_with_cells,
 };
-use knotq_sync::WorkspaceCrdtChangeSet;
-use uuid::Uuid;
+use common::{Harness, Rng, D0, D1, D2};
+use knotq_model::{Inline, Item, NodeRef, SchemeId};
 
 #[test]
 fn three_devices_converge_on_concurrent_distinct_scheme_creation() {
@@ -130,14 +130,9 @@ fn table_cell_image_media_syncs_after_restart() {
     let scheme = h.add_scheme(D0, "Gallery", &["anchor"]);
     h.settle();
 
-    let image_bytes: Vec<u8> = (0u32..4096).map(|i| (i % 251) as u8).collect();
-    let image = ImageInline {
-        asset: Uuid::new_v4(),
-        format: ImageAssetFormat::Png,
-        width: Some(96),
-        height: Some(54),
-    };
-    let image_name = format!("{}.{}", image.asset, image.format.extension());
+    let image_bytes = patterned_bytes(4096, 251);
+    let image = image_ref(96, 54);
+    let image_name = rich_image_name(image);
 
     // The cell is a sub-document: a caption text line followed by an image line,
     // each a single content kind. The outer line is the table itself.
@@ -196,62 +191,6 @@ fn offline_queue_of_many_edits_pushes_in_order_and_converges() {
     assert_eq!(texts.len(), 26, "{texts:?}");
     assert_eq!(texts[0], "seed edited");
     assert_eq!(texts[25], "line 24");
-}
-
-fn item_with_content(content: Vec<Inline>) -> Item {
-    let mut item = Item::new("");
-    item.content = ItemContent::from_inlines(content);
-    item
-}
-
-fn set_item_content(
-    h: &mut Harness,
-    device: common::DeviceKey,
-    scheme: SchemeId,
-    index: usize,
-    content: Vec<Inline>,
-) {
-    let test_device = h.device_mut_for_surgery(device);
-    test_device.scheme_mut_pub(scheme).items[index].content = ItemContent::from_inlines(content);
-    test_device.record_changes(WorkspaceCrdtChangeSet::default().touch_scheme(scheme));
-}
-
-fn item_content(
-    h: &Harness,
-    device: common::DeviceKey,
-    scheme: SchemeId,
-    index: usize,
-) -> Vec<Inline> {
-    h.device(device).workspace.schemes[&scheme].items[index]
-        .content
-        .to_inlines()
-}
-
-fn table_with_cells(rows: &[&[&str]]) -> Table {
-    let row_count = rows.len().max(1);
-    let column_count = rows.first().map(|row| row.len()).unwrap_or(1).max(1);
-    let mut table = Table::new(row_count, column_count);
-    for (row_index, row) in rows.iter().enumerate() {
-        for (column_index, text) in row.iter().enumerate() {
-            table.rows[row_index].cells[column_index] = TableCell::with_text(*text);
-        }
-    }
-    table
-}
-
-fn first_table(content: &[Inline]) -> Option<&Table> {
-    content.iter().find_map(|inline| match inline {
-        Inline::Table(table) => Some(table),
-        _ => None,
-    })
-}
-
-fn table_cell_texts(table: &Table) -> Vec<Vec<String>> {
-    table
-        .rows
-        .iter()
-        .map(|row| row.cells.iter().map(TableCell::summary_text).collect())
-        .collect()
 }
 
 #[test]

@@ -6,9 +6,9 @@ use knotq_state::{
     make_default_workspace_for_date, DailyQueueState,
 };
 
-fn date(year: i32, month: u32, day: u32) -> NaiveDate {
-    NaiveDate::from_ymd_opt(year, month, day).unwrap()
-}
+mod support;
+
+use support::date;
 
 /// Insert a daily-queue scheme for `day` carrying `items` (text only).
 fn insert_daily(workspace: &mut Workspace, day: NaiveDate, items: &[&str]) {

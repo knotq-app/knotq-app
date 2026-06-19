@@ -1,7 +1,10 @@
-use chrono::NaiveDate;
 use knotq_commands::Command;
-use knotq_model::{AppSettings, Item, NodeRef, Scheme, Workspace};
-use knotq_state::{AppEvent, AppState};
+use knotq_model::{Item, NodeRef, Scheme};
+use knotq_state::AppEvent;
+
+mod support;
+
+use support::test_state;
 
 #[test]
 fn apply_command_emits_event_marks_dirty_and_updates_index() {
@@ -61,16 +64,4 @@ fn direct_workspace_mutation_syncs_before_next_command() {
             .as_deref(),
         Some("after")
     );
-}
-
-fn test_state() -> AppState {
-    AppState::new(
-        Workspace::new(),
-        AppSettings::default(),
-        NaiveDate::from_ymd_opt(2026, 1, 1).unwrap(),
-        NaiveDate::from_ymd_opt(2025, 12, 1).unwrap(),
-        false,
-        Default::default(),
-        1,
-    )
 }
