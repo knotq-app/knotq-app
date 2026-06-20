@@ -2,6 +2,8 @@
 
 KnotQ is a local-first desktop productivity app where your notes and calendar live in the same workspace. Write plans as structured documents, schedule any line, and see the result immediately on a week calendar without sending your data to a cloud account.
 
+Download KnotQ from the website: [knotq.com](https://knotq.com)
+
 <p align="center">
   <img src="https://www.knotq.com/img/knotq-calendar.png" alt="KnotQ weekly calendar showing events, assignments, and reminders" width="880">
 </p>

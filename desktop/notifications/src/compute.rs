@@ -303,6 +303,7 @@ fn scheduled_notification(
         key: ScheduledNotification::make_key(scheme_id, item.id, &occurrence.id, kind, fire_at),
         fire_at,
         expires_at,
+        end_at: event_end_at(kind, &occurrence),
         title: title_for(item),
         body: body_for(kind, occurrence.start, occurrence.end),
         kind,
@@ -331,6 +332,13 @@ fn notification_expires_at(
     kind: NotificationKind,
     occurrence: &Occurrence,
 ) -> Option<DateTime<Utc>> {
+    match kind {
+        NotificationKind::Event => occurrence.end,
+        NotificationKind::Reminder | NotificationKind::Assignment => None,
+    }
+}
+
+fn event_end_at(kind: NotificationKind, occurrence: &Occurrence) -> Option<DateTime<Utc>> {
     match kind {
         NotificationKind::Event => occurrence.end,
         NotificationKind::Reminder | NotificationKind::Assignment => None,

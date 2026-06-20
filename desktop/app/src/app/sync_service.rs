@@ -556,7 +556,7 @@ fn sync_snapshot(snapshot: SyncSnapshot) -> Result<SyncRunResult> {
     }
 
     upload_local_media_assets(&client, &mut local_state, &workspace, &pull.remote_latest)?;
-    let media_downloaded = download_missing_media_assets(&client, &workspace)?;
+    let mut media_downloaded = download_missing_media_assets(&client, &workspace)?;
 
     let replica_id = local_state.replica_id.unwrap_or_default();
     // The server's per-document seq (our advanced pull cursor) tells the bootstrap
@@ -624,6 +624,19 @@ fn sync_snapshot(snapshot: SyncSnapshot) -> Result<SyncRunResult> {
         post_push_states
     };
     push_result?;
+
+    // Retry media after the CRDT push using a head map that treats newly pushed
+    // documents as present, so successful pre-push uploads are not re-sent but
+    // skipped or changed local assets still get uploaded.
+    let mut media_remote_latest = pull.remote_latest;
+    for pushed_document in &pushed {
+        media_remote_latest
+            .entry(pushed_document.document)
+            .or_insert(1);
+    }
+    upload_local_media_assets(&client, &mut local_state, &workspace, &media_remote_latest)?;
+    save_local_sync_state(&path, &local_state)?;
+    media_downloaded |= download_missing_media_assets(&client, &workspace)?;
 
     Ok(SyncRunResult {
         workspace,

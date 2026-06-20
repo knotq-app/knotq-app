@@ -110,6 +110,67 @@ pub(super) fn toolbar_italic_button(
         .into_any_element()
 }
 
+pub(super) fn toolbar_highlight_button(
+    active: bool,
+    c: Theme,
+    tooltip: &'static str,
+    editor: Entity<SchemeEditor>,
+    listener: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
+) -> gpui::AnyElement {
+    div()
+        .id("scheme-toolbar-highlight")
+        .w(px(24.0))
+        .h(px(23.0))
+        .flex()
+        .items_center()
+        .justify_center()
+        .cursor_pointer()
+        .on_mouse_down(MouseButton::Left, toolbar_refocus_listener(editor))
+        .on_click(listener)
+        .tooltip(move |window, cx| Tooltip::new(tooltip).build(window, cx))
+        .child(toolbar_highlight_glyph(active, c))
+        .into_any_element()
+}
+
+fn toolbar_highlight_glyph(active: bool, c: Theme) -> gpui::AnyElement {
+    let color = if active {
+        token_hsla(c.toolbar_chip_selected_text)
+    } else {
+        token_hsla(c.toolbar_chip_muted)
+    };
+    div()
+        .relative()
+        .w(px(14.0))
+        .h(px(15.0))
+        .flex()
+        .items_center()
+        .justify_center()
+        .child(
+            div()
+                .font_family(FONT_UI)
+                .font_weight(if active {
+                    gpui::FontWeight::BOLD
+                } else {
+                    gpui::FontWeight::MEDIUM
+                })
+                .text_size(px(13.0))
+                .line_height(px(13.0))
+                .text_color(color)
+                .child("H"),
+        )
+        .child(
+            div()
+                .absolute()
+                .left(px(0.0))
+                .right(px(0.0))
+                .bottom(px(0.0))
+                .h(px(if active { 2.0 } else { 1.5 }))
+                .rounded(px(1.0))
+                .bg(color),
+        )
+        .into_any_element()
+}
+
 pub(super) fn toolbar_strikethrough_button(
     active: bool,
     c: Theme,

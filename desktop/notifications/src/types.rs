@@ -56,6 +56,7 @@ pub struct ScheduledNotification {
     pub key: String,
     pub fire_at: DateTime<Utc>,
     pub expires_at: Option<DateTime<Utc>>,
+    pub end_at: Option<DateTime<Utc>>,
     pub title: String,
     pub body: String,
     pub kind: NotificationKind,

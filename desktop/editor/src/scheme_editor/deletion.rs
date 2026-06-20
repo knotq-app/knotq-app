@@ -404,6 +404,16 @@ impl SchemeEditor {
         if self.selection.is_empty() {
             return false;
         }
+        if let Some(top_indices) =
+            selected_cross_row_block_top_indices(&self.rows, &self.text, self.selection)
+        {
+            return self.delete_top_level_block_items(
+                top_indices,
+                self.selection.ordered().0,
+                window,
+                cx,
+            );
+        }
         let (start, end) = self.selection.ordered();
         if start.row != end.row {
             return false;
@@ -423,6 +433,9 @@ impl SchemeEditor {
             return;
         }
         if self.delete_block_object_at_caret(true, window, cx) {
+            return;
+        }
+        if self.delete_adjacent_block_item_at_boundary(true, window, cx) {
             return;
         }
         if self.boundary_delete_blocked(true) {
@@ -477,6 +490,9 @@ impl SchemeEditor {
         if self.delete_block_object_at_caret(true, window, cx) {
             return;
         }
+        if self.delete_adjacent_block_item_at_boundary(true, window, cx) {
+            return;
+        }
         if self.boundary_delete_blocked(true) {
             return;
         }
@@ -493,6 +509,9 @@ impl SchemeEditor {
             return;
         }
         if self.delete_block_object_at_caret(true, window, cx) {
+            return;
+        }
+        if self.delete_adjacent_block_item_at_boundary(true, window, cx) {
             return;
         }
         if self.boundary_delete_blocked(true) {
@@ -520,6 +539,9 @@ impl SchemeEditor {
         if self.delete_block_object_at_caret(false, window, cx) {
             return;
         }
+        if self.delete_adjacent_block_item_at_boundary(false, window, cx) {
+            return;
+        }
         if self.boundary_delete_blocked(false) {
             return;
         }
@@ -541,6 +563,9 @@ impl SchemeEditor {
         if self.delete_block_object_at_caret(false, window, cx) {
             return;
         }
+        if self.delete_adjacent_block_item_at_boundary(false, window, cx) {
+            return;
+        }
         if self.boundary_delete_blocked(false) {
             return;
         }
@@ -557,6 +582,9 @@ impl SchemeEditor {
             return;
         }
         if self.delete_block_object_at_caret(false, window, cx) {
+            return;
+        }
+        if self.delete_adjacent_block_item_at_boundary(false, window, cx) {
             return;
         }
         if self.boundary_delete_blocked(false) {
@@ -623,6 +651,99 @@ impl SchemeEditor {
         cx.notify();
         self.emit_top_level_diff(&old_top, &new_top, cx);
         true
+    }
+
+    fn delete_adjacent_block_item_at_boundary(
+        &mut self,
+        prefer_backward: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        if self.read_only || !self.selection.is_empty() {
+            return false;
+        }
+        let cursor = self.selection.head;
+        let Some(top_index) =
+            adjacent_block_top_index_at_boundary(&self.rows, &self.text, cursor, prefer_backward)
+        else {
+            return false;
+        };
+        self.delete_top_level_block_items(vec![top_index], cursor, window, cx)
+    }
+
+    fn delete_top_level_block_items(
+        &mut self,
+        mut top_indices: Vec<usize>,
+        cursor: TextLocation,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let old_top = reconstruct_top_level(&self.rows);
+        top_indices.sort_unstable();
+        top_indices.dedup();
+        top_indices.retain(|index| {
+            old_top
+                .get(*index)
+                .is_some_and(|item| item_has_block_object(item))
+        });
+        if top_indices.is_empty() {
+            return false;
+        }
+
+        let old_cursor_top = top_level_index_for_cursor_row(&self.rows, cursor.row);
+        let mut new_top = old_top.clone();
+        for index in top_indices.iter().rev() {
+            if *index < new_top.len() {
+                new_top.remove(*index);
+            }
+        }
+
+        let (text, rows) = build_buffer(&new_top);
+        self.text = text;
+        self.rows = rows;
+        self.refresh_layout_after_content_change(Some(window));
+        self.selection = TextSelection::collapsed(self.cursor_after_top_level_deletion(
+            cursor,
+            old_cursor_top,
+            &top_indices,
+            new_top.len(),
+        ));
+        self.marked_range = None;
+        self.reset_cursor_blink(cx);
+        self.scroll_to_cursor(cx);
+        cx.notify();
+        self.emit_top_level_diff(&old_top, &new_top, cx);
+        true
+    }
+
+    fn cursor_after_top_level_deletion(
+        &self,
+        cursor: TextLocation,
+        old_cursor_top: Option<usize>,
+        deleted_top_indices: &[usize],
+        new_top_len: usize,
+    ) -> TextLocation {
+        let Some(old_cursor_top) = old_cursor_top else {
+            return self.clamp_location(cursor);
+        };
+        if new_top_len == 0 {
+            return TextLocation { row: 0, col: 0 };
+        }
+
+        let deleted_before = deleted_top_indices
+            .iter()
+            .filter(|index| **index < old_cursor_top)
+            .count();
+        let target_top = old_cursor_top
+            .saturating_sub(deleted_before)
+            .min(new_top_len.saturating_sub(1));
+        let row = flat_row_for_top_level_index(&self.rows, target_top);
+        let col = if deleted_top_indices.binary_search(&old_cursor_top).is_ok() {
+            0
+        } else {
+            cursor.col
+        };
+        self.clamp_location(TextLocation { row, col })
     }
 
     fn block_object_after_or_at(&self, row: usize, col: usize) -> Option<(Range<usize>, usize)> {
@@ -870,5 +991,269 @@ fn same_region(a: RowPath, b: RowPath) -> bool {
         a.anchor == b.anchor && a.r == b.r && a.c == b.c
     } else {
         a.is_doc() && b.is_doc()
+    }
+}
+
+fn adjacent_block_top_index_at_boundary(
+    rows: &[EditorRow],
+    text: &str,
+    cursor: TextLocation,
+    backward: bool,
+) -> Option<usize> {
+    let current = rows.get(cursor.row)?;
+    if !current.path.is_doc() || item_has_block_object(&current.item) {
+        return None;
+    }
+    let line_len = line_len_in_text(text, cursor.row)?;
+    let col = cursor.col.min(line_len);
+    let current_top = top_level_index_for_flat_row(rows, cursor.row)?;
+
+    let target_top = if backward {
+        (col == 0).then(|| current_top.checked_sub(1)).flatten()?
+    } else {
+        (col == line_len).then_some(current_top + 1)?
+    };
+    let target_row = flat_row_for_top_level_index(rows, target_top);
+    rows.get(target_row)
+        .filter(|row| !row.path.is_cell() && item_has_block_object(&row.item))
+        .and_then(|_| top_level_index_for_flat_row(rows, target_row))
+}
+
+fn selected_cross_row_block_top_indices(
+    rows: &[EditorRow],
+    text: &str,
+    selection: TextSelection,
+) -> Option<Vec<usize>> {
+    if selection.is_empty() {
+        return None;
+    }
+    let (start, end) = selection.ordered();
+    if start.row == end.row {
+        return None;
+    }
+
+    let ranges = line_ranges(text);
+    let last_row = end.row.min(ranges.len().saturating_sub(1));
+    let mut block_rows = Vec::new();
+    for row in start.row..=last_row {
+        let Some(editor_row) = rows.get(row) else {
+            continue;
+        };
+        if editor_row.path.is_cell() || !item_has_block_object(&editor_row.item) {
+            continue;
+        }
+        let Some((selection_start, selection_end, line)) =
+            selected_line_slice(text, &ranges, selection, row)
+        else {
+            continue;
+        };
+        if selection_start >= selection_end {
+            continue;
+        }
+        if block_object_ranges(line)
+            .into_iter()
+            .any(|object| selection_start < object.end && object.start < selection_end)
+        {
+            block_rows.push(row);
+        }
+    }
+    if block_rows.is_empty() {
+        return None;
+    }
+
+    for row in start.row..=last_row {
+        let Some((selection_start, selection_end, line)) =
+            selected_line_slice(text, &ranges, selection, row)
+        else {
+            continue;
+        };
+        if selection_start >= selection_end {
+            continue;
+        }
+        if rows
+            .get(row)
+            .is_some_and(|row| row.path.is_cell() && block_rows.contains(&row.path.anchor))
+        {
+            continue;
+        }
+        if !line_without_table_object(&line[selection_start..selection_end])
+            .trim()
+            .is_empty()
+        {
+            return None;
+        }
+    }
+
+    let mut top_indices = block_rows
+        .into_iter()
+        .filter_map(|row| top_level_index_for_flat_row(rows, row))
+        .collect::<Vec<_>>();
+    top_indices.sort_unstable();
+    top_indices.dedup();
+    (!top_indices.is_empty()).then_some(top_indices)
+}
+
+fn selected_line_slice<'a>(
+    text: &'a str,
+    ranges: &[Range<usize>],
+    selection: TextSelection,
+    row: usize,
+) -> Option<(usize, usize, &'a str)> {
+    let (start, end) = selection.ordered();
+    let range = ranges.get(row)?.clone();
+    let line = text.get(range)?;
+    let selection_start = if row == start.row { start.col } else { 0 };
+    let selection_end = if row == end.row { end.col } else { line.len() };
+    let selection_start = clamp_col_to_line_boundary(line, selection_start);
+    let selection_end = clamp_col_to_line_boundary(line, selection_end);
+    Some((selection_start.min(selection_end), selection_end, line))
+}
+
+fn line_len_in_text(text: &str, row: usize) -> Option<usize> {
+    line_ranges(text)
+        .get(row)
+        .map(|range| range.end.saturating_sub(range.start))
+}
+
+fn clamp_col_to_line_boundary(line: &str, col: usize) -> usize {
+    let mut col = col.min(line.len());
+    while col > 0 && !line.is_char_boundary(col) {
+        col -= 1;
+    }
+    col
+}
+
+fn top_level_index_for_cursor_row(rows: &[EditorRow], row: usize) -> Option<usize> {
+    let editor_row = rows.get(row)?;
+    if editor_row.path.is_cell() {
+        top_level_index_for_flat_row(rows, editor_row.path.anchor)
+    } else {
+        top_level_index_for_flat_row(rows, row)
+    }
+}
+
+#[cfg(test)]
+mod block_boundary_tests {
+    use super::*;
+    use knotq_model::Table;
+
+    fn table_item(rows: usize, cols: usize) -> Item {
+        let mut item = Item::new("");
+        item.set_table(Table::new(rows, cols));
+        item
+    }
+
+    #[test]
+    fn forward_delete_at_text_table_boundary_targets_the_table_item() {
+        let text_item = Item::new("finish my room list and items");
+        let (text, rows) = build_buffer(&[text_item, table_item(2, 2)]);
+
+        assert_eq!(
+            adjacent_block_top_index_at_boundary(
+                &rows,
+                &text,
+                TextLocation {
+                    row: 0,
+                    col: "finish my room list and items".len(),
+                },
+                false,
+            ),
+            Some(1)
+        );
+    }
+
+    #[test]
+    fn backspace_at_table_text_boundary_targets_the_table_item() {
+        let text_item = Item::new("after");
+        let (text, rows) = build_buffer(&[table_item(2, 2), text_item]);
+        let text_row = rows
+            .iter()
+            .position(|row| row.path.is_doc() && row.item.text() == "after")
+            .unwrap();
+
+        assert_eq!(
+            adjacent_block_top_index_at_boundary(
+                &rows,
+                &text,
+                TextLocation {
+                    row: text_row,
+                    col: 0,
+                },
+                true,
+            ),
+            Some(0)
+        );
+    }
+
+    #[test]
+    fn selected_newline_and_table_object_targets_the_table_item() {
+        let text_item = Item::new("finish my room list and items");
+        let (text, rows) = build_buffer(&[text_item, table_item(2, 2)]);
+
+        assert_eq!(
+            selected_cross_row_block_top_indices(
+                &rows,
+                &text,
+                TextSelection {
+                    anchor: TextLocation {
+                        row: 0,
+                        col: "finish my room list and items".len(),
+                    },
+                    head: TextLocation {
+                        row: 1,
+                        col: TABLE_OBJECT_LEN,
+                    },
+                },
+            ),
+            Some(vec![1])
+        );
+    }
+
+    #[test]
+    fn selected_table_object_and_cell_rows_targets_the_table_item() {
+        let text_item = Item::new("finish my room list and items");
+        let (text, rows) = build_buffer(&[text_item, table_item(2, 2)]);
+
+        assert_eq!(
+            selected_cross_row_block_top_indices(
+                &rows,
+                &text,
+                TextSelection {
+                    anchor: TextLocation {
+                        row: 0,
+                        col: "finish my room list and items".len(),
+                    },
+                    head: TextLocation {
+                        row: 2,
+                        col: "Column 2".len(),
+                    },
+                },
+            ),
+            Some(vec![1])
+        );
+    }
+
+    #[test]
+    fn selection_with_real_text_before_table_is_not_a_block_delete() {
+        let text_item = Item::new("finish my room list and items");
+        let (text, rows) = build_buffer(&[text_item, table_item(2, 2)]);
+
+        assert_eq!(
+            selected_cross_row_block_top_indices(
+                &rows,
+                &text,
+                TextSelection {
+                    anchor: TextLocation {
+                        row: 0,
+                        col: "finish my room list and item".len(),
+                    },
+                    head: TextLocation {
+                        row: 1,
+                        col: TABLE_OBJECT_LEN,
+                    },
+                },
+            ),
+            None
+        );
     }
 }

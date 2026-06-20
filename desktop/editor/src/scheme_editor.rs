@@ -111,6 +111,7 @@ actions!(
         ToggleBold,
         ToggleEndDate,
         ToggleHeading,
+        ToggleHighlight,
         ToggleItalic,
         ToggleRepeat,
         ToggleStartDate,

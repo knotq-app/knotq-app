@@ -100,6 +100,7 @@ impl gpui::Render for SchemeEditor {
             }))
             .on_action(cx.listener(|this, _: &ToggleBold, _w, cx| this.toggle_bold(cx)))
             .on_action(cx.listener(|this, _: &ToggleItalic, _w, cx| this.toggle_italic(cx)))
+            .on_action(cx.listener(|this, _: &ToggleHighlight, _w, cx| this.toggle_highlight(cx)))
             .on_action(
                 cx.listener(|this, _: &ToggleStrikethrough, _w, cx| this.toggle_strikethrough(cx)),
             )

@@ -15,16 +15,17 @@
 //! `quick-xml`'s pull parser for correct entity/attribute handling.
 
 use anyhow::{anyhow, bail, Context, Result};
+use chrono::{DateTime, SecondsFormat, Utc};
 use knotq_model::{
     ExternalItemSource, ImageAssetFormat, ImageInline, Inline, Item, ItemContent, ItemId,
-    ItemMarker, Recurrence, Scheme, SchemeId, Table, TableCell, TableColumn, TableRow,
+    ItemMarker, OccurrenceId, OccurrenceState, Recurrence, Scheme, SchemeId, Table, TableCell,
+    TableColumn, TableRow,
 };
 use quick_xml::events::{BytesStart, Event};
 use quick_xml::reader::Reader;
 use std::path::Path;
 
 use crate::scheme_file::SchemeFile;
-use crate::scheme_markdown::{encode_datetime, parse_datetime, single_rrule, state_is_default};
 
 const SCHEME_VERSION: &str = "1";
 
@@ -502,6 +503,31 @@ fn skip_to_end(reader: &mut Reader<&[u8]>, end_name: &[u8]) -> Result<()> {
         }
     }
     Ok(())
+}
+
+fn encode_datetime(value: DateTime<Utc>) -> String {
+    value.to_rfc3339_opts(SecondsFormat::Secs, true)
+}
+
+fn parse_datetime(value: &str) -> Result<DateTime<Utc>> {
+    Ok(DateTime::parse_from_rfc3339(value)?.with_timezone(&Utc))
+}
+
+fn single_rrule(repeats: &Recurrence) -> Option<&str> {
+    if repeats.rrules.len() == 1
+        && repeats.rdates.is_empty()
+        && repeats.exdates.is_empty()
+        && repeats.overrides.is_empty()
+        && repeats.raw_import.is_none()
+    {
+        Some(&repeats.rrules[0])
+    } else {
+        None
+    }
+}
+
+fn state_is_default(state: &[OccurrenceState]) -> bool {
+    state.len() == 1 && state[0].occurrence == OccurrenceId::Single && state[0].state.is_default()
 }
 
 #[cfg(test)]

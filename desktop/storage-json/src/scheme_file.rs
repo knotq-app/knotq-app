@@ -12,7 +12,6 @@ use crate::{
     files::write_atomic,
     paths::schemes_dir,
     schema::{DailyQueueIndexEntry, SchemeIndex},
-    scheme_markdown::decode_scheme_file,
     scheme_xml::{decode_scheme_xml, encode_scheme_xml},
 };
 
@@ -57,21 +56,15 @@ struct DecodedSchemeFile {
     should_rewrite: bool,
 }
 
-/// Decode a scheme file, detecting its format. Files written by this version are
-/// XML; the markdown reader is kept only to migrate pre-XML files in place.
+/// Decode an XML scheme file, recovering older quirks in place: a missing XML
+/// declaration, or XML that a past load saved back as literal item text. Sets
+/// `should_rewrite` when the file should be re-serialized in canonical form.
 fn decode_scheme_any(raw: &str, path: &Path, id: SchemeId) -> Result<DecodedSchemeFile> {
-    if raw_looks_like_xml_scheme(raw) {
-        let file = decode_scheme_xml(raw, path, id)?;
-        let (file, recovered_wrapped_xml) = recover_wrapped_xml_text(file, path, id)?;
-        return Ok(DecodedSchemeFile {
-            file,
-            should_rewrite: recovered_wrapped_xml || !raw_has_xml_declaration(raw),
-        });
-    }
-
+    let file = decode_scheme_xml(raw, path, id)?;
+    let (file, recovered_wrapped_xml) = recover_wrapped_xml_text(file, path, id)?;
     Ok(DecodedSchemeFile {
-        file: decode_scheme_file(raw, path, id)?,
-        should_rewrite: false,
+        file,
+        should_rewrite: recovered_wrapped_xml || !raw_has_xml_declaration(raw),
     })
 }
 
@@ -96,32 +89,10 @@ pub(crate) fn read_daily_queue_file(
     Ok(decoded.file)
 }
 
-pub(crate) fn repair_scheme_file_format(path: &Path) -> Result<bool> {
-    let raw = fs::read_to_string(path).with_context(|| format!("read {}", path.display()))?;
-    if raw.trim().is_empty() {
-        return Ok(false);
-    }
-    let id = scheme_id_from_path(path);
-    let decoded = decode_scheme_any(&raw, path, id)?;
-    if decoded.should_rewrite {
-        rewrite_recovered_scheme_file(path, &decoded)?;
-        return Ok(true);
-    }
-    Ok(false)
-}
-
 fn raw_has_xml_declaration(raw: &str) -> bool {
     raw.trim_start_matches('\u{feff}')
         .trim_start()
         .starts_with("<?xml")
-}
-
-fn raw_looks_like_xml_scheme(raw: &str) -> bool {
-    let trimmed = raw.trim_start_matches('\u{feff}').trim_start();
-    if trimmed.starts_with("<?xml") {
-        return true;
-    }
-    trimmed.starts_with("<scheme")
 }
 
 fn recover_wrapped_xml_text(
@@ -213,13 +184,6 @@ fn rewrite_recovered_scheme_file(path: &Path, decoded: &DecodedSchemeFile) -> Re
     };
     let xml = encode_scheme_xml(&scheme)?;
     write_atomic(path, xml.as_bytes()).with_context(|| format!("rewrite {}", path.display()))
-}
-
-fn scheme_id_from_path(path: &Path) -> SchemeId {
-    path.file_stem()
-        .and_then(|stem| stem.to_str())
-        .and_then(|stem| stem.parse::<SchemeId>().ok())
-        .unwrap_or_else(SchemeId::new)
 }
 
 pub(crate) fn write_scheme_file(
@@ -401,9 +365,8 @@ mod tests {
             .push(Item::new("book flights").with_marker(ItemMarker::Checkbox));
 
         let original_xml = without_xml_declaration(&encode_scheme_xml(&scheme).unwrap());
-        let text_items = decode_scheme_file(&original_xml, Path::new("corrupt.knotq"), id)
-            .unwrap()
-            .items;
+        // Simulate the corruption: each XML line stored as a literal text item.
+        let text_items: Vec<Item> = original_xml.lines().map(Item::new).collect();
         let corrupt_scheme = Scheme {
             id,
             name: String::new(),

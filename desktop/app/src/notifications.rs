@@ -926,6 +926,9 @@ pub(crate) fn notification_request(note: ScheduledNotification) -> NotificationR
     if let Some(expires_at) = note.expires_at {
         request = request.user_info("expires_at", expires_at.to_rfc3339());
     }
+    if let Some(end_at) = note.end_at {
+        request = request.user_info("end_at", end_at.to_rfc3339());
+    }
     request
 }
 
@@ -1043,6 +1046,7 @@ mod tests {
             key: "key".to_string(),
             fire_at,
             expires_at: Some(expires_at),
+            end_at: Some(expires_at),
             title: "Class".to_string(),
             body: "From Thu, 12:00 PM to 1:00 PM".to_string(),
             kind: knotq_notifications::NotificationKind::Event,
@@ -1058,6 +1062,10 @@ mod tests {
         let expected_expires_at = expires_at.to_rfc3339();
         assert_eq!(
             request.user_info.get("expires_at").map(String::as_str),
+            Some(expected_expires_at.as_str())
+        );
+        assert_eq!(
+            request.user_info.get("end_at").map(String::as_str),
             Some(expected_expires_at.as_str())
         );
     }

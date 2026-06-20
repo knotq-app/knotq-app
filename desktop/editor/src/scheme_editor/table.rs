@@ -20,6 +20,13 @@ const GRID_BOTTOM_GAP: f32 = 2.0;
 const CONTROL_H: f32 = 16.0;
 const CONTROL_BTN: f32 = 14.0;
 const RIGHT_MARGIN: f32 = CONTROL_BTN + 10.0;
+
+/// Hit-test slack below the grid (the add-row control strip), so a click at the
+/// very bottom of a cell reads as that cell instead of falling through to the
+/// caret at the end of the table — the cell's visual padding makes that spot
+/// feel like part of the cell. The add-row "+" is matched first in
+/// `on_mouse_down`, so it still wins inside this slack.
+pub(super) const BOTTOM_HIT_SLACK: f32 = CONTROL_H + GRID_BOTTOM_GAP;
 const CELL_LINE_HEIGHT: f32 = TEXT_LINE_HEIGHT;
 
 pub(super) fn grid_left_content() -> Pixels {
@@ -55,7 +62,7 @@ pub(super) struct TableLayout {
 }
 
 impl TableLayout {
-    fn grid_h(&self) -> Pixels {
+    pub(super) fn grid_h(&self) -> Pixels {
         self.header_h + self.body_band_h.iter().fold(px(0.0), |acc, h| acc + *h)
     }
 }

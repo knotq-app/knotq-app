@@ -20,7 +20,6 @@ use crate::{CrdtDocumentUpdate, StoredCrdtUpdate};
 const SCHEME_SCHEMA_V1: &str = "knotq.scheme_file.v1";
 const WORKSPACE_SCHEMA_V1: &str = "knotq.workspace.v1";
 const INLINE_EMBED_PREFIX: &str = "\u{fffc}knotq.inline.v1\0";
-const LEGACY_INLINE_EMBED_PREFIX: &[u8] = b"knotq.inline.v1\0";
 
 const NODE_KIND_FOLDER: &str = "folder";
 const NODE_KIND_SCHEME: &str = "scheme";
@@ -1306,11 +1305,6 @@ fn read_text_content(text: &TextRef, txn: &impl ReadTxn) -> Vec<Inline> {
                     push_text_inline(&mut content, text);
                 }
             }
-            Out::Any(Any::Buffer(bytes)) => {
-                if let Some(inline) = decode_legacy_inline_embed(&bytes) {
-                    content.push(inline);
-                }
-            }
             _ => {}
         }
     }
@@ -1481,13 +1475,6 @@ fn encode_inline_embed(inline: &Inline) -> anyhow::Result<String> {
 fn decode_inline_embed_str(text: &str) -> Option<Inline> {
     text.strip_prefix(INLINE_EMBED_PREFIX)
         .and_then(|json| serde_json::from_str::<Inline>(json).ok())
-        .and_then(|inline| (!inline.is_text()).then_some(inline))
-}
-
-fn decode_legacy_inline_embed(bytes: &[u8]) -> Option<Inline> {
-    bytes
-        .strip_prefix(LEGACY_INLINE_EMBED_PREFIX)
-        .and_then(|json| serde_json::from_slice::<Inline>(json).ok())
         .and_then(|inline| (!inline.is_text()).then_some(inline))
 }
 

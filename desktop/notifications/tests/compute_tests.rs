@@ -31,6 +31,7 @@ fn event_notifications_fire_at_start_time() {
     assert_eq!(notes[0].kind, NotificationKind::Event);
     assert_eq!(notes[0].fire_at, start);
     assert_eq!(notes[0].expires_at, Some(end));
+    assert_eq!(notes[0].end_at, Some(end));
     assert_eq!(notes[0].title, "Class");
     assert!(!notes[0].body.starts_with("From "));
     assert!(notes[0].body.contains(" to "));
@@ -55,6 +56,7 @@ fn assignment_notification_uses_default_due_lead_time() {
     assert_eq!(notes.len(), 1);
     assert_eq!(notes[0].title, "Essay");
     assert_eq!(notes[0].expires_at, None);
+    assert_eq!(notes[0].end_at, None);
     assert!(notes[0].body.starts_with("Due "));
 }
 
