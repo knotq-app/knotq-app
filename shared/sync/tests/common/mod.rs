@@ -483,6 +483,14 @@ impl Harness {
             .reject_next_push_with_schema_invalid();
     }
 
+    /// Arm a one-shot rejection with an arbitrary backend code so the next push
+    /// exercises the engine's generalized (non-`crdt_schema_invalid`) self-heal.
+    /// Panics on an HTTP harness (fault injection is only available in-memory).
+    pub fn reject_next_push_with_code(&self, code: &str) {
+        self.require_in_memory_server()
+            .reject_next_push_with_code(code);
+    }
+
     /// In-memory only.
     pub fn server_pull_calls(&self) -> usize {
         self.require_in_memory_server().pull_calls()
@@ -780,9 +788,9 @@ pub struct TestServer {
     /// test helpers call them directly.
     media: RefCell<HashMap<MediaKey, Vec<u8>>>,
     counters: RefCell<ServerCounters>,
-    /// When set, the next push call returns `crdt_schema_invalid` unconditionally
-    /// and clears this flag (one-shot).
-    reject_next_push: RefCell<bool>,
+    /// When set, the next push call returns this rejection code unconditionally
+    /// and clears it (one-shot).
+    reject_next_push: RefCell<Option<String>>,
 }
 
 #[derive(Default)]
@@ -853,7 +861,14 @@ impl TestServer {
     /// server state unchanged.  Use this in tests to deterministically force the
     /// engine's self-heal path.
     pub fn reject_next_push_with_schema_invalid(&self) {
-        *self.reject_next_push.borrow_mut() = true;
+        self.reject_next_push_with_code("crdt_schema_invalid");
+    }
+
+    /// Arm a one-shot rejection with an arbitrary backend rejection code (e.g.
+    /// `"updates_too_large"`), exercising the engine's generalized self-heal for
+    /// non-`crdt_schema_invalid` rejections.
+    pub fn reject_next_push_with_code(&self, code: &str) {
+        *self.reject_next_push.borrow_mut() = Some(code.to_string());
     }
 
     /// Inject a valid scheme content document directly into the server without
@@ -947,12 +962,9 @@ impl SyncTransport for TestServer {
 
         // One-shot forced rejection for self-heal regression tests.
         {
-            let mut flag = self.reject_next_push.borrow_mut();
-            if *flag {
-                *flag = false;
-                return Err(anyhow::Error::new(SyncPushRejected {
-                    code: "crdt_schema_invalid".to_string(),
-                }));
+            let code = self.reject_next_push.borrow_mut().take();
+            if let Some(code) = code {
+                return Err(anyhow::Error::new(SyncPushRejected { code }));
             }
         }
 

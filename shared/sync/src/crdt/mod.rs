@@ -1,0 +1,787 @@
+//! CRDT documents backing workspace sync. The public surface (`WorkspaceCrdtDocuments`
+//! and the change/outcome types) lives here; the heavy machinery is split into focused
+//! submodules:
+//!   - [`encoding`]       — stable client IDs, Yjs options, inline-embed serialization
+//!   - [`validation`]     — schema/structure validation of workspace & scheme docs
+//!   - [`scheme_content`] — the per-scheme rich-text content CRDT
+//!   - [`workspace_index`]— the folder/scheme tree + sync-metadata CRDT
+//!
+//! Shared data carriers (the `*Snapshot`/`*Entry` structs) and schema constants stay
+//! in this module so the submodules — its descendants — can use them directly.
+use std::collections::{HashMap, HashSet};
+
+use anyhow::{anyhow, Context};
+use chrono::{DateTime, NaiveDate};
+use knotq_model::{
+    DeletedFolderOrigin, DeletedSchemeOrigin, DocumentId, Folder, FolderId, Inline, Item,
+    ItemContent, ItemId, ItemMarker, NodeRef, ReplicaId, Scheme, SchemeId, SchemeSource,
+    SyncDocumentKind, SyncDocumentMeta, Workspace,
+};
+use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
+use yrs::updates::{decoder::Decode, encoder::Encode};
+use yrs::{
+    Any, ClientID, Doc, Map, MapPrelim, MapRef, OffsetKind, Options, Out, ReadTxn, StateVector,
+    Text, TextPrelim, TextRef, Transact, TransactionMut, Update,
+};
+
+use crate::{CrdtDocumentUpdate, StoredCrdtUpdate};
+
+mod encoding;
+mod scheme_content;
+mod validation;
+mod workspace_index;
+
+pub use encoding::stable_client_id;
+pub use scheme_content::YrsSchemeDocument;
+pub use validation::validate_crdt_update_sequence;
+
+pub(crate) use encoding::{
+    decode_inline_embed_str, encode_inline_embed, serde_json_string_value, update_v1_is_empty,
+    yrs_doc_options,
+};
+pub(crate) use scheme_content::item_text_ref;
+#[cfg(test)]
+pub(crate) use scheme_content::{item_map_ref, item_snapshot_json, write_new_item};
+pub(crate) use validation::{validate_scheme_document, validate_workspace_document};
+pub(crate) use workspace_index::{
+    preserve_local_calendar_sync_token, scheme_documents_by_id, scheme_meta,
+    workspace_document_snapshot, YrsJsonDocument,
+};
+
+const SCHEME_SCHEMA_V1: &str = "knotq.scheme_file.v1";
+const WORKSPACE_SCHEMA_V1: &str = "knotq.workspace.v1";
+const INLINE_EMBED_PREFIX: &str = "\u{fffc}knotq.inline.v1\0";
+
+const NODE_KIND_FOLDER: &str = "folder";
+const NODE_KIND_SCHEME: &str = "scheme";
+
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct WorkspaceCrdtChangeSet {
+    pub workspace: bool,
+    pub schemes: HashSet<SchemeId>,
+}
+
+impl WorkspaceCrdtChangeSet {
+    pub fn workspace(mut self) -> Self {
+        self.workspace = true;
+        self
+    }
+
+    pub fn touch_scheme(mut self, scheme: SchemeId) -> Self {
+        self.schemes.insert(scheme);
+        self
+    }
+
+    pub fn merge(&mut self, other: Self) {
+        self.workspace |= other.workspace;
+        self.schemes.extend(other.schemes);
+    }
+}
+
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct WorkspaceCrdtSyncOutcome {
+    pub updates: Vec<CrdtDocumentUpdate>,
+    pub errors: Vec<String>,
+}
+
+impl WorkspaceCrdtSyncOutcome {
+    pub fn is_ok(&self) -> bool {
+        self.errors.is_empty()
+    }
+
+    fn push_error(&mut self, context: impl std::fmt::Display, error: anyhow::Error) {
+        self.errors.push(format!("{context}: {error:#}"));
+    }
+}
+
+/// A recoverable per-document error during `apply_remote_updates`. Attributable
+/// to one specific document; the caller can skip that document while still applying
+/// the rest.
+#[derive(Clone, Debug)]
+pub struct DocumentApplyError {
+    pub document: DocumentId,
+    pub kind: knotq_model::SyncDocumentKind,
+    /// True when the error is specifically "unknown scheme document" (the
+    /// document ID arrived in a pull response but is not in the workspace index).
+    /// This is a normal, benign situation: a scheme deleted on another device
+    /// leaves its content doc on the server; callers should skip silently rather
+    /// than alarm.
+    pub unknown_scheme_document: bool,
+    pub message: String,
+}
+
+/// A fatal workspace-document error during `apply_remote_updates`. The workspace
+/// index itself is corrupt or inconsistent; the caller must not proceed with
+/// applying scheme content and should abort the pull.
+#[derive(Clone, Debug)]
+pub struct WorkspaceApplyError {
+    pub message: String,
+}
+
+#[derive(Clone, Debug)]
+pub struct WorkspaceCrdtApplyOutcome {
+    pub workspace: Workspace,
+    pub applied: usize,
+    /// Per-document (scheme) errors: recoverable, attributable to one document.
+    pub document_errors: Vec<DocumentApplyError>,
+    /// Workspace-level fatal errors: if non-empty the caller must abort the pull.
+    pub workspace_errors: Vec<WorkspaceApplyError>,
+}
+
+impl WorkspaceCrdtApplyOutcome {
+    pub fn is_ok(&self) -> bool {
+        self.document_errors.is_empty() && self.workspace_errors.is_empty()
+    }
+
+    pub fn workspace_is_ok(&self) -> bool {
+        self.workspace_errors.is_empty()
+    }
+
+    fn push_workspace_error(&mut self, context: impl std::fmt::Display, error: anyhow::Error) {
+        self.workspace_errors.push(WorkspaceApplyError {
+            message: format!("{context}: {error:#}"),
+        });
+    }
+
+    fn push_document_error(
+        &mut self,
+        document: DocumentId,
+        kind: knotq_model::SyncDocumentKind,
+        unknown_scheme_document: bool,
+        context: impl std::fmt::Display,
+        error: anyhow::Error,
+    ) {
+        self.document_errors.push(DocumentApplyError {
+            document,
+            kind,
+            unknown_scheme_document,
+            message: format!("{context}: {error:#}"),
+        });
+    }
+}
+
+pub struct WorkspaceCrdtDocuments {
+    workspace: YrsJsonDocument,
+    schemes: HashMap<SchemeId, YrsSchemeDocument>,
+    /// When set, every Yjs document this owns is built with a clientID derived
+    /// deterministically from `(replica_id, document_id)` (see [`stable_client_id`]),
+    /// so a document reconstructed from persisted state — across app restarts, the
+    /// desktop UI↔background split, or mobile reloads — keeps one stable Yjs identity.
+    /// `None` preserves the legacy random-clientID behavior used by the unit tests
+    /// that simulate two independent replicas from one process.
+    replica_id: Option<ReplicaId>,
+}
+
+impl WorkspaceCrdtDocuments {
+    pub fn snapshot_updates(workspace: &Workspace) -> WorkspaceCrdtSyncOutcome {
+        let mut docs = Self::empty(workspace);
+        docs.sync_changes(workspace, &WorkspaceCrdtChangeSet::default().workspace())
+    }
+
+    pub fn snapshot_updates_with_client_ids(
+        workspace: &Workspace,
+        workspace_client_id: u64,
+        mut scheme_client_id: impl FnMut(SchemeId, DocumentId) -> u64,
+    ) -> WorkspaceCrdtSyncOutcome {
+        let mut workspace = workspace.clone();
+        workspace.ensure_sync_metadata();
+        let mut docs = Self {
+            workspace: YrsJsonDocument::new_with_client_id(
+                workspace.sync.id,
+                SyncDocumentKind::PersonalWorkspace,
+                workspace_client_id,
+            ),
+            schemes: HashMap::new(),
+            replica_id: None,
+        };
+        docs.sync_changes_with_scheme_factory(
+            &workspace,
+            &WorkspaceCrdtChangeSet::default().workspace(),
+            |scheme_id, document_id| {
+                YrsSchemeDocument::new_with_client_id(
+                    document_id,
+                    scheme_client_id(scheme_id, document_id),
+                )
+            },
+        )
+    }
+
+    pub fn empty(workspace: &Workspace) -> Self {
+        Self::empty_inner(workspace, None)
+    }
+
+    /// Like [`empty`](Self::empty) but every document carries a stable, deterministic
+    /// clientID for `replica_id` (see [`stable_client_id`]).
+    pub fn empty_for_replica(workspace: &Workspace, replica_id: ReplicaId) -> Self {
+        Self::empty_inner(workspace, Some(replica_id))
+    }
+
+    fn empty_inner(workspace: &Workspace, replica_id: Option<ReplicaId>) -> Self {
+        let mut workspace = workspace.clone();
+        workspace.ensure_sync_metadata();
+        Self {
+            workspace: YrsJsonDocument::for_replica(
+                workspace.sync.id,
+                SyncDocumentKind::PersonalWorkspace,
+                replica_id,
+            ),
+            schemes: HashMap::new(),
+            replica_id,
+        }
+    }
+
+    pub fn try_new(workspace: &Workspace) -> anyhow::Result<Self> {
+        let mut docs = Self::empty(workspace);
+        docs.replace_all(workspace)?;
+        Ok(docs)
+    }
+
+    /// Reconstruct the long-lived CRDT documents for `replica_id` from previously
+    /// persisted per-document `state_v1` bytes. Documents present in `states` are
+    /// restored exactly (preserving their Yjs identity and clocks). Documents absent
+    /// from `states` are created EMPTY — never seeded from the materialized workspace.
+    ///
+    /// Seeding a fresh base for an absent document is what corrupts sync: a device
+    /// that discovers another device's document (or a legacy server snapshot) would
+    /// mint its own competing base under its clientID, and a later delta would
+    /// tombstone the server's items while its replacements — built on that
+    /// never-pushed local base — buffer unintegrated, wiping the document. Instead,
+    /// an absent document is left empty here and populated either by the pull
+    /// (adopting the server's canonical identity) or, for genuinely local content, by
+    /// the store's reconcile, which force-emits a full snapshot establishing this
+    /// device as the creator. This is the single way the real drivers obtain their
+    /// CRDT: they never rebuild from plain data with a throwaway identity.
+    pub fn from_states(
+        workspace: &Workspace,
+        replica_id: ReplicaId,
+        states: &HashMap<DocumentId, Vec<u8>>,
+    ) -> anyhow::Result<Self> {
+        let mut workspace = workspace.clone();
+        workspace.ensure_sync_metadata();
+        let workspace_doc = YrsJsonDocument::for_replica(
+            workspace.sync.id,
+            SyncDocumentKind::PersonalWorkspace,
+            Some(replica_id),
+        );
+        if let Some(state) = states.get(&workspace.sync.id).filter(|s| !s.is_empty()) {
+            workspace_doc
+                .apply_update_v1(state)
+                .context("restore workspace CRDT state")?;
+        }
+        let mut schemes = HashMap::new();
+        for id in workspace.schemes.keys() {
+            let meta = scheme_meta(&workspace, *id)?;
+            let doc = YrsSchemeDocument::for_replica(meta.id, Some(replica_id));
+            if let Some(state) = states.get(&meta.id).filter(|s| !s.is_empty()) {
+                doc.apply_update_v1(state)
+                    .with_context(|| format!("restore scheme CRDT state {id}"))?;
+            }
+            schemes.insert(*id, doc);
+        }
+        Ok(Self {
+            workspace: workspace_doc,
+            schemes,
+            replica_id: Some(replica_id),
+        })
+    }
+
+    /// The set of document IDs for which this instance holds a local CRDT doc.
+    /// Used by the engine to detect scheme documents that are now in the workspace
+    /// index but have no local CRDT representation (so their cursor can be reset).
+    pub fn known_document_ids(&self) -> std::collections::HashSet<DocumentId> {
+        let mut ids = std::collections::HashSet::new();
+        ids.insert(self.workspace.id);
+        for doc in self.schemes.values() {
+            ids.insert(doc.id);
+        }
+        ids
+    }
+
+    /// Snapshot every owned document's full `state_v1`, keyed by document id, for
+    /// durable persistence. Restoring these via [`from_states`](Self::from_states)
+    /// with the same `replica_id` round-trips the documents losslessly.
+    pub fn document_states(&self) -> HashMap<DocumentId, Vec<u8>> {
+        let mut out = HashMap::new();
+        out.insert(self.workspace.id, self.workspace.encode_state_v1());
+        for doc in self.schemes.values() {
+            out.insert(doc.id, doc.encode_state_v1());
+        }
+        out
+    }
+
+    /// A full-state update for every owned document, taken from the live documents
+    /// (so it carries their real clientID and clocks). Used to re-seed a server that
+    /// has no base for a document, so the re-seed shares identity with the device's
+    /// incremental diffs instead of competing with them under a throwaway identity.
+    pub fn full_snapshot_updates(&self) -> WorkspaceCrdtSyncOutcome {
+        let mut outcome = WorkspaceCrdtSyncOutcome::default();
+        outcome.updates.push(CrdtDocumentUpdate {
+            document: self.workspace.id,
+            kind: self.workspace.kind,
+            update_v1: self.workspace.encode_state_v1(),
+        });
+        for doc in self.schemes.values() {
+            outcome.updates.push(CrdtDocumentUpdate {
+                document: doc.id,
+                kind: SyncDocumentKind::Scheme,
+                update_v1: doc.encode_state_v1(),
+            });
+        }
+        outcome
+    }
+
+    /// Rewrite any owned document whose current full state would fail the server's
+    /// schema validation — i.e. an empty document with no schema root — by
+    /// repopulating it from the materialized `workspace`. Such documents exist when
+    /// a scheme is added to the workspace outside the command path (e.g. the
+    /// desktop's direct Daily Queue creation): [`from_states`](Self::from_states)
+    /// leaves it empty awaiting a pull, but if the server has no base for it either,
+    /// its bootstrap snapshot is rejected as `crdt_schema_invalid` and wedges the
+    /// whole push batch.
+    ///
+    /// `should_heal` gates which documents may be rewritten — callers restrict it to
+    /// documents the server holds no base for (or has just rejected), so a heal
+    /// never mints a base that competes with un-pulled server content. Returns the
+    /// healed document ids.
+    pub fn heal_schema_invalid_documents(
+        &mut self,
+        workspace: &Workspace,
+        mut should_heal: impl FnMut(DocumentId) -> bool,
+    ) -> Vec<DocumentId> {
+        let mut workspace = workspace.clone();
+        workspace.ensure_sync_metadata();
+        let mut healed = Vec::new();
+        let state_is_invalid = |kind: SyncDocumentKind, state: Vec<u8>| {
+            validate_crdt_update_sequence(kind, [state.as_slice()]).is_err()
+        };
+        if should_heal(self.workspace.id)
+            && state_is_invalid(self.workspace.kind, self.workspace.encode_state_v1())
+        {
+            match self
+                .workspace
+                .sync_snapshot(&workspace_document_snapshot(&workspace), true)
+            {
+                Ok(_) => healed.push(self.workspace.id),
+                Err(err) => eprintln!("heal workspace CRDT document failed: {err:#}"),
+            }
+        }
+        for (scheme_id, doc) in &self.schemes {
+            if !should_heal(doc.id)
+                || !state_is_invalid(SyncDocumentKind::Scheme, doc.encode_state_v1())
+            {
+                continue;
+            }
+            let Some(scheme) = workspace.schemes.get(scheme_id) else {
+                continue;
+            };
+            match doc.replace_scheme(scheme) {
+                Ok(()) => healed.push(doc.id),
+                Err(err) => eprintln!("heal scheme CRDT document {scheme_id} failed: {err:#}"),
+            }
+        }
+        healed
+    }
+
+    pub fn replace_all(&mut self, workspace: &Workspace) -> anyhow::Result<()> {
+        let mut workspace = workspace.clone();
+        workspace.ensure_sync_metadata();
+        self.workspace
+            .replace_snapshot(&workspace_document_snapshot(&workspace))?;
+
+        let replica_id = self.replica_id;
+        self.schemes
+            .retain(|id, _| workspace.schemes.contains_key(id));
+        for (id, scheme) in &workspace.schemes {
+            let meta = scheme_meta(&workspace, *id)?;
+            self.schemes
+                .entry(*id)
+                .or_insert_with(|| YrsSchemeDocument::for_replica(meta.id, replica_id))
+                .replace_scheme(scheme)
+                .with_context(|| format!("replace scheme CRDT {id}"))?;
+        }
+        Ok(())
+    }
+
+    pub fn sync_changes(
+        &mut self,
+        workspace: &Workspace,
+        changeset: &WorkspaceCrdtChangeSet,
+    ) -> WorkspaceCrdtSyncOutcome {
+        let replica_id = self.replica_id;
+        self.sync_changes_with_scheme_factory(workspace, changeset, move |_, document_id| {
+            YrsSchemeDocument::for_replica(document_id, replica_id)
+        })
+    }
+
+    fn sync_changes_with_scheme_factory(
+        &mut self,
+        workspace: &Workspace,
+        changeset: &WorkspaceCrdtChangeSet,
+        mut new_scheme_document: impl FnMut(SchemeId, DocumentId) -> YrsSchemeDocument,
+    ) -> WorkspaceCrdtSyncOutcome {
+        let mut workspace = workspace.clone();
+        workspace.ensure_sync_metadata();
+        let mut outcome = WorkspaceCrdtSyncOutcome::default();
+
+        let workspace_documents_missing = documents_missing(self, &workspace);
+        let workspace_documents_removed = documents_removed(self, &workspace);
+        if changeset.workspace || workspace_documents_missing || workspace_documents_removed {
+            // A document-set change (a scheme added or removed) must re-emit the
+            // full workspace state so a server that lost the document can rebuild
+            // it; an ordinary edit emits only the incremental diff.
+            let force = workspace_documents_missing || workspace_documents_removed;
+            match self
+                .workspace
+                .sync_snapshot(&workspace_document_snapshot(&workspace), force)
+            {
+                Ok(Some(update)) => outcome.updates.push(update),
+                Ok(None) => {}
+                Err(err) => outcome.push_error("workspace CRDT update", err),
+            }
+        }
+
+        let mut scheme_ids: HashSet<SchemeId> = changeset.schemes.iter().copied().collect();
+        scheme_ids.extend(
+            workspace
+                .schemes
+                .keys()
+                .copied()
+                .filter(|id| !self.schemes.contains_key(id)),
+        );
+        self.schemes
+            .retain(|id, _| workspace.schemes.contains_key(id));
+        for id in scheme_ids {
+            let Some(scheme) = workspace.schemes.get(&id) else {
+                continue;
+            };
+            let meta = match scheme_meta(&workspace, id) {
+                Ok(meta) => meta,
+                Err(err) => {
+                    outcome.push_error(format!("scheme CRDT metadata {id}"), err);
+                    continue;
+                }
+            };
+            match self
+                .schemes
+                .entry(id)
+                .or_insert_with(|| new_scheme_document(id, meta.id))
+                .sync_scheme(scheme)
+            {
+                Ok(Some(update)) => outcome.updates.push(update),
+                Ok(None) => {}
+                Err(err) => outcome.push_error(format!("scheme CRDT update {id}"), err),
+            }
+        }
+
+        outcome
+    }
+
+    pub fn apply_remote_updates(
+        &mut self,
+        current: &Workspace,
+        updates: &[StoredCrdtUpdate],
+    ) -> WorkspaceCrdtApplyOutcome {
+        let mut outcome = WorkspaceCrdtApplyOutcome {
+            workspace: current.clone(),
+            applied: 0,
+            document_errors: Vec::new(),
+            workspace_errors: Vec::new(),
+        };
+
+        let mut workspace_applied = false;
+        for update in updates
+            .iter()
+            .filter(|update| update.kind == SyncDocumentKind::PersonalWorkspace)
+        {
+            if update.document != self.workspace.id {
+                outcome.push_workspace_error(
+                    format!("workspace update {}", update.sequence),
+                    anyhow!(
+                        "document id mismatch: expected {}, got {}",
+                        self.workspace.id,
+                        update.document
+                    ),
+                );
+                continue;
+            }
+            match self.workspace.apply_update_v1(&update.update_v1) {
+                Ok(()) => {
+                    outcome.applied += 1;
+                    workspace_applied = true;
+                }
+                Err(err) => outcome
+                    .push_workspace_error(format!("workspace update {}", update.sequence), err),
+            }
+        }
+
+        // Defense in depth: the client does not blindly trust remote bytes. After
+        // applying remote updates, re-run the same schema validation the server
+        // performs before materializing/persisting anything.
+        if workspace_applied {
+            if let Err(err) = self.workspace.validate() {
+                outcome.push_workspace_error("workspace validation", err);
+                return outcome;
+            }
+        }
+
+        match self.materialize_workspace(current) {
+            Ok(workspace) => outcome.workspace = workspace,
+            Err(err) => {
+                outcome.push_workspace_error("workspace materialization", err);
+                return outcome;
+            }
+        }
+
+        self.schemes
+            .retain(|id, _| outcome.workspace.schemes.contains_key(id));
+        let scheme_by_document = scheme_documents_by_id(&outcome.workspace);
+        // Track which scheme documents had errors so their cursor can be reset later.
+        let mut touched_schemes: HashSet<SchemeId> = HashSet::new();
+        // Track schemes that had a per-document error (to exclude from validation).
+        let mut errored_schemes: HashSet<SchemeId> = HashSet::new();
+        for update in updates
+            .iter()
+            .filter(|update| update.kind == SyncDocumentKind::Scheme)
+        {
+            let Some(scheme_id) = scheme_by_document.get(&update.document).copied() else {
+                // The content document arrived but its scheme is not in the workspace
+                // index. This is a normal occurrence: a scheme deleted on one device
+                // leaves its content doc on the server, or an orphan was created by a
+                // buggy heal path. We skip silently; the cursor will be advanced so we
+                // do not re-pull this every cycle.
+                outcome.push_document_error(
+                    update.document,
+                    SyncDocumentKind::Scheme,
+                    true, // unknown_scheme_document
+                    format!("scheme update {}", update.sequence),
+                    anyhow!("unknown scheme document {}", update.document),
+                );
+                continue;
+            };
+            let replica_id = self.replica_id;
+            match self
+                .schemes
+                .entry(scheme_id)
+                .or_insert_with(|| YrsSchemeDocument::for_replica(update.document, replica_id))
+                .apply_update_v1(&update.update_v1)
+            {
+                Ok(()) => {
+                    outcome.applied += 1;
+                    touched_schemes.insert(scheme_id);
+                }
+                Err(err) => {
+                    let doc_id = update.document;
+                    outcome.push_document_error(
+                        doc_id,
+                        SyncDocumentKind::Scheme,
+                        false,
+                        format!("scheme update {}", update.sequence),
+                        err,
+                    );
+                    errored_schemes.insert(scheme_id);
+                }
+            }
+        }
+
+        for scheme_id in &touched_schemes {
+            if errored_schemes.contains(scheme_id) {
+                continue; // already recorded an error for this scheme
+            }
+            if let Some(doc) = self.schemes.get(scheme_id) {
+                if let Err(err) = doc.validate() {
+                    // Attribute the validation failure to this scheme's document id.
+                    let doc_id = outcome
+                        .workspace
+                        .scheme_sync
+                        .get(scheme_id)
+                        .map(|m| m.id)
+                        .unwrap_or_default();
+                    outcome.push_document_error(
+                        doc_id,
+                        SyncDocumentKind::Scheme,
+                        false,
+                        format!("scheme validation {scheme_id}"),
+                        err,
+                    );
+                    errored_schemes.insert(*scheme_id);
+                }
+            }
+        }
+
+        if !touched_schemes.is_empty() {
+            match self.materialize_workspace(current) {
+                Ok(workspace) => outcome.workspace = workspace,
+                Err(err) => outcome.push_workspace_error("scheme materialization", err),
+            }
+        }
+
+        outcome
+    }
+
+    fn materialize_workspace(&self, current: &Workspace) -> anyhow::Result<Workspace> {
+        let snapshot: WorkspaceDocumentSnapshot = self.workspace.snapshot()?;
+        let scheme_sync = snapshot
+            .scheme_sync
+            .into_iter()
+            .map(|entry| (entry.scheme, entry.sync))
+            .collect::<HashMap<_, _>>();
+        let folder_sync = snapshot
+            .folder_sync
+            .into_iter()
+            .map(|entry| (entry.folder, entry.sync))
+            .collect::<HashMap<_, _>>();
+        let mut workspace = Workspace {
+            id: snapshot.id,
+            sync: snapshot.sync,
+            root: snapshot.root,
+            folders: snapshot
+                .folders
+                .into_iter()
+                .map(|folder| (folder.id, folder))
+                .collect(),
+            schemes: HashMap::new(),
+            scheme_sync,
+            folder_sync,
+            daily_queue: snapshot
+                .daily_queue
+                .into_iter()
+                .map(|entry| (entry.date, entry.scheme))
+                .collect(),
+            recently_deleted: snapshot.recently_deleted,
+            deleted_scheme_origins: snapshot
+                .deleted_scheme_origins
+                .into_iter()
+                .map(|entry| (entry.scheme, entry.origin))
+                .collect(),
+            recently_deleted_folders: snapshot.recently_deleted_folders,
+            deleted_folder_origins: snapshot
+                .deleted_folder_origins
+                .into_iter()
+                .map(|entry| (entry.folder, entry.origin))
+                .collect(),
+        };
+
+        for entry in snapshot.schemes {
+            let items = self
+                .schemes
+                .get(&entry.id)
+                .and_then(|doc| doc.scheme_items().ok())
+                .or_else(|| {
+                    current
+                        .schemes
+                        .get(&entry.id)
+                        .map(|scheme| scheme.items.clone())
+                })
+                .unwrap_or_default();
+            workspace.schemes.insert(
+                entry.id,
+                Scheme {
+                    id: entry.id,
+                    name: entry.name,
+                    color_index: entry.color_index,
+                    gsync: entry.gsync,
+                    source: preserve_local_calendar_sync_token(current, entry.id, entry.source),
+                    items,
+                },
+            );
+        }
+
+        workspace.ensure_sync_metadata();
+        Ok(workspace)
+    }
+}
+
+fn documents_missing(docs: &WorkspaceCrdtDocuments, workspace: &Workspace) -> bool {
+    workspace
+        .schemes
+        .keys()
+        .any(|id| !docs.schemes.contains_key(id))
+}
+
+fn documents_removed(docs: &WorkspaceCrdtDocuments, workspace: &Workspace) -> bool {
+    docs.schemes
+        .keys()
+        .any(|id| !workspace.schemes.contains_key(id))
+}
+
+/// One folder or scheme stored as an individual, id-keyed entry in the workspace
+/// document's `nodes` map. `parent`/`position` carry the tree structure so that
+/// it can be reconstructed (and merged) without a shared, wedge-prone array.
+#[derive(Serialize, Deserialize)]
+struct WorkspaceNodeEntry {
+    id: String,
+    kind: String,
+    #[serde(default)]
+    parent: String,
+    #[serde(default)]
+    position: String,
+    payload: String,
+}
+
+#[derive(Serialize, Deserialize)]
+struct FolderPayload {
+    name: String,
+    expanded: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    parent: Option<FolderId>,
+}
+
+#[derive(Deserialize, Serialize)]
+pub(crate) struct WorkspaceDocumentSnapshot {
+    schema: String,
+    id: knotq_model::WorkspaceId,
+    sync: SyncDocumentMeta,
+    root: FolderId,
+    folders: Vec<Folder>,
+    schemes: Vec<SchemeWorkspaceEntry>,
+    daily_queue: Vec<DailyQueueEntry>,
+    recently_deleted: Vec<SchemeId>,
+    deleted_scheme_origins: Vec<DeletedSchemeOriginEntry>,
+    recently_deleted_folders: Vec<FolderId>,
+    deleted_folder_origins: Vec<DeletedFolderOriginEntry>,
+    scheme_sync: Vec<SchemeSyncEntry>,
+    folder_sync: Vec<FolderSyncEntry>,
+}
+
+#[derive(Deserialize, Serialize)]
+struct SchemeWorkspaceEntry {
+    id: SchemeId,
+    name: String,
+    color_index: u8,
+    gsync: bool,
+    source: SchemeSource,
+}
+
+#[derive(Deserialize, Serialize)]
+struct DailyQueueEntry {
+    date: NaiveDate,
+    scheme: SchemeId,
+}
+
+#[derive(Deserialize, Serialize)]
+struct DeletedSchemeOriginEntry {
+    scheme: SchemeId,
+    origin: DeletedSchemeOrigin,
+}
+
+#[derive(Deserialize, Serialize)]
+struct DeletedFolderOriginEntry {
+    folder: FolderId,
+    origin: DeletedFolderOrigin,
+}
+
+#[derive(Deserialize, Serialize)]
+struct SchemeSyncEntry {
+    scheme: SchemeId,
+    sync: SyncDocumentMeta,
+}
+
+#[derive(Deserialize, Serialize)]
+struct FolderSyncEntry {
+    folder: FolderId,
+    sync: SyncDocumentMeta,
+}
+
+#[cfg(test)]
+mod tests;

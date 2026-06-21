@@ -21,8 +21,11 @@ use knotq_model::{
     ItemMarker, OccurrenceId, OccurrenceState, Recurrence, Scheme, SchemeId, Table, TableCell,
     TableColumn, TableRow,
 };
-use quick_xml::events::{BytesStart, Event};
+use quick_xml::events::{BytesDecl, BytesEnd, BytesStart, BytesText, Event};
 use quick_xml::reader::Reader;
+use quick_xml::writer::Writer;
+use std::borrow::Cow;
+use std::io::Write;
 use std::path::Path;
 
 use crate::scheme_file::SchemeFile;
@@ -32,156 +35,165 @@ const SCHEME_VERSION: &str = "1";
 // ── Encoding ──────────────────────────────────────────────────────────────
 
 pub(crate) fn encode_scheme_xml(scheme: &Scheme) -> Result<String> {
-    let mut out = String::new();
-    out.push_str("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n");
-    out.push_str(&format!(
-        "<scheme id=\"{}\" version=\"{}\">\n",
-        scheme.id, SCHEME_VERSION
-    ));
+    // The encoder writes through quick-xml's `Writer`, so all element, attribute,
+    // and text escaping is the library's responsibility — there is no hand-rolled
+    // escaping that a newly added field could forget, which structurally rules out
+    // XML injection. We only pre-strip characters illegal in XML 1.0, which no
+    // escaping can represent (see `strip_invalid_xml_chars`).
+    let mut writer = Writer::new_with_indent(Vec::new(), b' ', 2);
+    writer.write_event(Event::Decl(BytesDecl::new("1.0", Some("UTF-8"), None)))?;
+    let mut scheme_el = BytesStart::new("scheme");
+    scheme_el.push_attribute(("id", scheme.id.to_string().as_str()));
+    scheme_el.push_attribute(("version", SCHEME_VERSION));
+    writer.write_event(Event::Start(scheme_el))?;
     for item in &scheme.items {
-        encode_item_xml(&mut out, item, 1)?;
+        write_item(&mut writer, item)?;
     }
-    out.push_str("</scheme>\n");
-    Ok(out)
+    writer.write_event(Event::End(BytesEnd::new("scheme")))?;
+    let mut bytes = writer.into_inner();
+    bytes.push(b'\n');
+    Ok(String::from_utf8(bytes)?)
 }
 
-fn encode_item_xml(out: &mut String, item: &Item, depth: usize) -> Result<()> {
-    let indent = "  ".repeat(depth);
-    let attrs = encode_item_attrs(item)?;
+fn write_item<W: Write>(writer: &mut Writer<W>, item: &Item) -> Result<()> {
+    let mut el = BytesStart::new("item");
+    push_item_attrs(&mut el, item);
     let meta = meta_children(item)?;
 
     match &item.content {
         ItemContent::Table(table) => {
-            // A table is a block, so emit it on its own line. Inter-element
-            // whitespace is insignificant — only text *inside* <text> is content.
-            out.push_str(&format!("{indent}<item{attrs}>\n"));
-            let inner = "  ".repeat(depth + 1);
-            encode_table_xml(out, table, depth + 1)?;
-            for child in &meta {
-                out.push_str(&format!("{inner}{child}\n"));
-            }
-            out.push_str(&format!("{indent}</item>\n"));
+            writer.write_event(Event::Start(el))?;
+            write_table(writer, table)?;
+            write_meta(writer, &meta)?;
+            writer.write_event(Event::End(BytesEnd::new("item")))?;
         }
-        content => {
-            // Inline form: a single <text> or <image> plus meta, concatenated
-            // with no whitespace. An empty text line emits no content child.
-            let mut inner = String::new();
-            match content {
-                ItemContent::Text { text } if !text.is_empty() => {
-                    inner.push_str(&format!("<text>{}</text>", xml_text_escape(text)));
-                }
-                ItemContent::Text { .. } => {}
-                ItemContent::Image(image) => inner.push_str(&encode_image(image)),
-                ItemContent::Table(_) => unreachable!("handled above"),
-            }
-            for child in &meta {
-                inner.push_str(child);
-            }
-            if inner.is_empty() {
-                out.push_str(&format!("{indent}<item{attrs}/>\n"));
+        ItemContent::Image(image) => {
+            writer.write_event(Event::Start(el))?;
+            write_image(writer, image)?;
+            write_meta(writer, &meta)?;
+            writer.write_event(Event::End(BytesEnd::new("item")))?;
+        }
+        ItemContent::Text { text } if !text.is_empty() => {
+            writer.write_event(Event::Start(el))?;
+            write_text_element(writer, "text", text)?;
+            write_meta(writer, &meta)?;
+            writer.write_event(Event::End(BytesEnd::new("item")))?;
+        }
+        // Empty text content: a self-closing item when there is no metadata,
+        // otherwise an open item carrying just its metadata children.
+        ItemContent::Text { .. } => {
+            if meta.is_empty() {
+                writer.write_event(Event::Empty(el))?;
             } else {
-                out.push_str(&format!("{indent}<item{attrs}>{inner}</item>\n"));
+                writer.write_event(Event::Start(el))?;
+                write_meta(writer, &meta)?;
+                writer.write_event(Event::End(BytesEnd::new("item")))?;
             }
         }
     }
     Ok(())
 }
 
-/// The non-content children of an item (complex recurrence, non-default state,
-/// external source), each a complete `<tag>JSON</tag>` element.
-fn meta_children(item: &Item) -> Result<Vec<String>> {
+/// Item metadata children (complex recurrence, non-default state, external
+/// source) ride as JSON text inside a named element, reusing the model's serde.
+/// Returned as `(tag, json)` pairs for the writer to emit and escape.
+fn meta_children(item: &Item) -> Result<Vec<(&'static str, String)>> {
     let mut children = Vec::new();
     if let Some(repeats) = &item.repeats {
         if single_rrule(repeats).is_none() {
-            children.push(json_element("repeats", repeats)?);
+            children.push(("repeats", serde_json::to_string(repeats)?));
         }
     }
     if !state_is_default(&item.state) {
-        children.push(json_element("state", &item.state)?);
+        children.push(("state", serde_json::to_string(&item.state)?));
     }
     if let Some(external) = &item.external {
-        children.push(json_element("external", external)?);
+        children.push(("external", serde_json::to_string(external)?));
     }
     Ok(children)
 }
 
-fn encode_image(image: &ImageInline) -> String {
-    let mut s = format!(
-        "<image asset=\"{}\" format=\"{}\"",
-        image.asset,
-        image_format_str(image.format)
-    );
-    if let Some(width) = image.width {
-        s.push_str(&format!(" width=\"{width}\""));
+fn write_meta<W: Write>(writer: &mut Writer<W>, meta: &[(&'static str, String)]) -> Result<()> {
+    for (tag, json) in meta {
+        write_text_element(writer, tag, json)?;
     }
-    if let Some(height) = image.height {
-        s.push_str(&format!(" height=\"{height}\""));
-    }
-    s.push_str("/>");
-    s
-}
-
-fn encode_table_xml(out: &mut String, table: &Table, depth: usize) -> Result<()> {
-    let indent = "  ".repeat(depth);
-    let inner = "  ".repeat(depth + 1);
-    out.push_str(&format!("{indent}<table>\n"));
-    for column in &table.columns {
-        let mut attrs = format!(
-            " id=\"{}\" name=\"{}\"",
-            column.id,
-            xml_attr_escape(&column.name)
-        );
-        if let Some(width) = column.width {
-            attrs.push_str(&format!(" width=\"{width}\""));
-        }
-        out.push_str(&format!("{inner}<column{attrs}/>\n"));
-    }
-    let cell_indent = "  ".repeat(depth + 2);
-    for row in &table.rows {
-        out.push_str(&format!("{inner}<row id=\"{}\">\n", row.id));
-        for cell in &row.cells {
-            out.push_str(&format!("{cell_indent}<cell>\n"));
-            for item in &cell.items {
-                encode_item_xml(out, item, depth + 3)?;
-            }
-            out.push_str(&format!("{cell_indent}</cell>\n"));
-        }
-        out.push_str(&format!("{inner}</row>\n"));
-    }
-    out.push_str(&format!("{indent}</table>\n"));
     Ok(())
 }
 
-fn encode_item_attrs(item: &Item) -> Result<String> {
-    let mut out = String::new();
-    out.push_str(&format!(" id=\"{}\"", item.id));
-    out.push_str(&format!(" marker=\"{}\"", item.marker.as_str()));
+/// Write `<tag>text</tag>`; the library escapes the content. We only strip
+/// characters illegal in XML 1.0 first.
+fn write_text_element<W: Write>(writer: &mut Writer<W>, tag: &str, text: &str) -> Result<()> {
+    writer.write_event(Event::Start(BytesStart::new(tag)))?;
+    writer.write_event(Event::Text(BytesText::new(&strip_invalid_xml_chars(text))))?;
+    writer.write_event(Event::End(BytesEnd::new(tag)))?;
+    Ok(())
+}
+
+fn write_image<W: Write>(writer: &mut Writer<W>, image: &ImageInline) -> Result<()> {
+    let mut el = BytesStart::new("image");
+    el.push_attribute(("asset", image.asset.to_string().as_str()));
+    el.push_attribute(("format", image_format_str(image.format)));
+    if let Some(width) = image.width {
+        el.push_attribute(("width", width.to_string().as_str()));
+    }
+    if let Some(height) = image.height {
+        el.push_attribute(("height", height.to_string().as_str()));
+    }
+    writer.write_event(Event::Empty(el))?;
+    Ok(())
+}
+
+fn write_table<W: Write>(writer: &mut Writer<W>, table: &Table) -> Result<()> {
+    writer.write_event(Event::Start(BytesStart::new("table")))?;
+    for column in &table.columns {
+        let mut el = BytesStart::new("column");
+        el.push_attribute(("id", column.id.to_string().as_str()));
+        el.push_attribute(("name", strip_invalid_xml_chars(&column.name).as_ref()));
+        if let Some(width) = column.width {
+            el.push_attribute(("width", width.to_string().as_str()));
+        }
+        writer.write_event(Event::Empty(el))?;
+    }
+    for row in &table.rows {
+        let mut row_el = BytesStart::new("row");
+        row_el.push_attribute(("id", row.id.to_string().as_str()));
+        writer.write_event(Event::Start(row_el))?;
+        for cell in &row.cells {
+            writer.write_event(Event::Start(BytesStart::new("cell")))?;
+            for item in &cell.items {
+                write_item(writer, item)?;
+            }
+            writer.write_event(Event::End(BytesEnd::new("cell")))?;
+        }
+        writer.write_event(Event::End(BytesEnd::new("row")))?;
+    }
+    writer.write_event(Event::End(BytesEnd::new("table")))?;
+    Ok(())
+}
+
+fn push_item_attrs(el: &mut BytesStart, item: &Item) {
+    el.push_attribute(("id", item.id.to_string().as_str()));
+    el.push_attribute(("marker", item.marker.as_str()));
     if item.indent != 0 {
-        out.push_str(&format!(" indent=\"{}\"", item.indent));
+        el.push_attribute(("indent", item.indent.to_string().as_str()));
     }
     if let Some(start) = item.start {
-        out.push_str(&format!(" start=\"{}\"", encode_datetime(start)));
+        el.push_attribute(("start", encode_datetime(start).as_str()));
     }
     if let Some(end) = item.end {
-        out.push_str(&format!(" end=\"{}\"", encode_datetime(end)));
+        el.push_attribute(("end", encode_datetime(end).as_str()));
     }
     if let Some(available) = item.available {
-        out.push_str(&format!(" available=\"{}\"", encode_datetime(available)));
+        el.push_attribute(("available", encode_datetime(available).as_str()));
     }
     if let Some(priority) = item.priority {
-        out.push_str(&format!(" priority=\"{priority}\""));
+        el.push_attribute(("priority", priority.to_string().as_str()));
     }
     if let Some(repeats) = &item.repeats {
         if let Some(rrule) = single_rrule(repeats) {
-            out.push_str(&format!(" rrule=\"{}\"", xml_attr_escape(rrule)));
+            el.push_attribute(("rrule", strip_invalid_xml_chars(rrule).as_ref()));
         }
     }
-    Ok(out)
-}
-
-fn json_element<T: serde::Serialize>(tag: &str, value: &T) -> Result<String> {
-    let json = serde_json::to_string(value)?;
-    Ok(format!("<{tag}>{}</{tag}>", xml_text_escape(&json)))
 }
 
 fn image_format_str(format: ImageAssetFormat) -> &'static str {
@@ -209,21 +221,28 @@ fn parse_image_format(value: &str) -> Result<ImageAssetFormat> {
     })
 }
 
-fn xml_text_escape(text: &str) -> String {
-    text.replace('&', "&amp;")
-        .replace('<', "&lt;")
-        .replace('>', "&gt;")
+/// Whether `c` is a legal XML 1.0 character. Control characters (other than tab,
+/// newline, and CR) are forbidden and cannot be represented even via numeric
+/// escapes, so they must be removed rather than encoded.
+fn is_xml_char(c: char) -> bool {
+    matches!(c,
+        '\u{9}' | '\u{A}' | '\u{D}'
+        | '\u{20}'..='\u{D7FF}'
+        | '\u{E000}'..='\u{FFFD}'
+        | '\u{10000}'..='\u{10FFFF}')
 }
 
-fn xml_attr_escape(text: &str) -> String {
-    text.replace('&', "&amp;")
-        .replace('<', "&lt;")
-        .replace('>', "&gt;")
-        .replace('"', "&quot;")
-        .replace('\n', "&#10;")
-        .replace('\t', "&#9;")
-        .replace('\r', "&#13;")
+/// Drop characters illegal in XML 1.0. Without this, a pasted/imported control
+/// character would be written verbatim and then fail to parse on the next load,
+/// silently losing the whole scheme. Borrows when the input is already clean.
+fn strip_invalid_xml_chars(text: &str) -> Cow<'_, str> {
+    if text.chars().all(is_xml_char) {
+        Cow::Borrowed(text)
+    } else {
+        Cow::Owned(text.chars().filter(|&c| is_xml_char(c)).collect())
+    }
 }
+
 
 // ── Decoding ──────────────────────────────────────────────────────────────
 
@@ -615,5 +634,38 @@ mod tests {
             ItemMarker::Numbered
         );
         assert!(parse_marker("list.alphabet").is_err());
+    }
+
+    #[test]
+    fn strips_illegal_xml_control_chars_and_preserves_metacharacters() {
+        let mut scheme = Scheme::new("Sanitize", 0);
+        // Text content: XML metacharacters must survive escaping; control
+        // characters illegal in XML 1.0 (NUL, 0x01, 0x08, 0x0B, 0x0C, 0x1F) must
+        // be stripped, not written raw — otherwise the file fails to parse on the
+        // next load and the scheme is silently lost.
+        scheme
+            .items
+            .push(Item::new("a<b>&\"c\u{0}\u{1}\u{8}\u{B}\u{C}\u{1F}d"));
+
+        // A table column name exercises the attribute escape + sanitize path.
+        let mut table = Table::new(1, 1);
+        table.columns[0].name = "N<a>m&\"e\u{0}\u{7}".to_string();
+        let mut block = Item::new("");
+        block.set_table(table);
+        scheme.items.push(block);
+
+        let xml = encode_scheme_xml(&scheme).unwrap();
+        // The writer must never emit a character illegal in XML 1.0.
+        assert!(
+            xml.chars().all(is_xml_char),
+            "encoded XML contains an illegal control character"
+        );
+        // And it must re-parse cleanly, proving the output is well-formed.
+        let decoded = decode_scheme_xml(&xml, Path::new("S.knotq"), scheme.id).unwrap();
+        assert_eq!(decoded.items[0].text(), "a<b>&\"cd");
+        assert_eq!(
+            decoded.items[1].table().unwrap().columns[0].name,
+            "N<a>m&\"e"
+        );
     }
 }

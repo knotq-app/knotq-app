@@ -17,7 +17,11 @@ impl gpui::Render for SchemeEditor {
             .key_context(KEY_CONTEXT)
             .track_focus(&self.focus_handle)
             .w_full()
-            .cursor(CursorStyle::IBeam)
+            .cursor(if self.hovered_link {
+                CursorStyle::PointingHand
+            } else {
+                CursorStyle::IBeam
+            })
             .on_action(cx.listener(|this, _: &Backspace, window, cx| this.backspace(window, cx)))
             .on_action(
                 cx.listener(|this, _: &BackspaceWord, window, cx| this.backspace_word(window, cx)),

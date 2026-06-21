@@ -121,6 +121,9 @@ impl KnotQApp {
                 self.open_repeat_popover(scheme_id, item_id, anchor, window, cx);
                 cx.notify();
             }
+            EditorEvent::OpenLink { scheme_id: _, url } => {
+                let _ = crate::app::google_oauth::open_browser(&url);
+            }
             EditorEvent::OpenContextMenu {
                 scheme_id,
                 item_id,

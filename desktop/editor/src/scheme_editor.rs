@@ -34,6 +34,7 @@ mod items;
 mod keymap;
 mod layout;
 mod line_actions;
+mod links;
 mod markdown;
 mod markdown_actions;
 mod markers;
@@ -57,6 +58,7 @@ use buffer::*;
 use clipboard::*;
 use geometry::bounds_contains;
 use items::*;
+use links::*;
 use markdown::*;
 use media::*;
 use navigation::*;
@@ -173,6 +175,12 @@ pub enum EditorEvent {
         item_id: ItemId,
         anchor: Point<Pixels>,
     },
+    /// A detected URL was activated (Cmd/Ctrl-click, or a plain click in a
+    /// read-only scheme). The host opens it in the system browser.
+    OpenLink {
+        scheme_id: SchemeId,
+        url: String,
+    },
     OpenContextMenu {
         scheme_id: SchemeId,
         item_id: ItemId,
@@ -237,6 +245,12 @@ struct RepeatAnnotationHitbox {
     item_id: ItemId,
 }
 
+#[derive(Clone)]
+struct LinkHitbox {
+    bounds: Bounds<Pixels>,
+    url: String,
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum MouseSelectionMode {
     Character,
@@ -281,6 +295,13 @@ pub struct SchemeEditor {
     checkbox_hitboxes: Vec<CheckboxHitbox>,
     date_annotation_hitboxes: Vec<DateAnnotationHitbox>,
     repeat_annotation_hitboxes: Vec<RepeatAnnotationHitbox>,
+    link_hitboxes: Vec<LinkHitbox>,
+    /// The floating "open link" button shown above the link the cursor sits in,
+    /// if any. Opens on a plain click (no modifier needed).
+    open_link_button: Option<LinkHitbox>,
+    /// Whether the mouse is currently over something openable (the link button,
+    /// or a link while the secondary modifier is held). Drives the pointer cursor.
+    hovered_link: bool,
     auto_scroll_task: Option<Task<()>>,
     auto_scroll_last_mouse_position: Option<Point<Pixels>>,
     image_cache: HashMap<Uuid, Option<Arc<Image>>>,

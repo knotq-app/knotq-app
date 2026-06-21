@@ -158,6 +158,14 @@ pub struct SyncAccountStatus {
     pub subscription_provider: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub current_period_end: Option<DateTime<Utc>>,
+    /// Whether the account email has been confirmed, or `None` when it hasn't been
+    /// checked yet (e.g. right after sign-in, before the first status fetch, or in
+    /// status persisted before this field existed). Subscribing is gated on a
+    /// confirmed email; the UI only blocks/prompts on a definite `Some(false)` and
+    /// treats `None` as "unknown" so it never flashes a false prompt. The backend
+    /// remains the authoritative gate.
+    #[serde(default)]
+    pub email_verified: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub checked_at: Option<DateTime<Utc>>,
 }
@@ -174,6 +182,9 @@ impl SyncAccountStatus {
             subscription_state: Some(if supports_sync { "active" } else { "inactive" }.to_string()),
             subscription_provider: None,
             current_period_end: None,
+            // Derived solely from a session's `supports_sync`, with no email signal
+            // available — leave it unknown until a real status response fills it in.
+            email_verified: None,
             checked_at: None,
         }
     }

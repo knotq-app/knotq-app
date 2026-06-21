@@ -656,8 +656,12 @@ fn queue_repair_crdt_updates(
     crdt_docs: &mut WorkspaceCrdtDocuments,
 ) -> Result<()> {
     let outcome = crdt_docs.sync_changes(workspace, &WorkspaceCrdtChangeSet::default().workspace());
-    if !outcome.is_ok() {
-        return Err(anyhow!("CRDT repair update failed: {:?}", outcome.errors));
+    for error in &outcome.errors {
+        // A repair-encoding error for one document must not wedge the entire sync.
+        // Log it and queue whatever updates did encode; the pull cursors still
+        // persist, so the device keeps converging and retries the repair next sync
+        // rather than failing every sync forever.
+        eprintln!("sync: CRDT repair update skipped: {error}");
     }
     if outcome.updates.is_empty() {
         return Ok(());
@@ -811,22 +815,33 @@ fn upload_local_media_assets(
             continue;
         }
         if byte_length > MAX_SYNC_MEDIA_BYTES as u64 {
-            return Err(anyhow!(
-                "image {} is {} bytes, above the {} byte sync limit",
+            // An over-limit asset can never upload; skipping it (rather than
+            // returning Err) keeps a single bad image from permanently wedging the
+            // CRDT sync, so text/structure edits still converge.
+            eprintln!(
+                "sync: skipping image {} ({} bytes, above the {} byte sync limit)",
                 media.image_name(),
                 byte_length,
                 MAX_SYNC_MEDIA_BYTES
-            ));
+            );
+            continue;
         }
         let image_name = media.image_name();
-        let bytes = fs::read(&path).with_context(|| format!("read {}", path.display()))?;
+        let bytes = match fs::read(&path) {
+            Ok(bytes) => bytes,
+            Err(error) => {
+                eprintln!("sync: skipping unreadable image {image_name}: {error}");
+                continue;
+            }
+        };
         if bytes.len() > MAX_SYNC_MEDIA_BYTES {
-            return Err(anyhow!(
-                "image {} is {} bytes, above the {} byte sync limit",
+            eprintln!(
+                "sync: skipping image {} ({} bytes, above the {} byte sync limit)",
                 image_name,
                 bytes.len(),
                 MAX_SYNC_MEDIA_BYTES
-            ));
+            );
+            continue;
         }
         let sha256 = media_sha256(&bytes);
         if !local_state.should_upload_media_asset(
@@ -838,7 +853,13 @@ fn upload_local_media_assets(
         ) {
             continue;
         }
-        client.upload_media_asset(media, &bytes)?;
+        // A single asset's upload failure (server rejection, transient error) must
+        // not abort the whole sync before CRDT pull cursors are persisted — skip it
+        // and let the next sync retry, rather than wedging every future sync.
+        if let Err(error) = client.upload_media_asset(media, &bytes) {
+            eprintln!("sync: media upload failed for {image_name}; skipping: {error:#}");
+            continue;
+        }
         local_state.mark_media_uploaded(image_name, media.document, byte_length, sha256);
     }
     Ok(())
@@ -848,26 +869,47 @@ fn download_missing_media_assets(client: &SyncHttpClient, workspace: &Workspace)
     let mut downloaded = false;
     for media in workspace_media_assets(workspace) {
         let path = image_asset_path(media.asset, media.format.extension());
-        if !media_asset_needs_download(&path)? {
-            continue;
+        match media_asset_needs_download(&path) {
+            Ok(false) => continue,
+            Ok(true) => {}
+            Err(error) => {
+                eprintln!(
+                    "sync: skipping media download for {}: {error}",
+                    media.image_name()
+                );
+                continue;
+            }
         }
         let image_name = media.image_name();
-        let Some(bytes) = client.download_media_asset(media)? else {
-            eprintln!("sync media missing on backend: {image_name}; skipping download");
-            continue;
+        // A single asset's download failure must not abort the whole sync — skip it
+        // and let a later sync retry, mirroring the missing-asset skip below.
+        let bytes = match client.download_media_asset(media) {
+            Ok(Some(bytes)) => bytes,
+            Ok(None) => {
+                eprintln!("sync media missing on backend: {image_name}; skipping download");
+                continue;
+            }
+            Err(error) => {
+                eprintln!("sync: media download failed for {image_name}; skipping: {error:#}");
+                continue;
+            }
         };
         if bytes.len() > MAX_SYNC_MEDIA_BYTES {
-            return Err(anyhow!(
-                "downloaded image {} is {} bytes, above the {} byte sync limit",
+            eprintln!(
+                "sync: skipping oversized downloaded image {} ({} bytes, above the {} byte limit)",
                 image_name,
                 bytes.len(),
                 MAX_SYNC_MEDIA_BYTES
-            ));
+            );
+            continue;
         }
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent).with_context(|| format!("create {}", parent.display()))?;
         }
-        fs::write(&path, bytes).with_context(|| format!("write {}", path.display()))?;
+        if let Err(error) = fs::write(&path, bytes) {
+            eprintln!("sync: failed to write downloaded image {image_name}; skipping: {error}");
+            continue;
+        }
         downloaded = true;
     }
     Ok(downloaded)

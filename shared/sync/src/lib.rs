@@ -246,6 +246,12 @@ pub struct AccountStatusResponse {
     pub subscription_provider: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub current_period_end: Option<DateTime<Utc>>,
+    /// Whether the account email has been confirmed. Subscribing is gated on this.
+    /// The current backend always sends it; the `default` (false) only applies to a
+    /// response that omits it, which fails closed (treat as unverified) rather than
+    /// silently granting — the backend remains the authoritative gate either way.
+    #[serde(default)]
+    pub email_verified: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub checked_at: Option<DateTime<Utc>>,
 }

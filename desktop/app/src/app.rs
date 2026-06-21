@@ -252,6 +252,18 @@ pub enum SyncAuthMode {
     CreateAccount,
 }
 
+/// Tracks a resend of the email-verification link, so the UI can show progress and
+/// a one-shot confirmation without re-arming on every render. Reset to `Idle` when
+/// the account status is refreshed (which is also how a now-verified account stops
+/// showing the prompt).
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Default)]
+pub enum EmailVerificationResend {
+    #[default]
+    Idle,
+    InProgress,
+    Sent,
+}
+
 /// An account action awaiting an explicit second confirmation in Settings, so a
 /// single misclick cannot change billing state.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -567,12 +579,20 @@ pub struct KnotQApp {
     pub sync_auth_status: SyncAuthStatus,
     pub sync_run_status: SyncRunStatus,
     pub sync_auth_task: Option<Task<()>>,
+    /// Cancel signal for the in-flight browser sign-in, so re-clicking "Sign in"
+    /// during the polling window can abort the old loopback wait and relaunch the
+    /// browser (mirroring the Google Calendar OAuth flow).
+    pub sync_auth_cancel_token: Option<Arc<AtomicBool>>,
     /// Bounded background poll that re-checks entitlement after the user opens the
     /// subscription checkout, so sync turns on without them clicking anything.
     pub sync_subscription_poll_task: Option<Task<()>>,
     /// One-shot background account-status refresh fired when Settings opens, so
     /// an entitlement change made outside the app shows up without any clicks.
     pub sync_status_quiet_task: Option<Task<()>>,
+    /// State of a resend of the email-verification link (shown in the Sync card).
+    pub email_verification_resend: EmailVerificationResend,
+    /// In-flight resend task; kept alive so it isn't dropped mid-request.
+    pub email_verification_resend_task: Option<Task<()>>,
     /// The currently expanded compact selector in Settings.
     pub settings_dropdown: Option<SettingsDropdown>,
     /// Pending confirmation for a destructive account action shown in Settings.
@@ -737,12 +757,15 @@ impl KnotQApp {
             google_oauth_cancel_token: None,
             sync_advance_onboarding_on_success: false,
             sync_auth_status: SyncAuthStatus::Idle,
+            sync_auth_cancel_token: None,
             sync_account_action: None,
             settings_dropdown: None,
             sync_run_status: SyncRunStatus::Idle,
             sync_auth_task: None,
             sync_subscription_poll_task: None,
             sync_status_quiet_task: None,
+            email_verification_resend: EmailVerificationResend::Idle,
+            email_verification_resend_task: None,
             sync_status_popover: None,
             last_synced_at: None,
             last_sync_poll_at: None,

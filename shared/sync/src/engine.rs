@@ -275,19 +275,23 @@ pub fn batch_push_pending(
                 }
             }
             Err(err) => {
-                // Check if this is a crdt_schema_invalid rejection we can self-heal.
-                let is_schema_invalid = err
-                    .downcast_ref::<SyncPushRejected>()
-                    .is_some_and(|e| e.code == "crdt_schema_invalid")
-                    || err.to_string().contains("crdt_schema_invalid");
-
-                if !is_schema_invalid {
+                // Only a deterministic server rejection (an HTTP 4xx carrying a
+                // `SyncPushRejected` code) is safe to self-heal. A transport/network
+                // error is transient, so abort and let the next sync retry the whole
+                // batch — the caller has already persisted the pull cursors, so no
+                // pull progress is lost. Previously only `crdt_schema_invalid` was
+                // healed and every other rejection code (e.g. `updates_too_large`,
+                // `update_payload_invalid`) aborted the sync permanently; reseeding
+                // for any rejection lets the merged snapshot recover cases a single
+                // bad delta could not.
+                if err.downcast_ref::<SyncPushRejected>().is_none() {
                     return Err(err);
                 }
 
                 // Identify which documents were in the rejected batch and haven't been
                 // reseeded yet.  For each, drop all pending edits and re-queue a full
-                // snapshot from the live CRDT so the server can re-converge.
+                // snapshot from the live CRDT so the server can re-converge. A reseed
+                // never loses data: the snapshot is regenerated from the on-disk CRDT.
                 let next_seq = local_state
                     .pending
                     .iter()
@@ -309,7 +313,13 @@ pub fn batch_push_pending(
                 }
                 for ack in &acks {
                     if reseeded.contains(&ack.document) {
-                        // Already reseeded this document — give up.
+                        // Already reseeded this document and it still rejected — the
+                        // server-side batch rejection is all-or-nothing, so we cannot
+                        // tell which document is at fault. Give up rather than
+                        // quarantine (dropping a sibling document batched with it
+                        // would silently lose its edits); the pull cursors are
+                        // already durable, so this surfaces as a retryable error
+                        // without losing pull progress or local data.
                         return Err(err);
                     }
                     reseeded.insert(ack.document);

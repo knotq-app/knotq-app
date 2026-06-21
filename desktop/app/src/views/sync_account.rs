@@ -7,7 +7,10 @@ use gpui::{deferred, div, px, ClickEvent, Context, FontWeight, IntoElement, Wind
 use gpui_component::tooltip::Tooltip;
 use gpui_component::{Icon, IconName, Sizable};
 
-use crate::app::{KnotQApp, SettingsDropdown, SyncAccountAction, SyncAuthStatus, SyncRunStatus};
+use crate::app::{
+    EmailVerificationResend, KnotQApp, SettingsDropdown, SyncAccountAction, SyncAuthStatus,
+    SyncRunStatus,
+};
 use crate::theme_gpui::{token_hsla, token_rgba, Theme};
 
 /// Which provider backs the subscription, used to route the cancel action: a web
@@ -60,6 +63,22 @@ impl KnotQApp {
                 .as_ref()
                 .and_then(|status| status.subscription_provider.as_deref()),
         );
+        // Subscribing is gated on a confirmed email, so when we know it's unverified
+        // we disable the CTA and spell out why rather than open a checkout the
+        // backend rejects. `None` (not checked yet) is left alone — the backend
+        // stays the authoritative gate.
+        let known_unverified = matches!(
+            account
+                .account_status
+                .as_ref()
+                .and_then(|status| status.email_verified),
+            Some(false)
+        );
+        let needs_verification = !account.supports_sync && known_unverified;
+        let resend_in_progress =
+            matches!(self.email_verification_resend, EmailVerificationResend::InProgress);
+        let resend_sent =
+            matches!(self.email_verification_resend, EmailVerificationResend::Sent);
         // Account-action errors (cancel/re-enable/checkout) surface here, since those
         // actions dismiss their prompt immediately rather than holding it open.
         let error = match &self.sync_auth_status {
@@ -78,9 +97,13 @@ impl KnotQApp {
                 manage_open,
                 in_progress,
                 syncing,
+                known_unverified,
                 t,
                 cx,
             ))
+            .when(needs_verification, |column| {
+                column.child(email_verification_notice(resend_in_progress, resend_sent, t, cx))
+            })
             .when_some(error, |column, message| {
                 column.child(
                     div()
@@ -160,6 +183,60 @@ impl KnotQApp {
     }
 }
 
+/// Shown beneath the account actions when the email is confirmed unverified:
+/// explains why Subscribe is disabled and offers to resend the verification email.
+/// The resend is a one-shot per state (re-armed when status refreshes); the backend
+/// also rate-limits it.
+fn email_verification_notice(
+    resend_in_progress: bool,
+    resend_sent: bool,
+    t: Theme,
+    cx: &mut Context<KnotQApp>,
+) -> gpui::AnyElement {
+    let amber = if t.is_dark { 0xf8d38dff } else { 0x9a4b00ff };
+    let (label, disabled): (&str, bool) = if resend_sent {
+        ("Verification email sent", true)
+    } else if resend_in_progress {
+        ("Sending\u{2026}", true)
+    } else {
+        ("Resend verification email", false)
+    };
+
+    div()
+        .w_full()
+        .flex()
+        .flex_col()
+        .gap(px(3.0))
+        .child(
+            div()
+                .text_size(px(11.0))
+                .line_height(px(15.0))
+                .text_color(token_hsla(amber))
+                .child("Your email isn't verified. Verify it to subscribe — check your inbox for the link."),
+        )
+        .child(
+            div()
+                .id("sync-resend-verification")
+                .text_size(px(11.0))
+                .line_height(px(15.0))
+                .font_weight(FontWeight::SEMIBOLD)
+                .text_color(token_hsla(if disabled {
+                    t.text_muted
+                } else {
+                    sync_cta_bg()
+                }))
+                .when(!disabled, |s| {
+                    s.cursor_pointer().hover(|s| s.opacity(0.85)).on_click(
+                        cx.listener(|this, _: &ClickEvent, _window, cx| {
+                            this.resend_email_verification(cx);
+                        }),
+                    )
+                })
+                .child(label),
+        )
+        .into_any_element()
+}
+
 /// The signed-out state: a single full-width CTA. The card header above already
 /// carries the "sign in to sync across devices" message, so we don't repeat it.
 fn signed_out_entry(_t: Theme, cx: &mut Context<KnotQApp>) -> gpui::AnyElement {
@@ -216,6 +293,7 @@ fn resync_button(syncing: bool, t: Theme, cx: &mut Context<KnotQApp>) -> gpui::A
     )
 }
 
+#[allow(clippy::too_many_arguments)]
 fn signed_in_account_actions(
     supports_sync: bool,
     cancelled: bool,
@@ -223,6 +301,7 @@ fn signed_in_account_actions(
     manage_open: bool,
     in_progress: bool,
     syncing: bool,
+    known_unverified: bool,
     t: Theme,
     cx: &mut Context<KnotQApp>,
 ) -> gpui::AnyElement {
@@ -240,7 +319,7 @@ fn signed_in_account_actions(
                 .items_center()
                 .gap(px(6.0))
                 .when(!supports_sync, |s| {
-                    s.child(subscribe_button(in_progress, t, cx))
+                    s.child(subscribe_button(in_progress, known_unverified, t, cx))
                 })
                 .when(supports_sync && cancelled, |s| {
                     s.child(reenable_button(in_progress, t, cx))
@@ -256,6 +335,7 @@ fn signed_in_account_actions(
                 cancelled,
                 provider,
                 in_progress,
+                known_unverified,
                 t,
                 cx,
             )))
@@ -265,15 +345,26 @@ fn signed_in_account_actions(
 
 /// Primary CTA shown when the signed-in account has no active subscription.
 /// Opens the hosted checkout, same destination as the "Subscribe" menu row.
-fn subscribe_button(in_progress: bool, t: Theme, cx: &mut Context<KnotQApp>) -> gpui::AnyElement {
+/// Disabled until the account email is verified, since the backend gates checkout
+/// on a confirmed email.
+fn subscribe_button(
+    in_progress: bool,
+    known_unverified: bool,
+    t: Theme,
+    cx: &mut Context<KnotQApp>,
+) -> gpui::AnyElement {
     account_icon_button(
         "sync-subscribe",
         Some("Subscribe"),
-        "Subscribe to KnotQ Sync",
+        if known_unverified {
+            "Verify your email before subscribing"
+        } else {
+            "Subscribe to KnotQ Sync"
+        },
         IconName::ExternalLink,
         true,
         false,
-        in_progress,
+        in_progress || known_unverified,
         false,
         t,
         cx,
@@ -337,11 +428,13 @@ fn manage_account_button(
     )
 }
 
+#[allow(clippy::too_many_arguments)]
 fn manage_account_menu(
     supports_sync: bool,
     cancelled: bool,
     provider: SubscriptionProvider,
     in_progress: bool,
+    known_unverified: bool,
     t: Theme,
     cx: &mut Context<KnotQApp>,
 ) -> gpui::AnyElement {
@@ -350,10 +443,15 @@ fn manage_account_menu(
     if !supports_sync {
         rows.push(manage_menu_row(
             ("sync-manage-subscribe", 0),
-            "Subscribe",
+            if known_unverified {
+                "Verify email to subscribe"
+            } else {
+                "Subscribe"
+            },
             IconName::ExternalLink,
             false,
-            in_progress,
+            // Gated on a confirmed email, matching the primary Subscribe CTA.
+            in_progress || known_unverified,
             t,
             cx,
             |this, _window, cx| {

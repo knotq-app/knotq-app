@@ -398,6 +398,34 @@ fn schema_invalid_rejection_must_self_heal() {
     );
 }
 
+/// Generalized self-heal: a server push rejection with ANY code (not only
+/// `crdt_schema_invalid`) must reseed-and-retry rather than wedge the sync. Before
+/// this, codes like `updates_too_large` / `update_payload_invalid` returned `Err`
+/// and the pending queue never drained — a permanent push wedge for a paid user.
+#[test]
+fn push_self_heals_from_non_schema_invalid_rejection() {
+    let mut h = Harness::new(1);
+    h.login_all();
+
+    let scheme = h.add_scheme(D0, "Notes", &["first"]);
+    h.sync(D0);
+
+    // New local edit, then force a one-shot non-schema-invalid rejection.
+    h.append_line(D0, scheme, "second");
+    h.reject_next_push_with_code("updates_too_large");
+
+    // The engine intercepts the rejection, reseeds the affected document with a
+    // full snapshot, and retries within the same sync call — so it returns Ok and
+    // the queue drains, instead of failing every sync forever.
+    h.try_sync(D0)
+        .expect("engine must self-heal from a non-schema-invalid rejection and return Ok");
+    assert!(
+        h.device(D0).is_fully_pushed(),
+        "pending queue must drain after the generalized self-heal; {} remain",
+        h.device(D0).pending_count(),
+    );
+}
+
 // ---------------------------------------------------------------------------
 // Bug 1+2 — image_media_syncs_between_devices
 // ---------------------------------------------------------------------------

@@ -7,6 +7,10 @@ pub(super) struct MarkdownStyle {
     pub(super) highlight: bool,
     pub(super) strikethrough: bool,
     pub(super) heading: bool,
+    /// Set on runs that fall inside a detected URL so they render in the link
+    /// color with an underline. Not produced by markdown parsing; layered on in
+    /// `build_line_layout`.
+    pub(super) link: bool,
 }
 
 /// Whether a run is visible document content or a markup marker (the `*`, `==`,
@@ -44,16 +48,13 @@ impl Emphasis {
     }
 }
 
-/// Inline emphasis markers, matched longest-first so `**` wins over `*`.
-/// Mirrors Obsidian: `**`/`__` bold, `*`/`_` italic, `==` highlight,
-/// `~~` strikethrough.
+/// Inline emphasis markers. Every marker is two characters: `**` bold, `__`
+/// italic, `==` highlight, `~~` strikethrough. Single `*`/`_` are literal text.
 const DELIMITERS: &[(&str, Emphasis)] = &[
     ("**", Emphasis::Bold),
-    ("__", Emphasis::Bold),
+    ("__", Emphasis::Italic),
     ("==", Emphasis::Highlight),
     ("~~", Emphasis::Strikethrough),
-    ("*", Emphasis::Italic),
-    ("_", Emphasis::Italic),
 ];
 
 pub(super) fn parse_markdown_runs(line: &str) -> Vec<MarkdownRun> {
@@ -64,6 +65,7 @@ pub(super) fn parse_markdown_runs(line: &str) -> Vec<MarkdownRun> {
         highlight: false,
         strikethrough: false,
         heading,
+        link: false,
     };
     let mut runs = Vec::new();
     // The leading `#`/`## ` of a heading is a marker; the rest is parsed as body.

@@ -228,6 +228,7 @@ impl SchemeEditor {
         let mut shaped = String::with_capacity(hidden_prefix.len() + line.len());
         let mut runs = Vec::new();
         let mut collapsed = Vec::new();
+        let link_ranges = detect_links(line);
 
         if !hidden_prefix.is_empty() {
             shaped.push_str(hidden_prefix);
@@ -264,6 +265,7 @@ impl SchemeEditor {
                     &mut runs,
                     &mut collapsed,
                     extra_collapsed,
+                    &link_ranges,
                 );
                 collapsed.push(object_start..object_start + TABLE_OBJECT_LEN);
                 segment_start = object_start + TABLE_OBJECT_LEN;
@@ -282,6 +284,7 @@ impl SchemeEditor {
                 &mut runs,
                 &mut collapsed,
                 extra_collapsed,
+                &link_ranges,
             );
             pos = end;
         }
@@ -312,9 +315,12 @@ impl SchemeEditor {
 
         // Highlighted text keeps its normal color (Obsidian-style): the
         // translucent `highlight_bg` tints the line without recoloring glyphs,
-        // which reads correctly on both light and dark themes.
+        // which reads correctly on both light and dark themes. Links override
+        // the color so a URL reads as clickable on any line.
         let color = if is_done {
             token_hsla(self.theme.done_text)
+        } else if style.link {
+            token_hsla(self.theme.link)
         } else {
             default_color
         };
@@ -328,7 +334,11 @@ impl SchemeEditor {
             } else {
                 None
             },
-            underline: None,
+            underline: style.link.then(|| gpui::UnderlineStyle {
+                color: Some(color),
+                thickness: px(1.0),
+                wavy: false,
+            }),
             // Completed items strike through the whole line; `~~text~~` strikes
             // just its span. Either way the rule follows the run's text color.
             strikethrough: if is_done || style.strikethrough {
@@ -366,6 +376,7 @@ fn push_line_layout_segment(
     runs: &mut Vec<TextRun>,
     collapsed: &mut Vec<Range<usize>>,
     extra_collapsed: &[Range<usize>],
+    link_ranges: &[Range<usize>],
 ) {
     if range.is_empty() {
         return;
@@ -390,6 +401,7 @@ fn push_line_layout_segment(
             shaped,
             runs,
             collapsed,
+            link_ranges,
         );
         collapsed.push(hidden_start..hidden_end);
         start = hidden_end;
@@ -407,6 +419,7 @@ fn push_line_layout_segment(
         shaped,
         runs,
         collapsed,
+        link_ranges,
     );
 }
 
@@ -423,6 +436,7 @@ fn push_visible_line_layout_segment(
     shaped: &mut String,
     runs: &mut Vec<TextRun>,
     collapsed: &mut Vec<Range<usize>>,
+    link_ranges: &[Range<usize>],
 ) {
     if range.is_empty() {
         return;
@@ -432,5 +446,34 @@ fn push_visible_line_layout_segment(
         return;
     }
     shaped.push_str(&line[range.clone()]);
-    runs.push(editor.text_run(range.end - range.start, font, default_color, style, is_done));
+    // Split the visible run at link boundaries so each emitted `TextRun` is
+    // wholly inside or wholly outside a URL, and carries the link styling.
+    for (sub, is_link) in split_by_links(range, link_ranges) {
+        let mut run_style = style;
+        run_style.link = is_link;
+        runs.push(editor.text_run(sub.end - sub.start, font, default_color, run_style, is_done));
+    }
+}
+
+/// Partitions `range` into maximal sub-ranges each entirely inside or entirely
+/// outside the (sorted, disjoint) `link_ranges`, preserving order.
+fn split_by_links(range: Range<usize>, link_ranges: &[Range<usize>]) -> Vec<(Range<usize>, bool)> {
+    let mut parts = Vec::new();
+    let mut pos = range.start;
+    for link in link_ranges {
+        if link.end <= pos || link.start >= range.end {
+            continue;
+        }
+        let link_start = link.start.max(range.start);
+        let link_end = link.end.min(range.end);
+        if link_start > pos {
+            parts.push((pos..link_start, false));
+        }
+        parts.push((link_start..link_end, true));
+        pos = link_end;
+    }
+    if pos < range.end {
+        parts.push((pos..range.end, false));
+    }
+    parts
 }

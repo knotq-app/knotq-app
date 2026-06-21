@@ -1,5 +1,7 @@
 use std::net::TcpListener;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
+use std::sync::Arc;
 use std::time::Duration as StdDuration;
 
 use anyhow::{anyhow, Context as AnyhowContext, Result};
@@ -9,21 +11,60 @@ use knotq_model::{SyncAccountSettings, SyncAccountStatus};
 use knotq_sync::AccountStatusResponse;
 use serde::Deserialize;
 
-use super::{KnotQApp, SyncAccountAction, SyncAuthMode, SyncAuthStatus, SyncRunStatus};
+use super::{
+    EmailVerificationResend, KnotQApp, SyncAccountAction, SyncAuthMode, SyncAuthStatus,
+    SyncRunStatus,
+};
 use crate::app::google_oauth::{code_challenge, open_browser, random_token, wait_for_oauth_code};
 
-const DEFAULT_SYNC_API_BASE: &str = "https://api.knotq.com";
+const PROD_SYNC_API_BASE: &str = "https://api.knotq.com";
+const SANDBOX_SYNC_API_BASE: &str = "https://sandbox.api.knotq.com";
 
-/// KnotQ-hosted browser sign-in page. The app opens this with a loopback
-/// `redirect_uri` + PKCE; the page signs the user in and hands back a one-time
-/// authorization code redeemed via `POST /v1/auth/authorize/exchange`.
-const SIGNIN_PAGE_URL: &str = "https://www.knotq.com/signin.html";
-const ACCOUNT_PAGE_URL: &str = "https://www.knotq.com/account.html#signin";
+/// The default backend for a *new* sign-in when no `KNOTQ_API_BASE` override is
+/// set: release (production) builds talk to prod, dev/debug builds talk to the
+/// hosted sandbox so day-to-day development never touches production data.
+const fn build_default_sync_api_base() -> &'static str {
+    if cfg!(debug_assertions) {
+        SANDBOX_SYNC_API_BASE
+    } else {
+        PROD_SYNC_API_BASE
+    }
+}
 
-/// The knotq.com checkout portal. Rather than sending users to the Lemon Squeezy
-/// domain, we open this page with the checkout URL in `?url=`; it embeds the
-/// checkout in an iframe so payment stays on the official domain.
-const CHECKOUT_PORTAL_URL: &str = "https://www.knotq.com/checkout.html";
+/// Base URL used for a *new* sign-in when no account is stored yet. An explicit
+/// `KNOTQ_API_BASE` env override always wins (e.g. point a build at a local
+/// Worker, `http://127.0.0.1:8787`); otherwise the default is build-aware — see
+/// [`build_default_sync_api_base`]. Existing accounts keep their stored
+/// `api_base`, so this never silently moves a signed-in account between
+/// environments.
+fn default_sync_api_base() -> String {
+    match std::env::var("KNOTQ_API_BASE") {
+        Ok(value) if !value.trim().is_empty() => value.trim().to_string(),
+        _ => build_default_sync_api_base().to_string(),
+    }
+}
+
+/// The KnotQ marketing/auth site origins. The hosted sign-in, account, and
+/// checkout pages live here; the app opens whichever matches the backend it is
+/// configured for (see [`sync_web_base`]).
+const PROD_WEB_BASE: &str = "https://www.knotq.com";
+const SANDBOX_WEB_BASE: &str = "https://sandbox.knotq.com";
+
+/// The knotq.com site origin matching a given sync API base, so a sandbox or
+/// local-dev build opens the sandbox site instead of production. The sign-in,
+/// account, and checkout pages are *also* given the API base via the allowlisted
+/// `?api=` param, which is what actually pins the backend — necessary for local
+/// dev, where the site is the sandbox host but the API is the loopback Worker.
+fn sync_web_base(api_base: &str) -> &'static str {
+    if api_base.contains("sandbox.api.knotq.com")
+        || api_base.contains("127.0.0.1")
+        || api_base.contains("localhost")
+    {
+        SANDBOX_WEB_BASE
+    } else {
+        PROD_WEB_BASE
+    }
+}
 
 /// Where store-managed subscriptions are re-enabled (auto-renew turned back on).
 /// Neither the app nor our backend can flip that for Apple/Google.
@@ -97,15 +138,44 @@ impl KnotQApp {
     /// redirect + PKCE) and, on the redirect callback, exchange the one-time code
     /// for a session. The whole exchange runs on a background thread so the UI
     /// thread keeps painting while the browser is up.
+    /// Start (or restart) the browser sign-in's cancel token. Cancels any flow
+    /// already in progress so re-clicking "Sign in" during the polling window
+    /// aborts the stale loopback wait and relaunches the browser.
+    fn begin_sync_sign_in_flow(&mut self) -> Arc<AtomicBool> {
+        self.cancel_sync_sign_in_flow();
+        let cancel_token = Arc::new(AtomicBool::new(false));
+        self.sync_auth_cancel_token = Some(cancel_token.clone());
+        cancel_token
+    }
+
+    fn cancel_sync_sign_in_flow(&mut self) {
+        if let Some(cancel_token) = self.sync_auth_cancel_token.take() {
+            cancel_token.store(true, Ordering::SeqCst);
+            self.sync_auth_task = None;
+        }
+    }
+
+    /// Clears the task/token for a finished worker, but only if it owns the
+    /// current flow — a result from a cancelled-and-relaunched flow is stale and
+    /// must not clobber the live one's state. Returns whether the caller should
+    /// apply the result.
+    fn finish_sync_sign_in_flow(&mut self, cancel_token: &Arc<AtomicBool>) -> bool {
+        match self.sync_auth_cancel_token.as_ref() {
+            Some(current) if Arc::ptr_eq(current, cancel_token) => {
+                self.sync_auth_cancel_token = None;
+                self.sync_auth_task = None;
+                true
+            }
+            _ => false,
+        }
+    }
+
     fn begin_browser_sign_in(
         &mut self,
         mode: SyncAuthMode,
         advance_onboarding: bool,
         cx: &mut Context<Self>,
     ) {
-        if matches!(self.sync_auth_status, SyncAuthStatus::InProgress) {
-            return;
-        }
         self.sync_status_popover = None;
         self.close_repeat_popover();
         self.cancel_event_popup_without_commit(cx);
@@ -116,7 +186,7 @@ impl KnotQApp {
             .sync_account
             .as_ref()
             .map(|account| account.api_base.clone())
-            .unwrap_or_else(|| DEFAULT_SYNC_API_BASE.to_string());
+            .unwrap_or_else(default_sync_api_base);
         let api_base = match normalize_api_base(&api_base) {
             Ok(base) => base,
             Err(err) => {
@@ -128,16 +198,18 @@ impl KnotQApp {
 
         self.sync_advance_onboarding_on_success = advance_onboarding;
         self.sync_auth_status = SyncAuthStatus::InProgress;
+        let cancel_token = self.begin_sync_sign_in_flow();
         let task = cx.spawn(
             async move |weak: gpui::WeakEntity<Self>, cx: &mut gpui::AsyncApp| {
                 let (tx, rx) = mpsc::channel();
+                let worker_token = cancel_token.clone();
                 std::thread::spawn(move || {
-                    let result =
-                        run_browser_sign_in(&api_base, mode).map_err(|err| format!("{err:#}"));
+                    let result = run_browser_sign_in(&api_base, mode, &worker_token)
+                        .map_err(|err| format!("{err:#}"));
                     let _ = tx.send(result);
                 });
-                Self::pump_sync_auth_worker(weak, cx, rx, |app, result, cx| {
-                    app.finish_sync_sign_in(result, cx);
+                Self::pump_sync_auth_worker(weak, cx, rx, move |app, result, cx| {
+                    app.finish_sync_sign_in(result, &cancel_token, cx);
                 })
                 .await;
             },
@@ -199,8 +271,27 @@ impl KnotQApp {
         cx.notify();
     }
 
+    /// The sync API base this build talks to: the signed-in account's stored
+    /// base, else the configured default (honoring the `KNOTQ_API_BASE` override).
+    /// Used to pick the matching website origin and `?api=` param for hosted pages.
+    fn current_sync_api_base(&self) -> String {
+        let base = self
+            .settings
+            .sync_account
+            .as_ref()
+            .map(|account| account.api_base.clone())
+            .unwrap_or_else(default_sync_api_base);
+        normalize_api_base(&base).unwrap_or(base)
+    }
+
     pub fn open_online_account_management(&mut self, cx: &mut Context<Self>) {
-        match open_browser(ACCOUNT_PAGE_URL) {
+        let api_base = self.current_sync_api_base();
+        let url = format!(
+            "{}/account.html?api={}#signin",
+            sync_web_base(&api_base),
+            percent_encode(&api_base)
+        );
+        match open_browser(&url) {
             Ok(()) => {
                 self.sync_auth_status = SyncAuthStatus::Idle;
             }
@@ -414,6 +505,21 @@ impl KnotQApp {
         let Some(account) = self.settings.sync_account.clone() else {
             return;
         };
+        // Subscribing requires a confirmed email (the backend rejects it otherwise).
+        // Only short-circuit on a definite "unverified"; when it's unknown, let the
+        // request proceed and surface the backend's verdict.
+        let known_unverified = account
+            .account_status
+            .as_ref()
+            .map(|status| status.email_verified == Some(false))
+            .unwrap_or(false);
+        if known_unverified {
+            self.sync_auth_status = SyncAuthStatus::Error(
+                account_action_error_message("email_not_verified").to_string(),
+            );
+            cx.notify();
+            return;
+        }
         self.sync_auth_status = SyncAuthStatus::InProgress;
         let task = cx.spawn(
             async move |weak: gpui::WeakEntity<Self>, cx: &mut gpui::AsyncApp| {
@@ -443,7 +549,15 @@ impl KnotQApp {
             Ok(url) => {
                 // Open the knotq.com portal (which embeds the checkout) rather than
                 // the Lemon Squeezy URL directly, so payment stays on our domain.
-                let portal_url = format!("{CHECKOUT_PORTAL_URL}?url={}", percent_encode(&url));
+                // Matches the configured backend so a sandbox/local build checks out
+                // against the sandbox, not production.
+                let api_base = self.current_sync_api_base();
+                let portal_url = format!(
+                    "{}/checkout.html?url={}&api={}",
+                    sync_web_base(&api_base),
+                    percent_encode(&url),
+                    percent_encode(&api_base)
+                );
                 match open_browser(&portal_url) {
                     Ok(()) => {
                         self.sync_auth_status = SyncAuthStatus::Idle;
@@ -523,6 +637,8 @@ impl KnotQApp {
                     let enabled = updated.supports_sync;
                     app.settings.sync_account = Some(updated);
                     app.save_app_settings();
+                    // Re-arm the verification resend against the fresh status.
+                    app.email_verification_resend = EmailVerificationResend::Idle;
                     if enabled && !was_enabled {
                         app.service_bus.signal_sync();
                     }
@@ -531,6 +647,62 @@ impl KnotQApp {
             },
         );
         self.sync_status_quiet_task = Some(task);
+    }
+
+    /// Resend the email-verification link to the signed-in account's address. A
+    /// one-shot per armed state (the button disables to "sent"); the backend also
+    /// rate-limits, so a rapid second press is harmless. Failures surface in the
+    /// shared account-error line.
+    pub fn resend_email_verification(&mut self, cx: &mut Context<Self>) {
+        if matches!(
+            self.email_verification_resend,
+            EmailVerificationResend::InProgress | EmailVerificationResend::Sent
+        ) {
+            return;
+        }
+        let Some(account) = self.settings.sync_account.clone() else {
+            return;
+        };
+        self.email_verification_resend = EmailVerificationResend::InProgress;
+        let task = cx.spawn(
+            async move |weak: gpui::WeakEntity<Self>, cx: &mut gpui::AsyncApp| {
+                let (tx, rx) = mpsc::channel();
+                std::thread::spawn(move || {
+                    let _ = tx.send(
+                        resend_email_verification_backend(&account).map_err(|err| format!("{err:#}")),
+                    );
+                });
+                let result = loop {
+                    match rx.try_recv() {
+                        Ok(result) => break Some(result),
+                        Err(mpsc::TryRecvError::Empty) => {
+                            cx.background_executor()
+                                .timer(StdDuration::from_millis(100))
+                                .await;
+                        }
+                        Err(mpsc::TryRecvError::Disconnected) => break None,
+                    }
+                };
+                let _ = weak.update(cx, |app, cx| {
+                    app.email_verification_resend_task = None;
+                    match result {
+                        Some(Ok(())) => {
+                            app.email_verification_resend = EmailVerificationResend::Sent;
+                        }
+                        Some(Err(message)) => {
+                            app.email_verification_resend = EmailVerificationResend::Idle;
+                            app.sync_auth_status = SyncAuthStatus::Error(message);
+                        }
+                        None => {
+                            app.email_verification_resend = EmailVerificationResend::Idle;
+                        }
+                    }
+                    cx.notify();
+                });
+            },
+        );
+        self.email_verification_resend_task = Some(task);
+        cx.notify();
     }
 
     /// After the checkout opens in the browser, quietly re-check entitlement on a
@@ -656,6 +828,9 @@ impl KnotQApp {
                 let supports_sync = account.supports_sync;
                 self.settings.sync_account = Some(account);
                 self.save_app_settings();
+                // Re-arm the verification resend against the freshly fetched status
+                // (clears a stale "sent", and a now-verified account stops prompting).
+                self.email_verification_resend = EmailVerificationResend::Idle;
                 if !require_sync || supports_sync {
                     self.sync_auth_status = SyncAuthStatus::Idle;
                     if supports_sync {
@@ -682,12 +857,13 @@ impl KnotQApp {
         weak: gpui::WeakEntity<Self>,
         cx: &mut gpui::AsyncApp,
         rx: mpsc::Receiver<Result<T, String>>,
-        finish: impl Fn(&mut Self, Result<T, String>, &mut Context<Self>) + Copy + 'static,
+        finish: impl Fn(&mut Self, Result<T, String>, &mut Context<Self>) + Clone + 'static,
     ) {
         loop {
             match rx.try_recv() {
                 Ok(result) => {
-                    let _ = weak.update(cx, |app, cx| finish(app, result, cx));
+                    let finish = finish.clone();
+                    let _ = weak.update(cx, move |app, cx| finish(app, result, cx));
                     break;
                 }
                 Err(mpsc::TryRecvError::Empty) => {
@@ -696,7 +872,8 @@ impl KnotQApp {
                         .await;
                 }
                 Err(mpsc::TryRecvError::Disconnected) => {
-                    let _ = weak.update(cx, |app, cx| {
+                    let finish = finish.clone();
+                    let _ = weak.update(cx, move |app, cx| {
                         finish(app, Err("Sync sign-in worker stopped".to_string()), cx);
                     });
                     break;
@@ -708,9 +885,14 @@ impl KnotQApp {
     fn finish_sync_sign_in(
         &mut self,
         result: Result<SyncAccountSettings, String>,
+        cancel_token: &Arc<AtomicBool>,
         cx: &mut Context<Self>,
     ) {
-        self.sync_auth_task = None;
+        // A relaunched sign-in supersedes the old flow; ignore the stale result so
+        // it can't overwrite the live flow's status or a fresh session.
+        if !self.finish_sync_sign_in_flow(cancel_token) {
+            return;
+        }
         match result {
             Ok(account) => {
                 let advance_onboarding = self.sync_advance_onboarding_on_success;
@@ -738,7 +920,11 @@ impl KnotQApp {
 /// page against a loopback redirect with PKCE, wait for the redirect callback, and
 /// exchange the one-time authorization code for a session. Blocking (`ureq` + a
 /// loopback `TcpListener`), so callers run it off the UI thread.
-fn run_browser_sign_in(api_base: &str, mode: SyncAuthMode) -> Result<SyncAccountSettings> {
+fn run_browser_sign_in(
+    api_base: &str,
+    mode: SyncAuthMode,
+    cancel_token: &AtomicBool,
+) -> Result<SyncAccountSettings> {
     let base = normalize_api_base(api_base)?;
     let listener = TcpListener::bind("127.0.0.1:0").context("bind sign-in loopback listener")?;
     listener
@@ -759,7 +945,7 @@ fn run_browser_sign_in(api_base: &str, mode: SyncAuthMode) -> Result<SyncAccount
         StdDuration::from_secs(300),
         "You're signed in to KnotQ. You can close this tab and return to the app.",
         "Sign-in did not complete. You can close this tab and return to KnotQ.",
-        None,
+        Some(cancel_token),
     )?;
     exchange_authorize_code(&base, &code, &code_verifier)
 }
@@ -790,7 +976,7 @@ fn sign_in_authorize_url(
         .map(|(key, value)| format!("{key}={}", percent_encode(value)))
         .collect::<Vec<_>>()
         .join("&");
-    format!("{SIGNIN_PAGE_URL}?{query}")
+    format!("{}/signin.html?{query}", sync_web_base(api_base))
 }
 
 /// Redeem the one-time authorization code (with the PKCE verifier) for a session.
@@ -894,11 +1080,25 @@ fn logout_sync_backend(account: &SyncAccountSettings) -> Result<()> {
     }
 }
 
-/// Turn off the sync entitlement for the account (keeps the account + data). The
-/// backend rotates the session, so this returns fresh credentials to install.
-fn cancel_subscription_backend(account: &SyncAccountSettings) -> Result<SyncAccountSettings> {
+/// Extract the backend's machine-readable error `code` from a non-2xx response body,
+/// falling back to `fallback` when the body can't be parsed.
+fn login_error_code(response: ureq::Response, fallback: &str) -> String {
+    response
+        .into_json::<LoginError>()
+        .map(|error| error.code)
+        .unwrap_or_else(|_| fallback.to_string())
+}
+
+/// Shared driver for the bearer-authorized entitlement POST endpoints (cancel/resume).
+/// The backend rotates the session, so the rotated credentials are returned to install.
+fn account_action_request(
+    account: &SyncAccountSettings,
+    path: &str,
+    fallback_code: &str,
+    parse_context: &'static str,
+) -> Result<SyncAccountSettings> {
     let base = normalize_api_base(&account.api_base)?;
-    let url = format!("{base}/v1/auth/subscription/cancel");
+    let url = format!("{base}{path}");
     let response = match ureq::post(&url)
         .timeout(StdDuration::from_secs(10))
         .set("authorization", &format!("Bearer {}", account.bearer_token))
@@ -906,44 +1106,35 @@ fn cancel_subscription_backend(account: &SyncAccountSettings) -> Result<SyncAcco
     {
         Ok(response) => response,
         Err(ureq::Error::Status(_, response)) => {
-            let code = response
-                .into_json::<LoginError>()
-                .map(|error| error.code)
-                .unwrap_or_else(|_| "cancel_failed".to_string());
-            return Err(anyhow!(account_action_error_message(&code)));
+            return Err(anyhow!(account_action_error_message(&login_error_code(
+                response,
+                fallback_code
+            ))));
         }
         Err(error) => return Err(anyhow!("Could not reach the sync API: {error}")),
     };
-    let session: LoginResponse = response
-        .into_json()
-        .context("parse sync subscription cancel response")?;
+    let session: LoginResponse = response.into_json().context(parse_context)?;
     sync_account_settings_from_session(base, session)
 }
 
-/// Undo a pending cancellation for a web subscription. The backend rotates the
-/// session, so this returns fresh credentials to install.
+/// Turn off the sync entitlement for the account (keeps the account + data).
+fn cancel_subscription_backend(account: &SyncAccountSettings) -> Result<SyncAccountSettings> {
+    account_action_request(
+        account,
+        "/v1/auth/subscription/cancel",
+        "cancel_failed",
+        "parse sync subscription cancel response",
+    )
+}
+
+/// Undo a pending cancellation for a web subscription.
 fn resume_subscription_backend(account: &SyncAccountSettings) -> Result<SyncAccountSettings> {
-    let base = normalize_api_base(&account.api_base)?;
-    let url = format!("{base}/v1/auth/subscription/resume");
-    let response = match ureq::post(&url)
-        .timeout(StdDuration::from_secs(10))
-        .set("authorization", &format!("Bearer {}", account.bearer_token))
-        .send_json(serde_json::json!({}))
-    {
-        Ok(response) => response,
-        Err(ureq::Error::Status(_, response)) => {
-            let code = response
-                .into_json::<LoginError>()
-                .map(|error| error.code)
-                .unwrap_or_else(|_| "resume_failed".to_string());
-            return Err(anyhow!(account_action_error_message(&code)));
-        }
-        Err(error) => return Err(anyhow!("Could not reach the sync API: {error}")),
-    };
-    let session: LoginResponse = response
-        .into_json()
-        .context("parse sync subscription resume response")?;
-    sync_account_settings_from_session(base, session)
+    account_action_request(
+        account,
+        "/v1/auth/subscription/resume",
+        "resume_failed",
+        "parse sync subscription resume response",
+    )
 }
 
 /// Create a provider-hosted checkout URL for the signed-in account.
@@ -959,11 +1150,10 @@ fn create_subscription_checkout_backend(account: &SyncAccountSettings) -> Result
         })) {
         Ok(response) => response,
         Err(ureq::Error::Status(_, response)) => {
-            let code = response
-                .into_json::<LoginError>()
-                .map(|error| error.code)
-                .unwrap_or_else(|_| "checkout_failed".to_string());
-            return Err(anyhow!(account_action_error_message(&code)));
+            return Err(anyhow!(account_action_error_message(&login_error_code(
+                response,
+                "checkout_failed"
+            ))));
         }
         Err(error) => return Err(anyhow!("Could not reach the sync API: {error}")),
     };
@@ -974,6 +1164,25 @@ fn create_subscription_checkout_backend(account: &SyncAccountSettings) -> Result
         return Err(anyhow!("The sync API did not return a checkout URL."));
     }
     Ok(checkout.checkout_url)
+}
+
+fn resend_email_verification_backend(account: &SyncAccountSettings) -> Result<()> {
+    let base = normalize_api_base(&account.api_base)?;
+    let url = format!("{base}/v1/auth/email/verify/resend");
+    match ureq::post(&url)
+        .timeout(StdDuration::from_secs(10))
+        .set("authorization", &format!("Bearer {}", account.bearer_token))
+        .call()
+    {
+        Ok(_) => Ok(()),
+        Err(ureq::Error::Status(429, _)) => Err(anyhow!(
+            "You've requested this recently — wait a minute, then try again."
+        )),
+        Err(ureq::Error::Status(_, response)) => Err(anyhow!(account_action_error_message(
+            &login_error_code(response, "resend_failed")
+        ))),
+        Err(error) => Err(anyhow!("Could not reach the sync API: {error}")),
+    }
 }
 
 fn refresh_account_status_backend(mut account: SyncAccountSettings) -> Result<SyncAccountSettings> {
@@ -1087,6 +1296,7 @@ fn sync_account_status_from_response(status: AccountStatusResponse) -> SyncAccou
         }),
         subscription_provider: status.subscription_provider,
         current_period_end: status.current_period_end,
+        email_verified: Some(status.email_verified),
         checked_at: Some(status.checked_at.unwrap_or_else(Utc::now)),
     }
 }
@@ -1110,6 +1320,9 @@ fn account_action_error_message(code: &str) -> &'static str {
             "Subscription checkout is not configured yet."
         }
         "billing_provider_error" => "Subscription checkout is temporarily unavailable.",
+        "email_not_verified" => {
+            "Verify your email before subscribing — check your inbox for the link."
+        }
         "email_mismatch" | "forbidden" => "This checkout does not match the signed-in account.",
         "cancel_in_app_store" => {
             "Manage this App Store subscription from your Apple account subscriptions."
@@ -1196,6 +1409,20 @@ fn authorize_error_message(code: &str) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn sync_web_base_matches_backend() {
+        // Production API → production site.
+        assert_eq!(sync_web_base("https://api.knotq.com"), PROD_WEB_BASE);
+        // Sandbox and local-dev backends → the sandbox site (it can target a
+        // local API via the allowlisted `?api=` param).
+        assert_eq!(
+            sync_web_base("https://sandbox.api.knotq.com"),
+            SANDBOX_WEB_BASE
+        );
+        assert_eq!(sync_web_base("http://127.0.0.1:8787"), SANDBOX_WEB_BASE);
+        assert_eq!(sync_web_base("http://localhost:8787"), SANDBOX_WEB_BASE);
+    }
 
     #[test]
     fn normalize_api_base_accepts_https() {

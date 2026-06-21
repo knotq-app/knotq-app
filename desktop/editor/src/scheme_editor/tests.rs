@@ -351,13 +351,14 @@ fn markdown_heading_requires_hash_separator() {
 
 #[test]
 fn markdown_runs_mark_emphasis_without_removing_markers() {
-    let runs = parse_markdown_runs("a **bold** *ital* ==hi== ~~no~~");
+    let runs = parse_markdown_runs("a **bold** __ital__ ==hi== ~~no~~");
     let bold = MarkdownStyle {
         bold: true,
         italic: false,
         highlight: false,
         strikethrough: false,
         heading: false,
+        link: false,
     };
     let italic = MarkdownStyle {
         bold: false,
@@ -365,6 +366,7 @@ fn markdown_runs_mark_emphasis_without_removing_markers() {
         highlight: false,
         strikethrough: false,
         heading: false,
+        link: false,
     };
     let highlight = MarkdownStyle {
         bold: false,
@@ -372,6 +374,7 @@ fn markdown_runs_mark_emphasis_without_removing_markers() {
         highlight: true,
         strikethrough: false,
         heading: false,
+        link: false,
     };
     let strikethrough = MarkdownStyle {
         bold: false,
@@ -379,12 +382,13 @@ fn markdown_runs_mark_emphasis_without_removing_markers() {
         highlight: false,
         strikethrough: true,
         heading: false,
+        link: false,
     };
 
     // Markers stay in the text, so the run lengths still cover every byte.
     assert_eq!(
         runs.iter().map(|run| run.len).sum::<usize>(),
-        "a **bold** *ital* ==hi== ~~no~~".len()
+        "a **bold** __ital__ ==hi== ~~no~~".len()
     );
     assert!(runs.iter().any(|run| run.len == 4 && run.style == bold));
     assert!(runs.iter().any(|run| run.len == 4 && run.style == italic));
@@ -405,6 +409,7 @@ fn markdown_runs_mark_headings_as_bold_heading() {
         highlight: false,
         strikethrough: false,
         heading: true,
+        link: false,
     };
     assert_eq!(
         runs,

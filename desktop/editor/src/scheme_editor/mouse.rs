@@ -141,6 +141,40 @@ impl SchemeEditor {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if event.button == MouseButton::Left {
+            if let Some(button) = self
+                .open_link_button
+                .as_ref()
+                .filter(|button| bounds_contains(button.bounds, event.position))
+            {
+                cx.emit(EditorEvent::OpenLink {
+                    scheme_id: self.scheme_id,
+                    url: button.url.clone(),
+                });
+                self.is_selecting = false;
+                self.mouse_selection_mode = None;
+                self.mouse_selection_origin = None;
+                self.stop_responding_to_mouse_movements();
+                cx.stop_propagation();
+                cx.notify();
+                return;
+            }
+
+            if let Some(url) = self.link_at(event.position, event.modifiers) {
+                cx.emit(EditorEvent::OpenLink {
+                    scheme_id: self.scheme_id,
+                    url,
+                });
+                self.is_selecting = false;
+                self.mouse_selection_mode = None;
+                self.mouse_selection_origin = None;
+                self.stop_responding_to_mouse_movements();
+                cx.stop_propagation();
+                cx.notify();
+                return;
+            }
+        }
+
         if self.read_only {
             return;
         }
@@ -280,6 +314,20 @@ impl SchemeEditor {
         cx.notify();
     }
 
+    /// The URL of a detected link at `position`, if one should open on this
+    /// click. Editable schemes require the platform secondary modifier (Cmd on
+    /// macOS, Ctrl elsewhere) so a plain click still places the caret; a
+    /// read-only scheme is pure preview, so a plain click opens.
+    fn link_at(&self, position: Point<Pixels>, modifiers: gpui::Modifiers) -> Option<String> {
+        if !self.read_only && !modifiers.secondary() {
+            return None;
+        }
+        self.link_hitboxes
+            .iter()
+            .find(|hitbox| bounds_contains(hitbox.bounds, position))
+            .map(|hitbox| hitbox.url.clone())
+    }
+
     pub(super) fn on_mouse_move(
         &mut self,
         event: &MouseMoveEvent,
@@ -291,6 +339,22 @@ impl SchemeEditor {
             .map(|hitbox| hitbox.kind);
         if hovered_table_control != self.hovered_table_control {
             self.hovered_table_control = hovered_table_control;
+            cx.notify();
+        }
+
+        // Show a pointer cursor over the floating open button, and over a link
+        // itself while the secondary modifier (Cmd/Ctrl) is held.
+        let hovered_link = self
+            .open_link_button
+            .as_ref()
+            .is_some_and(|button| bounds_contains(button.bounds, event.position))
+            || (event.modifiers.secondary()
+                && self
+                    .link_hitboxes
+                    .iter()
+                    .any(|hitbox| bounds_contains(hitbox.bounds, event.position)));
+        if hovered_link != self.hovered_link {
+            self.hovered_link = hovered_link;
             cx.notify();
         }
 

@@ -1,6 +1,88 @@
 use super::*;
 
+mod blocks;
+mod boundary;
+mod support;
+
+use support::*;
+
 impl SchemeEditor {
+    /// Whether a deletion that touches a line/block boundary may proceed: the
+    /// editor is writable and the caret is collapsed (no active selection).
+    fn caret_delete_allowed(&self) -> bool {
+        !self.read_only && self.selection.is_empty()
+    }
+
+    /// The block-aware guards every delete entry point runs first. Each consumes
+    /// the keystroke when it applies (merging an adjacent block, removing a block
+    /// at the caret or boundary, or refusing a delete that would eat a block), in
+    /// which case the caller must return. Returns `true` if the keystroke was
+    /// handled.
+    fn block_aware_delete_guards(
+        &mut self,
+        prefer_backward: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        self.merge_adjacent_block_if_boundary(prefer_backward, window, cx)
+            || self.delete_block_object_at_caret(prefer_backward, window, cx)
+            || self.delete_adjacent_block_item_at_boundary(prefer_backward, window, cx)
+            || self.boundary_delete_blocked(prefer_backward)
+    }
+
+    /// Rebuild the flat buffer from an edited top-level item list, refresh layout,
+    /// place the caret (computed against the rebuilt rows by `select`), and emit
+    /// the resulting CRDT diff. Shared by every block-level edit so the
+    /// post-mutation bookkeeping stays identical.
+    fn apply_top_level_edit(
+        &mut self,
+        old_top: &[Item],
+        new_top: Vec<Item>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+        select: impl FnOnce(&Self) -> TextLocation,
+    ) {
+        let (text, rows) = build_buffer(&new_top);
+        self.text = text;
+        self.rows = rows;
+        self.refresh_layout_after_content_change(Some(window));
+        let location = select(self);
+        self.selection = TextSelection::collapsed(location);
+        self.marked_range = None;
+        self.reset_cursor_blink(cx);
+        self.scroll_to_cursor(cx);
+        cx.notify();
+        self.emit_top_level_diff(old_top, &new_top, cx);
+    }
+
+    /// Like [`Self::apply_top_level_edit`] but for an edit that *removes* a single
+    /// top-level item: it emits a `DeleteItem` command (instead of a structural
+    /// diff) and accepts an optional window so it can run during shutdown saves.
+    fn apply_top_level_item_delete(
+        &mut self,
+        new_top: Vec<Item>,
+        deleted: ItemId,
+        window: Option<&mut Window>,
+        cx: &mut Context<Self>,
+        select: impl FnOnce(&Self) -> TextLocation,
+    ) {
+        let (text, rows) = build_buffer(&new_top);
+        self.text = text;
+        self.rows = rows;
+        self.refresh_layout_after_content_change(window);
+        let location = select(self);
+        self.selection = TextSelection::collapsed(location);
+        self.marked_range = None;
+        self.reset_cursor_blink(cx);
+        self.scroll_to_cursor(cx);
+        cx.notify();
+        cx.emit(EditorEvent::Command(Command::DeleteItem {
+            scheme: self.scheme_id,
+            item: deleted,
+        }));
+        cx.notify();
+    }
+
     pub(super) fn enter(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.read_only {
             return;
@@ -19,360 +101,6 @@ impl SchemeEditor {
             }
         }
         self.replace_selection("\n", Some(window), cx);
-    }
-
-    fn handle_block_object_enter(&mut self, window: &mut Window, cx: &mut Context<Self>) -> bool {
-        if !self.selection.is_empty() {
-            return false;
-        }
-        let row = self.current_row_index();
-        let Some(editor_row) = self.rows.get(row) else {
-            return false;
-        };
-        if editor_row.path.is_cell() || !item_has_block_object(&editor_row.item) {
-            return false;
-        }
-        let Some(top_index) = top_level_index_for_flat_row(&self.rows, row) else {
-            return false;
-        };
-
-        let old_top = reconstruct_top_level(&self.rows);
-        let mut new_top = old_top.clone();
-        let mut col = self.selection.head.col.min(self.line_len(row));
-        if let Some(object) = self.last_block_object_range_for_row(row) {
-            if col > object.start {
-                return self.insert_blank_after_block_item(row, window, cx);
-            }
-            col = col.min(object.start);
-        }
-        let Some(result) = split_table_item_at_text_col(&mut new_top, top_index, col) else {
-            return false;
-        };
-
-        let (text, rows) = build_buffer(&new_top);
-        self.text = text;
-        self.rows = rows;
-        self.refresh_layout_after_content_change(Some(window));
-        let row = self
-            .rows
-            .iter()
-            .position(|row| item_has_block_object(&row.item) && row.item.id == result.table)
-            .unwrap_or_else(|| flat_row_for_top_level_index(&self.rows, result.table_index));
-        self.selection = TextSelection::collapsed(TextLocation { row, col: 0 });
-        self.marked_range = None;
-        self.reset_cursor_blink(cx);
-        self.scroll_to_cursor(cx);
-        cx.notify();
-        self.emit_top_level_diff(&old_top, &new_top, cx);
-        true
-    }
-
-    fn insert_blank_after_block_item(
-        &mut self,
-        block_row: usize,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) -> bool {
-        let Some(anchor) = self.rows.get(block_row) else {
-            return false;
-        };
-        let table_id = anchor.item.id;
-        let old_top = reconstruct_top_level(&self.rows);
-        let mut new_top = old_top.clone();
-        let Some(pos) = new_top.iter().position(|item| item.id == table_id) else {
-            return false;
-        };
-
-        let mut blank = Item::new("");
-        blank.indent = anchor.item.indent;
-        new_top.insert(pos + 1, blank);
-
-        let (text, rows) = build_buffer(&new_top);
-        self.text = text;
-        self.rows = rows;
-        self.refresh_layout_after_content_change(Some(window));
-        let row = flat_row_for_top_level_index(&self.rows, pos + 1);
-        self.selection = TextSelection::collapsed(TextLocation { row, col: 0 });
-        self.marked_range = None;
-        self.reset_cursor_blink(cx);
-        self.scroll_to_cursor(cx);
-        cx.notify();
-        self.emit_top_level_diff(&old_top, &new_top, cx);
-        true
-    }
-
-    fn boundary_delete_blocked(&self, backward: bool) -> bool {
-        if !self.selection.is_empty() {
-            return false;
-        }
-        let head = self.selection.head;
-        let Some(current) = self.rows.get(head.row) else {
-            return false;
-        };
-        let path = current.path;
-        // A whole-line block (image/table) is atomic. A collapsed-cursor delete at
-        // its edge is handled earlier by `delete_block_object_at_caret`, which
-        // removes the block and leaves an empty text line; what stays blocked here
-        // is merging an adjacent *text* line into a block, which would silently eat
-        // that text. (`!is_cell` keeps this to document-level blocks; inside a
-        // table cell, editing is ordinary.)
-        let current_is_block = !path.is_cell() && item_has_block_object(&current.item);
-
-        if backward {
-            if head.col != 0 {
-                // The only other caret position on a block line is after the
-                // object; that backspace is handled by the caret deletion above.
-                return current_is_block;
-            }
-            if head.row == 0 {
-                return false;
-            }
-            // Deleting an *empty* line that sits against a block just removes the
-            // empty line — allowed, handled by the empty-line boundary path.
-            if self.empty_doc_line_adjacent_to_block(head.row) {
-                return false;
-            }
-            if current_is_block {
-                return true;
-            }
-            let previous = &self.rows[head.row - 1];
-            if !previous.path.is_cell() && item_has_block_object(&previous.item) {
-                return true;
-            }
-            !same_region(previous.path, path)
-        } else {
-            if head.col != self.line_len(head.row) {
-                return current_is_block;
-            }
-            if head.row + 1 >= self.rows.len() {
-                return false;
-            }
-            if self.empty_doc_line_adjacent_to_block(head.row) {
-                return false;
-            }
-            if current_is_block {
-                return true;
-            }
-            let next = &self.rows[head.row + 1];
-            if !next.path.is_cell() && item_has_block_object(&next.item) {
-                return true;
-            }
-            !same_region(next.path, path)
-        }
-    }
-
-    fn empty_doc_line_adjacent_to_block(&self, row: usize) -> bool {
-        is_empty_doc_line_adjacent_to_block(&self.rows, row, self.line_len(row))
-    }
-
-    pub(super) fn clear_current_line_attributes_if_empty(
-        &mut self,
-        cx: &mut Context<Self>,
-    ) -> bool {
-        if self.read_only {
-            return false;
-        }
-        if !self.selection.is_empty() {
-            return false;
-        }
-
-        let row = self
-            .selection
-            .head
-            .row
-            .min(self.render_line_count().saturating_sub(1));
-        if self.line_len(row) != 0 {
-            return false;
-        }
-
-        let Some(item) = self.rows.get(row).map(|row| row.item.clone()) else {
-            return false;
-        };
-        if item.marker == ItemMarker::Blank {
-            return false;
-        }
-        if !item_has_line_attributes(&item) {
-            return false;
-        }
-
-        // Stripping the marker keeps the line's indentation.
-        let mut clean_item = item_without_line_attributes(&item);
-        clean_item.indent = item.indent;
-        if let Some(row) = self.rows.get_mut(row) {
-            row.item = clean_item.clone();
-        }
-        cx.emit(EditorEvent::Command(Command::ReplaceItem {
-            scheme: self.scheme_id,
-            item: clean_item,
-        }));
-        cx.emit(EditorEvent::CloseDatePopover);
-        self.reset_cursor_blink(cx);
-        cx.notify();
-        true
-    }
-
-    pub(super) fn clear_current_line_attributes_if_boundary_delete(
-        &mut self,
-        prefer_backward: bool,
-        cx: &mut Context<Self>,
-    ) -> bool {
-        if self.read_only {
-            return false;
-        }
-        if !self.selection.is_empty() {
-            return false;
-        }
-
-        let row = self
-            .selection
-            .head
-            .row
-            .min(self.render_line_count().saturating_sub(1));
-        let col = self.selection.head.col.min(self.line_len(row));
-        let offset = self.location_to_offset(self.selection.head);
-        let would_delete_line_boundary = if prefer_backward {
-            col == 0 && offset > 0
-        } else {
-            col == self.line_len(row) && offset < self.text.len()
-        };
-        if !would_delete_line_boundary {
-            return false;
-        }
-
-        let Some(item) = self.rows.get(row).map(|row| row.item.clone()) else {
-            return false;
-        };
-        if item.marker == ItemMarker::Blank || !item_has_line_attributes(&item) {
-            return false;
-        }
-
-        // Stripping the marker keeps the line's indentation.
-        let mut clean_item = item_without_line_attributes(&item);
-        clean_item.indent = item.indent;
-        if let Some(row) = self.rows.get_mut(row) {
-            row.item = clean_item.clone();
-        }
-        cx.emit(EditorEvent::Command(Command::ReplaceItem {
-            scheme: self.scheme_id,
-            item: clean_item,
-        }));
-        cx.emit(EditorEvent::CloseDatePopover);
-        self.reset_cursor_blink(cx);
-        cx.notify();
-        true
-    }
-
-    pub(super) fn delete_empty_line_boundary_if_possible(
-        &mut self,
-        prefer_backward: bool,
-        window: Option<&mut Window>,
-        cx: &mut Context<Self>,
-    ) -> bool {
-        if self.read_only {
-            return false;
-        }
-        if !self.selection.is_empty() {
-            return false;
-        }
-
-        if rows_have_block_object(&self.rows) {
-            return self.delete_empty_doc_line_adjacent_to_block(prefer_backward, window, cx);
-        }
-
-        let row = self.current_row_index();
-        if self.line_len(row) != 0 {
-            return false;
-        }
-
-        let row_count = self.rows.len();
-        let row = row.min(row_count.saturating_sub(1));
-        let previous_line_len = row
-            .checked_sub(1)
-            .map(|previous| self.line_len(previous))
-            .unwrap_or(0);
-        let Some(plan) = empty_line_delete_plan(row, row_count, prefer_backward, previous_line_len)
-        else {
-            return false;
-        };
-
-        let mut items: Vec<Item> = self.rows.iter().map(|row| row.item.clone()).collect();
-        let Some(deleted) = items.get(plan.delete_row).map(|item| item.id) else {
-            return false;
-        };
-        items.remove(plan.delete_row);
-
-        let (text, rows) = build_buffer(&items);
-        self.text = text;
-        self.rows = rows;
-        self.refresh_layout_after_content_change(window);
-        self.selection = TextSelection::collapsed(self.clamp_location(plan.cursor_after));
-        self.marked_range = None;
-        self.reset_cursor_blink(cx);
-        self.scroll_to_cursor(cx);
-        cx.notify();
-        cx.emit(EditorEvent::Command(Command::DeleteItem {
-            scheme: self.scheme_id,
-            item: deleted,
-        }));
-        cx.notify();
-        true
-    }
-
-    fn delete_empty_doc_line_adjacent_to_block(
-        &mut self,
-        prefer_backward: bool,
-        window: Option<&mut Window>,
-        cx: &mut Context<Self>,
-    ) -> bool {
-        let row = self.current_row_index();
-        if !self.empty_doc_line_adjacent_to_block(row) {
-            return false;
-        }
-        let Some(top_index) = top_level_index_for_flat_row(&self.rows, row) else {
-            return false;
-        };
-
-        let old_top = reconstruct_top_level(&self.rows);
-        let Some(item) = old_top.get(top_index) else {
-            return false;
-        };
-        if !item.is_content_empty() {
-            return false;
-        }
-        let deleted = item.id;
-        let mut new_top = old_top.clone();
-        new_top.remove(top_index);
-
-        let (text, rows) = build_buffer(&new_top);
-        self.text = text;
-        self.rows = rows;
-        self.refresh_layout_after_content_change(window);
-        let deleted_last_top = top_index >= new_top.len();
-        let target_top = if prefer_backward || deleted_last_top {
-            top_index.saturating_sub(1)
-        } else {
-            top_index
-        };
-        let target_row = flat_row_for_top_level_index(&self.rows, target_top);
-        let target_col = if prefer_backward || deleted_last_top {
-            self.line_len(target_row)
-        } else {
-            0
-        };
-        self.selection = TextSelection::collapsed(self.clamp_location(TextLocation {
-            row: target_row,
-            col: target_col,
-        }));
-        self.marked_range = None;
-        self.reset_cursor_blink(cx);
-        self.scroll_to_cursor(cx);
-        cx.notify();
-        cx.emit(EditorEvent::Command(Command::DeleteItem {
-            scheme: self.scheme_id,
-            item: deleted,
-        }));
-        cx.notify();
-        true
     }
 
     pub(super) fn delete_preflight(
@@ -396,49 +124,8 @@ impl SchemeEditor {
             || self.delete_empty_line_boundary_if_possible(prefer_backward, Some(window), cx)
     }
 
-    fn delete_selected_block_object(
-        &mut self,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) -> bool {
-        if self.selection.is_empty() {
-            return false;
-        }
-        if let Some(top_indices) =
-            selected_cross_row_block_top_indices(&self.rows, &self.text, self.selection)
-        {
-            return self.delete_top_level_block_items(
-                top_indices,
-                self.selection.ordered().0,
-                window,
-                cx,
-            );
-        }
-        let (start, end) = self.selection.ordered();
-        if start.row != end.row {
-            return false;
-        }
-        let Some((object, block_index)) = self.block_object_after_or_at(start.row, start.col)
-        else {
-            return false;
-        };
-        if start.col != object.start || end.col != object.end {
-            return false;
-        }
-        self.delete_block_object_from_row(start.row, block_index, object.start, window, cx)
-    }
-
     pub(super) fn backspace(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.merge_adjacent_block_if_boundary(true, window, cx) {
-            return;
-        }
-        if self.delete_block_object_at_caret(true, window, cx) {
-            return;
-        }
-        if self.delete_adjacent_block_item_at_boundary(true, window, cx) {
-            return;
-        }
-        if self.boundary_delete_blocked(true) {
+        if self.block_aware_delete_guards(true, window, cx) {
             return;
         }
         // Check auto-bulletize undo before anything else.
@@ -484,16 +171,7 @@ impl SchemeEditor {
     }
 
     pub(super) fn backspace_word(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.merge_adjacent_block_if_boundary(true, window, cx) {
-            return;
-        }
-        if self.delete_block_object_at_caret(true, window, cx) {
-            return;
-        }
-        if self.delete_adjacent_block_item_at_boundary(true, window, cx) {
-            return;
-        }
-        if self.boundary_delete_blocked(true) {
+        if self.block_aware_delete_guards(true, window, cx) {
             return;
         }
         if self.delete_preflight(true, window, cx) {
@@ -505,16 +183,7 @@ impl SchemeEditor {
     }
 
     pub(super) fn backspace_line(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.merge_adjacent_block_if_boundary(true, window, cx) {
-            return;
-        }
-        if self.delete_block_object_at_caret(true, window, cx) {
-            return;
-        }
-        if self.delete_adjacent_block_item_at_boundary(true, window, cx) {
-            return;
-        }
-        if self.boundary_delete_blocked(true) {
+        if self.block_aware_delete_guards(true, window, cx) {
             return;
         }
         if self.delete_preflight(true, window, cx) {
@@ -533,16 +202,7 @@ impl SchemeEditor {
     }
 
     pub(super) fn delete_forward(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.merge_adjacent_block_if_boundary(false, window, cx) {
-            return;
-        }
-        if self.delete_block_object_at_caret(false, window, cx) {
-            return;
-        }
-        if self.delete_adjacent_block_item_at_boundary(false, window, cx) {
-            return;
-        }
-        if self.boundary_delete_blocked(false) {
+        if self.block_aware_delete_guards(false, window, cx) {
             return;
         }
         if self.delete_preflight(false, window, cx) {
@@ -557,16 +217,7 @@ impl SchemeEditor {
     }
 
     pub(super) fn delete_word(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.merge_adjacent_block_if_boundary(false, window, cx) {
-            return;
-        }
-        if self.delete_block_object_at_caret(false, window, cx) {
-            return;
-        }
-        if self.delete_adjacent_block_item_at_boundary(false, window, cx) {
-            return;
-        }
-        if self.boundary_delete_blocked(false) {
+        if self.block_aware_delete_guards(false, window, cx) {
             return;
         }
         if self.delete_preflight(false, window, cx) {
@@ -578,16 +229,7 @@ impl SchemeEditor {
     }
 
     pub(super) fn delete_line(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.merge_adjacent_block_if_boundary(false, window, cx) {
-            return;
-        }
-        if self.delete_block_object_at_caret(false, window, cx) {
-            return;
-        }
-        if self.delete_adjacent_block_item_at_boundary(false, window, cx) {
-            return;
-        }
-        if self.boundary_delete_blocked(false) {
+        if self.block_aware_delete_guards(false, window, cx) {
             return;
         }
         if self.delete_preflight(false, window, cx) {
@@ -603,657 +245,5 @@ impl SchemeEditor {
         } else {
             self.replace_byte_range(offset..line_end, "", Some(window), cx);
         }
-    }
-
-    fn delete_block_object_from_row(
-        &mut self,
-        row: usize,
-        block_index: usize,
-        cursor_col: usize,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) -> bool {
-        let old_top = reconstruct_top_level(&self.rows);
-        let mut new_top = old_top.clone();
-        let Some(pos) = top_level_index_for_flat_row(&self.rows, row) else {
-            return false;
-        };
-        let Some(item) = new_top.get_mut(pos) else {
-            return false;
-        };
-        let mut seen = 0;
-        let mut inlines = item.content.to_inlines();
-        let Some(inline_pos) = inlines.iter().position(|inline| {
-            if inline.is_text() {
-                return false;
-            }
-            let matches = seen == block_index;
-            seen += 1;
-            matches
-        }) else {
-            return false;
-        };
-        inlines.remove(inline_pos);
-        item.content = ItemContent::from_inlines(inlines);
-
-        let (text, rows) = build_buffer(&new_top);
-        self.text = text;
-        self.rows = rows;
-        self.refresh_layout_after_content_change(Some(window));
-        let row = flat_row_for_top_level_index(&self.rows, pos);
-        self.selection = TextSelection::collapsed(TextLocation {
-            row,
-            col: cursor_col.min(self.line_len(row)),
-        });
-        self.marked_range = None;
-        self.reset_cursor_blink(cx);
-        self.scroll_to_cursor(cx);
-        cx.notify();
-        self.emit_top_level_diff(&old_top, &new_top, cx);
-        true
-    }
-
-    fn delete_adjacent_block_item_at_boundary(
-        &mut self,
-        prefer_backward: bool,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) -> bool {
-        if self.read_only || !self.selection.is_empty() {
-            return false;
-        }
-        let cursor = self.selection.head;
-        let Some(top_index) =
-            adjacent_block_top_index_at_boundary(&self.rows, &self.text, cursor, prefer_backward)
-        else {
-            return false;
-        };
-        self.delete_top_level_block_items(vec![top_index], cursor, window, cx)
-    }
-
-    fn delete_top_level_block_items(
-        &mut self,
-        mut top_indices: Vec<usize>,
-        cursor: TextLocation,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) -> bool {
-        let old_top = reconstruct_top_level(&self.rows);
-        top_indices.sort_unstable();
-        top_indices.dedup();
-        top_indices.retain(|index| {
-            old_top
-                .get(*index)
-                .is_some_and(|item| item_has_block_object(item))
-        });
-        if top_indices.is_empty() {
-            return false;
-        }
-
-        let old_cursor_top = top_level_index_for_cursor_row(&self.rows, cursor.row);
-        let mut new_top = old_top.clone();
-        for index in top_indices.iter().rev() {
-            if *index < new_top.len() {
-                new_top.remove(*index);
-            }
-        }
-
-        let (text, rows) = build_buffer(&new_top);
-        self.text = text;
-        self.rows = rows;
-        self.refresh_layout_after_content_change(Some(window));
-        self.selection = TextSelection::collapsed(self.cursor_after_top_level_deletion(
-            cursor,
-            old_cursor_top,
-            &top_indices,
-            new_top.len(),
-        ));
-        self.marked_range = None;
-        self.reset_cursor_blink(cx);
-        self.scroll_to_cursor(cx);
-        cx.notify();
-        self.emit_top_level_diff(&old_top, &new_top, cx);
-        true
-    }
-
-    fn cursor_after_top_level_deletion(
-        &self,
-        cursor: TextLocation,
-        old_cursor_top: Option<usize>,
-        deleted_top_indices: &[usize],
-        new_top_len: usize,
-    ) -> TextLocation {
-        let Some(old_cursor_top) = old_cursor_top else {
-            return self.clamp_location(cursor);
-        };
-        if new_top_len == 0 {
-            return TextLocation { row: 0, col: 0 };
-        }
-
-        let deleted_before = deleted_top_indices
-            .iter()
-            .filter(|index| **index < old_cursor_top)
-            .count();
-        let target_top = old_cursor_top
-            .saturating_sub(deleted_before)
-            .min(new_top_len.saturating_sub(1));
-        let row = flat_row_for_top_level_index(&self.rows, target_top);
-        let col = if deleted_top_indices.binary_search(&old_cursor_top).is_ok() {
-            0
-        } else {
-            cursor.col
-        };
-        self.clamp_location(TextLocation { row, col })
-    }
-
-    fn block_object_after_or_at(&self, row: usize, col: usize) -> Option<(Range<usize>, usize)> {
-        let line = self
-            .line_range(row)
-            .and_then(|range| self.text.get(range))?;
-        block_object_ranges(line)
-            .into_iter()
-            .enumerate()
-            .find(|(_, object)| col <= object.start)
-            .map(|(index, object)| (object, index))
-    }
-
-    /// A collapsed-caret delete sitting at the edge of a whole-line block
-    /// (image/table) removes the block, leaving an empty text line in its place
-    /// (the line keeps its identity/marker/dates). Backspace deletes the block
-    /// just before the caret; forward-delete the block just after it.
-    fn delete_block_object_at_caret(
-        &mut self,
-        prefer_backward: bool,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) -> bool {
-        if self.read_only || !self.selection.is_empty() {
-            return false;
-        }
-        let head = self.selection.head;
-        let Some(current) = self.rows.get(head.row) else {
-            return false;
-        };
-        // Only document-level blocks are atomic this way; inside a table cell,
-        // editing is ordinary text.
-        if current.path.is_cell() || !item_has_block_object(&current.item) {
-            return false;
-        }
-        let col = head.col.min(self.line_len(head.row));
-        let Some(line) = self
-            .line_range(head.row)
-            .and_then(|range| self.text.get(range))
-        else {
-            return false;
-        };
-        let Some((object, block_index)) =
-            block_object_adjacent_to_caret(line, col, prefer_backward)
-        else {
-            return false;
-        };
-        self.delete_block_object_from_row(head.row, block_index, object.start, window, cx)
-    }
-
-    fn merge_adjacent_block_if_boundary(
-        &mut self,
-        prefer_backward: bool,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) -> bool {
-        if !self.selection.is_empty() {
-            return false;
-        };
-
-        let row = self.current_row_index();
-        let path = self.rows.get(row).map(|row| row.path).unwrap_or_default();
-        if path.is_cell() {
-            return false;
-        }
-
-        let col = self.selection.head.col.min(self.line_len(row));
-        let Some((target_top, table_top, cursor_col)) = (if prefer_backward {
-            if col != 0 {
-                None
-            } else if self
-                .rows
-                .get(row)
-                .is_some_and(|row| item_has_block_object(&row.item))
-            {
-                top_level_index_for_flat_row(&self.rows, row).and_then(|table_top| {
-                    table_top.checked_sub(1).map(|target_top| {
-                        let target_row = flat_row_for_top_level_index(&self.rows, target_top);
-                        (target_top, table_top, self.line_len(target_row))
-                    })
-                })
-            } else if path.is_doc() {
-                top_level_index_for_flat_row(&self.rows, row).and_then(|item_top| {
-                    let table_top = item_top.checked_sub(1)?;
-                    let table_row = flat_row_for_top_level_index(&self.rows, table_top);
-                    self.rows
-                        .get(table_row)
-                        .filter(|row| item_has_block_object(&row.item))
-                        .map(|_| (item_top, table_top, self.line_len(table_row)))
-                })
-            } else {
-                None
-            }
-        } else if col != self.line_len(row) {
-            None
-        } else {
-            top_level_index_for_flat_row(&self.rows, row).and_then(|target_top| {
-                let table_top = target_top.checked_add(1)?;
-                let table_row = flat_row_for_top_level_index(&self.rows, table_top);
-                self.rows
-                    .get(table_row)
-                    .filter(|row| item_has_block_object(&row.item))
-                    .map(|_| (target_top, table_top, col))
-            })
-        }) else {
-            return false;
-        };
-
-        let old_top = reconstruct_top_level(&self.rows);
-        let mut new_top = old_top.clone();
-        let result = if prefer_backward && target_top > table_top {
-            append_item_into_table(&mut new_top, table_top, target_top)
-        } else {
-            merge_table_item_into(&mut new_top, target_top, table_top)
-        };
-        let Some(result) = result else {
-            return false;
-        };
-
-        let (text, rows) = build_buffer(&new_top);
-        self.text = text;
-        self.rows = rows;
-        self.refresh_layout_after_content_change(Some(window));
-        let row = flat_row_for_top_level_index(&self.rows, result.target_index);
-        self.selection = TextSelection::collapsed(TextLocation {
-            row,
-            col: cursor_col.min(self.line_len(row)),
-        });
-        self.marked_range = None;
-        self.reset_cursor_blink(cx);
-        self.scroll_to_cursor(cx);
-        cx.notify();
-        self.emit_top_level_diff(&old_top, &new_top, cx);
-        true
-    }
-}
-
-fn is_empty_doc_line_adjacent_to_block(rows: &[EditorRow], row: usize, line_len: usize) -> bool {
-    let Some(editor_row) = rows.get(row) else {
-        return false;
-    };
-    if !editor_row.path.is_doc() || line_len != 0 {
-        return false;
-    }
-
-    let Some(top_index) = top_level_index_for_flat_row(rows, row) else {
-        return false;
-    };
-    let top = reconstruct_top_level(rows);
-    top_index
-        .checked_sub(1)
-        .and_then(|previous| top.get(previous))
-        .is_some_and(item_has_block_object)
-        || top.get(top_index + 1).is_some_and(item_has_block_object)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use knotq_model::Table;
-
-    #[test]
-    fn empty_doc_line_after_table_is_boundary_across_cell_rows() {
-        let mut table = Item::new("");
-        table.set_table(Table::new(2, 2));
-        let blank = Item::new("");
-        let (_, rows) = build_buffer(&[table, blank]);
-        let blank_row = rows
-            .iter()
-            .rposition(|row| row.path.is_doc() && !row.item.has_table())
-            .expect("blank doc row after table");
-
-        assert!(!rows[blank_row - 1].path.is_table_anchor());
-        assert!(is_empty_doc_line_adjacent_to_block(&rows, blank_row, 0));
-    }
-
-    #[test]
-    fn empty_doc_line_before_table_is_boundary() {
-        let blank = Item::new("");
-        let mut table = Item::new("");
-        table.set_table(Table::new(1, 2));
-        let (_, rows) = build_buffer(&[blank, table]);
-
-        assert!(rows[1].path.is_table_anchor());
-        assert!(is_empty_doc_line_adjacent_to_block(&rows, 0, 0));
-        assert!(!is_empty_doc_line_adjacent_to_block(&rows, 0, 1));
-    }
-
-    #[test]
-    fn caret_after_block_targets_object_for_backspace() {
-        let line = TABLE_OBJECT_CHAR.to_string();
-        assert_eq!(
-            block_object_adjacent_to_caret(&line, TABLE_OBJECT_LEN, true),
-            Some((0..TABLE_OBJECT_LEN, 0))
-        );
-        // Caret before the object is not a backspace target.
-        assert_eq!(block_object_adjacent_to_caret(&line, 0, true), None);
-    }
-
-    #[test]
-    fn caret_before_block_targets_object_for_forward_delete() {
-        let line = TABLE_OBJECT_CHAR.to_string();
-        assert_eq!(
-            block_object_adjacent_to_caret(&line, 0, false),
-            Some((0..TABLE_OBJECT_LEN, 0))
-        );
-        // Caret after the object is not a forward-delete target.
-        assert_eq!(
-            block_object_adjacent_to_caret(&line, TABLE_OBJECT_LEN, false),
-            None
-        );
-    }
-
-    #[test]
-    fn caret_in_plain_text_has_no_block_object() {
-        assert_eq!(block_object_adjacent_to_caret("hello", 5, true), None);
-        assert_eq!(block_object_adjacent_to_caret("hello", 0, false), None);
-    }
-}
-
-/// The block object a collapsed-caret delete at `col` would remove: the one
-/// ending at `col` for a backward delete (caret just after it) or starting at
-/// `col` for a forward delete (caret just before it). Returns the object's byte
-/// range and its index among the line's block objects.
-fn block_object_adjacent_to_caret(
-    line: &str,
-    col: usize,
-    backward: bool,
-) -> Option<(Range<usize>, usize)> {
-    block_object_ranges(line)
-        .into_iter()
-        .enumerate()
-        .find(|(_, object)| {
-            if backward {
-                object.end == col
-            } else {
-                object.start == col
-            }
-        })
-        .map(|(index, object)| (object, index))
-}
-
-fn same_region(a: RowPath, b: RowPath) -> bool {
-    if a.is_cell() && b.is_cell() {
-        a.anchor == b.anchor && a.r == b.r && a.c == b.c
-    } else {
-        a.is_doc() && b.is_doc()
-    }
-}
-
-fn adjacent_block_top_index_at_boundary(
-    rows: &[EditorRow],
-    text: &str,
-    cursor: TextLocation,
-    backward: bool,
-) -> Option<usize> {
-    let current = rows.get(cursor.row)?;
-    if !current.path.is_doc() || item_has_block_object(&current.item) {
-        return None;
-    }
-    let line_len = line_len_in_text(text, cursor.row)?;
-    let col = cursor.col.min(line_len);
-    let current_top = top_level_index_for_flat_row(rows, cursor.row)?;
-
-    let target_top = if backward {
-        (col == 0).then(|| current_top.checked_sub(1)).flatten()?
-    } else {
-        (col == line_len).then_some(current_top + 1)?
-    };
-    let target_row = flat_row_for_top_level_index(rows, target_top);
-    rows.get(target_row)
-        .filter(|row| !row.path.is_cell() && item_has_block_object(&row.item))
-        .and_then(|_| top_level_index_for_flat_row(rows, target_row))
-}
-
-fn selected_cross_row_block_top_indices(
-    rows: &[EditorRow],
-    text: &str,
-    selection: TextSelection,
-) -> Option<Vec<usize>> {
-    if selection.is_empty() {
-        return None;
-    }
-    let (start, end) = selection.ordered();
-    if start.row == end.row {
-        return None;
-    }
-
-    let ranges = line_ranges(text);
-    let last_row = end.row.min(ranges.len().saturating_sub(1));
-    let mut block_rows = Vec::new();
-    for row in start.row..=last_row {
-        let Some(editor_row) = rows.get(row) else {
-            continue;
-        };
-        if editor_row.path.is_cell() || !item_has_block_object(&editor_row.item) {
-            continue;
-        }
-        let Some((selection_start, selection_end, line)) =
-            selected_line_slice(text, &ranges, selection, row)
-        else {
-            continue;
-        };
-        if selection_start >= selection_end {
-            continue;
-        }
-        if block_object_ranges(line)
-            .into_iter()
-            .any(|object| selection_start < object.end && object.start < selection_end)
-        {
-            block_rows.push(row);
-        }
-    }
-    if block_rows.is_empty() {
-        return None;
-    }
-
-    for row in start.row..=last_row {
-        let Some((selection_start, selection_end, line)) =
-            selected_line_slice(text, &ranges, selection, row)
-        else {
-            continue;
-        };
-        if selection_start >= selection_end {
-            continue;
-        }
-        if rows
-            .get(row)
-            .is_some_and(|row| row.path.is_cell() && block_rows.contains(&row.path.anchor))
-        {
-            continue;
-        }
-        if !line_without_table_object(&line[selection_start..selection_end])
-            .trim()
-            .is_empty()
-        {
-            return None;
-        }
-    }
-
-    let mut top_indices = block_rows
-        .into_iter()
-        .filter_map(|row| top_level_index_for_flat_row(rows, row))
-        .collect::<Vec<_>>();
-    top_indices.sort_unstable();
-    top_indices.dedup();
-    (!top_indices.is_empty()).then_some(top_indices)
-}
-
-fn selected_line_slice<'a>(
-    text: &'a str,
-    ranges: &[Range<usize>],
-    selection: TextSelection,
-    row: usize,
-) -> Option<(usize, usize, &'a str)> {
-    let (start, end) = selection.ordered();
-    let range = ranges.get(row)?.clone();
-    let line = text.get(range)?;
-    let selection_start = if row == start.row { start.col } else { 0 };
-    let selection_end = if row == end.row { end.col } else { line.len() };
-    let selection_start = clamp_col_to_line_boundary(line, selection_start);
-    let selection_end = clamp_col_to_line_boundary(line, selection_end);
-    Some((selection_start.min(selection_end), selection_end, line))
-}
-
-fn line_len_in_text(text: &str, row: usize) -> Option<usize> {
-    line_ranges(text)
-        .get(row)
-        .map(|range| range.end.saturating_sub(range.start))
-}
-
-fn clamp_col_to_line_boundary(line: &str, col: usize) -> usize {
-    let mut col = col.min(line.len());
-    while col > 0 && !line.is_char_boundary(col) {
-        col -= 1;
-    }
-    col
-}
-
-fn top_level_index_for_cursor_row(rows: &[EditorRow], row: usize) -> Option<usize> {
-    let editor_row = rows.get(row)?;
-    if editor_row.path.is_cell() {
-        top_level_index_for_flat_row(rows, editor_row.path.anchor)
-    } else {
-        top_level_index_for_flat_row(rows, row)
-    }
-}
-
-#[cfg(test)]
-mod block_boundary_tests {
-    use super::*;
-    use knotq_model::Table;
-
-    fn table_item(rows: usize, cols: usize) -> Item {
-        let mut item = Item::new("");
-        item.set_table(Table::new(rows, cols));
-        item
-    }
-
-    #[test]
-    fn forward_delete_at_text_table_boundary_targets_the_table_item() {
-        let text_item = Item::new("finish my room list and items");
-        let (text, rows) = build_buffer(&[text_item, table_item(2, 2)]);
-
-        assert_eq!(
-            adjacent_block_top_index_at_boundary(
-                &rows,
-                &text,
-                TextLocation {
-                    row: 0,
-                    col: "finish my room list and items".len(),
-                },
-                false,
-            ),
-            Some(1)
-        );
-    }
-
-    #[test]
-    fn backspace_at_table_text_boundary_targets_the_table_item() {
-        let text_item = Item::new("after");
-        let (text, rows) = build_buffer(&[table_item(2, 2), text_item]);
-        let text_row = rows
-            .iter()
-            .position(|row| row.path.is_doc() && row.item.text() == "after")
-            .unwrap();
-
-        assert_eq!(
-            adjacent_block_top_index_at_boundary(
-                &rows,
-                &text,
-                TextLocation {
-                    row: text_row,
-                    col: 0,
-                },
-                true,
-            ),
-            Some(0)
-        );
-    }
-
-    #[test]
-    fn selected_newline_and_table_object_targets_the_table_item() {
-        let text_item = Item::new("finish my room list and items");
-        let (text, rows) = build_buffer(&[text_item, table_item(2, 2)]);
-
-        assert_eq!(
-            selected_cross_row_block_top_indices(
-                &rows,
-                &text,
-                TextSelection {
-                    anchor: TextLocation {
-                        row: 0,
-                        col: "finish my room list and items".len(),
-                    },
-                    head: TextLocation {
-                        row: 1,
-                        col: TABLE_OBJECT_LEN,
-                    },
-                },
-            ),
-            Some(vec![1])
-        );
-    }
-
-    #[test]
-    fn selected_table_object_and_cell_rows_targets_the_table_item() {
-        let text_item = Item::new("finish my room list and items");
-        let (text, rows) = build_buffer(&[text_item, table_item(2, 2)]);
-
-        assert_eq!(
-            selected_cross_row_block_top_indices(
-                &rows,
-                &text,
-                TextSelection {
-                    anchor: TextLocation {
-                        row: 0,
-                        col: "finish my room list and items".len(),
-                    },
-                    head: TextLocation {
-                        row: 2,
-                        col: "Column 2".len(),
-                    },
-                },
-            ),
-            Some(vec![1])
-        );
-    }
-
-    #[test]
-    fn selection_with_real_text_before_table_is_not_a_block_delete() {
-        let text_item = Item::new("finish my room list and items");
-        let (text, rows) = build_buffer(&[text_item, table_item(2, 2)]);
-
-        assert_eq!(
-            selected_cross_row_block_top_indices(
-                &rows,
-                &text,
-                TextSelection {
-                    anchor: TextLocation {
-                        row: 0,
-                        col: "finish my room list and item".len(),
-                    },
-                    head: TextLocation {
-                        row: 1,
-                        col: TABLE_OBJECT_LEN,
-                    },
-                },
-            ),
-            None
-        );
     }
 }

@@ -6,7 +6,7 @@ impl SchemeEditor {
     }
 
     pub(super) fn toggle_italic(&mut self, cx: &mut Context<Self>) {
-        self.toggle_wrapped_markdown("_", cx);
+        self.toggle_wrapped_markdown("__", cx);
     }
 
     pub(super) fn toggle_highlight(&mut self, cx: &mut Context<Self>) {
@@ -85,7 +85,7 @@ impl SchemeEditor {
     }
 
     pub(super) fn active_text_is_italic(&self) -> bool {
-        self.active_text_is_wrapped("_")
+        self.active_text_is_wrapped("__")
     }
 
     pub(super) fn active_text_is_highlight(&self) -> bool {
