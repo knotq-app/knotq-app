@@ -1,5 +1,6 @@
 use super::text::clamp_range_to_char_boundaries;
-use super::{inline_selection_rgba, SingleLineEditor, CURSOR_WIDTH};
+use super::{inline_selection_rgba, SingleLineEditor};
+use crate::CURSOR_WIDTH;
 use gpui::{
     fill, point, px, relative, size, App, Bounds, ContentMask, DispatchPhase, Element, ElementId,
     ElementInputHandler, Entity, GlobalElementId, IntoElement, LayoutId, MouseButton,
@@ -139,7 +140,7 @@ impl Element for SingleLineTextElement {
             Some(fill(
                 Bounds::new(
                     point(bounds.left() + cursor_x, bounds.top()),
-                    size(CURSOR_WIDTH, bounds.size.height),
+                    size(px(CURSOR_WIDTH), bounds.size.height),
                 ),
                 style.color,
             ))

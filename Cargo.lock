@@ -3135,6 +3135,7 @@ dependencies = [
  "knotq-commands",
  "knotq-date-util",
  "knotq-model",
+ "knotq-rrule",
  "knotq-theme",
  "knotq-ui",
  "serde",

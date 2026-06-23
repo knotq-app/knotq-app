@@ -4,6 +4,14 @@ pub fn start_of_week(date: NaiveDate) -> NaiveDate {
     date - Duration::days(date.weekday().num_days_from_monday().into())
 }
 
+pub fn local_date_repeat_until_utc(date: NaiveDate) -> Option<DateTime<Utc>> {
+    let local_end = date.and_hms_opt(23, 59, 59)?;
+    Local
+        .from_local_datetime(&local_end)
+        .latest()
+        .map(|dt| dt.with_timezone(&Utc))
+}
+
 pub fn add_months_exact(dt: DateTime<Utc>, months: i32) -> DateTime<Utc> {
     let naive = dt.naive_utc();
     let date = naive.date();

@@ -2,7 +2,6 @@
 //! `crdt` module, so `use super::*` reaches the same internal items as before.
 use super::*;
 
-    use super::*;
     use knotq_model::{
         CalendarProvider, ImageAssetFormat, ImageInline, ImportedCalendarSource, Item, NodeRef,
     };
@@ -531,6 +530,58 @@ use super::*;
         assert!(outcome.workspace.folders[&outcome.workspace.root]
             .children
             .contains(&NodeRef::Scheme(scheme_id)));
+    }
+
+    #[test]
+    fn reidentified_workspace_merges_local_and_server_schemes_without_mismatch() {
+        // The server account's canonical personal-workspace document (id B) holds
+        // its own scheme. Mirror the server-side canonicalization so its document
+        // id is DocumentId(workspace_id).
+        let mut server = Workspace::new();
+        let server_scheme = add_root_scheme(&mut server, "ServerScheme");
+        server.canonicalize_personal_sync_identity(server.id);
+        let server_doc_id = server.sync.id;
+        let server_workspace_update: Vec<CrdtDocumentUpdate> =
+            WorkspaceCrdtDocuments::snapshot_updates(&server)
+                .updates
+                .into_iter()
+                .filter(|update| update.kind == SyncDocumentKind::PersonalWorkspace)
+                .collect();
+
+        // This device's workspace (a different account, id A) holds its own scheme.
+        let mut local = Workspace::new();
+        let local_scheme = add_root_scheme(&mut local, "LocalScheme");
+        local.canonicalize_personal_sync_identity(local.id);
+        assert_ne!(local.sync.id, server_doc_id);
+
+        // Applying the server's workspace update as-is fails with a document-id
+        // mismatch (the bug): the local CRDT workspace doc still carries id A.
+        let mut before = WorkspaceCrdtDocuments::try_new(&local).unwrap();
+        let before_outcome = before
+            .apply_remote_updates(&local, &stored_updates(server.id, server_workspace_update.clone()));
+        assert!(
+            !before_outcome.workspace_is_ok(),
+            "expected a document-id mismatch before re-identify"
+        );
+
+        // Re-identify the local workspace doc to the server's id (preserving its
+        // content) and adopt the server account identity on the materialized
+        // workspace, then the same update applies cleanly and unions both schemes.
+        let mut docs = WorkspaceCrdtDocuments::try_new(&local).unwrap();
+        let snapshot = docs.reidentify_workspace_document(server_doc_id).unwrap();
+        assert!(snapshot.is_some(), "re-identify should report the relabeled doc");
+        local.canonicalize_personal_sync_identity(server.id);
+        let outcome =
+            docs.apply_remote_updates(&local, &stored_updates(server.id, server_workspace_update));
+        assert!(outcome.workspace_is_ok(), "{:?}", outcome.workspace_errors);
+        assert!(
+            outcome.workspace.schemes.contains_key(&local_scheme),
+            "local scheme preserved through the merge"
+        );
+        assert!(
+            outcome.workspace.schemes.contains_key(&server_scheme),
+            "server scheme merged in over the shared id"
+        );
     }
 
     #[test]

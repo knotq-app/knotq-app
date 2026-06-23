@@ -5,7 +5,8 @@ use gpui_component::ActiveTheme;
 
 use crate::theme::token_rgba;
 
-use super::{DateComponentField, DATE_FIELD_CURSOR_WIDTH, DATE_FIELD_SELECTION_BG};
+use super::{DateComponentField, DATE_FIELD_SELECTION_BG};
+use crate::CURSOR_WIDTH;
 
 pub(super) fn paint_date_field(
     field: &Entity<DateComponentField>,
@@ -80,7 +81,7 @@ pub(super) fn paint_date_field(
                     origin.x + cursor_x,
                     origin.y + ((line_height - cursor_height) / 2.0),
                 ),
-                size(px(DATE_FIELD_CURSOR_WIDTH), cursor_height),
+                size(px(CURSOR_WIDTH), cursor_height),
             ),
             style.color,
         ));

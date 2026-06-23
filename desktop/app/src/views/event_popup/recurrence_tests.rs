@@ -75,7 +75,7 @@ fn simple_complex_recurrence_remains_editable_with_exdates() {
 #[test]
 fn local_date_repeat_end_roundtrips_without_timezone_shift() {
     let date = NaiveDate::from_ymd_opt(2026, 5, 22).unwrap();
-    let until = local_repeat_until_for_date(date).unwrap();
+    let until = knotq_date_util::local_date_repeat_until_utc(date).unwrap();
     let repeat = CalendarRecurrence {
         rrules: vec!["FREQ=DAILY;INTERVAL=1".to_string()],
         ..Default::default()

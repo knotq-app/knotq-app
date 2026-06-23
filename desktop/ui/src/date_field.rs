@@ -17,7 +17,6 @@ use selection::DateFieldSelection;
 pub use text::sanitize_numeric_component;
 
 const DATE_FIELD_SELECTION_BG: u32 = 0x4f8dffff;
-const DATE_FIELD_CURSOR_WIDTH: f32 = 1.5;
 const DATE_FIELD_CURSOR_BLINK_DELAY: StdDuration = StdDuration::from_millis(500);
 const DATE_FIELD_CURSOR_BLINK_INTERVAL: StdDuration = StdDuration::from_millis(500);
 

@@ -1,12 +1,16 @@
 use std::collections::HashMap;
 
+mod access;
 mod crdt;
+mod documents;
 mod engine;
 mod fractional;
 mod local_state;
+mod persisted_state;
+mod user_id;
 
 use chrono::{DateTime, Utc};
-use knotq_model::{DocumentId, ReplicaId, ShareId, SyncDocumentKind, Workspace, WorkspaceId};
+use knotq_model::{DocumentId, ReplicaId, ShareId, SyncDocumentKind, WorkspaceId};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
@@ -19,6 +23,7 @@ pub use engine::{
     batch_pull_and_apply, batch_push_pending, PullOutcome, PushedDocument, SkippedDocument,
     SyncPushRejected, SyncTransport, PUSH_MAX_DOCUMENTS_PER_REQUEST, PUSH_MAX_UPDATES_PER_DOCUMENT,
 };
+pub use documents::{scheme_documents, sync_documents};
 pub use local_state::{
     queue_workspace_bootstrap_updates, DocumentSyncCursor, LocalSyncState, MediaSyncCursor,
     PendingCrdtEdit,
@@ -99,28 +104,6 @@ pub struct PersistedDocumentState {
     pub state_v1: Vec<u8>,
 }
 
-impl PersistedCrdtState {
-    pub fn from_states(states: &HashMap<DocumentId, Vec<u8>>) -> Self {
-        let mut documents = states
-            .iter()
-            .map(|(document, state_v1)| PersistedDocumentState {
-                document: *document,
-                state_v1: state_v1.clone(),
-            })
-            .collect::<Vec<_>>();
-        // Stable order keeps the on-disk file diff-friendly and deterministic.
-        documents.sort_by(|a, b| a.document.0.cmp(&b.document.0));
-        Self { documents }
-    }
-
-    pub fn into_states(self) -> HashMap<DocumentId, Vec<u8>> {
-        self.documents
-            .into_iter()
-            .map(|entry| (entry.document, entry.state_v1))
-            .collect()
-    }
-}
-
 /// One-time local-state recovery generation. Bump this when a fixed sync bug could
 /// have left persisted `document_cursors` pointing past data that never made it
 /// into the on-disk workspace. On load, a client whose stored generation is lower
@@ -152,32 +135,6 @@ pub const SYNC_STATE_RECOVERY_VERSION: u32 = 6;
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq, Serialize, Deserialize)]
 #[serde(transparent)]
 pub struct UserId(pub Uuid);
-
-impl UserId {
-    pub fn new() -> Self {
-        Self(Uuid::new_v4())
-    }
-}
-
-impl Default for UserId {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl std::fmt::Display for UserId {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        self.0.fmt(f)
-    }
-}
-
-impl std::str::FromStr for UserId {
-    type Err = uuid::Error;
-
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        Uuid::parse_str(s).map(Self)
-    }
-}
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct ErrorResponse {
@@ -371,16 +328,6 @@ pub enum AccessRole {
     Reader,
 }
 
-impl AccessRole {
-    pub fn can_read(self) -> bool {
-        matches!(self, Self::Owner | Self::Writer | Self::Reader)
-    }
-
-    pub fn can_write(self) -> bool {
-        matches!(self, Self::Owner | Self::Writer)
-    }
-}
-
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct ShareDocumentRequest {
     pub grantee: UserId,
@@ -413,27 +360,6 @@ pub struct CrdtDocumentUpdate {
 pub struct SyncDocumentRef {
     pub document: DocumentId,
     pub kind: SyncDocumentKind,
-}
-
-pub fn sync_documents(workspace: &Workspace) -> Vec<SyncDocumentRef> {
-    let mut docs = vec![SyncDocumentRef {
-        document: workspace.sync.id,
-        kind: SyncDocumentKind::PersonalWorkspace,
-    }];
-    docs.extend(scheme_documents(workspace));
-    docs
-}
-
-pub fn scheme_documents(workspace: &Workspace) -> Vec<SyncDocumentRef> {
-    workspace
-        .scheme_sync
-        .values()
-        .filter(|meta| meta.kind == SyncDocumentKind::Scheme)
-        .map(|meta| SyncDocumentRef {
-            document: meta.id,
-            kind: SyncDocumentKind::Scheme,
-        })
-        .collect()
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]

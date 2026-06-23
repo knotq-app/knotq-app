@@ -1,17 +1,19 @@
 use gpui::prelude::*;
 use gpui::{div, px, ClickEvent, Context, IntoElement, MouseButton, Window, WindowControlArea};
-use gpui_component::tooltip::Tooltip;
 use gpui_component::{Icon, IconName, Sizable};
 use knotq_commands::Command;
 use knotq_model::SchemeId;
 use knotq_storage_json::CalendarViewMode;
 
-use crate::app::auto_update::AutoUpdateUiStatus;
-use crate::app::{daily_queue_marker_color, KnotQApp, SyncAuthStatus, SyncRunStatus, View};
+use crate::app::{daily_queue_marker_color, KnotQApp, View};
 use crate::theme_gpui::{
     palette_hsla, scheme_color, token_hsla, token_rgba, Theme, FONT_SIZE_HEADLINE,
 };
-use crate::views::sync_account::{sync_cta_bg, sync_cta_hover_bg};
+
+mod search;
+mod sync_control;
+mod update_control;
+mod window_controls;
 
 const TITLE_CONTENT_W: f32 = 430.0;
 const LINUX_TITLE_CONTENT_W: f32 = 340.0;
@@ -20,23 +22,17 @@ const TITLE_MARKER_SIZE: f32 = 18.0;
 const TITLE_TEXT_W: f32 = 190.0;
 const LINUX_TITLE_TEXT_W: f32 = 150.0;
 const COLOR_SWATCH_ORDER: &[u8] = &[0, 1, 5, 2, 3, 4];
+// macOS renders native traffic-light controls at the top-left, so the title bar
+// reserves room for them. Other platforms have no left-side window controls, so
+// they fall back to the normal edge padding instead of leaving dead space.
+const MACOS_TRAFFIC_LIGHT_PAD: f32 = 80.0;
+const TITLE_EDGE_PAD: f32 = 16.0;
 
 // Semantic sync status colors (the theme has no status palette of its own).
 pub(crate) const STATUS_OK: u32 = 0x22c55eff;
 pub(crate) const STATUS_SYNCING: u32 = 0x3b82f6ff;
 pub(crate) const STATUS_PENDING: u32 = 0xf59e0bff;
 pub(crate) const STATUS_ERROR: u32 = 0xef4444ff;
-
-struct TitleSyncStatus {
-    label: String,
-    dot_color: u32,
-}
-
-#[derive(Clone, Copy)]
-enum TitleUpdateAction {
-    Download,
-    Install,
-}
 
 impl KnotQApp {
     pub(crate) fn render_title_bar(
@@ -60,13 +56,19 @@ impl KnotQApp {
             TITLE_TEXT_W
         };
 
+        let left_pad = if cfg!(target_os = "macos") {
+            MACOS_TRAFFIC_LIGHT_PAD
+        } else {
+            TITLE_EDGE_PAD
+        };
+
         let base = div()
             .relative()
             .flex()
             .items_center()
             .h(px(38.0))
-            .pl(px(80.0))
-            .pr(px(16.0))
+            .pl(px(left_pad))
+            .pr(px(TITLE_EDGE_PAD))
             .bg(token_hsla(t.bg_cal_hdr))
             .border_b_1()
             .border_color(token_rgba(t.divider))
@@ -300,493 +302,5 @@ impl KnotQApp {
         )
         .children(self.render_linux_window_controls(window, t, cx))
         .into_any_element()
-    }
-
-    fn render_title_bar_update_control(
-        &self,
-        t: Theme,
-        cx: &mut Context<Self>,
-    ) -> Option<gpui::AnyElement> {
-        let (label, tooltip, action) = match &self.auto_update_status {
-            AutoUpdateUiStatus::Available { update, .. } => (
-                "Update",
-                format!("Update and restart KnotQ to {}.", update.version),
-                Some(TitleUpdateAction::Download),
-            ),
-            AutoUpdateUiStatus::Downloading { version } => {
-                ("Updating", format!("Updating KnotQ {version}..."), None)
-            }
-            AutoUpdateUiStatus::Ready { update } => {
-                let label = match update.install_strategy {
-                    knotq_auto_update::InstallStrategy::InstalledOnRestart => "Restart to update",
-                    knotq_auto_update::InstallStrategy::RunInstallerAndQuit => "Install update",
-                };
-                let tooltip = match update.install_strategy {
-                    knotq_auto_update::InstallStrategy::InstalledOnRestart => {
-                        format!("Restart KnotQ to finish updating to {}.", update.version)
-                    }
-                    knotq_auto_update::InstallStrategy::RunInstallerAndQuit => {
-                        format!("Run the KnotQ {} installer.", update.version)
-                    }
-                };
-                (label, tooltip, Some(TitleUpdateAction::Install))
-            }
-            AutoUpdateUiStatus::Errored {
-                update: Some(update),
-                ..
-            } => (
-                "Update",
-                format!("Retry downloading KnotQ {}.", update.version),
-                Some(TitleUpdateAction::Download),
-            ),
-            _ => return None,
-        };
-        let actionable = action.is_some();
-        let button_bg = if actionable {
-            sync_cta_bg()
-        } else {
-            t.button_bg
-        };
-        let button_border = if actionable {
-            sync_cta_bg()
-        } else {
-            t.border_soft
-        };
-        let button_text = if actionable { 0xffffffff } else { t.text_dim };
-
-        Some(
-            div()
-                .id("title-auto-update")
-                .h(px(26.0))
-                .min_w(px(92.0))
-                .px(px(10.0))
-                .rounded(px(7.0))
-                .border_1()
-                .border_color(token_rgba(button_border))
-                .bg(token_rgba(button_bg))
-                .flex()
-                .items_center()
-                .justify_center()
-                .gap(px(6.0))
-                .when(actionable, |button| {
-                    button
-                        .cursor_pointer()
-                        .hover(|s| s.bg(token_rgba(sync_cta_hover_bg())))
-                })
-                .when_some(action, |button, action| match action {
-                    TitleUpdateAction::Download => {
-                        button.on_click(cx.listener(|this, _: &ClickEvent, _window, cx| {
-                            this.download_available_update(cx);
-                        }))
-                    }
-                    TitleUpdateAction::Install => {
-                        button.on_click(cx.listener(|this, _: &ClickEvent, _window, cx| {
-                            this.install_ready_update(cx);
-                        }))
-                    }
-                })
-                .tooltip(move |window, cx| Tooltip::new(tooltip.clone()).build(window, cx))
-                .child(
-                    Icon::new(IconName::Redo2)
-                        .xsmall()
-                        .text_color(token_hsla(button_text)),
-                )
-                .child(
-                    div()
-                        .text_size(px(12.0))
-                        .font_weight(gpui::FontWeight::SEMIBOLD)
-                        .text_color(token_hsla(button_text))
-                        .child(label),
-                )
-                .into_any_element(),
-        )
-    }
-
-    fn render_title_bar_sync_control(
-        &self,
-        t: Theme,
-        cx: &mut Context<Self>,
-    ) -> Option<gpui::AnyElement> {
-        let auth_in_progress = matches!(self.sync_auth_status, SyncAuthStatus::InProgress);
-        let sync_active = self
-            .settings
-            .sync_account
-            .as_ref()
-            .is_some_and(|account| account.supports_sync);
-        let popover_open = self.sync_status_popover.is_some();
-
-        // Signed out or signed in without a subscription (and not mid sign-in):
-        // surface an "Enable sync" call to action instead of hiding the control.
-        // Clicking it opens the same status popover, which carries the matching
-        // sign-in / subscribe action.
-        if !sync_active && !auth_in_progress {
-            return Some(self.render_enable_sync_cta(t, cx));
-        }
-
-        let status = self.title_sync_status(t);
-        Some(
-            div()
-                .id("title-sync-account")
-                .h(px(26.0))
-                .px(px(9.0))
-                .rounded(px(7.0))
-                .border_1()
-                .border_color(token_rgba(t.border_soft))
-                .bg(token_rgba(if popover_open {
-                    t.button_hover
-                } else {
-                    t.button_bg
-                }))
-                .flex()
-                .items_center()
-                .justify_center()
-                .gap(px(7.0))
-                .cursor_pointer()
-                .hover({
-                    let c = t.button_hover;
-                    move |s| s.bg(token_rgba(c))
-                })
-                .on_click(cx.listener(move |this, event: &ClickEvent, _window, cx| {
-                    this.toggle_sync_status_popover(event.position(), cx);
-                }))
-                .child(
-                    div()
-                        .min_w_0()
-                        .truncate()
-                        .text_size(px(12.0))
-                        .font_weight(gpui::FontWeight::NORMAL)
-                        .text_color(token_hsla(t.text_dim))
-                        .child(status.label),
-                )
-                .child(
-                    div()
-                        .w(px(7.0))
-                        .h(px(7.0))
-                        .rounded(px(4.0))
-                        .bg(token_rgba(status.dot_color)),
-                )
-                .into_any_element(),
-        )
-    }
-
-    /// The "Enable sync" pill shown when sync isn't active yet (signed out or not
-    /// subscribed). Styled like the other neutral title-bar controls — an
-    /// invitation, not a loud call to action. Clicking jumps to Settings, where
-    /// the sync card carries the sign-in / subscribe actions.
-    fn render_enable_sync_cta(&self, t: Theme, cx: &mut Context<Self>) -> gpui::AnyElement {
-        div()
-            .id("title-sync-account")
-            .h(px(26.0))
-            .px(px(10.0))
-            .rounded(px(7.0))
-            .border_1()
-            .border_color(token_rgba(t.border_soft))
-            .bg(token_rgba(t.button_bg))
-            .flex()
-            .items_center()
-            .justify_center()
-            .cursor_pointer()
-            .hover({
-                let c = t.button_hover;
-                move |s| s.bg(token_rgba(c))
-            })
-            .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
-                if this.selection.view != View::Settings {
-                    this.open_settings(cx);
-                }
-                this.focus_app_root(window);
-                cx.notify();
-            }))
-            .child(
-                div()
-                    .text_size(px(12.0))
-                    .font_weight(gpui::FontWeight::NORMAL)
-                    .text_color(token_hsla(t.text_dim))
-                    .child("Enable sync"),
-            )
-            .into_any_element()
-    }
-
-    fn title_sync_status(&self, t: Theme) -> TitleSyncStatus {
-        let account = self.settings.sync_account.as_ref();
-        let pending = self.sync_pending_count();
-
-        if matches!(self.sync_auth_status, SyncAuthStatus::InProgress) {
-            return TitleSyncStatus {
-                label: "Sync".to_string(),
-                dot_color: STATUS_SYNCING,
-            };
-        }
-
-        if account.is_none() {
-            return TitleSyncStatus {
-                label: "Sync".to_string(),
-                dot_color: t.text_muted,
-            };
-        }
-
-        if account.is_some_and(|account| !account.supports_sync) {
-            return TitleSyncStatus {
-                label: "Sync inactive".to_string(),
-                dot_color: STATUS_ERROR,
-            };
-        }
-
-        match &self.sync_run_status {
-            SyncRunStatus::Running { .. } => TitleSyncStatus {
-                label: "Sync".to_string(),
-                dot_color: STATUS_SYNCING,
-            },
-            SyncRunStatus::Error { .. } => TitleSyncStatus {
-                label: "Sync".to_string(),
-                dot_color: STATUS_ERROR,
-            },
-            _ if pending > 0 => TitleSyncStatus {
-                label: "Sync".to_string(),
-                dot_color: STATUS_PENDING,
-            },
-            _ => TitleSyncStatus {
-                label: "Sync".to_string(),
-                dot_color: STATUS_OK,
-            },
-        }
-    }
-
-    /// Largest of locally-pending CRDT edits and the count reported by the last
-    /// sync run, so the indicator never under-reports unsynced work.
-    pub(crate) fn sync_pending_count(&self) -> usize {
-        let local_pending = self.state.pending_crdt_edits().len();
-        let pending_from_run = match &self.sync_run_status {
-            SyncRunStatus::Running { pending }
-            | SyncRunStatus::Synced { pending }
-            | SyncRunStatus::Error { pending, .. } => *pending,
-            SyncRunStatus::Idle => 0,
-        };
-        local_pending.max(pending_from_run)
-    }
-
-    fn uses_linux_client_decorations() -> bool {
-        cfg!(target_os = "linux")
-    }
-
-    fn render_linux_window_controls(
-        &self,
-        window: &mut Window,
-        t: Theme,
-        cx: &mut Context<Self>,
-    ) -> Option<gpui::AnyElement> {
-        if !Self::uses_linux_client_decorations() {
-            return None;
-        }
-
-        let controls = window.window_controls();
-        Some(
-            div()
-                .id("linux-window-controls")
-                .absolute()
-                .top_0()
-                .right_0()
-                .h_full()
-                .w(px(LINUX_WINDOW_CONTROLS_W))
-                .flex()
-                .items_center()
-                .justify_end()
-                .bg(token_rgba(t.bg_cal_hdr))
-                .child(Self::linux_window_control_button(
-                    "linux-window-minimize",
-                    Self::linux_minimize_glyph(t),
-                    false,
-                    controls.minimize,
-                    |_: &ClickEvent, window, _cx| window.minimize_window(),
-                    t,
-                ))
-                .child(Self::linux_window_control_button(
-                    "linux-window-maximize",
-                    Self::linux_maximize_glyph(t),
-                    false,
-                    controls.maximize,
-                    |_: &ClickEvent, window, _cx| window.zoom_window(),
-                    t,
-                ))
-                .child(Self::linux_window_control_button(
-                    "linux-window-close",
-                    Self::linux_close_glyph(),
-                    true,
-                    true,
-                    cx.listener(|this, _: &ClickEvent, window, _cx| {
-                        this.flush_for_shutdown("linux title bar close");
-                        window.remove_window();
-                    }),
-                    t,
-                ))
-                .into_any_element(),
-        )
-    }
-
-    fn linux_window_control_button(
-        id: &'static str,
-        glyph: gpui::AnyElement,
-        is_close: bool,
-        enabled: bool,
-        on_click: impl Fn(&ClickEvent, &mut Window, &mut gpui::App) + 'static,
-        t: Theme,
-    ) -> gpui::AnyElement {
-        let hover_bg = if is_close {
-            if t.is_dark {
-                0xff5a537d
-            } else {
-                0xd20f3988
-            }
-        } else {
-            t.button_hover
-        };
-
-        div()
-            .id(id)
-            .w(px(44.0))
-            .h_full()
-            .flex()
-            .items_center()
-            .justify_center()
-            .flex_shrink_0()
-            .text_size(px(12.0))
-            .text_color(token_hsla(if is_close {
-                t.text_primary
-            } else {
-                t.text_dim
-            }))
-            .when(enabled, |s| {
-                s.cursor_pointer()
-                    .hover(move |h| h.bg(token_rgba(hover_bg)))
-                    .on_mouse_down(MouseButton::Left, |_, window, cx| {
-                        window.prevent_default();
-                        cx.stop_propagation();
-                    })
-                    .on_click(move |event: &ClickEvent, window, cx| {
-                        window.prevent_default();
-                        cx.stop_propagation();
-                        on_click(event, window, cx);
-                    })
-            })
-            .when(!enabled, |s| s.opacity(0.35))
-            .child(glyph)
-            .into_any_element()
-    }
-
-    fn linux_minimize_glyph(t: Theme) -> gpui::AnyElement {
-        div()
-            .w(px(10.0))
-            .h(px(1.5))
-            .rounded(px(1.0))
-            .bg(token_rgba(t.text_dim))
-            .into_any_element()
-    }
-
-    fn linux_maximize_glyph(t: Theme) -> gpui::AnyElement {
-        div()
-            .w(px(9.0))
-            .h(px(9.0))
-            .rounded(px(1.5))
-            .border_1()
-            .border_color(token_rgba(t.text_dim))
-            .into_any_element()
-    }
-
-    fn linux_close_glyph() -> gpui::AnyElement {
-        div().child("x").into_any_element()
-    }
-
-    fn render_title_bar_search(
-        &mut self,
-        window: &mut Window,
-        t: Theme,
-        cx: &mut Context<Self>,
-    ) -> gpui::AnyElement {
-        use gpui_component::input::Input;
-        use gpui_component::Sizable as _;
-
-        if self.search_open {
-            let input = self.ensure_search_input(window, cx);
-            div()
-                .id("title-search")
-                .h(px(26.0))
-                .w(px(236.0))
-                .pl(px(7.0))
-                .pr(px(8.0))
-                .rounded(px(7.0))
-                .border_1()
-                .border_color(token_rgba(t.border_soft))
-                .bg(token_rgba(t.button_bg))
-                .flex()
-                .items_center()
-                .gap(px(8.0))
-                .on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
-                    let input = this.ensure_search_input(window, cx);
-                    input.update(cx, |input, cx| input.focus(window, cx));
-                }))
-                .child(
-                    div()
-                        .flex_1()
-                        .min_w_0()
-                        .h_full()
-                        .flex()
-                        .items_center()
-                        .child(
-                            Input::new(&input)
-                                .appearance(false)
-                                .bordered(false)
-                                .focus_bordered(false)
-                                .xsmall()
-                                .w_full()
-                                .h_full(),
-                        ),
-                )
-                .child(
-                    div()
-                        .flex_shrink_0()
-                        .text_size(px(10.0))
-                        .font_weight(gpui::FontWeight::NORMAL)
-                        .text_color(token_hsla(t.text_muted))
-                        .child("⌘F"),
-                )
-                .into_any_element()
-        } else {
-            div()
-                .id("title-search")
-                .h(px(26.0))
-                .w(px(108.0))
-                .px(px(8.0))
-                .rounded(px(7.0))
-                .border_1()
-                .border_color(token_rgba(t.border_soft))
-                .bg(token_rgba(t.button_bg))
-                .flex()
-                .items_center()
-                .justify_between()
-                .gap(px(10.0))
-                .cursor_pointer()
-                .hover({
-                    let c = t.button_hover;
-                    move |s| s.bg(token_rgba(c))
-                })
-                .on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
-                    this.open_search(window, cx);
-                }))
-                .child(
-                    div()
-                        .text_size(px(12.0))
-                        .font_weight(gpui::FontWeight::NORMAL)
-                        .text_color(token_hsla(t.text_dim))
-                        .child("search"),
-                )
-                .child(
-                    div()
-                        .text_size(px(10.0))
-                        .font_weight(gpui::FontWeight::NORMAL)
-                        .text_color(token_hsla(t.text_muted))
-                        .child("⌘F"),
-                )
-                .into_any_element()
-        }
     }
 }

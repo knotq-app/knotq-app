@@ -1,22 +1,28 @@
 use anyhow::{anyhow, bail, Context, Result};
-use chrono::{DateTime, Duration, Local, SecondsFormat, Utc};
+use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
-use std::{
-    collections::BTreeMap,
-    fs, io,
-    path::{Component, Path, PathBuf},
-    sync::atomic::{AtomicU64, Ordering},
+use std::{collections::BTreeMap, fs, path::Path, sync::atomic::AtomicU64};
+
+mod capture;
+mod retention;
+mod store;
+mod support;
+
+use capture::{list_internal_snapshots, record_workspace_snapshot_at};
+use retention::rotate_snapshots;
+use store::{blob_path, history_store_exists, read_snapshot_record};
+use support::{
+    format_snapshot_label, remove_if_exists, resolve_snapshot_id, workspace_target_path,
 };
 
-const HISTORY_DIR: &str = ".knotq-history";
-const STORE_DIR: &str = "v1";
-const STORE_VERSION: u32 = 1;
-const MANIFEST_FILE: &str = "manifest.json";
-const BLOB_DIR: &str = "blobs";
-const SNAPSHOT_DIR: &str = "snapshots";
+pub(crate) const HISTORY_DIR: &str = ".knotq-history";
+pub(crate) const STORE_DIR: &str = "v1";
+pub(crate) const STORE_VERSION: u32 = 1;
+pub(crate) const MANIFEST_FILE: &str = "manifest.json";
+pub(crate) const BLOB_DIR: &str = "blobs";
+pub(crate) const SNAPSHOT_DIR: &str = "snapshots";
 const SNAPSHOT_REF_PREFIX: &str = "refs/knotq/snapshots";
-const TRACKED_PATHS: &[&str] = &[
+pub(crate) const TRACKED_PATHS: &[&str] = &[
     "workspace.json",
     ".gitignore",
     "schemes",
@@ -24,7 +30,7 @@ const TRACKED_PATHS: &[&str] = &[
     "assets",
 ];
 
-static TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
+pub(crate) static TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct WorkspaceSnapshot {
@@ -34,20 +40,20 @@ pub struct WorkspaceSnapshot {
 }
 
 #[derive(Clone, Debug)]
-struct InternalSnapshot {
-    id: String,
-    timestamp: DateTime<Utc>,
-    content_hash: String,
+pub(crate) struct InternalSnapshot {
+    pub(crate) id: String,
+    pub(crate) timestamp: DateTime<Utc>,
+    pub(crate) content_hash: String,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-struct RetentionBucket {
-    tier: &'static str,
-    start_epoch_secs: i64,
+pub(crate) struct RetentionBucket {
+    pub(crate) tier: &'static str,
+    pub(crate) start_epoch_secs: i64,
 }
 
 impl RetentionBucket {
-    fn refname(&self) -> String {
+    pub(crate) fn refname(&self) -> String {
         format!(
             "{SNAPSHOT_REF_PREFIX}/{}/{}",
             self.tier, self.start_epoch_secs
@@ -56,31 +62,31 @@ impl RetentionBucket {
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
-struct StoreManifest {
-    version: u32,
-    refs: BTreeMap<String, String>,
+pub(crate) struct StoreManifest {
+    pub(crate) version: u32,
+    pub(crate) refs: BTreeMap<String, String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
-struct SnapshotRecord {
-    version: u32,
-    id: String,
-    timestamp: DateTime<Utc>,
-    content_hash: String,
-    entries: Vec<SnapshotEntry>,
+pub(crate) struct SnapshotRecord {
+    pub(crate) version: u32,
+    pub(crate) id: String,
+    pub(crate) timestamp: DateTime<Utc>,
+    pub(crate) content_hash: String,
+    pub(crate) entries: Vec<SnapshotEntry>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
-struct SnapshotEntry {
-    path: String,
-    kind: SnapshotEntryKind,
-    blob: Option<String>,
-    len: u64,
+pub(crate) struct SnapshotEntry {
+    pub(crate) path: String,
+    pub(crate) kind: SnapshotEntryKind,
+    pub(crate) blob: Option<String>,
+    pub(crate) len: u64,
 }
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-enum SnapshotEntryKind {
+pub(crate) enum SnapshotEntryKind {
     Dir,
     File,
 }
@@ -157,496 +163,13 @@ pub fn restore_workspace_snapshot(workspace_dir: &Path, snapshot_id: &str) -> Re
     Ok(())
 }
 
-fn record_workspace_snapshot_at(workspace_dir: &Path, now: DateTime<Utc>) -> Result<()> {
-    ensure_history_store(workspace_dir)?;
-    let snapshot = build_snapshot_record(workspace_dir, now)?;
-    if snapshot.entries.is_empty() {
-        bail!("workspace history has no files to snapshot");
-    }
-    if !snapshot
-        .entries
-        .iter()
-        .any(|entry| entry.kind == SnapshotEntryKind::File && entry.path == "workspace.json")
-    {
-        bail!("workspace history requires workspace.json");
-    }
-    if let Some(latest) = latest_snapshot(workspace_dir)? {
-        if latest.content_hash == snapshot.content_hash {
-            return Ok(());
-        }
-    }
-
-    let bucket = retention_bucket(now, now)
-        .ok_or_else(|| anyhow!("new history snapshots must be within retention"))?;
-    write_snapshot_record(workspace_dir, &snapshot)?;
-    update_ref(workspace_dir, &bucket.refname(), &snapshot.id)?;
-    rotate_snapshots(workspace_dir, now)?;
-    Ok(())
-}
-
-fn ensure_history_store(workspace_dir: &Path) -> Result<()> {
-    fs::create_dir_all(workspace_dir)
-        .with_context(|| format!("create {}", workspace_dir.display()))?;
-    fs::create_dir_all(blob_dir(workspace_dir))
-        .with_context(|| format!("create {}", blob_dir(workspace_dir).display()))?;
-    fs::create_dir_all(snapshot_dir(workspace_dir))
-        .with_context(|| format!("create {}", snapshot_dir(workspace_dir).display()))?;
-    if !manifest_path(workspace_dir).exists() {
-        write_manifest(
-            workspace_dir,
-            &StoreManifest {
-                version: STORE_VERSION,
-                refs: BTreeMap::new(),
-            },
-        )?;
-    }
-    Ok(())
-}
-
-fn history_store_exists(workspace_dir: &Path) -> bool {
-    manifest_path(workspace_dir).exists()
-}
-
-fn history_dir(workspace_dir: &Path) -> PathBuf {
-    workspace_dir.join(HISTORY_DIR)
-}
-
-fn store_dir(workspace_dir: &Path) -> PathBuf {
-    history_dir(workspace_dir).join(STORE_DIR)
-}
-
-fn blob_dir(workspace_dir: &Path) -> PathBuf {
-    store_dir(workspace_dir).join(BLOB_DIR)
-}
-
-fn snapshot_dir(workspace_dir: &Path) -> PathBuf {
-    store_dir(workspace_dir).join(SNAPSHOT_DIR)
-}
-
-fn manifest_path(workspace_dir: &Path) -> PathBuf {
-    store_dir(workspace_dir).join(MANIFEST_FILE)
-}
-
-fn build_snapshot_record(workspace_dir: &Path, timestamp: DateTime<Utc>) -> Result<SnapshotRecord> {
-    let mut entries = Vec::new();
-    for path in TRACKED_PATHS {
-        collect_snapshot_entries(workspace_dir, Path::new(path), &mut entries)?;
-    }
-    entries.sort_by(|a, b| a.path.cmp(&b.path).then_with(|| a.kind.cmp(&b.kind)));
-    entries.dedup_by(|a, b| a.path == b.path && a.kind == b.kind);
-
-    let content_hash = snapshot_content_hash(&entries);
-    let id = snapshot_id(timestamp, &content_hash);
-    Ok(SnapshotRecord {
-        version: STORE_VERSION,
-        id,
-        timestamp,
-        content_hash,
-        entries,
-    })
-}
-
-fn collect_snapshot_entries(
-    workspace_dir: &Path,
-    relative: &Path,
-    entries: &mut Vec<SnapshotEntry>,
-) -> Result<()> {
-    validate_relative_path(relative)?;
-    let absolute = workspace_dir.join(relative);
-    let metadata = match fs::symlink_metadata(&absolute) {
-        Ok(metadata) => metadata,
-        Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(()),
-        Err(err) => return Err(err).with_context(|| format!("stat {}", absolute.display())),
-    };
-
-    if metadata.is_dir() {
-        entries.push(SnapshotEntry {
-            path: stored_path(relative)?,
-            kind: SnapshotEntryKind::Dir,
-            blob: None,
-            len: 0,
-        });
-
-        let mut children = fs::read_dir(&absolute)
-            .with_context(|| format!("read directory {}", absolute.display()))?
-            .collect::<std::result::Result<Vec<_>, _>>()
-            .with_context(|| format!("read directory entry {}", absolute.display()))?;
-        children.sort_by_key(|entry| entry.file_name());
-        for child in children {
-            collect_snapshot_entries(workspace_dir, &relative.join(child.file_name()), entries)?;
-        }
-        return Ok(());
-    }
-
-    if !metadata.is_file() {
-        return Ok(());
-    }
-
-    let bytes = fs::read(&absolute).with_context(|| format!("read {}", absolute.display()))?;
-    let blob = sha256_hex(&bytes);
-    store_blob(workspace_dir, &blob, &bytes)?;
-    entries.push(SnapshotEntry {
-        path: stored_path(relative)?,
-        kind: SnapshotEntryKind::File,
-        blob: Some(blob),
-        len: bytes.len() as u64,
-    });
-    Ok(())
-}
-
-fn store_blob(workspace_dir: &Path, blob: &str, bytes: &[u8]) -> Result<()> {
-    validate_blob_id(blob)?;
-    let path = blob_path(workspace_dir, blob);
-    if path.exists() {
-        return Ok(());
-    }
-    let parent = path
-        .parent()
-        .ok_or_else(|| anyhow!("blob path has no parent"))?;
-    fs::create_dir_all(parent).with_context(|| format!("create {}", parent.display()))?;
-    let tmp = path.with_extension(format!("tmp-{}", temp_suffix()));
-    fs::write(&tmp, bytes).with_context(|| format!("write {}", tmp.display()))?;
-    fs::rename(&tmp, &path).with_context(|| format!("install blob {}", path.display()))?;
-    Ok(())
-}
-
-fn blob_path(workspace_dir: &Path, blob: &str) -> PathBuf {
-    let prefix = &blob[..2];
-    blob_dir(workspace_dir).join(prefix).join(blob)
-}
-
-fn snapshot_content_hash(entries: &[SnapshotEntry]) -> String {
-    let mut hasher = Sha256::new();
-    hasher.update(b"knotq-history-content-v1\0");
-    for entry in entries {
-        hasher.update(entry.path.as_bytes());
-        hasher.update([0]);
-        hasher.update(match entry.kind {
-            SnapshotEntryKind::Dir => b"dir".as_slice(),
-            SnapshotEntryKind::File => b"file".as_slice(),
-        });
-        hasher.update([0]);
-        if let Some(blob) = &entry.blob {
-            hasher.update(blob.as_bytes());
-        }
-        hasher.update([0]);
-        hasher.update(entry.len.to_be_bytes());
-        hasher.update([0]);
-    }
-    hex_digest(hasher.finalize())
-}
-
-fn snapshot_id(timestamp: DateTime<Utc>, content_hash: &str) -> String {
-    let mut hasher = Sha256::new();
-    hasher.update(b"knotq-history-snapshot-v1\0");
-    hasher.update(
-        timestamp
-            .to_rfc3339_opts(SecondsFormat::Nanos, true)
-            .as_bytes(),
-    );
-    hasher.update([0]);
-    hasher.update(content_hash.as_bytes());
-    hex_digest(hasher.finalize())
-}
-
-fn latest_snapshot(workspace_dir: &Path) -> Result<Option<InternalSnapshot>> {
-    Ok(list_internal_snapshots(workspace_dir)?
-        .into_iter()
-        .max_by_key(|snapshot| snapshot.timestamp))
-}
-
-fn list_internal_snapshots(workspace_dir: &Path) -> Result<Vec<InternalSnapshot>> {
-    if !history_store_exists(workspace_dir) {
-        return Ok(Vec::new());
-    }
-    let manifest = read_manifest(workspace_dir)?;
-    let mut snapshots = Vec::new();
-    for (refname, id) in manifest.refs {
-        let snapshot = read_snapshot_record(workspace_dir, &id)
-            .with_context(|| format!("read history snapshot {id} for {refname}"))?;
-        snapshots.push(InternalSnapshot {
-            id: snapshot.id,
-            timestamp: snapshot.timestamp,
-            content_hash: snapshot.content_hash,
-        });
-    }
-    Ok(snapshots)
-}
-
-fn rotate_snapshots(workspace_dir: &Path, now: DateTime<Utc>) -> Result<()> {
-    let snapshots = list_internal_snapshots(workspace_dir)?;
-    let mut refs = BTreeMap::<String, String>::new();
-    let mut keep_by_ref = BTreeMap::<String, InternalSnapshot>::new();
-    for snapshot in &snapshots {
-        let Some(bucket) = retention_bucket(snapshot.timestamp, now) else {
-            continue;
-        };
-        let refname = bucket.refname();
-        let replace = keep_by_ref
-            .get(&refname)
-            .map(|existing| snapshot.timestamp > existing.timestamp)
-            .unwrap_or(true);
-        if replace {
-            keep_by_ref.insert(refname, snapshot.clone());
-        }
-    }
-
-    for (refname, snapshot) in keep_by_ref {
-        refs.insert(refname, snapshot.id);
-    }
-    write_manifest(
-        workspace_dir,
-        &StoreManifest {
-            version: STORE_VERSION,
-            refs,
-        },
-    )?;
-    Ok(())
-}
-
-fn retention_bucket(timestamp: DateTime<Utc>, now: DateTime<Utc>) -> Option<RetentionBucket> {
-    let age = now.signed_duration_since(timestamp);
-    let (tier, step_secs) = if age <= Duration::hours(1) {
-        ("m5", 5 * 60)
-    } else if age <= Duration::hours(48) {
-        ("h1", 60 * 60)
-    } else if age <= Duration::days(7) {
-        ("h4", 4 * 60 * 60)
-    } else if age <= Duration::days(365) {
-        ("d1", 24 * 60 * 60)
-    } else {
-        return None;
-    };
-    Some(RetentionBucket {
-        tier,
-        start_epoch_secs: floor_epoch(timestamp.timestamp(), step_secs),
-    })
-}
-
-fn floor_epoch(timestamp: i64, step_secs: i64) -> i64 {
-    timestamp.div_euclid(step_secs) * step_secs
-}
-
-fn update_ref(workspace_dir: &Path, refname: &str, snapshot: &str) -> Result<()> {
-    validate_snapshot_id(snapshot)?;
-    let mut manifest = read_manifest(workspace_dir)?;
-    manifest
-        .refs
-        .insert(refname.to_string(), snapshot.to_string());
-    write_manifest(workspace_dir, &manifest)
-        .with_context(|| format!("update history ref {refname}"))?;
-    Ok(())
-}
-
-fn read_manifest(workspace_dir: &Path) -> Result<StoreManifest> {
-    let path = manifest_path(workspace_dir);
-    let raw = fs::read(&path).with_context(|| format!("read {}", path.display()))?;
-    let manifest: StoreManifest =
-        serde_json::from_slice(&raw).with_context(|| format!("parse {}", path.display()))?;
-    if manifest.version != STORE_VERSION {
-        bail!("unsupported history store version {}", manifest.version);
-    }
-    for id in manifest.refs.values() {
-        validate_snapshot_id(id)?;
-    }
-    Ok(manifest)
-}
-
-fn write_manifest(workspace_dir: &Path, manifest: &StoreManifest) -> Result<()> {
-    let path = manifest_path(workspace_dir);
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent).with_context(|| format!("create {}", parent.display()))?;
-    }
-    let raw = serde_json::to_vec_pretty(manifest).context("serialize history manifest")?;
-    write_json_atomic(&path, &raw)
-}
-
-fn read_snapshot_record(workspace_dir: &Path, id: &str) -> Result<SnapshotRecord> {
-    validate_snapshot_id(id)?;
-    let path = snapshot_path(workspace_dir, id);
-    let raw = fs::read(&path).with_context(|| format!("read {}", path.display()))?;
-    let snapshot: SnapshotRecord =
-        serde_json::from_slice(&raw).with_context(|| format!("parse {}", path.display()))?;
-    if snapshot.version != STORE_VERSION {
-        bail!("unsupported history snapshot version {}", snapshot.version);
-    }
-    if snapshot.id != id {
-        bail!("history snapshot id mismatch");
-    }
-    validate_snapshot_record(&snapshot)?;
-    Ok(snapshot)
-}
-
-fn write_snapshot_record(workspace_dir: &Path, snapshot: &SnapshotRecord) -> Result<()> {
-    validate_snapshot_record(snapshot)?;
-    let path = snapshot_path(workspace_dir, &snapshot.id);
-    if path.exists() {
-        return Ok(());
-    }
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent).with_context(|| format!("create {}", parent.display()))?;
-    }
-    let raw = serde_json::to_vec_pretty(snapshot).context("serialize history snapshot")?;
-    write_json_atomic(&path, &raw)
-}
-
-fn snapshot_path(workspace_dir: &Path, id: &str) -> PathBuf {
-    snapshot_dir(workspace_dir).join(format!("{id}.json"))
-}
-
-fn write_json_atomic(path: &Path, raw: &[u8]) -> Result<()> {
-    let tmp = path.with_extension(format!("tmp-{}", temp_suffix()));
-    fs::write(&tmp, raw).with_context(|| format!("write {}", tmp.display()))?;
-    fs::rename(&tmp, path).with_context(|| format!("install {}", path.display()))?;
-    Ok(())
-}
-
-fn validate_snapshot_record(snapshot: &SnapshotRecord) -> Result<()> {
-    validate_snapshot_id(&snapshot.id)?;
-    validate_blob_id(&snapshot.content_hash)?;
-    for entry in &snapshot.entries {
-        validate_relative_path(Path::new(&entry.path))?;
-        match entry.kind {
-            SnapshotEntryKind::Dir => {
-                if entry.blob.is_some() || entry.len != 0 {
-                    bail!("history directory entry {} has file data", entry.path);
-                }
-            }
-            SnapshotEntryKind::File => {
-                let blob = entry
-                    .blob
-                    .as_deref()
-                    .ok_or_else(|| anyhow!("history file entry {} has no blob", entry.path))?;
-                validate_blob_id(blob)?;
-            }
-        }
-    }
-    Ok(())
-}
-
-fn resolve_snapshot_id(workspace_dir: &Path, id: &str) -> Result<String> {
-    validate_snapshot_id(id)?;
-    if id.len() == 64 {
-        return Ok(id.to_string());
-    }
-
-    let mut matches = Vec::new();
-    if snapshot_dir(workspace_dir).exists() {
-        for entry in fs::read_dir(snapshot_dir(workspace_dir))
-            .with_context(|| format!("read {}", snapshot_dir(workspace_dir).display()))?
-        {
-            let entry = entry?;
-            let Some(name) = entry.file_name().to_str().map(ToOwned::to_owned) else {
-                continue;
-            };
-            let Some(candidate) = name.strip_suffix(".json") else {
-                continue;
-            };
-            if candidate.starts_with(id) {
-                matches.push(candidate.to_string());
-            }
-        }
-    }
-
-    match matches.as_slice() {
-        [only] => Ok(only.clone()),
-        [] => bail!("history snapshot {id} not found"),
-        _ => bail!("history snapshot id {id} is ambiguous"),
-    }
-}
-
-fn workspace_target_path(workspace_dir: &Path, stored: &str) -> Result<PathBuf> {
-    validate_relative_path(Path::new(stored))?;
-    Ok(workspace_dir.join(stored))
-}
-
-fn stored_path(relative: &Path) -> Result<String> {
-    let mut parts = Vec::new();
-    for component in relative.components() {
-        match component {
-            Component::Normal(part) => {
-                let part = part
-                    .to_str()
-                    .ok_or_else(|| anyhow!("history paths must be valid UTF-8"))?;
-                parts.push(part.to_string());
-            }
-            _ => bail!("invalid history path {}", relative.display()),
-        }
-    }
-    if parts.is_empty() {
-        bail!("history path cannot be empty");
-    }
-    Ok(parts.join("/"))
-}
-
-fn validate_relative_path(path: &Path) -> Result<()> {
-    let mut has_component = false;
-    for component in path.components() {
-        match component {
-            Component::Normal(_) => has_component = true,
-            _ => bail!("invalid history path {}", path.display()),
-        }
-    }
-    if !has_component {
-        bail!("history path cannot be empty");
-    }
-    Ok(())
-}
-
-fn validate_snapshot_id(id: &str) -> Result<()> {
-    if id.len() < 7 || id.len() > 64 || !id.bytes().all(|byte| byte.is_ascii_hexdigit()) {
-        bail!("invalid history snapshot id");
-    }
-    Ok(())
-}
-
-fn validate_blob_id(id: &str) -> Result<()> {
-    if id.len() != 64 || !id.bytes().all(|byte| byte.is_ascii_hexdigit()) {
-        bail!("invalid history blob id");
-    }
-    Ok(())
-}
-
-fn sha256_hex(bytes: &[u8]) -> String {
-    hex_digest(Sha256::digest(bytes))
-}
-
-fn hex_digest(bytes: impl AsRef<[u8]>) -> String {
-    bytes
-        .as_ref()
-        .iter()
-        .map(|byte| format!("{byte:02x}"))
-        .collect()
-}
-
-fn remove_if_exists(path: &Path) -> Result<()> {
-    match fs::symlink_metadata(path) {
-        Ok(metadata) if metadata.is_dir() => {
-            fs::remove_dir_all(path).with_context(|| format!("remove {}", path.display()))
-        }
-        Ok(_) => fs::remove_file(path).with_context(|| format!("remove {}", path.display())),
-        Err(err) if err.kind() == io::ErrorKind::NotFound => Ok(()),
-        Err(err) => Err(err).with_context(|| format!("stat {}", path.display())),
-    }
-}
-
-fn format_snapshot_label(timestamp: DateTime<Utc>) -> String {
-    timestamp
-        .with_timezone(&Local)
-        .format("%Y-%m-%d %H:%M %Z")
-        .to_string()
-}
-
-fn temp_suffix() -> String {
-    let nanos = Utc::now().timestamp_nanos_opt().unwrap_or_default();
-    let counter = TEMP_COUNTER.fetch_add(1, Ordering::Relaxed);
-    format!("{nanos}-{counter}")
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use chrono::TimeZone;
+    use crate::retention::retention_bucket;
+    use crate::support::temp_suffix;
+    use chrono::{Duration, TimeZone};
+    use std::path::PathBuf;
 
     #[test]
     fn retention_bucket_uses_requested_cadence() {

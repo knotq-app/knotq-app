@@ -101,7 +101,7 @@ pub(super) fn rp_until_calendar(
         .absolute()
         .left(left)
         .top(top)
-        .w(px(REPEAT_UNTIL_CALENDAR_WIDTH))
+        .w(px(UNTIL_CALENDAR_WIDTH))
         .bg(token_hsla(t.bg_modal))
         .border_1()
         .border_color(token_rgba(t.border_overlay))

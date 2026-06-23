@@ -1,4 +1,4 @@
-use chrono::{DateTime, Local, NaiveDate, NaiveDateTime, TimeZone, Utc, Weekday};
+use chrono::{DateTime, NaiveDate, NaiveDateTime, Utc, Weekday};
 use std::collections::BTreeMap;
 
 use knotq_model::RepeatWeekday;
@@ -30,7 +30,7 @@ pub(crate) fn parse_rrule_fields(raw_rule: &str) -> BTreeMap<String, String> {
         .collect()
 }
 
-pub(crate) fn parse_rrule_weekdays(value: &str) -> Vec<RepeatWeekday> {
+pub fn parse_rrule_weekdays(value: &str) -> Vec<RepeatWeekday> {
     value
         .split(',')
         .filter_map(|part| {
@@ -51,7 +51,7 @@ pub(crate) fn parse_rrule_weekdays(value: &str) -> Vec<RepeatWeekday> {
         .collect()
 }
 
-pub(crate) fn parse_rrule_until(value: &str) -> Option<DateTime<Utc>> {
+pub fn parse_rrule_until(value: &str) -> Option<DateTime<Utc>> {
     DateTime::parse_from_rfc3339(value)
         .map(|dt| dt.with_timezone(&Utc))
         .ok()
@@ -63,7 +63,7 @@ pub(crate) fn parse_rrule_until(value: &str) -> Option<DateTime<Utc>> {
         .or_else(|| {
             NaiveDate::parse_from_str(value, "%Y%m%d")
                 .ok()
-                .and_then(local_repeat_until_for_date)
+                .and_then(knotq_date_util::local_date_repeat_until_utc)
         })
 }
 
@@ -77,12 +77,4 @@ pub(crate) fn repeat_weekday_from_chrono(weekday: Weekday) -> RepeatWeekday {
         Weekday::Sat => RepeatWeekday::Sat,
         Weekday::Sun => RepeatWeekday::Sun,
     }
-}
-
-fn local_repeat_until_for_date(date: NaiveDate) -> Option<DateTime<Utc>> {
-    let local_end = date.and_hms_opt(23, 59, 59)?;
-    Local
-        .from_local_datetime(&local_end)
-        .latest()
-        .map(|dt| dt.with_timezone(&Utc))
 }

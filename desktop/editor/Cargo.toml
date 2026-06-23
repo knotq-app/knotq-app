@@ -10,6 +10,7 @@ image = { version = "0.25", default-features = false, features = ["bmp", "gif", 
 knotq-commands = { workspace = true }
 knotq-date-util = { workspace = true }
 knotq-model = { workspace = true }
+knotq-rrule = { workspace = true }
 knotq-theme = { workspace = true }
 knotq-ui = { workspace = true }
 serde = { workspace = true }

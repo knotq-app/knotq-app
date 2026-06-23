@@ -101,13 +101,13 @@ impl KnotQApp {
         };
         let end_row_top = top + px((scope_row_count + 1.0 + weekly_row_count) * 25.0);
         let until_calendar_left = clamped_popover_left(
-            left + px(REPEAT_POPOVER_WIDTH - REPEAT_UNTIL_CALENDAR_WIDTH),
-            px(REPEAT_UNTIL_CALENDAR_WIDTH),
+            left + px(REPEAT_POPOVER_WIDTH - UNTIL_CALENDAR_WIDTH),
+            px(UNTIL_CALENDAR_WIDTH),
             viewport_width,
         );
         let until_calendar_top = popover_top_biased_below(
             end_row_top + px(25.0),
-            px(REPEAT_UNTIL_CALENDAR_HEIGHT),
+            px(UNTIL_CALENDAR_HEIGHT),
             viewport_height,
         );
 

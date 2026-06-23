@@ -7,3 +7,5 @@ pub mod text_util;
 pub mod theme;
 
 pub use popover::*;
+
+pub(crate) const CURSOR_WIDTH: f32 = 1.5;

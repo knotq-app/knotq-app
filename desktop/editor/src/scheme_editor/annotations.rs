@@ -1,5 +1,6 @@
-use chrono::{DateTime, Datelike, Local, NaiveDate, NaiveDateTime, TimeZone, Utc};
+use chrono::{DateTime, Datelike, Local, NaiveDate, Utc};
 use knotq_commands::DateKind;
+use knotq_rrule::ical::{parse_rrule_until, parse_rrule_weekdays};
 use knotq_model::TimeFormat;
 use knotq_model::{
     CalendarDateTime, Item, ItemMarker, OccurrenceId, OccurrenceOverrideStatus, Recurrence,
@@ -156,51 +157,6 @@ fn parse_simple_rrule(raw_rule: &str) -> Option<SimpleRecurrence> {
         "YEARLY" if weekdays.is_empty() => Some(SimpleRecurrence::Yearly { interval, end }),
         _ => None,
     }
-}
-
-fn parse_rrule_until(value: &str) -> Option<DateTime<Utc>> {
-    DateTime::parse_from_rfc3339(value)
-        .map(|dt| dt.with_timezone(&Utc))
-        .ok()
-        .or_else(|| {
-            NaiveDateTime::parse_from_str(value, "%Y%m%dT%H%M%SZ")
-                .ok()
-                .map(|dt| DateTime::from_naive_utc_and_offset(dt, Utc))
-        })
-        .or_else(|| {
-            NaiveDate::parse_from_str(value, "%Y%m%d")
-                .ok()
-                .and_then(local_repeat_until_for_date)
-        })
-}
-
-fn local_repeat_until_for_date(date: NaiveDate) -> Option<DateTime<Utc>> {
-    let local_end = date.and_hms_opt(23, 59, 59)?;
-    Local
-        .from_local_datetime(&local_end)
-        .latest()
-        .map(|dt| dt.with_timezone(&Utc))
-}
-
-fn parse_rrule_weekdays(value: &str) -> Vec<RepeatWeekday> {
-    value
-        .split(',')
-        .filter_map(|part| {
-            let day = part
-                .trim()
-                .trim_start_matches(|ch: char| ch == '+' || ch == '-' || ch.is_ascii_digit());
-            match day {
-                "MO" => Some(RepeatWeekday::Mon),
-                "TU" => Some(RepeatWeekday::Tue),
-                "WE" => Some(RepeatWeekday::Wed),
-                "TH" => Some(RepeatWeekday::Thu),
-                "FR" => Some(RepeatWeekday::Fri),
-                "SA" => Some(RepeatWeekday::Sat),
-                "SU" => Some(RepeatWeekday::Sun),
-                _ => None,
-            }
-        })
-        .collect()
 }
 
 fn format_simple_repeat_annotation(repeat: &SimpleRecurrence, reference_year: i32) -> String {

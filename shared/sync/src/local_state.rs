@@ -86,6 +86,20 @@ impl LocalSyncState {
         self.pending = pending.into_iter().collect();
     }
 
+    /// Clear pull/push and media cursors and drop stale workspace-index pending so
+    /// the next sync re-pulls every document from sequence zero and re-seeds full
+    /// snapshots (idempotent in Yjs). Workspace-index pending is dropped because it
+    /// can encode deltas against a partial/corrupt or different-account workspace
+    /// index; scheme content pending is kept — the bootstrap either re-pushes it as
+    /// a valid self-contained sequence or replaces it with a full snapshot. Shared
+    /// by the one-time recovery heal and the account-switch reset.
+    fn clear_cursors_for_full_repull(&mut self) {
+        self.document_cursors.clear();
+        self.media_cursors.clear();
+        self.pending
+            .retain(|edit| edit.kind != SyncDocumentKind::PersonalWorkspace);
+    }
+
     /// Apply any pending one-time recovery for the current
     /// [`SYNC_STATE_RECOVERY_VERSION`]. Clears pull cursors so the next sync
     /// re-pulls every document from sequence zero and re-merges (idempotent in
@@ -97,11 +111,46 @@ impl LocalSyncState {
         if self.recovery_version >= SYNC_STATE_RECOVERY_VERSION {
             return false;
         }
-        self.document_cursors.clear();
-        self.media_cursors.clear();
-        self.pending
-            .retain(|edit| edit.kind != SyncDocumentKind::PersonalWorkspace);
+        self.clear_cursors_for_full_repull();
         self.recovery_version = SYNC_STATE_RECOVERY_VERSION;
+        true
+    }
+
+    /// Reset cursors when signing in under a different account or server than these
+    /// cursors were built against. The persisted `sync-state.json` is a single,
+    /// account-agnostic file, so without this an account switch (sign out of A, sign
+    /// into B) reuses account A's pull/push and media cursors. A carried-over cursor
+    /// is unsafe two ways:
+    ///
+    /// 1. **Silent data loss on pull** — the pull request is keyed by document with
+    ///    A's `last_pulled_sequence`; for a document B holds at a lower sequence the
+    ///    server returns nothing, so B's content is never pulled.
+    /// 2. **`crdt_schema_invalid` on push** — a non-zero cursor makes the bootstrap
+    ///    treat a document B has no base for as already-present and push a bare delta
+    ///    instead of a full snapshot. Reconstructed from empty on the server, the
+    ///    delta has no `schema` root and the backend rejects the whole batch.
+    ///
+    /// Resetting forces the next sync to re-pull every document from sequence zero
+    /// and re-seed full snapshots, which Yjs merges idempotently (the workspace doc
+    /// itself is re-keyed and re-queued separately by the caller). No-op (returns
+    /// `false`) on first configuration (no prior identity recorded) or when both the
+    /// account workspace id and server url are unchanged.
+    pub fn reset_for_account_change(
+        &mut self,
+        new_workspace_id: WorkspaceId,
+        new_server_url: &str,
+    ) -> bool {
+        let workspace_changed = self
+            .workspace_id
+            .is_some_and(|existing| existing != new_workspace_id);
+        let server_changed = self
+            .server_url
+            .as_deref()
+            .is_some_and(|existing| existing != new_server_url);
+        if !(workspace_changed || server_changed) {
+            return false;
+        }
+        self.clear_cursors_for_full_repull();
         true
     }
 
@@ -381,4 +430,184 @@ pub fn queue_workspace_bootstrap_updates(
     });
 
     healed
+}
+
+#[cfg(test)]
+mod account_change_tests {
+    use super::{DocumentSyncCursor, LocalSyncState, MediaSyncCursor, PendingCrdtEdit};
+    use chrono::Utc;
+    use knotq_model::{DocumentId, OperationId, ReplicaId, SyncDocumentKind, WorkspaceId};
+
+    const SERVER_A: &str = "https://a.api.knotq.com";
+    const SERVER_B: &str = "https://b.api.knotq.com";
+
+    fn pending(
+        workspace: WorkspaceId,
+        document: DocumentId,
+        kind: SyncDocumentKind,
+    ) -> PendingCrdtEdit {
+        PendingCrdtEdit {
+            operation_id: OperationId::new(),
+            workspace_id: workspace,
+            replica_id: ReplicaId::new(),
+            local_sequence: 1,
+            created_at: Utc::now(),
+            document,
+            kind,
+            update_v1: vec![1, 2, 3],
+        }
+    }
+
+    /// A fully-configured state for account `workspace`/`server` carrying a scheme
+    /// cursor, a media cursor, plus one scheme and one workspace pending edit.
+    fn configured_state(workspace: WorkspaceId, server: &str) -> LocalSyncState {
+        let scheme_doc = DocumentId::new();
+        let workspace_doc = DocumentId::new();
+        let mut state = LocalSyncState {
+            workspace_id: Some(workspace),
+            replica_id: Some(ReplicaId::new()),
+            server_url: Some(server.to_string()),
+            ..LocalSyncState::default()
+        };
+        state.document_cursors.insert(
+            scheme_doc,
+            DocumentSyncCursor {
+                document: scheme_doc,
+                kind: SyncDocumentKind::Scheme,
+                last_pulled_sequence: 4,
+                last_pushed_sequence: 4,
+            },
+        );
+        state.media_cursors.insert(
+            "image.png".to_string(),
+            MediaSyncCursor {
+                image_name: "image.png".to_string(),
+                document: scheme_doc,
+                byte_length: 3,
+                sha256: "deadbeef".to_string(),
+                uploaded_at: Utc::now(),
+            },
+        );
+        state.push_pending(pending(workspace, scheme_doc, SyncDocumentKind::Scheme));
+        state.push_pending(pending(
+            workspace,
+            workspace_doc,
+            SyncDocumentKind::PersonalWorkspace,
+        ));
+        state
+    }
+
+    #[test]
+    fn resets_cursors_when_workspace_id_changes() {
+        let account_a = WorkspaceId::new();
+        let account_b = WorkspaceId::new();
+        let mut state = configured_state(account_a, SERVER_A);
+
+        assert!(state.reset_for_account_change(account_b, SERVER_A));
+
+        assert!(state.document_cursors.is_empty(), "pull/push cursors cleared");
+        assert!(state.media_cursors.is_empty(), "media cursors cleared");
+        // Scheme content pending is kept; workspace-index pending is dropped.
+        assert_eq!(state.pending.len(), 1);
+        assert!(state
+            .pending
+            .iter()
+            .all(|edit| edit.kind == SyncDocumentKind::Scheme));
+    }
+
+    #[test]
+    fn resets_cursors_when_server_url_changes() {
+        let account = WorkspaceId::new();
+        let mut state = configured_state(account, SERVER_A);
+
+        // Same workspace id but a different backend (prod -> sandbox).
+        assert!(state.reset_for_account_change(account, SERVER_B));
+        assert!(state.document_cursors.is_empty());
+        assert!(state.media_cursors.is_empty());
+    }
+
+    #[test]
+    fn no_reset_when_account_and_server_unchanged() {
+        let account = WorkspaceId::new();
+        let mut state = configured_state(account, SERVER_A);
+
+        assert!(!state.reset_for_account_change(account, SERVER_A));
+        assert_eq!(state.document_cursors.len(), 1);
+        assert_eq!(state.media_cursors.len(), 1);
+        assert_eq!(state.pending.len(), 2);
+    }
+
+    #[test]
+    fn no_reset_on_first_configuration() {
+        // A fresh state has no recorded identity, so the first sign-in must not be
+        // mistaken for an account switch (which would clear freshly-seeded cursors).
+        let mut state = LocalSyncState::default();
+        let scheme_doc = DocumentId::new();
+        state.document_cursors.insert(
+            scheme_doc,
+            DocumentSyncCursor {
+                document: scheme_doc,
+                kind: SyncDocumentKind::Scheme,
+                last_pulled_sequence: 0,
+                last_pushed_sequence: 0,
+            },
+        );
+        assert!(!state.reset_for_account_change(WorkspaceId::new(), SERVER_A));
+        assert_eq!(state.document_cursors.len(), 1);
+    }
+
+    #[test]
+    fn reset_preserves_every_scheme_pending_and_drops_every_workspace_pending() {
+        let account_a = WorkspaceId::new();
+        let account_b = WorkspaceId::new();
+        let mut state = configured_state(account_a, SERVER_A);
+        // Add extra pending so we cover "many" rather than one of each.
+        let scheme_doc = DocumentId::new();
+        state.push_pending(pending(account_a, scheme_doc, SyncDocumentKind::Scheme));
+        state.push_pending(pending(account_a, scheme_doc, SyncDocumentKind::Scheme));
+        state.push_pending(pending(
+            account_a,
+            DocumentId::new(),
+            SyncDocumentKind::PersonalWorkspace,
+        ));
+
+        assert!(state.reset_for_account_change(account_b, SERVER_A));
+
+        assert!(state
+            .pending
+            .iter()
+            .all(|edit| edit.kind == SyncDocumentKind::Scheme));
+        assert_eq!(
+            state.pending.len(),
+            3,
+            "the original scheme pending plus the two added ones survive"
+        );
+    }
+
+    #[test]
+    fn reset_is_safe_on_a_state_with_no_cursors() {
+        let account_a = WorkspaceId::new();
+        let account_b = WorkspaceId::new();
+        let mut state = LocalSyncState {
+            workspace_id: Some(account_a),
+            replica_id: Some(ReplicaId::new()),
+            server_url: Some(SERVER_A.to_string()),
+            ..LocalSyncState::default()
+        };
+        // Detects the change and is a no-op on the (already empty) cursor maps.
+        assert!(state.reset_for_account_change(account_b, SERVER_A));
+        assert!(state.document_cursors.is_empty());
+        assert!(state.media_cursors.is_empty());
+        assert!(state.pending.is_empty());
+    }
+
+    #[test]
+    fn reset_triggers_when_both_account_and_server_change() {
+        let account_a = WorkspaceId::new();
+        let account_b = WorkspaceId::new();
+        let mut state = configured_state(account_a, SERVER_A);
+        assert!(state.reset_for_account_change(account_b, SERVER_B));
+        assert!(state.document_cursors.is_empty());
+        assert!(state.media_cursors.is_empty());
+    }
 }

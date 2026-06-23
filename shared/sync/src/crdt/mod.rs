@@ -331,6 +331,41 @@ impl WorkspaceCrdtDocuments {
         outcome
     }
 
+    /// Re-label the personal-workspace CRDT document with `new_id`, preserving its
+    /// current content and Yjs history (the real clientIDs and clocks). Returns the
+    /// relabeled document's full-state update when the id actually changed — so the
+    /// caller can queue it for push — or `None` if the document already had `new_id`.
+    ///
+    /// Used when a device adopts a different account's canonical workspace identity
+    /// (a sign-in into an account this device did not last sync with — e.g. switching
+    /// from prod to the sandbox). The two natural alternatives are both wrong here:
+    /// keeping the old id makes every pull fail with a fatal document-id mismatch,
+    /// and discarding the local document (rebuilding empty) loses every
+    /// locally-created scheme because the workspace is materialized purely from the
+    /// CRDT index. Instead we treat the local and server workspace documents as the
+    /// same logical document and let the normal pull/push CRDT merge union their
+    /// contents over the shared id. Unlike a throwaway re-seed, this carries the
+    /// document's genuine history, so the merge integrates cleanly with the server's.
+    pub fn reidentify_workspace_document(
+        &mut self,
+        new_id: DocumentId,
+    ) -> anyhow::Result<Option<CrdtDocumentUpdate>> {
+        if self.workspace.id == new_id {
+            return Ok(None);
+        }
+        let kind = self.workspace.kind;
+        let state = self.workspace.encode_state_v1();
+        let doc = YrsJsonDocument::for_replica(new_id, kind, self.replica_id);
+        doc.apply_update_v1(&state)
+            .context("re-identify workspace CRDT document")?;
+        self.workspace = doc;
+        Ok(Some(CrdtDocumentUpdate {
+            document: new_id,
+            kind,
+            update_v1: self.workspace.encode_state_v1(),
+        }))
+    }
+
     /// Rewrite any owned document whose current full state would fail the server's
     /// schema validation — i.e. an empty document with no schema root — by
     /// repopulating it from the materialized `workspace`. Such documents exist when

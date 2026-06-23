@@ -46,9 +46,9 @@ use knotq_model::{
 use knotq_sync::{
     batch_pull_and_apply, batch_push_pending, queue_workspace_bootstrap_updates,
     validate_crdt_update_sequence, BatchPullRequest, BatchPullResponse, BatchPushRequest,
-    BatchPushResponse, LocalSyncState, NotificationScheduleSnapshot, PendingCrdtEdit,
-    PulledCrdtDocument, PushDocumentUpdates, PushedCrdtDocument, SyncPushRejected, SyncTransport,
-    WorkspaceCrdtChangeSet, WorkspaceCrdtDocuments, MAX_SYNC_MEDIA_BYTES,
+    BatchPushResponse, CrdtDocumentUpdate, LocalSyncState, NotificationScheduleSnapshot,
+    PendingCrdtEdit, PulledCrdtDocument, PushDocumentUpdates, PushedCrdtDocument, SyncPushRejected,
+    SyncTransport, WorkspaceCrdtChangeSet, WorkspaceCrdtDocuments, MAX_SYNC_MEDIA_BYTES,
 };
 use uuid::Uuid;
 use yrs::updates::decoder::Decode;
@@ -797,6 +797,11 @@ pub struct TestServer {
 struct ServerCounters {
     pull_calls: usize,
     push_calls: usize,
+    /// How many times `push` organically rejected a batch with `crdt_schema_invalid`
+    /// (a baseless bare delta that reconstructs a schema-less document). Excludes the
+    /// one-shot `reject_next_push` fault injection, so a test can assert that a clean
+    /// account switch never pushes a bare delta in the first place.
+    schema_invalid_rejections: usize,
 }
 
 struct ServerDocument {
@@ -812,6 +817,14 @@ impl TestServer {
 
     pub fn push_calls(&self) -> usize {
         self.counters.borrow().push_calls
+    }
+
+    /// Number of batches organically rejected with `crdt_schema_invalid` (a baseless
+    /// bare delta). Stays at 0 when the client always re-seeds a full snapshot for a
+    /// document the server has no base for — the property a clean account switch must
+    /// preserve. Excludes `reject_next_push_with_*` fault injection.
+    pub fn schema_invalid_rejections(&self) -> usize {
+        self.counters.borrow().schema_invalid_rejections
     }
 
     pub fn document_count(&self) -> usize {
@@ -1009,6 +1022,7 @@ impl SyncTransport for TestServer {
                     !base.is_empty(),
                     doc.updates.len(),
                 );
+                self.counters.borrow_mut().schema_invalid_rejections += 1;
                 return Err(anyhow::Error::new(SyncPushRejected {
                     code: "crdt_schema_invalid".to_string(),
                 }));
@@ -1190,6 +1204,125 @@ impl TestDevice {
     /// tests (e.g. simulating a partially-acked push that left stale entries).
     pub fn local_state_mut(&mut self) -> &mut LocalSyncState {
         &mut self.local_state
+    }
+
+    /// Read-only view of the local sync state (cursors, pending) for assertions.
+    pub fn local_state(&self) -> &LocalSyncState {
+        &self.local_state
+    }
+
+    /// Number of per-document pull/push cursors currently tracked.
+    pub fn document_cursor_count(&self) -> usize {
+        self.local_state.document_cursors.len()
+    }
+
+    /// Number of media upload cursors currently tracked.
+    pub fn media_cursor_count(&self) -> usize {
+        self.local_state.media_cursors.len()
+    }
+
+    /// `true` when the materialized workspace holds a scheme named `name`.
+    pub fn has_scheme_named(&self, name: &str) -> bool {
+        self.workspace.schemes.values().any(|s| s.name == name)
+    }
+
+    /// Number of items (lines) in the first scheme named `name`, or `None` if absent.
+    /// `Some(0)` distinguishes "present but content doc missing" from `None`.
+    pub fn scheme_line_count(&self, name: &str) -> Option<usize> {
+        self.workspace
+            .schemes
+            .values()
+            .find(|s| s.name == name)
+            .map(|s| s.items.len())
+    }
+
+    /// `true` when the materialized workspace holds a folder named `name`.
+    pub fn has_folder_named(&self, name: &str) -> bool {
+        self.workspace.folders.values().any(|f| f.name == name)
+    }
+
+    /// `true` when `scheme_id` is in the archive (recently_deleted) set.
+    pub fn scheme_is_archived(&self, scheme_id: SchemeId) -> bool {
+        self.workspace.recently_deleted.contains(&scheme_id)
+    }
+
+    // --- account switch (sign out of A, sign into B) ---------------------------
+
+    /// Adopt a different account's canonical workspace identity and re-label the live
+    /// workspace CRDT document to the new id, preserving its content (mobile
+    /// `reidentify_workspace_document` / the desktop `snapshot.rs` re-key). Re-encoding
+    /// the doc under the new id — rather than only moving persisted bytes between map
+    /// keys — keeps it consistent across *repeated* switches (A -> B -> A). Returns the
+    /// re-identified full-state update (None when the workspace id is unchanged) so the
+    /// caller can queue it for push, exactly as the real drivers do. Does NOT touch
+    /// cursors.
+    fn reidentify_for_account(
+        &mut self,
+        new_account_workspace: WorkspaceId,
+    ) -> Option<CrdtDocumentUpdate> {
+        self.account_workspace = new_account_workspace;
+        self.workspace
+            .canonicalize_personal_sync_identity(new_account_workspace);
+        self.workspace.ensure_sync_metadata();
+        let update = self
+            .store_crdt
+            .reidentify_workspace_document(self.workspace.sync.id)
+            .expect("re-identify workspace document");
+        self.crdt_states = self.store_crdt.document_states();
+        update
+    }
+
+    /// Queue the re-identified workspace document's full state for push, mirroring
+    /// desktop `queue_reidentified_workspace_update` / mobile `sync_once`. Queued AFTER
+    /// the cursor reset so it survives (the reset drops stale workspace-index pending).
+    fn queue_reidentified_workspace(&mut self, update: CrdtDocumentUpdate) {
+        let local_sequence = self.next_sequence;
+        self.next_sequence += 1;
+        self.local_state.push_pending(PendingCrdtEdit {
+            operation_id: OperationId::new(),
+            workspace_id: self.workspace.id,
+            replica_id: self.replica_id,
+            local_sequence,
+            created_at: Utc::now(),
+            document: update.document,
+            kind: update.kind,
+            update_v1: update.update_v1,
+        });
+    }
+
+    /// Simulate signing out and into a DIFFERENT account (new workspace id + server),
+    /// mirroring the fixed drivers: adopt the new canonical workspace identity, re-key
+    /// the workspace CRDT document, reset the previous account's stale cursors via
+    /// [`LocalSyncState::reset_for_account_change`], then queue the re-identified
+    /// workspace state for push. This is desktop `configure_local_state` + the
+    /// `snapshot.rs` re-key/queue / mobile `sync_once` + `reidentify_workspace_document`,
+    /// distilled to the harness.
+    pub fn switch_account(&mut self, new_account_workspace: WorkspaceId, new_server_url: &str) {
+        let reidentified = self.reidentify_for_account(new_account_workspace);
+        self.local_state
+            .reset_for_account_change(self.workspace.id, new_server_url);
+        self.local_state.workspace_id = Some(self.workspace.id);
+        self.local_state.server_url = Some(new_server_url.to_string());
+        if let Some(update) = reidentified {
+            self.queue_reidentified_workspace(update);
+        }
+    }
+
+    /// Account switch WITHOUT the cursor reset — reproduces the pre-fix driver, which
+    /// overwrote the account identity but reused the previous account's pull/push and
+    /// media cursors. Use this to demonstrate the silent-skip / `crdt_schema_invalid`
+    /// bug the reset fixes.
+    pub fn switch_account_without_cursor_reset(
+        &mut self,
+        new_account_workspace: WorkspaceId,
+        new_server_url: &str,
+    ) {
+        let reidentified = self.reidentify_for_account(new_account_workspace);
+        self.local_state.workspace_id = Some(self.workspace.id);
+        self.local_state.server_url = Some(new_server_url.to_string());
+        if let Some(update) = reidentified {
+            self.queue_reidentified_workspace(update);
+        }
     }
 
     // --- media helpers ---------------------------------------------------------

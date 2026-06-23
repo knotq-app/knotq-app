@@ -1,4 +1,4 @@
-use chrono::{DateTime, Datelike, Duration, Local, NaiveDate, NaiveDateTime, TimeZone, Utc};
+use chrono::{DateTime, Datelike, Duration, Local, NaiveDate, Utc};
 use gpui::prelude::*;
 use gpui::{
     deferred, div, point, px, ClickEvent, Context, Entity, FontWeight, IntoElement, Pixels,
@@ -27,8 +27,6 @@ use knotq_ui::single_line_editor::SingleLineEditor;
 use knotq_ui::{clamped_popover_left, popover_top_biased_below};
 
 const EVENT_POPUP_PRIORITY: usize = 10_000;
-const UNTIL_CALENDAR_WIDTH: f32 = 220.0;
-const UNTIL_CALENDAR_HEIGHT: f32 = 211.0;
 const EVENT_POPUP_WIDTH: f32 = 286.0;
 const DATE_POPOVER_Y_OFFSET: f32 = 8.0;
 const NOTIFICATION_MENU_WIDTH: f32 = 176.0;
@@ -40,7 +38,6 @@ const REPEAT_MENU_LEFT_OFFSET: f32 = 0.0;
 const REPEAT_MENU_TOP_OFFSET: f32 = 126.0;
 const SCHEME_PICKER_WIDTH: f32 = 230.0;
 const SCHEME_PICKER_FOLDER_ICON: &str = "icons/zed-folder.svg";
-const SCHEME_PICKER_FOLDER_ICON_SIZE: f32 = 10.5;
 const SCHEME_PICKER_MOVE_ICON: &str = "icons/move-to-folder.svg";
 const EVENT_POPUP_ESTIMATED_HEIGHT: f32 = 220.0;
 const SCOPE_DIALOG_WIDTH: f32 = 340.0;
@@ -63,6 +60,9 @@ mod repeat_weekdays;
 mod scope_dialog;
 mod until_calendar;
 
+use crate::views::{
+    repeat_end_for_local_date, FOLDER_ICON_SIZE, UNTIL_CALENDAR_HEIGHT, UNTIL_CALENDAR_WIDTH,
+};
 use self::components::*;
 use self::formatting::*;
 use self::layer::*;

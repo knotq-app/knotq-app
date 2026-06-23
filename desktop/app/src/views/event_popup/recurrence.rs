@@ -1,5 +1,7 @@
 use super::*;
 
+pub(super) use knotq_rrule::ical::{parse_rrule_until, parse_rrule_weekdays};
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) enum EventRepeatMode {
     Daily,
@@ -186,58 +188,6 @@ pub(super) fn parse_rrule_fields(raw_rule: &str) -> Option<Vec<(String, String)>
         })
         .collect::<Vec<_>>();
     (!fields.is_empty()).then_some(fields)
-}
-
-pub(super) fn parse_rrule_until(value: &str) -> Option<DateTime<Utc>> {
-    DateTime::parse_from_rfc3339(value)
-        .map(|dt| dt.with_timezone(&Utc))
-        .ok()
-        .or_else(|| {
-            NaiveDateTime::parse_from_str(value, "%Y%m%dT%H%M%SZ")
-                .ok()
-                .map(|dt| DateTime::from_naive_utc_and_offset(dt, Utc))
-        })
-        .or_else(|| {
-            NaiveDate::parse_from_str(value, "%Y%m%d")
-                .ok()
-                .and_then(local_repeat_until_for_date)
-        })
-}
-
-pub(super) fn local_repeat_until_for_date(date: NaiveDate) -> Option<DateTime<Utc>> {
-    let local_end = date.and_hms_opt(23, 59, 59)?;
-    Local
-        .from_local_datetime(&local_end)
-        .latest()
-        .map(|dt| dt.with_timezone(&Utc))
-}
-
-pub(super) fn repeat_end_for_local_date(date: NaiveDate) -> RepeatEnd {
-    RepeatEnd::Until(
-        local_repeat_until_for_date(date)
-            .expect("23:59:59 should resolve for a valid local calendar date"),
-    )
-}
-
-pub(super) fn parse_rrule_weekdays(value: &str) -> Vec<RepeatWeekday> {
-    value
-        .split(',')
-        .filter_map(|part| {
-            let day = part
-                .trim()
-                .trim_start_matches(|ch: char| ch == '+' || ch == '-' || ch.is_ascii_digit());
-            match day {
-                "MO" => Some(RepeatWeekday::Mon),
-                "TU" => Some(RepeatWeekday::Tue),
-                "WE" => Some(RepeatWeekday::Wed),
-                "TH" => Some(RepeatWeekday::Thu),
-                "FR" => Some(RepeatWeekday::Fri),
-                "SA" => Some(RepeatWeekday::Sat),
-                "SU" => Some(RepeatWeekday::Sun),
-                _ => None,
-            }
-        })
-        .collect()
 }
 
 pub(super) fn simple_recurrence_rrule(simple: &SimpleRecurrence) -> String {

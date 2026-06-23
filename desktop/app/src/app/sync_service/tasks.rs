@@ -1,0 +1,372 @@
+use std::time::Duration as StdDuration;
+
+use async_channel::Receiver;
+use chrono::Utc;
+use futures::{pin_mut, select, FutureExt};
+use gpui::{Context, Task};
+use knotq_model::SyncAccountStatus;
+use knotq_storage_json::{load_local_sync_state, workspace_path};
+
+use super::snapshot::sync_snapshot;
+use super::{
+    SyncNetworkUnreachable, SyncSignal, SyncSnapshot, ACCESS_REFRESH_SKEW_SECS, SYNC_DEBOUNCE,
+    SYNC_LOCAL_CHANGE_DEBOUNCE, SYNC_PENDING_RETRY, SYNC_POLL_BACKGROUND, SYNC_POLL_FOREGROUND,
+    SYNC_POLL_OFFLINE,
+};
+use crate::app::sync_auth::{refresh_sync_backend, RefreshError};
+use crate::app::{KnotQApp, SyncAuthStatus, SyncRunStatus, View};
+
+pub(crate) fn spawn_sync_task(
+    sync_rx: Receiver<SyncSignal>,
+    cx: &mut Context<KnotQApp>,
+) -> Task<()> {
+    cx.spawn(
+        async move |weak: gpui::WeakEntity<KnotQApp>, cx: &mut gpui::AsyncApp| {
+            // Run once at startup (immediate, no debounce).
+            record_poll_at(&weak, cx);
+            run_sync_once(&weak, cx).await;
+            loop {
+                // Choose the timer interval based on current app state.
+                let interval = poll_interval(&weak, cx);
+                let timer = cx.background_executor().timer(interval).fuse();
+                let signal = sync_rx.recv().fuse();
+                pin_mut!(timer, signal);
+                let mut received_signal: Option<SyncSignal> = None;
+                select! {
+                    _ = timer => {}
+                    result = signal => {
+                        match result {
+                            Ok(sig) => received_signal = Some(sig),
+                            Err(_) => break,
+                        }
+                    }
+                }
+
+                if let Some(first_signal) = received_signal {
+                    // Debounce: LocalChange waits 30 s from the *first* signal;
+                    // Immediate waits 2 s. During the wait keep listening — an
+                    // Immediate mid-wait shortens the deadline to now+2 s (only
+                    // if that is sooner than the current deadline), further
+                    // LocalChanges do not extend the 30 s deadline.
+                    let debounce = match first_signal {
+                        SyncSignal::Immediate => SYNC_DEBOUNCE,
+                        SyncSignal::LocalChange => SYNC_LOCAL_CHANGE_DEBOUNCE,
+                    };
+                    let mut debounce_end = std::time::Instant::now() + debounce;
+                    loop {
+                        let remaining = debounce_end
+                            .checked_duration_since(std::time::Instant::now())
+                            .unwrap_or(StdDuration::ZERO);
+                        if remaining.is_zero() {
+                            break;
+                        }
+                        let timer = cx.background_executor().timer(remaining).fuse();
+                        let signal = sync_rx.recv().fuse();
+                        pin_mut!(timer, signal);
+                        select! {
+                            _ = timer => break,
+                            result = signal => {
+                                match result {
+                                    Ok(SyncSignal::Immediate) => {
+                                        // Shorten the deadline to 2 s from now, but
+                                        // only if that is sooner than the current end.
+                                        let shortened =
+                                            std::time::Instant::now() + SYNC_DEBOUNCE;
+                                        if shortened < debounce_end {
+                                            debounce_end = shortened;
+                                        }
+                                    }
+                                    Ok(SyncSignal::LocalChange) => {
+                                        // Additional local changes don't extend the wait.
+                                    }
+                                    Err(_) => return,
+                                }
+                            }
+                        }
+                    }
+                    // Drain any remaining queued signals.
+                    while sync_rx.try_recv().is_ok() {}
+                }
+
+                record_poll_at(&weak, cx);
+                run_sync_once(&weak, cx).await;
+            }
+        },
+    )
+}
+
+/// Compute the poll-timer interval from the current app state.
+///
+/// This is a pure function of (has_pending, offline, server_rejecting,
+/// window_active) exposed as a separate free function so it can be unit-tested.
+pub(crate) fn sync_poll_interval(
+    has_pending: bool,
+    offline: bool,
+    server_rejecting: bool,
+    window_active: bool,
+) -> StdDuration {
+    if has_pending && !server_rejecting {
+        // Pending edits exist and the server hasn't rejected them (i.e. either
+        // we're offline or haven't tried yet): retry aggressively.
+        SYNC_PENDING_RETRY
+    } else if offline {
+        SYNC_POLL_OFFLINE
+    } else if window_active {
+        SYNC_POLL_FOREGROUND
+    } else {
+        SYNC_POLL_BACKGROUND
+    }
+}
+
+fn poll_interval(weak: &gpui::WeakEntity<KnotQApp>, cx: &mut gpui::AsyncApp) -> StdDuration {
+    weak.update(cx, |app, _cx| {
+        let has_pending = app.state.has_pending_crdt_edits() || app.sync_pending_hint > 0;
+        let offline = app.sync_offline;
+        let server_rejecting = app.sync_server_rejecting;
+        let window_active = app.window_is_active;
+        sync_poll_interval(has_pending, offline, server_rejecting, window_active)
+    })
+    .unwrap_or(SYNC_POLL_FOREGROUND)
+}
+
+fn record_poll_at(weak: &gpui::WeakEntity<KnotQApp>, cx: &mut gpui::AsyncApp) {
+    let now = Utc::now();
+    let _ = weak.update(cx, |app, _cx| {
+        app.last_sync_poll_at = Some(now);
+    });
+}
+
+async fn run_sync_once(weak: &gpui::WeakEntity<KnotQApp>, cx: &mut gpui::AsyncApp) {
+    // Refresh the (short-lived) access token before syncing if it's near expiry,
+    // persisting the rotated credentials immediately so a rotated refresh token is
+    // never lost to a later sync failure. Aborts this tick if the session is gone.
+    if ensure_fresh_token(weak, cx).await.is_err() {
+        return;
+    }
+
+    let snapshot = weak
+        .update(cx, |app, _cx| {
+            if app.workspace_save_blocked_reason.is_some() {
+                return None;
+            }
+            let account = app.settings.sync_account.clone()?;
+            if !account.supports_sync {
+                app.sync_run_status = SyncRunStatus::Idle;
+                _cx.notify();
+                return None;
+            }
+            app.state.sync_store_from_workspace();
+            let pending = app.state.pending_crdt_edits();
+            let crdt_states = app.state.crdt_document_states();
+            app.sync_run_status = SyncRunStatus::Running {
+                pending: pending.len(),
+            };
+            _cx.notify();
+            let notification_schedule = crate::notifications::notification_schedule_snapshot(
+                &app.workspace,
+                app.settings.notification_defaults,
+                Utc::now(),
+                0,
+            );
+            let snapshot = SyncSnapshot {
+                workspace: app.workspace.clone(),
+                account,
+                replica_id: app.settings.replica_id,
+                pending,
+                crdt_states,
+                notification_schedule,
+            };
+            // Captured after sync_store_from_workspace above, so it only moves
+            // again if the user edits while the run is in flight.
+            Some((snapshot, app.state.local_edit_watermark()))
+        })
+        .ok()
+        .flatten();
+
+    let Some((snapshot, local_edit_watermark)) = snapshot else {
+        return;
+    };
+
+    let result = cx
+        .background_executor()
+        .spawn(async move { sync_snapshot(snapshot) })
+        .await;
+
+    match result {
+        Ok(result) => {
+            let remote_updates_applied = result.remote_updates_applied;
+            let pushed = result.pushed.clone();
+            let workspace = result.workspace.clone();
+            let crdt_states = result.crdt_states.clone();
+            let remaining_pending = result.remaining_pending;
+            let local_workspace_changed = result.local_workspace_changed;
+            let media_downloaded = result.media_downloaded;
+            let _ = weak.update(cx, |app, cx| {
+                for pushed in pushed {
+                    app.state
+                        .clear_pushed_crdt_edits(pushed.document, pushed.through_local_sequence);
+                }
+                app.sync_run_status = SyncRunStatus::Synced {
+                    pending: remaining_pending,
+                };
+                app.sync_pending_hint = remaining_pending;
+                app.sync_offline = false;
+                app.sync_server_rejecting = false;
+                app.last_synced_at = Some(Utc::now());
+                if remote_updates_applied > 0 || local_workspace_changed {
+                    let scheme_scroll_restore = if app.selection.view == View::Scheme {
+                        app.selection
+                            .scheme_id
+                            .map(|scheme_id| (scheme_id, app.scheme_scroll_handle.offset()))
+                    } else {
+                        None
+                    };
+                    let daily_queue_scroll_restore = (app.selection.view == View::DailyQueue)
+                        .then(|| app.daily_queue_scroll_handle.offset());
+                    // Edits applied while the run was in flight are not in its
+                    // result; merge the result into the live documents so they
+                    // survive (e.g. an event being drafted on the calendar)
+                    // instead of being rolled back until the next round trip.
+                    // With no in-flight edits the replace is equivalent and
+                    // adopts the run's canonical merged state wholesale.
+                    let merged = app.state.has_local_edits_since(local_edit_watermark)
+                        && app
+                            .state
+                            .merge_workspace_from_sync(&workspace, &crdt_states);
+                    if !merged {
+                        app.state
+                            .replace_workspace_from_sync(workspace, crdt_states);
+                    }
+                    app.scheme_scroll_restore_after_sync = scheme_scroll_restore;
+                    app.daily_queue_scroll_restore_after_sync = daily_queue_scroll_restore;
+                    app.service_bus.signal_save();
+                    app.service_bus.signal_notifications();
+                    app.service_bus.signal_timeline();
+                }
+                if media_downloaded {
+                    // Drop cached load failures so freshly downloaded assets are
+                    // re-read on the repaint below instead of staying blank.
+                    if let Some((_, editor)) = app.scheme_editor.clone() {
+                        editor.update(cx, |editor, cx| {
+                            editor.forget_missing_images();
+                            cx.notify();
+                        });
+                    }
+                    for editor in app
+                        .daily_queue_editors
+                        .values()
+                        .cloned()
+                        .collect::<Vec<_>>()
+                    {
+                        editor.update(cx, |editor, cx| {
+                            editor.forget_missing_images();
+                            cx.notify();
+                        });
+                    }
+                    app.service_bus.signal_timeline();
+                }
+                cx.notify();
+            });
+        }
+        Err(err) => {
+            eprintln!("sync failed: {err:#}");
+            let is_offline = err.downcast_ref::<SyncNetworkUnreachable>().is_some();
+            let message = format!("{err:#}");
+            // The store queue alone undercounts after a restart, when unpushed
+            // edits live only in the persisted sync state — and the poll cadence
+            // keys off pending-ness, so count both.
+            let disk_pending = load_local_sync_state(&workspace_path())
+                .map(|state| state.pending.len())
+                .unwrap_or(0);
+            let _ = weak.update(cx, |app, cx| {
+                let pending_len = app.state.pending_crdt_edits().len().max(disk_pending);
+                app.sync_pending_hint = pending_len;
+                app.sync_offline = is_offline;
+                app.sync_server_rejecting = !is_offline;
+                app.sync_run_status = SyncRunStatus::Error {
+                    message,
+                    pending: pending_len,
+                };
+                cx.notify();
+            });
+        }
+    }
+}
+
+// Returns Err(()) only when the session is gone (refresh token dead) and the
+// caller should abort the sync tick; the user has been signed out. Otherwise
+// Ok(()), having either refreshed-and-persisted new tokens or left the current
+// (still-valid-enough) ones in place.
+async fn ensure_fresh_token(
+    weak: &gpui::WeakEntity<KnotQApp>,
+    cx: &mut gpui::AsyncApp,
+) -> Result<(), ()> {
+    let account = weak
+        .update(cx, |app, _cx| app.settings.sync_account.clone())
+        .ok()
+        .flatten();
+    let Some(account) = account else {
+        return Ok(());
+    };
+    // Refresh even when sync isn't entitled: rotation recomputes entitlement
+    // server-side and updates the local `supports_sync` cache, so a subscription
+    // purchased on the website reaches a signed-in client within one token
+    // lifetime instead of never.
+    // Only refresh when the access token is at/near expiry.
+    if account.expires_at > Utc::now() + chrono::Duration::seconds(ACCESS_REFRESH_SKEW_SECS) {
+        return Ok(());
+    }
+    let Some(refresh_token) = account.refresh_token.clone() else {
+        let _ = weak.update(cx, |app, cx| {
+            app.settings.sync_account = None;
+            app.sync_auth_status = SyncAuthStatus::Error(
+                "Your sync session expired. Please sign in again.".to_string(),
+            );
+            app.sync_run_status = SyncRunStatus::Idle;
+            app.save_app_settings();
+            cx.notify();
+        });
+        return Err(());
+    };
+    let api_base = account.api_base.clone();
+    let outcome = cx
+        .background_executor()
+        .spawn(async move { refresh_sync_backend(&api_base, &refresh_token) })
+        .await;
+    match outcome {
+        Ok(tokens) => {
+            let _ = weak.update(cx, |app, cx| {
+                if let Some(acct) = app.settings.sync_account.as_mut() {
+                    acct.bearer_token = tokens.bearer_token;
+                    acct.expires_at = tokens.expires_at;
+                    acct.refresh_token = Some(tokens.refresh_token);
+                    acct.refresh_expires_at = tokens.refresh_expires_at;
+                    acct.supports_sync = tokens.supports_sync;
+                    acct.account_status =
+                        Some(SyncAccountStatus::from_supports_sync(tokens.supports_sync));
+                }
+                app.save_app_settings();
+                cx.notify();
+            });
+            Ok(())
+        }
+        Err(RefreshError::Unauthorized) => {
+            // Refresh token revoked/expired/replayed: the session is gone.
+            let _ = weak.update(cx, |app, cx| {
+                app.settings.sync_account = None;
+                app.sync_auth_status = SyncAuthStatus::Error(
+                    "Your sync session expired. Please sign in again.".to_string(),
+                );
+                app.sync_run_status = SyncRunStatus::Idle;
+                app.save_app_settings();
+                cx.notify();
+            });
+            Err(())
+        }
+        Err(RefreshError::Transient(error)) => {
+            // Network/parse hiccup: keep the current token and retry next tick.
+            eprintln!("sync token refresh deferred: {error:#}");
+            Ok(())
+        }
+    }
+}

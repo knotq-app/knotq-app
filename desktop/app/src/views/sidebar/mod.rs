@@ -26,7 +26,6 @@ pub(super) const NAV_ROW_HEIGHT: f32 = 26.0;
 pub(super) const NAV_DROP_ZONE_HEIGHT: f32 = 3.0;
 pub(super) const ARCHIVE_MAX_VISIBLE_ROWS: f32 = 8.0;
 pub(super) const SCHEME_SQUARE_SIZE: f32 = 9.0;
-pub(super) const FOLDER_ICON_SIZE: f32 = 10.5;
 pub(super) const SIDEBAR_TEXT_SIZE: f32 = 13.0;
 pub(super) const SIDEBAR_LINE_HEIGHT: f32 = 17.0;
 pub(super) const FOOTER_TEXT_SIZE: f32 = 11.5;
@@ -61,5 +60,6 @@ mod rows;
 mod trash;
 mod tree;
 
+use crate::views::FOLDER_ICON_SIZE;
 use self::components::*;
 use self::drag::*;

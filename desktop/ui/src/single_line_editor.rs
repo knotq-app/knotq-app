@@ -3,7 +3,7 @@ use std::time::Duration as StdDuration;
 
 use gpui::prelude::*;
 use gpui::{
-    div, px, App, Bounds, Context, CursorStyle, EventEmitter, FocusHandle, IntoElement,
+    div, App, Bounds, Context, CursorStyle, EventEmitter, FocusHandle, IntoElement,
     MouseButton, Pixels, Render, Rgba, ShapedLine, SharedString, Subscription, Task, Window,
 };
 use gpui_component::ActiveTheme;
@@ -18,7 +18,6 @@ use element::SingleLineTextElement;
 use selection::TextSelection;
 use text::sanitize_input;
 
-const CURSOR_WIDTH: Pixels = px(1.5);
 const CURSOR_BLINK_DELAY: StdDuration = StdDuration::from_millis(500);
 const CURSOR_BLINK_INTERVAL: StdDuration = StdDuration::from_millis(500);
 

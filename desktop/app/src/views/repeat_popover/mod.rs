@@ -1,4 +1,4 @@
-use chrono::{DateTime, Datelike, Local, NaiveDate, NaiveDateTime, TimeZone, Utc};
+use chrono::{DateTime, Datelike, Local, NaiveDate, Utc};
 use gpui::prelude::*;
 use gpui::{deferred, div, px, ClickEvent, Context, FontWeight, IntoElement, MouseButton, Window};
 use gpui_component::input::Escape as InputEscape;
@@ -13,8 +13,6 @@ use crate::theme_gpui::{selected_date_text_color, token_hsla, token_rgba, Theme}
 use knotq_ui::{clamped_popover_left, popover_top_biased_below};
 
 pub(crate) const REPEAT_POPOVER_WIDTH: f32 = 286.0;
-pub(crate) const REPEAT_UNTIL_CALENDAR_WIDTH: f32 = 220.0;
-pub(crate) const REPEAT_UNTIL_CALENDAR_HEIGHT: f32 = 211.0;
 const REPEAT_POPOVER_PRIORITY: usize = 20_500;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -87,6 +85,7 @@ mod recurrence;
 mod render;
 mod until_calendar;
 
+use crate::views::{repeat_end_for_local_date, UNTIL_CALENDAR_HEIGHT, UNTIL_CALENDAR_WIDTH};
 use self::components::*;
 use self::recurrence::*;
 use self::until_calendar::*;
