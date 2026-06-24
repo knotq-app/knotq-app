@@ -236,7 +236,7 @@ impl YrsSchemeDocument {
                             };
                             let new_content = normalize_inline_content(&item.content.to_inlines());
                             if current != new_content {
-                                apply_content_diff(&text_ref, &mut txn, &current, &new_content)?;
+                                                apply_content_diff(&text_ref, &mut txn, &current, &new_content)?;
                             }
                             if prev.is_none_or(|stored| {
                                 stored.content_shadow.as_deref() != Some(new_content.as_slice())
@@ -442,7 +442,14 @@ pub(crate) fn write_new_item(
     position: &str,
     snapshot_json: &str,
 ) -> anyhow::Result<()> {
-    write_item_fields(item_map, txn, item, position, snapshot_json, true)
+    write_item_fields(item_map, txn, item, position, snapshot_json, true)?;
+    // content_json is owned by the shadow writer (see write_item_fields' note), so the
+    // creation path writes it here — exactly once.
+    write_item_content_shadow(
+        item_map,
+        txn,
+        &normalize_inline_content(&item.content.to_inlines()),
+    )
 }
 
 /// Rewrite an existing item's last-writer-wins metadata fields in place, leaving
@@ -521,11 +528,11 @@ pub(crate) fn write_item_fields(
     item_map.insert(txn, "priority_json", serde_json::to_string(&item.priority)?);
     item_map.insert(txn, "external_json", serde_json::to_string(&item.external)?);
     item_map.insert(txn, "snapshot_json", snapshot_json.to_string());
-    item_map.insert(
-        txn,
-        "content_json",
-        serde_json::to_string(&normalize_inline_content(&item.content.to_inlines()))?,
-    );
+    // NOTE: `content_json` (the content shadow) is intentionally NOT written here — it is
+    // owned solely by `write_item_content_shadow`. Writing it both here and there inserts
+    // the same key twice in one creation transaction; the second insert tombstones the
+    // first, baking a permanent delete into the document that `encode_diff_v1` re-emits on
+    // every subsequent reconcile — a spurious, non-idempotent edit on unchanged content.
     Ok(())
 }
 
