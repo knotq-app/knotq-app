@@ -37,8 +37,8 @@ pub use scheme_content::YrsSchemeDocument;
 pub use validation::validate_crdt_update_sequence;
 
 pub(crate) use encoding::{
-    decode_inline_embed_str, encode_inline_embed, serde_json_string_value, update_v1_is_empty,
-    yrs_doc_options,
+    decode_inline_embed_str, encode_inline_embed, serde_json_string_value,
+    random_document_client_id, stable_item_seed_client_id, update_v1_is_empty, yrs_doc_options,
 };
 pub(crate) use scheme_content::item_text_ref;
 #[cfg(test)]
@@ -164,13 +164,6 @@ impl WorkspaceCrdtApplyOutcome {
 pub struct WorkspaceCrdtDocuments {
     workspace: YrsJsonDocument,
     schemes: HashMap<SchemeId, YrsSchemeDocument>,
-    /// When set, every Yjs document this owns is built with a clientID derived
-    /// deterministically from `(replica_id, document_id)` (see [`stable_client_id`]),
-    /// so a document reconstructed from persisted state — across app restarts, the
-    /// desktop UI↔background split, or mobile reloads — keeps one stable Yjs identity.
-    /// `None` preserves the legacy random-clientID behavior used by the unit tests
-    /// that simulate two independent replicas from one process.
-    replica_id: Option<ReplicaId>,
 }
 
 impl WorkspaceCrdtDocuments {
@@ -193,7 +186,6 @@ impl WorkspaceCrdtDocuments {
                 workspace_client_id,
             ),
             schemes: HashMap::new(),
-            replica_id: None,
         };
         docs.sync_changes_with_scheme_factory(
             &workspace,
@@ -227,7 +219,6 @@ impl WorkspaceCrdtDocuments {
                 replica_id,
             ),
             schemes: HashMap::new(),
-            replica_id,
         }
     }
 
@@ -254,17 +245,35 @@ impl WorkspaceCrdtDocuments {
     /// CRDT: they never rebuild from plain data with a throwaway identity.
     pub fn from_states(
         workspace: &Workspace,
-        replica_id: ReplicaId,
+        // The replica id is no longer used for clientID derivation — every document is
+        // built under a fresh random authoring identity (see below) — but the parameter
+        // is kept so the desktop/mobile/test call sites stay unchanged.
+        _replica_id: ReplicaId,
         states: &HashMap<DocumentId, Vec<u8>>,
     ) -> anyhow::Result<Self> {
         let mut workspace = workspace.clone();
         workspace.ensure_sync_metadata();
+        // Every document is (re)constructed under a FRESH random authoring clientID — the
+        // standard Yjs session model — never the per-replica `stable_client_id`. Restored
+        // bytes carry their own original authoring clientIDs, so this session's fresh id is
+        // used ONLY for new local edits; existing content is never re-authored (the diff in
+        // `replace_scheme`/`sync_snapshot` only writes changes). A stable clientID, by
+        // contrast, gets REUSED across document incarnations, and when a clock ever
+        // restarts (a rebuild whose restored bytes don't already contain that clientID's
+        // full history) two unrelated operations alias the same `(clientID, clock)`. Yjs
+        // then keeps whichever integrated first, so the merge becomes order-dependent — the
+        // server (base-then-push) and the device (local-then-pull) land on different sides
+        // and diverge forever (observed: a text chunk overwriting `scheme_file.id`, and a
+        // delete that never takes on the server). A fresh random id per construction makes
+        // `(clientID, clock)` reuse impossible, so every merge is commutative and converges
+        // (worst case: duplicated content, which still converges identically everywhere).
+        let workspace_state = states.get(&workspace.sync.id).filter(|s| !s.is_empty());
         let workspace_doc = YrsJsonDocument::for_replica(
             workspace.sync.id,
             SyncDocumentKind::PersonalWorkspace,
-            Some(replica_id),
+            None,
         );
-        if let Some(state) = states.get(&workspace.sync.id).filter(|s| !s.is_empty()) {
+        if let Some(state) = workspace_state {
             workspace_doc
                 .apply_update_v1(state)
                 .context("restore workspace CRDT state")?;
@@ -272,7 +281,7 @@ impl WorkspaceCrdtDocuments {
         let mut schemes = HashMap::new();
         for id in workspace.schemes.keys() {
             let meta = scheme_meta(&workspace, *id)?;
-            let doc = YrsSchemeDocument::for_replica(meta.id, Some(replica_id));
+            let doc = YrsSchemeDocument::for_replica(meta.id, None);
             if let Some(state) = states.get(&meta.id).filter(|s| !s.is_empty()) {
                 doc.apply_update_v1(state)
                     .with_context(|| format!("restore scheme CRDT state {id}"))?;
@@ -282,7 +291,6 @@ impl WorkspaceCrdtDocuments {
         Ok(Self {
             workspace: workspace_doc,
             schemes,
-            replica_id: Some(replica_id),
         })
     }
 
@@ -355,7 +363,11 @@ impl WorkspaceCrdtDocuments {
         }
         let kind = self.workspace.kind;
         let state = self.workspace.encode_state_v1();
-        let doc = YrsJsonDocument::for_replica(new_id, kind, self.replica_id);
+        // Fresh random identity (not the stable per-replica clientID) — consistent with
+        // `from_states`: the re-keyed doc carries the old content under its original
+        // authoring clientIDs, and only new edits use this session's id, so no
+        // `(clientID, clock)` is ever reused. See the rationale in `from_states`.
+        let doc = YrsJsonDocument::for_replica(new_id, kind, None);
         doc.apply_update_v1(&state)
             .context("re-identify workspace CRDT document")?;
         self.workspace = doc;
@@ -424,14 +436,16 @@ impl WorkspaceCrdtDocuments {
         self.workspace
             .replace_snapshot(&workspace_document_snapshot(&workspace))?;
 
-        let replica_id = self.replica_id;
         self.schemes
             .retain(|id, _| workspace.schemes.contains_key(id));
         for (id, scheme) in &workspace.schemes {
             let meta = scheme_meta(&workspace, *id)?;
+            // A doc created here starts from an empty base (no restored bytes), so it
+            // gets a fresh identity — never the stable clientID, which is reserved for
+            // from-bytes restore (see `from_states`) to avoid `(clientID, clock)` reuse.
             self.schemes
                 .entry(*id)
-                .or_insert_with(|| YrsSchemeDocument::for_replica(meta.id, replica_id))
+                .or_insert_with(|| YrsSchemeDocument::for_replica(meta.id, None))
                 .replace_scheme(scheme)
                 .with_context(|| format!("replace scheme CRDT {id}"))?;
         }
@@ -443,9 +457,11 @@ impl WorkspaceCrdtDocuments {
         workspace: &Workspace,
         changeset: &WorkspaceCrdtChangeSet,
     ) -> WorkspaceCrdtSyncOutcome {
-        let replica_id = self.replica_id;
+        // A doc absent from `self.schemes` is authored from an empty base, so it gets a
+        // fresh identity (`None`); the stable clientID is reserved for from-bytes restore
+        // in `from_states` to prevent `(clientID, clock)` reuse across incarnations.
         self.sync_changes_with_scheme_factory(workspace, changeset, move |_, document_id| {
-            YrsSchemeDocument::for_replica(document_id, replica_id)
+            YrsSchemeDocument::for_replica(document_id, None)
         })
     }
 
@@ -594,11 +610,14 @@ impl WorkspaceCrdtDocuments {
                 );
                 continue;
             };
-            let replica_id = self.replica_id;
+            // First sight of this content doc: create it from an empty base and adopt
+            // the server's structs from the update below. A fresh identity (`None`) — not
+            // the stable clientID — keeps it from reusing a `(clientID, clock)` the server
+            // may already hold under that clientID from a prior local incarnation.
             match self
                 .schemes
                 .entry(scheme_id)
-                .or_insert_with(|| YrsSchemeDocument::for_replica(update.document, replica_id))
+                .or_insert_with(|| YrsSchemeDocument::for_replica(update.document, None))
                 .apply_update_v1(&update.update_v1)
             {
                 Ok(()) => {

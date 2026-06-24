@@ -445,11 +445,12 @@ fn switch_into_empty_account_seeds_it_fully() {
 // Silent-skip bug (pull cursor) — demonstrated and fixed
 // ---------------------------------------------------------------------------
 
-/// Pre-fix: a device that PULLED a scheme on account A (non-zero pull cursor, no
-/// pending) signs into B without resetting cursors. The stale cursor makes the
-/// bootstrap skip re-seeding the scheme, so it never reaches B — silent data loss.
+/// A device that PULLED a scheme on account A (non-zero pull cursor, no pending) signs
+/// into a FRESH account B. The server-authoritative bootstrap re-seeds full snapshots
+/// for documents B lacks, so the scheme is carried even without an explicit cursor
+/// reset — no silent loss for the fresh-account case.
 #[test]
-fn switch_without_reset_silently_skips_pulled_scheme() {
+fn switch_to_fresh_account_carries_pulled_scheme_via_reseed() {
     let mut h = Harness::new(2);
     h.login_all();
     h.add_scheme(D0, "Shared", &["x"]);
@@ -463,14 +464,15 @@ fn switch_without_reset_silently_skips_pulled_scheme() {
     {
         let dev = h.device_mut_for_surgery(D1);
         dev.switch_account_without_cursor_reset(account_b, "memory://account-b");
-        dev.try_sync(&server_b).expect("buggy sync to B");
+        dev.try_sync(&server_b).expect("sync to B");
     }
+    assert_eq!(server_b.schema_invalid_rejections(), 0);
 
     let puller = puller_for(account_b, &server_b);
-    assert_ne!(
+    assert_eq!(
         puller.scheme_line_count("Shared"),
         Some(1),
-        "demonstrates the bug: the pulled scheme's content is not carried to B without a cursor reset"
+        "fresh-account re-seed carries the pulled scheme even without an explicit cursor reset"
     );
 }
 

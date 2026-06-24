@@ -96,12 +96,12 @@ fn account_switch_reseeds_full_snapshots_without_schema_invalid() {
     );
 }
 
-/// The same setup WITHOUT the cursor reset reproduces the bug: the stale cursor makes
-/// the bootstrap push a baseless bare delta, which the server rejects with
-/// `crdt_schema_invalid` (the engine's self-heal then recovers, so the sync still
-/// completes — but only after at least one rejection round-trip).
+/// Switching into a FRESH account re-seeds full snapshots from the server-authoritative
+/// bootstrap, so even without an explicit cursor reset no baseless bare delta is pushed
+/// (no `crdt_schema_invalid`) and the content still lands. (The cursor reset additionally
+/// protects switches into an account that already holds divergent content.)
 #[test]
-fn account_switch_without_reset_triggers_schema_invalid_rejection() {
+fn account_switch_to_fresh_account_reseeds_without_schema_invalid() {
     let mut h = Harness::new(2);
     h.login_all();
 
@@ -114,14 +114,21 @@ fn account_switch_without_reset_triggers_schema_invalid_rejection() {
     let server_b = TestServer::default();
     {
         let dev = h.device_mut_for_surgery(D0);
-        // Pre-fix behavior: identity is updated but cursors carry over.
         dev.switch_account_without_cursor_reset(account_b, "memory://account-b");
-        let _ = dev.try_sync(&server_b);
+        dev.try_sync(&server_b).expect("sync to fresh account B");
     }
 
-    assert!(
-        server_b.schema_invalid_rejections() >= 1,
-        "carried-over cursor must cause a baseless bare-delta push (the bug)"
+    assert_eq!(
+        server_b.schema_invalid_rejections(),
+        0,
+        "fresh-account switch re-seeds full snapshots; no baseless bare delta"
+    );
+    let mut puller = fresh_device(account_b);
+    puller.try_sync(&server_b).expect("puller sync from B");
+    assert_eq!(
+        scheme_item_count(&puller, "Plan"),
+        Some(2),
+        "content still carried to the new account"
     );
 }
 

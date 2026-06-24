@@ -1246,6 +1246,14 @@ impl TestDevice {
         self.workspace.recently_deleted.contains(&scheme_id)
     }
 
+    /// `true` when this device's materialized workspace is content-identical to
+    /// `other` — the same convergence definition `assert_all_converged` uses
+    /// (`summary()`), exposed so multi-account model tests in other files can assert
+    /// that every device on an account converged.
+    pub fn converges_with(&self, other: &TestDevice) -> bool {
+        self.summary() == other.summary()
+    }
+
     // --- account switch (sign out of A, sign into B) ---------------------------
 
     /// Adopt a different account's canonical workspace identity and re-label the live
@@ -1306,6 +1314,26 @@ impl TestDevice {
         if let Some(update) = reidentified {
             self.queue_reidentified_workspace(update);
         }
+        // Force re-seed every scheme's full content to the new account. The bootstrap
+        // only re-seeds documents the new server LACKS (remote_latest == 0); a scheme
+        // the new account already holds from another origin (or empty) would otherwise
+        // never receive this device's content — the cross-account content gap. Full
+        // snapshots union idempotently, and with deterministic item creation items
+        // dedupe instead of duplicating.
+        knotq_sync::queue_account_switch_reseed(
+            &mut self.local_state,
+            &self.store_crdt,
+            &self.workspace,
+            self.replica_id,
+        );
+        self.next_sequence = self
+            .local_state
+            .pending
+            .iter()
+            .map(|edit| edit.local_sequence)
+            .max()
+            .unwrap_or(0)
+            + 1;
     }
 
     /// Account switch WITHOUT the cursor reset — reproduces the pre-fix driver, which
@@ -2245,6 +2273,11 @@ impl TestDevice {
         )
         .expect("pull/apply");
         self.last_skipped = pull.skipped.clone();
+        // Server-authoritative per-document latest (from the pull's known_documents),
+        // exactly as desktop snapshot.rs / mobile sync_once use it — not a
+        // cursor-derived approximation. This makes the bootstrap's re-seed decisions
+        // mirror production so the fuzzer's results are trustworthy.
+        let remote_latest = pull.remote_latest.clone();
         self.workspace = pull.workspace;
         let mut repaired_workspace_changed = self
             .workspace
@@ -2275,12 +2308,7 @@ impl TestDevice {
             }
         }
 
-        let remote_latest: HashMap<DocumentId, u64> = self
-            .local_state
-            .document_cursors
-            .values()
-            .map(|cursor| (cursor.document, cursor.last_pulled_sequence))
-            .collect();
+        // remote_latest was captured from the server-authoritative pull above.
         queue_workspace_bootstrap_updates(
             &mut self.local_state,
             &mut apply_crdt,
@@ -2352,6 +2380,11 @@ impl TestDevice {
         )
         .expect("pull/apply");
         self.last_skipped = pull.skipped.clone();
+        // Server-authoritative per-document latest (from the pull's known_documents),
+        // exactly as desktop snapshot.rs / mobile sync_once use it — not a
+        // cursor-derived approximation. This makes the bootstrap's re-seed decisions
+        // mirror production so the fuzzer's results are trustworthy.
+        let remote_latest = pull.remote_latest.clone();
         self.workspace = pull.workspace;
         let mut repaired_workspace_changed = self
             .workspace
@@ -2379,12 +2412,7 @@ impl TestDevice {
                 });
             }
         }
-        let remote_latest: HashMap<DocumentId, u64> = self
-            .local_state
-            .document_cursors
-            .values()
-            .map(|cursor| (cursor.document, cursor.last_pulled_sequence))
-            .collect();
+        // remote_latest was captured from the server-authoritative pull above.
         queue_workspace_bootstrap_updates(
             &mut self.local_state,
             &mut apply_crdt,

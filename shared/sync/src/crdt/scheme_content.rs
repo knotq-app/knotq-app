@@ -17,13 +17,16 @@ pub struct YrsSchemeDocument {
 
 impl YrsSchemeDocument {
     pub fn new(id: DocumentId) -> Self {
-        // UTF-16 offsets match Yjs (JS) semantics, so the text-diff index math
-        // here lines up with any future JavaScript collaboration client and never
-        // splits a multi-byte character.
-        let doc = Doc::with_options(Options {
-            offset_kind: OffsetKind::Utf16,
-            ..Options::default()
-        });
+        // UTF-16 offsets match Yjs (JS) semantics, so the text-diff index math here lines
+        // up with any future JavaScript collaboration client and never splits a multi-byte
+        // character. The clientID is a fresh random value in the DOCUMENT namespace (not
+        // yrs's unpartitioned default), so a from-empty rebuild can never alias an
+        // item-skeleton seed clientID — see `stable_item_seed_client_id`.
+        let doc = Doc::with_options(yrs_doc_options(
+            id,
+            random_document_client_id(),
+            OffsetKind::Utf16,
+        ));
         init_scheme_maps(&doc);
         Self { id, doc }
     }
@@ -68,7 +71,40 @@ impl YrsSchemeDocument {
         }))
     }
 
+    /// Deterministically create the skeleton (sub-map + `schema`/`id` + empty Text) for
+    /// every item not yet in the document, under a fixed clientID derived from the item
+    /// id. Identical across devices, so two independent creations of the same item
+    /// dedupe into one container instead of clobbering one. Each skeleton is applied as
+    /// its own sub-update (each uses its own id-derived clientID) before the main edit
+    /// transaction.
+    fn ensure_item_skeletons(&self, scheme: &Scheme) -> anyhow::Result<()> {
+        let items_by_id = self.doc.get_or_insert_map("items_by_id");
+        let missing: Vec<String> = {
+            let txn = self.doc.transact();
+            scheme
+                .items
+                .iter()
+                .map(|item| item.id.to_string())
+                .filter(|id| item_map_ref(&items_by_id, &txn, id).is_none())
+                .collect()
+        };
+        for item_id in missing {
+            let skeleton = build_item_skeleton_update(self.id, &item_id);
+            self.doc
+                .transact_mut()
+                .apply_update(Update::decode_v1(&skeleton)?)?;
+        }
+        Ok(())
+    }
+
     pub fn replace_scheme(&self, scheme: &Scheme) -> anyhow::Result<()> {
+        // Deterministically create the skeleton for any new item BEFORE the main edit
+        // transaction, so two devices that independently create the same item dedupe
+        // into one container instead of clobbering one. The content/metadata writes
+        // below then fill those skeletons under the device clientID (and so still merge
+        // AB/BA). Applied as sub-updates because each item's skeleton uses its own
+        // id-derived clientID.
+        self.ensure_item_skeletons(scheme)?;
         let metadata = self.doc.get_or_insert_map("scheme_file");
         let items_by_id = self.doc.get_or_insert_map("items_by_id");
         let mut txn = self.doc.transact_mut();
@@ -118,7 +154,12 @@ impl YrsSchemeDocument {
         let mut positions: Vec<String> = Vec::with_capacity(desired.len());
         for (idx, id) in desired.iter().enumerate() {
             let prev = positions.last().cloned();
-            let existing = stored.get(id).map(|entry| entry.position.clone());
+            // A skeleton-created item has no real position yet (read back as ""); treat
+            // an empty position as absent so a fresh fractional key is minted.
+            let existing = stored
+                .get(id)
+                .map(|entry| entry.position.clone())
+                .filter(|position| !position.is_empty());
             let keep = match (&existing, &prev) {
                 (Some(existing), Some(prev)) => existing.as_str() > prev.as_str(),
                 (Some(_), None) => true,
@@ -147,7 +188,27 @@ impl YrsSchemeDocument {
             .map(str::to_string)
             .collect::<Vec<_>>();
         for key in stale_keys {
-            items_by_id.remove(&mut txn, &key);
+            let Some(item_map) = item_map_ref(&items_by_id, &txn, &key) else {
+                continue;
+            };
+            let has_schema = item_map
+                .get_as::<_, Option<String>>(&txn, "schema")
+                .ok()
+                .flatten()
+                .is_some();
+            if has_schema {
+                // A valid item the user removed → tombstone (soft-delete). A hard remove
+                // concurrent with another replica's edit detaches the map and loses
+                // fields ("item schema missing"), wedging the scheme; a tombstone keeps a
+                // valid map that merges with concurrent edits. Materialization skips it.
+                item_map.insert(&mut txn, "deleted", true);
+            } else {
+                // Already a partial/clobbered entry (schema missing, e.g. from a legacy
+                // hard-remove race). Hard-remove it: tombstoning would leave it
+                // schema-invalid and the backend would reject the push. Dropping converges
+                // — every replica sees the same partial in the merged state and drops it.
+                items_by_id.remove(&mut txn, &key);
+            }
         }
 
         // For each item, merge content as a rich-text sequence CRDT and treat
@@ -183,12 +244,20 @@ impl YrsSchemeDocument {
                                 write_item_content_shadow(&item_map, &mut txn, &new_content)?;
                             }
                         }
-                        // No Text present (corrupt entry) — rebuild it whole.
+                        // No Text present (an entry that lost its Text). Seed a fresh
+                        // Text IN PLACE and fall through to write the metadata fields. Do
+                        // NOT re-insert the items_by_id entry: a re-insert detaches the
+                        // whole map and races a concurrent edit into a schema-less "only
+                        // text" partial — the exact clobber we are eliminating. The entry
+                        // is a materialized item, so its immutable schema/id already
+                        // exist; only the Text needs rebuilding.
                         None => {
-                            let item_map =
-                                items_by_id.insert(&mut txn, item_id, MapPrelim::default());
-                            write_new_item(&item_map, &mut txn, item, position, &next_snapshot)?;
-                            continue;
+                            let new_content =
+                                normalize_inline_content(&item.content.to_inlines());
+                            let text_ref =
+                                item_map.insert(&mut txn, "text", TextPrelim::new(""));
+                            insert_inline_content(&text_ref, &mut txn, &new_content)?;
+                            write_item_content_shadow(&item_map, &mut txn, &new_content)?;
                         }
                     }
                     let metadata_changed = prev.is_none_or(|stored| {
@@ -260,17 +329,25 @@ impl YrsSchemeDocument {
     }
 
     pub(crate) fn scheme_items(&self) -> anyhow::Result<Vec<Item>> {
-        self.sorted_entries()?
+        Ok(self
+            .sorted_entries()?
             .into_iter()
-            .map(|(id, entry)| {
+            // Skip tombstoned items, and any partial entry (empty snapshot) left by a
+            // pre-tombstone concurrent remove/edit clobber, so materialization stays
+            // consistent across replicas instead of failing the whole scheme.
+            .filter(|(_, entry)| !entry.deleted && !entry.snapshot_json.is_empty())
+            .filter_map(|(_, entry)| {
                 // snapshot_json holds every non-content field; the ordered inline
                 // stream comes from the Text CRDT, which is the source of truth.
-                let mut item: Item = serde_json::from_str(&entry.snapshot_json)
-                    .with_context(|| format!("parse item snapshot {id}"))?;
+                // Tolerate a partial: a snapshot that fails to parse is skipped rather
+                // than failing the whole scheme load. Every replica holds the same
+                // merged CRDT, so each skips the same item and they converge — matching
+                // the server's tolerant validation (see validate_scheme_document).
+                let mut item: Item = serde_json::from_str(&entry.snapshot_json).ok()?;
                 item.content = ItemContent::from_inlines(entry.content);
-                Ok(item)
+                Some(item)
             })
-            .collect()
+            .collect())
     }
 }
 
@@ -281,6 +358,10 @@ pub(crate) struct StoredItem {
     snapshot_json: String,
     content: Vec<Inline>,
     content_shadow: Option<Vec<Inline>>,
+    /// Soft-delete tombstone. A removed item keeps its (valid) map with `deleted=true`
+    /// instead of being hard-removed, so a concurrent remove+edit can't detach the map
+    /// and lose fields. Materialization skips tombstoned items.
+    deleted: bool,
 }
 
 pub(crate) fn item_map_ref(items_by_id: &MapRef, txn: &impl ReadTxn, key: &str) -> Option<MapRef> {
@@ -295,6 +376,29 @@ pub(crate) fn item_text_ref(item_map: &MapRef, txn: &impl ReadTxn) -> Option<Tex
         Some(Out::YText(text)) => Some(text),
         _ => None,
     }
+}
+
+/// Build the deterministic "create this item's skeleton" sub-update: the item's
+/// sub-map with invariant `schema`/`id` and an empty Text, encoded under a fixed
+/// clientID derived from `item_id` (see [`stable_item_seed_client_id`]). Byte-identical
+/// across devices for a given id, so applying two independent creations dedupes to a
+/// single container rather than clobbering one and losing its fields.
+fn build_item_skeleton_update(document: DocumentId, item_id: &str) -> Vec<u8> {
+    let doc = Doc::with_options(yrs_doc_options(
+        document,
+        stable_item_seed_client_id(item_id),
+        OffsetKind::Utf16,
+    ));
+    {
+        let items = doc.get_or_insert_map("items_by_id");
+        let mut txn = doc.transact_mut();
+        let item_map = items.insert(&mut txn, item_id, MapPrelim::default());
+        item_map.insert(&mut txn, "schema", "knotq.item.v1");
+        item_map.insert(&mut txn, "id", item_id);
+        item_map.insert(&mut txn, "text", TextPrelim::new(""));
+    }
+    let update = doc.transact().encode_diff_v1(&StateVector::default());
+    update
 }
 
 pub(crate) fn read_stored_item(item_map: &MapRef, txn: &impl ReadTxn) -> StoredItem {
@@ -314,6 +418,11 @@ pub(crate) fn read_stored_item(item_map: &MapRef, txn: &impl ReadTxn) -> StoredI
         snapshot_json: str_field("snapshot_json"),
         content: reconcile_content_shadow(content, content_shadow.as_deref()),
         content_shadow,
+        deleted: item_map
+            .get_as::<_, Option<bool>>(txn, "deleted")
+            .ok()
+            .flatten()
+            .unwrap_or(false),
     }
 }
 
@@ -365,9 +474,23 @@ pub(crate) fn write_item_fields(
     snapshot_json: &str,
     include_text: bool,
 ) -> anyhow::Result<()> {
-    item_map.insert(txn, "schema", "knotq.item.v1");
-    item_map.insert(txn, "id", item.id.to_string());
+    // `schema` and `id` are immutable identity fields. They are written once at
+    // creation — by the deterministic item skeleton (shared seed clientID, so every
+    // origin that creates this item produces the identical, de-duplicated struct) or by
+    // the rebuild paths below. We deliberately DO NOT re-write them on a metadata-only
+    // edit: re-inserting a map key replaces its struct, so concurrent metadata edits
+    // from different origins each delete the other's `schema`/`id` copy, and a merge can
+    // end up deleting EVERY copy — leaving a schema-less "only text" partial that fails
+    // validation and wedges the scheme. Writing them only at creation keeps a single
+    // stable struct that no edit ever churns.
+    if include_text {
+        item_map.insert(txn, "schema", "knotq.item.v1");
+        item_map.insert(txn, "id", item.id.to_string());
+    }
     item_map.insert(txn, "position", position.to_string());
+    // A live item is not tombstoned. Setting this also un-deletes an item that was
+    // re-added after a soft-delete (deleted vs edit resolves last-writer-wins).
+    item_map.insert(txn, "deleted", false);
     if include_text {
         let text_ref = item_map.insert(txn, "text", TextPrelim::new(""));
         insert_inline_content(

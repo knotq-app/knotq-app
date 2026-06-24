@@ -8,8 +8,9 @@ use knotq_storage_json::{
     save_local_sync_state, save_workspace, workspace_path, WorkspaceLoadOptions,
 };
 use knotq_sync::{
-    batch_pull_and_apply, batch_push_pending, queue_workspace_bootstrap_updates, CrdtDocumentUpdate,
-    LocalSyncState, PendingCrdtEdit, WorkspaceCrdtChangeSet, WorkspaceCrdtDocuments,
+    batch_pull_and_apply, batch_push_pending, queue_account_switch_reseed,
+    queue_workspace_bootstrap_updates, CrdtDocumentUpdate, LocalSyncState, PendingCrdtEdit,
+    WorkspaceCrdtChangeSet, WorkspaceCrdtDocuments,
 };
 
 use super::http::normalize_api_base;
@@ -62,7 +63,8 @@ pub(super) fn sync_snapshot(snapshot: SyncSnapshot) -> Result<SyncRunResult> {
     // pull merges (unions) the local and server workspace histories over the shared
     // id. The carried snapshot is queued for push so the server unions it in too;
     // `queue_workspace_bootstrap_updates` only force-pushes docs with no server base.
-    let reidentified_workspace = if workspace.sync.id != previous_workspace_document_id {
+    let account_switched = workspace.sync.id != previous_workspace_document_id;
+    let reidentified_workspace = if account_switched {
         crdt_states
             .remove(&previous_workspace_document_id)
             .map(|state| {
@@ -85,6 +87,14 @@ pub(super) fn sync_snapshot(snapshot: SyncSnapshot) -> Result<SyncRunResult> {
             &workspace,
             update,
         );
+    }
+    if account_switched {
+        // Force re-seed this device's scheme content to the new account. The bootstrap
+        // below only re-seeds documents the new server LACKS, so a scheme the new
+        // account already holds from another origin would otherwise never receive this
+        // device's content (the cross-account content gap). Full snapshots union
+        // idempotently; deterministic item creation dedupes items.
+        queue_account_switch_reseed(&mut local_state, &crdt_docs, &workspace, snapshot.replica_id);
     }
 
     let mut pushed = Vec::new();

@@ -105,21 +105,25 @@ pub(crate) fn validate_scheme_document(doc: &Doc) -> anyhow::Result<()> {
         .ok_or_else(|| anyhow!("scheme id missing"))?;
     scheme_id.parse::<SchemeId>().context("scheme id invalid")?;
 
-    // Items are keyed by id in the map, so id uniqueness is structural — there is
-    // no separate order array to keep consistent or to duplicate under merge.
-    let item_keys = items_by_id
-        .keys(&txn)
-        .map(str::to_string)
-        .collect::<Vec<_>>();
-    for item_id in item_keys {
-        let parsed_item_id = item_id
-            .parse::<ItemId>()
-            .with_context(|| format!("item id invalid: {item_id}"))?;
-        let item_map = match items_by_id.get(&txn, &item_id) {
-            Some(Out::YMap(map)) => map,
-            _ => return Err(anyhow!("item entry missing or not a map: {item_id}")),
+    // Items are tolerated individually. A multi-origin CRDT merge — the same scheme
+    // or daily-queue document evolving on more than one account server, or created
+    // independently on several devices — can churn an item's map entries and strand a
+    // required field, leaving a structurally-incomplete "partial" item. A partial
+    // must NOT fail the whole document: a rejected push wedges sync, and an update
+    // that never reaches the server is the ONLY way Yjs replicas permanently diverge.
+    // So we skip a bad item and accept the document. Correctness is preserved because
+    // materialization skips the same partial on every replica (it reads
+    // `snapshot_json`, never this validated `schema` struct), so every replica
+    // converges on identical content. `validate_scheme_item` stays available for
+    // callers that want a strict, per-item check.
+    for item_id in items_by_id.keys(&txn).map(str::to_string).collect::<Vec<_>>() {
+        let Ok(parsed_item_id) = item_id.parse::<ItemId>() else {
+            continue;
         };
-        validate_scheme_item(&item_id, parsed_item_id, &item_map, &txn)?;
+        let Some(Out::YMap(item_map)) = items_by_id.get(&txn, &item_id) else {
+            continue;
+        };
+        let _ = validate_scheme_item(&item_id, parsed_item_id, &item_map, &txn);
     }
 
     Ok(())

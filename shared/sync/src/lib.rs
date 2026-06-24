@@ -25,8 +25,8 @@ pub use engine::{
 };
 pub use documents::{scheme_documents, sync_documents};
 pub use local_state::{
-    queue_workspace_bootstrap_updates, DocumentSyncCursor, LocalSyncState, MediaSyncCursor,
-    PendingCrdtEdit,
+    queue_account_switch_reseed, queue_workspace_bootstrap_updates, DocumentSyncCursor,
+    LocalSyncState, MediaSyncCursor, PendingCrdtEdit,
 };
 
 /// Serde codec that represents CRDT update bytes as a base64 string rather than

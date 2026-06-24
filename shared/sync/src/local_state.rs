@@ -369,6 +369,13 @@ pub fn queue_workspace_bootstrap_updates(
     // Yjs doc whose snapshot the server rejects as `crdt_schema_invalid`, wedging
     // the whole push batch. Only documents the server has no base for are
     // eligible, so a heal never competes with un-pulled server content.
+    // Only documents the server has no base for are eligible, so a heal never
+    // competes with un-pulled server content. (An item left as a schema-less partial
+    // by a multi-origin merge no longer needs healing here: validation now tolerates
+    // partial items and materialization skips them identically on every replica, so
+    // the snapshot pushes fine and all replicas converge — see
+    // validate_scheme_document. Healing here is now only for an empty, schema-less
+    // document, e.g. desktop's direct Daily Queue creation before its first pull.)
     let healed = crdt.heal_schema_invalid_documents(workspace, |document| {
         remote_latest.get(&document).copied().unwrap_or(0) == 0
     });
@@ -385,6 +392,8 @@ pub fn queue_workspace_bootstrap_updates(
     // server rebuilds shares clientID + clocks with this device's incremental diffs
     // (a throwaway snapshot would carry a fresh identity that competes with them).
     for update in crdt.full_snapshot_updates().updates {
+        // Only documents the server lacks a base for are seeded here; a document the
+        // server already holds converges through the normal pull/push CRDT merge.
         if remote_latest.get(&update.document).copied().unwrap_or(0) != 0 {
             continue;
         }
@@ -430,6 +439,46 @@ pub fn queue_workspace_bootstrap_updates(
     });
 
     healed
+}
+
+/// Force-queue a full snapshot for every scheme content document, so an account switch
+/// re-seeds this device's content to the new account even for schemes the new server
+/// already holds (from another origin or empty). [`queue_workspace_bootstrap_updates`]
+/// alone only re-seeds schemes the server LACKS (remote seq 0); without this, content
+/// already pushed to the previous account never reaches the new one — the cross-account
+/// content gap (a device shows lines the new account never receives). Full snapshots
+/// union idempotently on the server, and with deterministic item creation items dedupe
+/// rather than duplicate. Call on a detected account switch, before the pull; the
+/// bootstrap then treats these queued snapshots as valid pending and does not re-queue.
+pub fn queue_account_switch_reseed(
+    sync_state: &mut LocalSyncState,
+    crdt: &WorkspaceCrdtDocuments,
+    workspace: &Workspace,
+    replica_id: ReplicaId,
+) {
+    let mut next_sequence = sync_state
+        .pending
+        .iter()
+        .map(|edit| edit.local_sequence)
+        .max()
+        .unwrap_or(0)
+        + 1;
+    for update in crdt.full_snapshot_updates().updates {
+        if update.kind != SyncDocumentKind::Scheme {
+            continue;
+        }
+        sync_state.push_pending(PendingCrdtEdit {
+            operation_id: OperationId::new(),
+            workspace_id: workspace.id,
+            replica_id,
+            local_sequence: next_sequence,
+            created_at: Utc::now(),
+            document: update.document,
+            kind: update.kind,
+            update_v1: update.update_v1,
+        });
+        next_sequence += 1;
+    }
 }
 
 #[cfg(test)]

@@ -373,7 +373,11 @@ use super::*;
     }
 
     #[test]
-    fn crdt_schema_validation_rejects_item_without_position() {
+    fn crdt_schema_validation_tolerates_item_without_position() {
+        // A structurally-incomplete item (here: empty position) is tolerated, not
+        // rejected: rejecting the whole document would wedge the push, and a wedged
+        // update never propagates — the only way Yjs replicas permanently diverge. The
+        // scheme-level structure is valid, so the document validates.
         let doc = Doc::new();
         let metadata = doc.get_or_insert_map("scheme_file");
         let items_by_id = doc.get_or_insert_map("items_by_id");
@@ -386,15 +390,18 @@ use super::*;
         write_new_item(&item_map, &mut txn, &item, "", &snapshot_json).unwrap();
         drop(txn);
 
-        assert!(validate_crdt_update_sequence(
+        validate_crdt_update_sequence(
             SyncDocumentKind::Scheme,
-            [encode_full_update(&doc).as_slice()]
+            [encode_full_update(&doc).as_slice()],
         )
-        .is_err());
+        .unwrap();
     }
 
     #[test]
-    fn crdt_schema_validation_rejects_item_id_key_mismatch() {
+    fn crdt_schema_validation_tolerates_item_id_key_mismatch() {
+        // An item whose map key disagrees with its stored id is tolerated rather than
+        // rejected, for the same reason: a single partial item must never wedge the
+        // whole document.
         let doc = Doc::new();
         let metadata = doc.get_or_insert_map("scheme_file");
         let items_by_id = doc.get_or_insert_map("items_by_id");
@@ -409,11 +416,53 @@ use super::*;
         write_new_item(&item_map, &mut txn, &item, "V", &snapshot_json).unwrap();
         drop(txn);
 
-        assert!(validate_crdt_update_sequence(
+        validate_crdt_update_sequence(
             SyncDocumentKind::Scheme,
-            [encode_full_update(&doc).as_slice()]
+            [encode_full_update(&doc).as_slice()],
         )
-        .is_err());
+        .unwrap();
+    }
+
+    #[test]
+    fn crdt_schema_validation_tolerates_schema_missing_partial_item() {
+        // The exact multi-origin merge artifact that used to wedge sync: an item that
+        // keeps its content and snapshot but loses its `schema` struct (concurrent
+        // map-entry churn across origins can delete every copy of the field). The
+        // strict per-item check flags it, but the document must still validate so the
+        // push is not rejected — a rejected push wedges sync and never propagates,
+        // which is the only way replicas permanently diverge. Other valid items in the
+        // same document are unaffected, and materialization reads snapshot_json (not
+        // this struct), so every replica still renders the kept item identically.
+        let doc = Doc::new();
+        let metadata = doc.get_or_insert_map("scheme_file");
+        let items_by_id = doc.get_or_insert_map("items_by_id");
+        let kept = Item::new("kept");
+        let partial = Item::new("partial");
+        let mut txn = doc.transact_mut();
+        metadata.insert(&mut txn, "schema", SCHEME_SCHEMA_V1);
+        metadata.insert(&mut txn, "id", SchemeId::new().to_string());
+        let kept_map = items_by_id.insert(&mut txn, kept.id.to_string(), MapPrelim::default());
+        write_new_item(&kept_map, &mut txn, &kept, "V", &item_snapshot_json(&kept).unwrap())
+            .unwrap();
+        let partial_map =
+            items_by_id.insert(&mut txn, partial.id.to_string(), MapPrelim::default());
+        write_new_item(
+            &partial_map,
+            &mut txn,
+            &partial,
+            "W",
+            &item_snapshot_json(&partial).unwrap(),
+        )
+        .unwrap();
+        // Strand the schema struct, reproducing the cross-origin map-entry clobber.
+        partial_map.remove(&mut txn, "schema");
+        drop(txn);
+
+        validate_crdt_update_sequence(
+            SyncDocumentKind::Scheme,
+            [encode_full_update(&doc).as_slice()],
+        )
+        .unwrap();
     }
 
     #[test]
@@ -877,4 +926,125 @@ use super::*;
 
     fn encode_full_update(doc: &Doc) -> Vec<u8> {
         doc.transact().encode_diff_v1(&StateVector::default())
+    }
+
+    /// Feasibility proof for the deterministic-creation fix. Creating an item's
+    /// *skeleton* (its sub-map + `schema`/`id` + an empty Text) under a fixed,
+    /// id-derived clientID makes two independent creations byte-identical, so Yjs
+    /// dedupes them into ONE container instead of clobbering one. Meanwhile each
+    /// device's *content* edit keeps its own clientID, so concurrent inserts stay
+    /// distinct and merge (AB/BA) — exactly the property that must NOT regress.
+    #[test]
+    fn deterministic_skeleton_dedupes_yet_merges_concurrent_content() {
+        use yrs::GetString;
+        let document = DocumentId::new();
+        let item_id = "11111111-1111-4111-8111-111111111111";
+        const SEED_CID: u64 = 0x5EED;
+
+        // The skeleton-create update, generated identically on every device.
+        let skeleton = || -> Vec<u8> {
+            let doc = Doc::with_options(yrs_doc_options(document, SEED_CID, OffsetKind::Utf16));
+            {
+                let items = doc.get_or_insert_map("items_by_id");
+                let mut txn = doc.transact_mut();
+                let item_map = items.insert(&mut txn, item_id, MapPrelim::default());
+                item_map.insert(&mut txn, "schema", "knotq.item.v1");
+                item_map.insert(&mut txn, "id", item_id);
+                item_map.insert(&mut txn, "text", TextPrelim::new(""));
+            }
+            let update = doc.transact().encode_diff_v1(&StateVector::default());
+            update
+        };
+        assert_eq!(
+            skeleton(),
+            skeleton(),
+            "skeleton must be byte-identical across devices to dedupe"
+        );
+
+        // Each device: apply the shared skeleton, then splice its own content under its
+        // own clientID.
+        let device = |client_id: u64, content: &str| -> Vec<u8> {
+            let doc = Doc::with_options(yrs_doc_options(document, client_id, OffsetKind::Utf16));
+            doc.transact_mut()
+                .apply_update(Update::decode_v1(&skeleton()).unwrap())
+                .unwrap();
+            {
+                let items = doc.get_or_insert_map("items_by_id");
+                let mut txn = doc.transact_mut();
+                let Some(Out::YMap(item_map)) = items.get(&txn, item_id) else {
+                    panic!("skeleton item missing");
+                };
+                let Some(Out::YText(text)) = item_map.get(&txn, "text") else {
+                    panic!("skeleton text missing");
+                };
+                text.insert(&mut txn, 0, content);
+            }
+            let update = doc.transact().encode_diff_v1(&StateVector::default());
+            update
+        };
+        let a = device(111, "hello");
+        let b = device(222, "world");
+
+        let merged = Doc::with_options(yrs_doc_options(document, 333, OffsetKind::Utf16));
+        merged
+            .transact_mut()
+            .apply_update(Update::decode_v1(&a).unwrap())
+            .unwrap();
+        merged
+            .transact_mut()
+            .apply_update(Update::decode_v1(&b).unwrap())
+            .unwrap();
+
+        let items = merged.get_or_insert_map("items_by_id");
+        let txn = merged.transact();
+        assert_eq!(items.len(&txn), 1, "concurrent creates deduped to ONE container");
+        let Some(Out::YMap(item_map)) = items.get(&txn, item_id) else {
+            panic!("item missing after merge");
+        };
+        assert_eq!(
+            item_map
+                .get_as::<_, Option<String>>(&txn, "schema")
+                .unwrap()
+                .as_deref(),
+            Some("knotq.item.v1"),
+            "schema survived (no clobber)"
+        );
+        let Some(Out::YText(text)) = item_map.get(&txn, "text") else {
+            panic!("text missing after merge");
+        };
+        let merged_text = text.get_string(&txn);
+        assert!(
+            merged_text.contains("hello") && merged_text.contains("world"),
+            "both devices' concurrent content preserved (AB/BA), got {merged_text:?}"
+        );
+    }
+
+    /// Bug A, through the real production path: two devices that independently create a
+    /// scheme containing the SAME item id (e.g. a carryover "today" item) via
+    /// `replace_scheme` must merge into a structurally valid document — the
+    /// deterministic skeleton dedupes the item container instead of clobbering one and
+    /// dropping its fields (which would surface as `item schema/position missing`).
+    #[test]
+    fn replace_scheme_dedupes_concurrent_same_item_creation() {
+        let document = DocumentId::new();
+        // One item value cloned to both devices, so they share the item id.
+        let shared = Item::new("base");
+        let make = |text: &str| {
+            let mut item = shared.clone();
+            item.set_text(text);
+            let mut scheme = Scheme::new("Daily", 0);
+            scheme.items.push(item);
+            YrsSchemeDocument::from_scheme(document, &scheme).unwrap()
+        };
+        let a = make("alpha");
+        let b = make("beta");
+
+        let merged = YrsSchemeDocument::new(document);
+        merged.apply_update_v1(&a.encode_state_v1()).unwrap();
+        merged.apply_update_v1(&b.encode_state_v1()).unwrap();
+
+        // No clobber: the merged item still has schema/id/position/text → validates.
+        let state = merged.encode_state_v1();
+        validate_crdt_update_sequence(SyncDocumentKind::Scheme, [state.as_slice()])
+            .expect("concurrent same-item creation must merge to a valid document");
     }
