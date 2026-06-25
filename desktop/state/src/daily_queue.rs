@@ -3,8 +3,8 @@ use std::collections::HashSet;
 use chrono::{DateTime, Datelike, Duration, Local, LocalResult, NaiveDate, TimeZone, Utc};
 use knotq_commands::Command;
 use knotq_model::{
-    CalendarRecurrence, DocumentId, Item, ItemId, ItemMarker, NodeRef, Scheme, SchemeId,
-    SyncDocumentKind, SyncDocumentMeta, Workspace,
+    DocumentId, Item, ItemId, ItemMarker, NodeRef, Scheme, SchemeId, SyncDocumentKind,
+    SyncDocumentMeta, Workspace,
 };
 
 #[derive(Clone, Debug)]
@@ -214,9 +214,12 @@ fn make_start_here_scheme(today: NaiveDate) -> Scheme {
             "==Argument:== compare economic pressure and *public trust*",
         )
         .with_marker(ItemMarker::Bullet),
+        // The one intentionally-incomplete dated item: an overdue assignment (due
+        // yesterday), so new users can see what "overdue" looks like. Past-dated, so
+        // it never schedules a notification.
         fixed_item("00000000-0000-8000-8000-000000001005", "Final draft")
             .with_marker(ItemMarker::Checkbox)
-            .with_end(local_dt(today + Duration::days(2), 17, 0)),
+            .with_end(local_dt(today - Duration::days(1), 17, 0)),
         fixed_item(
             "00000000-0000-8000-8000-000000001006",
             "Finish source notes",
@@ -231,7 +234,8 @@ fn make_start_here_scheme(today: NaiveDate) -> Scheme {
         .with_indent(1),
         fixed_item("00000000-0000-8000-8000-000000001008", "Citation question")
             .with_marker(ItemMarker::Checkbox)
-            .with_start(local_dt(today + Duration::days(1), 15, 30)),
+            .with_start(local_dt(today + Duration::days(1), 15, 30))
+            .done(),
         fixed_item(
             "00000000-0000-8000-8000-000000001009",
             "Old outline moved into final draft",
@@ -252,7 +256,8 @@ fn make_start_here_scheme(today: NaiveDate) -> Scheme {
         fixed_item("00000000-0000-8000-8000-000000001013", "Study block")
             .with_marker(ItemMarker::Checkbox)
             .with_start(local_dt(today + Duration::days(1), 19, 0))
-            .with_end(local_dt(today + Duration::days(1), 20, 30)),
+            .with_end(local_dt(today + Duration::days(1), 20, 30))
+            .done(),
         fixed_item(
             "00000000-0000-8000-8000-000000001014",
             "Questions for office hours",
@@ -279,7 +284,8 @@ fn make_scheduling_scheme(today: NaiveDate) -> Scheme {
         fixed_item("00000000-0000-8000-8000-000000002004", "Focus block")
             .with_marker(ItemMarker::Checkbox)
             .with_start(local_dt(today, 10, 0))
-            .with_end(local_dt(today, 11, 0)),
+            .with_end(local_dt(today, 11, 0))
+            .done(),
         fixed_item(
             "00000000-0000-8000-8000-000000002005",
             "**Assignments** have a deadline",
@@ -287,7 +293,8 @@ fn make_scheduling_scheme(today: NaiveDate) -> Scheme {
         .with_marker(ItemMarker::Bullet),
         fixed_item("00000000-0000-8000-8000-000000002006", "First draft")
             .with_marker(ItemMarker::Checkbox)
-            .with_end(local_dt(today + Duration::days(1), 17, 0)),
+            .with_end(local_dt(today + Duration::days(1), 17, 0))
+            .done(),
         fixed_item(
             "00000000-0000-8000-8000-000000002007",
             "**Reminders** happen at one time",
@@ -295,7 +302,8 @@ fn make_scheduling_scheme(today: NaiveDate) -> Scheme {
         .with_marker(ItemMarker::Bullet),
         fixed_item("00000000-0000-8000-8000-000000002008", "Team message")
             .with_marker(ItemMarker::Checkbox)
-            .with_start(local_dt(today, 16, 0)),
+            .with_start(local_dt(today, 16, 0))
+            .done(),
         fixed_item(
             "00000000-0000-8000-8000-000000002009",
             "### Repeating habits",
@@ -303,7 +311,7 @@ fn make_scheduling_scheme(today: NaiveDate) -> Scheme {
         fixed_item("00000000-0000-8000-8000-000000002010", "Morning review")
             .with_marker(ItemMarker::Checkbox)
             .with_start(local_dt(today, 8, 30))
-            .with_repeats(repeat("FREQ=WEEKLY;INTERVAL=1")),
+            .done(),
         fixed_item(
             "00000000-0000-8000-8000-000000002011",
             "Backlog: choose next experiment",
@@ -328,11 +336,13 @@ fn make_projects_scheme(today: NaiveDate) -> Scheme {
             .done(),
         fixed_item("00000000-0000-8000-8000-000000003005", "Open questions")
             .with_marker(ItemMarker::Checkbox)
-            .with_end(local_dt(today + Duration::days(2), 12, 0)),
+            .with_end(local_dt(today + Duration::days(2), 12, 0))
+            .done(),
         fixed_item("00000000-0000-8000-8000-000000003006", "Work session")
             .with_marker(ItemMarker::Checkbox)
             .with_start(local_dt(today + Duration::days(1), 14, 0))
-            .with_end(local_dt(today + Duration::days(1), 15, 0)),
+            .with_end(local_dt(today + Duration::days(1), 15, 0))
+            .done(),
         fixed_item(
             "00000000-0000-8000-8000-000000003007",
             "Nested notes keep context close",
@@ -442,13 +452,6 @@ fn fixed_scheme_sync(document_id: DocumentId) -> SyncDocumentMeta {
     let mut meta = SyncDocumentMeta::local(SyncDocumentKind::Scheme);
     meta.id = document_id;
     meta
-}
-
-fn repeat(rrule: &str) -> CalendarRecurrence {
-    CalendarRecurrence {
-        rrules: vec![rrule.to_string()],
-        ..CalendarRecurrence::default()
-    }
 }
 
 fn local_dt(date: NaiveDate, hour: u32, minute: u32) -> DateTime<Utc> {

@@ -152,6 +152,12 @@ fn default_workspace_uses_fixed_starter_ids_and_plain_calendar_titles() {
                 !text.contains("~~"),
                 "starter workspace should not include strikethrough examples: {text}"
             );
+            // No recurring reminders in the starter workspace: a repeat would
+            // schedule a notification for every new user, forever.
+            assert!(
+                item.repeats.is_none(),
+                "starter workspace should not seed a recurring reminder (notification spam): {text}"
+            );
             if text.contains("==") {
                 highlight_count += 1;
             }
@@ -172,20 +178,32 @@ fn default_workspace_uses_fixed_starter_ids_and_plain_calendar_titles() {
     assert_eq!(highlight_count, 2);
     assert!(saw_work_session);
 
-    let scheduling = workspace
-        .scheme(
-            "00000000-0000-8000-8000-000000000102"
-                .parse::<SchemeId>()
-                .unwrap(),
-        )
-        .unwrap();
-    let morning_review = scheduling
-        .items
-        .iter()
-        .find(|item| item.text() == "Morning review")
-        .unwrap();
+    // Exactly one seeded dated item is incomplete, and it's in the past — the
+    // overdue example. Nothing future is incomplete, so a brand-new user's
+    // starter workspace schedules no notifications.
+    let seed_date = date(2026, 6, 18);
+    let incomplete_dated: Vec<(String, NaiveDate)> = workspace
+        .iter_schemes()
+        .flat_map(|scheme| scheme.items.iter())
+        .filter(|item| item.start.is_some() || item.end.is_some())
+        .filter(|item| !item.state.iter().all(|s| s.state.is_done()))
+        .map(|item| {
+            let when = item
+                .end
+                .or(item.start)
+                .unwrap()
+                .with_timezone(&Local)
+                .date_naive();
+            (item.text().to_string(), when)
+        })
+        .collect();
     assert_eq!(
-        morning_review.repeats.as_ref().unwrap().rrules,
-        vec!["FREQ=WEEKLY;INTERVAL=1"]
+        incomplete_dated.len(),
+        1,
+        "starter workspace should have exactly one incomplete dated item (the overdue example): {incomplete_dated:?}"
+    );
+    assert!(
+        incomplete_dated[0].1 < seed_date,
+        "the one incomplete dated item should be overdue (past): {incomplete_dated:?}"
     );
 }
