@@ -1,7 +1,7 @@
 use chrono::{Duration, TimeZone, Utc};
 use knotq_date_util::UPCOMING_HORIZON_DAYS;
 use knotq_index::IndexedWorkspace;
-use knotq_model::{Item, NodeRef, Scheme, Workspace};
+use knotq_model::{CalendarRecurrence, Item, NodeRef, Scheme, Workspace};
 
 #[test]
 fn calendar_query_returns_occurrences_with_origin_context() {
@@ -43,6 +43,54 @@ fn overdue_query_includes_overdue_reminders() {
 
     assert_eq!(events.len(), 1);
     assert_eq!(events[0].item_id, item_id);
+}
+
+#[test]
+fn overdue_query_surfaces_recurring_capped_at_five() {
+    let as_of = Utc.with_ymd_and_hms(2026, 1, 10, 12, 30, 0).unwrap();
+    // A daily reminder anchored 30 days ago, never completed: previously it was
+    // excluded from overdue entirely (showed nothing). Now it surfaces its most
+    // recent occurrences, capped so a long-missed habit can't flood the panel.
+    let start = as_of - Duration::days(30);
+    let item = Item::new("Morning review")
+        .with_start(start)
+        .with_repeats(CalendarRecurrence {
+            rrules: vec!["FREQ=DAILY;INTERVAL=1".to_string()],
+            ..Default::default()
+        });
+    let (workspace, _, item_id) = workspace_with_item(item);
+    let indexed = IndexedWorkspace::build(workspace);
+
+    let events = indexed.calendar_query().overdue(as_of);
+
+    assert_eq!(events.len(), 5, "recurring overdue should be capped at five");
+    assert!(events.iter().all(|event| event.item_id == item_id));
+    // All are in the past and within the recent walk-back window (no ancient ones).
+    for event in &events {
+        let anchor = event.occurrence.start.unwrap();
+        assert!(anchor < as_of && anchor >= as_of - Duration::days(6));
+    }
+}
+
+#[test]
+fn overdue_query_surfaces_recurring_monthly_within_window() {
+    let as_of = Utc.with_ymd_and_hms(2026, 6, 10, 12, 0, 0).unwrap();
+    // Monthly reminder anchored ~10 months ago: a short fixed lookback would miss
+    // it entirely, but the bounded recent window still surfaces the recent ones.
+    let start = Utc.with_ymd_and_hms(2025, 8, 15, 9, 0, 0).unwrap();
+    let item = Item::new("Pay rent")
+        .with_start(start)
+        .with_repeats(CalendarRecurrence {
+            rrules: vec!["FREQ=MONTHLY;INTERVAL=1".to_string()],
+            ..Default::default()
+        });
+    let (workspace, _, item_id) = workspace_with_item(item);
+    let indexed = IndexedWorkspace::build(workspace);
+
+    let events = indexed.calendar_query().overdue(as_of);
+
+    assert_eq!(events.len(), 5, "monthly recurring overdue should surface, capped at five");
+    assert!(events.iter().all(|event| event.item_id == item_id));
 }
 
 #[test]

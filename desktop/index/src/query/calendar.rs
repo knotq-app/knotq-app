@@ -1,4 +1,4 @@
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, Duration, Utc};
 use knotq_date_util::{upcoming_range, week_range, DateRange};
 use knotq_model::ItemKind;
 use knotq_rrule::{DefaultExpander, OccurrenceExpander};
@@ -72,10 +72,17 @@ impl<'a> CalendarQuery<'a> {
         as_of: DateTime<Utc>,
         is_retained: impl Fn(&OccurrenceWithContext) -> bool,
     ) -> Vec<OccurrenceWithContext> {
-        // Overdue assignments and reminders surface regardless of how old they
-        // are (no lookback window), mirroring the desktop upcoming panel. Only
-        // non-recurring items are considered here — recurring ones come through
-        // the normal range query — so the unbounded range never explodes.
+        // A recurring item surfaces at most its few most-recent overdue occurrences
+        // so a long-missed daily/weekly habit doesn't flood the panel — but still
+        // shows something rather than nothing.
+        const MAX_OVERDUE_PER_RECURRING: usize = 5;
+        // How far back to look for a recurring item's overdue occurrences. Generous
+        // enough to find recent ones at any realistic frequency (daily..monthly)
+        // while keeping the per-item expansion bounded.
+        const RECURRING_OVERDUE_WINDOW_DAYS: i64 = 180;
+        // Non-recurring overdue assignments/reminders surface regardless of age (no
+        // lookback window), mirroring the desktop upcoming panel — a single item per
+        // entry, so the unbounded range never explodes.
         let range = DateRange {
             start: DateTime::<Utc>::UNIX_EPOCH,
             end: as_of,
@@ -88,12 +95,10 @@ impl<'a> CalendarQuery<'a> {
             let Some(item) = scheme.item(context.item_id) else {
                 continue;
             };
-            if item.repeats.is_some()
-                || !matches!(item.kind(), ItemKind::Assignment | ItemKind::Reminder)
-            {
+            if !matches!(item.kind(), ItemKind::Assignment | ItemKind::Reminder) {
                 continue;
             }
-            for occurrence in self.expander.expand(item, range) {
+            let mut push = |occurrence| {
                 out.push(OccurrenceWithContext {
                     occurrence,
                     scheme_id: context.scheme_id,
@@ -101,6 +106,25 @@ impl<'a> CalendarQuery<'a> {
                     color_index: context.color_index,
                     scheme_name: context.scheme_name.clone(),
                 });
+            };
+            if item.repeats.is_some() {
+                // Recurring: surface only the most-recent overdue occurrences within a
+                // bounded recent window — so a long-missed habit of any frequency shows
+                // the last few rather than nothing, without materializing its history.
+                let window = DateRange {
+                    start: as_of - Duration::days(RECURRING_OVERDUE_WINDOW_DAYS),
+                    end: as_of,
+                };
+                let mut occurrences = self.expander.expand(item, window);
+                occurrences.retain(|occurrence| occurrence.start.or(occurrence.end) < Some(as_of));
+                occurrences.sort_by_key(|occurrence| occurrence.start.or(occurrence.end));
+                for occurrence in occurrences.into_iter().rev().take(MAX_OVERDUE_PER_RECURRING) {
+                    push(occurrence);
+                }
+            } else {
+                for occurrence in self.expander.expand(item, range) {
+                    push(occurrence);
+                }
             }
         }
         out.retain(|event| {
