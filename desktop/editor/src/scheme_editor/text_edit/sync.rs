@@ -343,25 +343,17 @@ impl SchemeEditor {
         let text = editor_row.item.text();
         let text = text.as_str();
 
-        let (new_marker, prefix_len) = if text == "- " || text == "* " {
-            (ItemMarker::Bullet, text.len())
-        } else if let Some(rest) = text.strip_prefix(|c: char| c.is_ascii_digit()) {
-            // Match patterns like "1. ", "2. ", etc.
-            if let Some(after_dots) = rest.strip_prefix(". ") {
-                // Only convert if the entire text is "N. " (digits + ". ")
-                let digit_count = text.len() - rest.len();
-                let full_prefix = digit_count + 2; // digits + ". "
-                if after_dots.is_empty() {
-                    (ItemMarker::Numbered, full_prefix)
-                } else {
-                    return;
-                }
-            } else {
-                return;
-            }
-        } else {
+        let Some((new_marker, prefix_len)) = auto_bullet_prefix(text) else {
             return;
         };
+        // Fire only when the cursor sits immediately after the just-typed prefix
+        // — i.e. the user typed "- " (or "* "/"N. ") at the line start. This
+        // works whether the rest of the line is empty or already has trailing
+        // content ("- existing text"), but never fires when editing elsewhere on
+        // a line that merely happens to begin with one of these prefixes.
+        if self.selection.head.col != prefix_len {
+            return;
+        }
 
         // Save undo state before conversion.
         let original_text = editor_row.item.text();

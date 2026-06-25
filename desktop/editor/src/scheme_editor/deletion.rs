@@ -140,7 +140,12 @@ impl SchemeEditor {
                     let (text, rows) = build_buffer(&items);
                     self.text = text;
                     self.rows = rows;
-                    let col = original_text.len();
+                    // Put the cursor back where it was when the prefix was typed:
+                    // immediately after the restored "- "/"N. " prefix, not at the
+                    // end of any trailing content.
+                    let col = auto_bullet_prefix(&original_text)
+                        .map(|(_, prefix_len)| prefix_len)
+                        .unwrap_or(original_text.len());
                     self.selection = TextSelection::collapsed(TextLocation { row: undo_row, col });
                     self.marked_range = None;
                     self.refresh_layout_after_content_change(Some(window));

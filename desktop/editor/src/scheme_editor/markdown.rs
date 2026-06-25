@@ -1,5 +1,7 @@
 use std::ops::Range;
 
+use knotq_model::ItemMarker;
+
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub(super) struct MarkdownStyle {
     pub(super) bold: bool,
@@ -168,4 +170,55 @@ pub(super) fn markdown_heading_marker_range(line: &str) -> Option<Range<usize>> 
         end += ch.len_utf8();
     }
     Some(leading_ws..end)
+}
+
+/// Detects a leading list-marker prefix that auto-bulletize should convert:
+/// `"- "` / `"* "` → a bullet, or a single leading digit followed by `". "` →
+/// a numbered item. Returns the resulting marker and the prefix's byte length.
+/// Trailing content after the prefix is allowed (e.g. `"- existing text"`), so
+/// callers gate on cursor position rather than the prefix being the whole line.
+pub(super) fn auto_bullet_prefix(text: &str) -> Option<(ItemMarker, usize)> {
+    if text.starts_with("- ") || text.starts_with("* ") {
+        return Some((ItemMarker::Bullet, 2));
+    }
+    // A single leading ASCII digit followed by ". " (e.g. "1. ").
+    let mut chars = text.chars();
+    if chars.next().is_some_and(|ch| ch.is_ascii_digit()) && chars.as_str().starts_with(". ") {
+        return Some((ItemMarker::Numbered, 3));
+    }
+    None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn auto_bullet_prefix_detects_markers_with_and_without_trailing_content() {
+        // Empty (prefix is the whole line) and trailing-content cases both match,
+        // with the same prefix length — the caller gates on cursor position.
+        assert_eq!(auto_bullet_prefix("- "), Some((ItemMarker::Bullet, 2)));
+        assert_eq!(
+            auto_bullet_prefix("- existing text"),
+            Some((ItemMarker::Bullet, 2))
+        );
+        assert_eq!(auto_bullet_prefix("* "), Some((ItemMarker::Bullet, 2)));
+        assert_eq!(auto_bullet_prefix("* item"), Some((ItemMarker::Bullet, 2)));
+        assert_eq!(auto_bullet_prefix("1. "), Some((ItemMarker::Numbered, 3)));
+        assert_eq!(
+            auto_bullet_prefix("9. trailing"),
+            Some((ItemMarker::Numbered, 3))
+        );
+    }
+
+    #[test]
+    fn auto_bullet_prefix_rejects_non_prefixes() {
+        assert_eq!(auto_bullet_prefix(""), None);
+        assert_eq!(auto_bullet_prefix("-"), None); // no space yet
+        assert_eq!(auto_bullet_prefix("-text"), None); // no space after dash
+        assert_eq!(auto_bullet_prefix("plain text"), None);
+        assert_eq!(auto_bullet_prefix("1."), None); // no space after dot
+        assert_eq!(auto_bullet_prefix("12. multi-digit"), None); // single-digit only
+        assert_eq!(auto_bullet_prefix("a. "), None); // not a digit
+    }
 }

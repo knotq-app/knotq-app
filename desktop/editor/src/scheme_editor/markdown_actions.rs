@@ -30,17 +30,28 @@ impl SchemeEditor {
         let Some(selected) = self.text.get(range.clone()) else {
             return;
         };
-        let replacement = if selected.len() >= delimiter.len() * 2
+        let already_wrapped = selected.len() >= delimiter.len() * 2
             && selected.starts_with(delimiter)
             && selected.ends_with(delimiter)
             && selected.is_char_boundary(delimiter.len())
-            && selected.is_char_boundary(selected.len() - delimiter.len())
-        {
+            && selected.is_char_boundary(selected.len() - delimiter.len());
+        let replacement = if already_wrapped {
             selected[delimiter.len()..selected.len() - delimiter.len()].to_string()
         } else {
             format!("{delimiter}{selected}{delimiter}")
         };
+        let start = range.start;
         self.replace_byte_range(range, &replacement, None, cx);
+        // When adding the markers, place the cursor just inside the closing
+        // delimiter (right before the trailing `**`/`__`/`==`/`~~`) rather than
+        // after it, so continued typing stays within the emphasized run.
+        if !already_wrapped {
+            let cursor_offset = start + replacement.len() - delimiter.len();
+            self.selection =
+                TextSelection::collapsed(self.clamp_location(self.offset_to_location(cursor_offset)));
+            self.scroll_to_cursor(cx);
+            cx.notify();
+        }
     }
 
     pub(super) fn toggle_heading(&mut self, cx: &mut Context<Self>) {
