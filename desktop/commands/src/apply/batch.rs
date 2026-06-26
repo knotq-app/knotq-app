@@ -12,9 +12,23 @@ pub(crate) fn apply_batch(
     let mut inverses = Vec::with_capacity(cmds.len());
     let mut touched = ChangeSet::default();
     for cmd in cmds {
-        let receipt = dispatch(workspace, cmd, origin)?;
-        inverses.push(receipt.inverse);
-        touched.merge(receipt.touched);
+        match dispatch(workspace, cmd, origin) {
+            Ok(receipt) => {
+                inverses.push(receipt.inverse);
+                touched.merge(receipt.touched);
+            }
+            Err(err) => {
+                // A batch is all-or-nothing: if any sub-command fails, undo the
+                // sub-commands already applied (in reverse) so the workspace is
+                // left exactly as it was before the batch. Without this, a
+                // partially applied batch — e.g. a cross-scheme undo whose
+                // second leg no longer applies — would corrupt the workspace.
+                for inverse in inverses.into_iter().rev() {
+                    let _ = dispatch(workspace, inverse, origin);
+                }
+                return Err(err);
+            }
+        }
     }
     inverses.reverse();
     Ok(CommandReceipt {

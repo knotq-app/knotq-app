@@ -2,7 +2,9 @@ use knotq_commands::Command;
 use knotq_model::{Item, ItemId, ItemKind, OccurrenceId, SchemeId, Workspace};
 
 #[cfg(test)]
-use super::{UndoNavigationEntry, UndoNavigationSnapshot};
+use super::{NavSnapshot, UndoEntry};
+#[cfg(test)]
+use knotq_state::{UndoScope, UndoStore};
 
 mod apply;
 mod navigation;
@@ -10,22 +12,56 @@ mod notifications;
 mod undo;
 
 #[cfg(test)]
-fn discard_pending_creation_undo_from_stacks(
-    undo_stack: &mut std::collections::VecDeque<Command>,
-    undo_navigation_stack: &mut std::collections::VecDeque<UndoNavigationEntry>,
-    item_id: ItemId,
-) -> bool {
-    if !pending_creation_undo_matches(undo_stack.back(), item_id) {
+fn discard_pending_creation_from_store(store: &mut UndoStore, item_id: ItemId) -> bool {
+    if !pending_creation_undo_matches(store.last_undo().map(|e| &e.inverse), item_id) {
         return false;
     }
-
-    undo_stack.pop_back();
-    undo_navigation_stack.pop_back();
+    store.discard_last_undo();
     true
 }
 
 fn pending_creation_undo_matches(cmd: Option<&Command>, item_id: ItemId) -> bool {
     cmd.is_some_and(|cmd| matches!(cmd, Command::DeleteItem { item, .. } if *item == item_id))
+}
+
+/// The item a command's caret should land on after undo/redo, so the editor can
+/// place the cursor at the spot that changed rather than wherever it drifted to.
+/// `None` for structural commands (undone from views without an editor). For a
+/// batch the last item-bearing leg wins — it is the most recently applied.
+pub(super) fn primary_cursor_item(cmd: &Command) -> Option<(SchemeId, ItemId)> {
+    match cmd {
+        Command::InsertItem { scheme, item, .. } | Command::ReplaceItem { scheme, item } => {
+            Some((*scheme, item.id))
+        }
+        Command::UpdateItemText { scheme, item, .. }
+        | Command::SetItemIndent { scheme, item, .. }
+        | Command::SetItemMarker { scheme, item, .. }
+        | Command::SetItemDate { scheme, item, .. }
+        | Command::SetItemRecurrence { scheme, item, .. }
+        | Command::SetItemPriority { scheme, item, .. }
+        | Command::SetOccurrenceNotificationOffset { scheme, item, .. }
+        | Command::ToggleOccurrence { scheme, item, .. }
+        | Command::DeleteItem { scheme, item } => Some((*scheme, *item)),
+        Command::Batch(cmds) => cmds.iter().rev().find_map(primary_cursor_item),
+        Command::ReorderItem { .. }
+        | Command::CreateFolder { .. }
+        | Command::RestoreFolder { .. }
+        | Command::RestoreDeletedFolder { .. }
+        | Command::RenameFolder { .. }
+        | Command::SetFolderExpanded { .. }
+        | Command::DeleteFolder { .. }
+        | Command::PermanentlyDeleteFolder { .. }
+        | Command::CreateScheme { .. }
+        | Command::RestoreScheme { .. }
+        | Command::RestoreDeletedScheme { .. }
+        | Command::RenameScheme { .. }
+        | Command::SetSchemeColor { .. }
+        | Command::SetSchemeGsync { .. }
+        | Command::SetSchemeSource { .. }
+        | Command::DeleteScheme { .. }
+        | Command::PermanentlyDeleteScheme { .. }
+        | Command::MoveNode { .. } => None,
+    }
 }
 
 fn collect_deleted_items(cmd: &Command, out: &mut Vec<(SchemeId, ItemId)>) {
@@ -259,7 +295,6 @@ mod tests {
     use chrono::Utc;
     use knotq_commands::DateKind;
     use knotq_model::Scheme;
-    use std::collections::VecDeque;
 
     #[test]
     fn text_edits_do_not_wake_background_calendar_workers_for_plain_items() {
@@ -326,25 +361,15 @@ mod tests {
         let scheme = SchemeId::new();
         let item = ItemId::new();
         let older_item = ItemId::new();
-        let mut undo_stack = VecDeque::from([
-            Command::DeleteItem {
-                scheme,
-                item: older_item,
-            },
-            Command::DeleteItem { scheme, item },
-        ]);
-        let mut navigation_stack = VecDeque::from([undo_nav(), undo_nav()]);
+        let mut store = UndoStore::default();
+        store.push_undo(delete_entry(scheme, older_item));
+        store.push_undo(delete_entry(scheme, item));
 
-        assert!(discard_pending_creation_undo_from_stacks(
-            &mut undo_stack,
-            &mut navigation_stack,
-            item,
-        ));
+        assert!(discard_pending_creation_from_store(&mut store, item));
 
-        assert_eq!(undo_stack.len(), 1);
-        assert_eq!(navigation_stack.len(), 1);
+        assert_eq!(store.undo_len(), 1);
         assert!(matches!(
-            undo_stack.back(),
+            store.last_undo().map(|entry| &entry.inverse),
             Some(Command::DeleteItem { item, .. }) if *item == older_item
         ));
     }
@@ -354,23 +379,22 @@ mod tests {
         let scheme = SchemeId::new();
         let item = ItemId::new();
         let newer_item = ItemId::new();
-        let mut undo_stack = VecDeque::from([
-            Command::DeleteItem { scheme, item },
-            Command::DeleteItem {
-                scheme,
-                item: newer_item,
-            },
-        ]);
-        let mut navigation_stack = VecDeque::from([undo_nav(), undo_nav()]);
+        let mut store = UndoStore::default();
+        store.push_undo(delete_entry(scheme, item));
+        store.push_undo(delete_entry(scheme, newer_item));
 
-        assert!(!discard_pending_creation_undo_from_stacks(
-            &mut undo_stack,
-            &mut navigation_stack,
-            item,
-        ));
+        assert!(!discard_pending_creation_from_store(&mut store, item));
 
-        assert_eq!(undo_stack.len(), 2);
-        assert_eq!(navigation_stack.len(), 2);
+        assert_eq!(store.undo_len(), 2);
+    }
+
+    fn delete_entry(scheme: SchemeId, item: ItemId) -> UndoEntry {
+        UndoEntry {
+            inverse: Command::DeleteItem { scheme, item },
+            scope: UndoScope::Scheme(scheme),
+            before: nav(),
+            after: nav(),
+        }
     }
 
     fn workspace_with_item(mut item: Item) -> (Workspace, SchemeId, ItemId) {
@@ -387,15 +411,58 @@ mod tests {
         (workspace, scheme_id, item_id)
     }
 
-    fn undo_nav() -> UndoNavigationEntry {
-        let snapshot = UndoNavigationSnapshot {
+    #[test]
+    fn primary_cursor_item_points_at_changed_item() {
+        let scheme = SchemeId::new();
+        let item = ItemId::new();
+        assert_eq!(
+            primary_cursor_item(&Command::UpdateItemText {
+                scheme,
+                item,
+                text: "x".into(),
+            }),
+            Some((scheme, item))
+        );
+        assert_eq!(
+            primary_cursor_item(&Command::DeleteItem { scheme, item }),
+            Some((scheme, item))
+        );
+
+        let inserted = Item::new("z");
+        let inserted_id = inserted.id;
+        assert_eq!(
+            primary_cursor_item(&Command::InsertItem {
+                scheme,
+                position: 0,
+                item: inserted,
+            }),
+            Some((scheme, inserted_id))
+        );
+
+        // Structural commands carry no caret target.
+        assert_eq!(
+            primary_cursor_item(&Command::DeleteScheme { id: scheme }),
+            None
+        );
+
+        // A batch focuses its last item-bearing leg (most recently applied).
+        let other = ItemId::new();
+        let batch = Command::Batch(vec![
+            Command::DeleteItem { scheme, item },
+            Command::UpdateItemText {
+                scheme,
+                item: other,
+                text: "y".into(),
+            },
+        ]);
+        assert_eq!(primary_cursor_item(&batch), Some((scheme, other)));
+    }
+
+    fn nav() -> NavSnapshot {
+        NavSnapshot {
             selection: Default::default(),
             week_offset: 0,
             month_offset: 0,
-        };
-        UndoNavigationEntry {
-            before: snapshot.clone(),
-            after: snapshot,
         }
     }
 }

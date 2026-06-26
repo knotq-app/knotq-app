@@ -35,7 +35,7 @@ mod workspace_ops;
 pub use bootstrap::load_or_default_settings;
 pub use settings::initial_window_bounds;
 
-use std::collections::{HashMap, VecDeque};
+use std::collections::HashMap;
 use std::ops::{Deref, DerefMut};
 use std::sync::{atomic::AtomicBool, Arc};
 
@@ -53,7 +53,7 @@ pub use knotq_state::{
     daily_queue_scheme_name, editor_undo_key, last_nonempty_daily_queue_day,
     make_default_workspace_for_date, recurrence_undo_key, should_coalesce_editor_undo,
     should_coalesce_recurrence_undo, AppState, CalendarOccurrenceKey, EditorUndoGroup,
-    EditorUndoKey, Selection, View, DAILY_QUEUE_DEFAULT_WINDOW_DAYS, UNDO_DEPTH,
+    EditorUndoKey, NavSnapshot, Selection, UndoEntry, View, DAILY_QUEUE_DEFAULT_WINDOW_DAYS,
 };
 use knotq_storage_json::{
     load_app_settings, load_daily_queue_scheme, load_daily_queue_schemes_for_calendar_range,
@@ -518,27 +518,10 @@ pub const MIN_WINDOW_WIDTH: f32 = 800.0;
 // time rather than a whole month in a single frame.
 pub(super) const DAILY_QUEUE_PAGE_DAYS: i64 = DAILY_QUEUE_DEFAULT_WINDOW_DAYS;
 
-// ── Undo navigation state ─────────────────────────────────────────────────
-
-#[derive(Clone, Debug)]
-pub(crate) struct UndoNavigationSnapshot {
-    pub(crate) selection: Selection,
-    pub(crate) week_offset: i32,
-    pub(crate) month_offset: i32,
-}
-
-#[derive(Clone, Debug)]
-pub(crate) struct UndoNavigationEntry {
-    pub(crate) before: UndoNavigationSnapshot,
-    pub(crate) after: UndoNavigationSnapshot,
-}
-
 // ── KnotQApp struct ────────────────────────────────────────────────────────
 
 pub struct KnotQApp {
     pub state: AppState,
-    pub(crate) undo_navigation_stack: VecDeque<UndoNavigationEntry>,
-    pub(crate) redo_navigation_stack: VecDeque<UndoNavigationEntry>,
     pub(super) settings_return_selection: Option<Selection>,
     pub event_popup: Option<EventPopup>,
     pub(crate) event_popup_title_subscription: Option<Subscription>,

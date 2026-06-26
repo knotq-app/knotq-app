@@ -22,7 +22,7 @@ mod common;
 
 use chrono::NaiveDate;
 use common::{Rng, TestDevice, TestServer};
-use knotq_model::{FolderId, SchemeId, Workspace, WorkspaceId};
+use knotq_model::{FolderId, Item, SchemeId, Workspace, WorkspaceId};
 
 fn fresh_device(account: WorkspaceId) -> TestDevice {
     let mut base = Workspace::new();
@@ -62,6 +62,11 @@ struct Account {
 struct DeviceSlot {
     dev: TestDevice,
     account: usize,
+    /// Per-device undo/redo stacks of prior scheme-content snapshots, used only
+    /// when `World::enable_undo` is set. Each entry is a scheme and the items it
+    /// held before an edit; undo reverts to it, redo reapplies.
+    undo: Vec<(SchemeId, Vec<Item>)>,
+    redo: Vec<(SchemeId, Vec<Item>)>,
 }
 
 struct World {
@@ -70,6 +75,14 @@ struct World {
     rng: Rng,
     step_no: usize,
     trace: bool,
+    /// When set, `step` may also undo/redo. Gated so the extra RNG draw happens
+    /// only in the undo fuzz test — the other seeds keep their exact sequences.
+    enable_undo: bool,
+}
+
+/// Ops in `edit_op` that mutate a scheme's item list (so an undo can revert it).
+fn is_content_op(op: u64) -> bool {
+    matches!(op, 5 | 6 | 7 | 8 | 9 | 11 | 20)
 }
 
 impl World {
@@ -96,6 +109,8 @@ impl World {
                 DeviceSlot {
                     dev: fresh_device(accounts[account].workspace),
                     account,
+                    undo: Vec::new(),
+                    redo: Vec::new(),
                 }
             })
             .collect();
@@ -105,6 +120,7 @@ impl World {
             rng: Rng::new(seed),
             step_no: 0,
             trace: std::env::var("KNOTQ_FUZZ_TRACE").is_ok(),
+            enable_undo: false,
         }
     }
 
@@ -182,6 +198,16 @@ impl World {
             self.devices[i].account,
             scheme.map(|s| s.to_string())
         ));
+        // Record the pre-edit content so the undo model (when enabled) can later
+        // revert to it. This draws no RNG, so seeds without undo are unaffected.
+        if self.enable_undo && is_content_op(op) {
+            if let Some(s) = scheme {
+                if let Some(items) = self.devices[i].dev.scheme_items_snapshot(s) {
+                    self.devices[i].undo.push((s, items));
+                    self.devices[i].redo.clear();
+                }
+            }
+        }
         let dev = &mut self.devices[i].dev;
         let items_in = |s: SchemeId| dev.workspace.schemes.get(&s).map_or(0, |x| x.items.len());
 
@@ -296,6 +322,34 @@ impl World {
         }
     }
 
+    /// Revert (undo) or reapply (redo) a device's most recent content snapshot.
+    /// At the CRDT layer this is just another local edit, so it must converge
+    /// under concurrent edits + syncs like everything else.
+    fn undo_or_redo_op(&mut self, i: usize) {
+        let redo = self.rng.below(2) == 1;
+        self.log(&format!(
+            "dev{i} acct{} {}",
+            self.devices[i].account,
+            if redo { "REDO" } else { "UNDO" }
+        ));
+        let slot = &mut self.devices[i];
+        let popped = if redo { slot.redo.pop() } else { slot.undo.pop() };
+        let Some((scheme_id, prior_items)) = popped else {
+            return;
+        };
+        // The scheme may have been archived/deleted since the snapshot; only
+        // revert content that still exists.
+        let Some(current) = slot.dev.scheme_items_snapshot(scheme_id) else {
+            return;
+        };
+        if redo {
+            slot.undo.push((scheme_id, current));
+        } else {
+            slot.redo.push((scheme_id, current));
+        }
+        slot.dev.revert_scheme_items(scheme_id, prior_items);
+    }
+
     fn step(&mut self) {
         self.step_no += 1;
         let i = self.rng.below(self.devices.len() as u64) as usize;
@@ -307,6 +361,10 @@ impl World {
             let from = self.devices[i].account;
             self.switch_account(i);
             self.log(&format!("dev{i} SWITCH acct{from} -> acct{}", self.devices[i].account));
+        } else if self.enable_undo && roll < 50 {
+            // Only the undo fuzz reaches this band; other tests fall straight to
+            // `edit_op` with the identical RNG sequence they always had.
+            self.undo_or_redo_op(i);
         } else {
             self.edit_op(i);
         }
@@ -424,6 +482,16 @@ fn run_seed(seed: u64, num_accounts: usize, num_devices: usize, steps: usize) {
     world.assert_invariants(seed);
 }
 
+fn run_seed_undo(seed: u64, num_accounts: usize, num_devices: usize, steps: usize) {
+    let mut world = World::new(seed, num_accounts, num_devices);
+    world.enable_undo = true;
+    for _ in 0..steps {
+        world.step();
+    }
+    world.settle();
+    world.assert_invariants(seed);
+}
+
 fn env_usize(key: &str, default: usize) -> usize {
     std::env::var(key)
         .ok()
@@ -526,5 +594,19 @@ fn single_account_many_devices_fuzz_converges() {
     let seeds = env_usize("KNOTQ_FUZZ_SEEDS", 24) as u64;
     for seed in 0..seeds {
         run_seed(seed.wrapping_add(7), 1, 5, 160);
+    }
+}
+
+/// Undo/redo fuzz: the same multi-device world, but devices also revert scheme
+/// content to prior snapshots (undo) and reapply them (redo) mid-stream, racing
+/// concurrent edits and syncs from other devices. An undo is just another local
+/// edit at the CRDT layer, so every invariant must still hold — this guards
+/// against a content revert wedging a device or diverging sync.
+#[test]
+fn undo_redo_fuzz_converges() {
+    let seeds = env_usize("KNOTQ_FUZZ_SEEDS", 24) as u64;
+    let steps = env_usize("KNOTQ_FUZZ_STEPS", 160);
+    for seed in 0..seeds {
+        run_seed_undo(seed.wrapping_add(13), 3, 4, steps);
     }
 }

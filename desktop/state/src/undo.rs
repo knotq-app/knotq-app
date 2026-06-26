@@ -1,4 +1,3 @@
-use std::collections::VecDeque;
 use std::time::{Duration as StdDuration, Instant};
 
 use crate::CalendarOccurrenceKey;
@@ -17,60 +16,6 @@ pub struct EditorUndoKey {
 pub struct EditorUndoGroup {
     pub key: EditorUndoKey,
     pub last_edit: Instant,
-}
-
-#[derive(Clone, Debug)]
-pub struct UndoRedoStack {
-    undo: VecDeque<Command>,
-    redo: VecDeque<Command>,
-    max_depth: usize,
-}
-
-impl Default for UndoRedoStack {
-    fn default() -> Self {
-        Self::new(UNDO_DEPTH)
-    }
-}
-
-impl UndoRedoStack {
-    pub fn new(max_depth: usize) -> Self {
-        Self {
-            undo: VecDeque::new(),
-            redo: VecDeque::new(),
-            max_depth,
-        }
-    }
-
-    pub fn push_undo(&mut self, command: Command) {
-        self.undo.push_back(command);
-        while self.undo.len() > self.max_depth {
-            self.undo.pop_front();
-        }
-    }
-
-    pub fn pop_undo(&mut self) -> Option<Command> {
-        self.undo.pop_back()
-    }
-
-    pub fn push_redo(&mut self, command: Command) {
-        self.redo.push_back(command);
-    }
-
-    pub fn pop_redo(&mut self) -> Option<Command> {
-        self.redo.pop_back()
-    }
-
-    pub fn clear_redo(&mut self) {
-        self.redo.clear();
-    }
-
-    pub fn undo_len(&self) -> usize {
-        self.undo.len()
-    }
-
-    pub fn redo_len(&self) -> usize {
-        self.redo.len()
-    }
 }
 
 pub fn editor_undo_key(cmd: &Command) -> Option<EditorUndoKey> {

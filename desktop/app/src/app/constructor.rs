@@ -1,4 +1,4 @@
-use std::collections::{HashMap, VecDeque};
+use std::collections::HashMap;
 
 use chrono::Local;
 use gpui::{Context, ScrollHandle};
@@ -77,8 +77,6 @@ impl KnotQApp {
                 crdt_states,
                 initial_sequence,
             ),
-            undo_navigation_stack: VecDeque::new(),
-            redo_navigation_stack: VecDeque::new(),
             settings_return_selection: None,
             event_popup: None,
             event_popup_title_subscription: None,

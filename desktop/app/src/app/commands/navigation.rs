@@ -1,12 +1,12 @@
 use gpui::Context;
 
-use crate::app::{KnotQApp, UndoNavigationSnapshot, View};
+use crate::app::{KnotQApp, NavSnapshot, View};
 
 use super::{workspace_item, NotificationServiceSignal, WorkspaceServiceSignals};
 
 impl KnotQApp {
-    pub(super) fn undo_navigation_snapshot(&self) -> UndoNavigationSnapshot {
-        UndoNavigationSnapshot {
+    pub(super) fn undo_navigation_snapshot(&self) -> NavSnapshot {
+        NavSnapshot {
             selection: self.selection.clone(),
             week_offset: self.week_offset,
             month_offset: self.month_offset,
@@ -15,7 +15,7 @@ impl KnotQApp {
 
     pub(super) fn restore_undo_navigation_snapshot(
         &mut self,
-        snapshot: &UndoNavigationSnapshot,
+        snapshot: &NavSnapshot,
         _cx: &mut Context<Self>,
     ) {
         let view_changed = self.selection.view != snapshot.selection.view

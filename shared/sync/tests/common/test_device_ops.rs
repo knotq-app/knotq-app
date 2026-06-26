@@ -56,6 +56,25 @@ impl TestDevice {
         self.record_changes(WorkspaceCrdtChangeSet::default().touch_scheme(scheme_id));
     }
 
+    /// Snapshot a scheme's current items — the fuzzer's undo model records these
+    /// before a content edit so it can later revert to them.
+    pub fn scheme_items_snapshot(&self, scheme_id: SchemeId) -> Option<Vec<Item>> {
+        self.workspace
+            .schemes
+            .get(&scheme_id)
+            .map(|scheme| scheme.items.clone())
+    }
+
+    /// Replace a scheme's items wholesale and record the CRDT change. Models an
+    /// undo/redo reverting a scheme's content to a prior snapshot — at the CRDT
+    /// layer it is just another local edit, so it must converge like any other.
+    pub fn revert_scheme_items(&mut self, scheme_id: SchemeId, items: Vec<Item>) {
+        if let Some(scheme) = self.workspace.schemes.get_mut(&scheme_id) {
+            scheme.items = items;
+            self.record_changes(WorkspaceCrdtChangeSet::default().touch_scheme(scheme_id));
+        }
+    }
+
     pub fn rename_scheme(&mut self, scheme_id: SchemeId, name: &str) {
         self.scheme_mut(scheme_id).name = name.to_string();
         // The name lives in the workspace document's node payload.

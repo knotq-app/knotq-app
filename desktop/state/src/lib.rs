@@ -10,6 +10,7 @@ mod session;
 mod state;
 mod store;
 mod undo;
+mod undo_store;
 
 pub use calendar_state::{
     complete_past_events, mark_past_event_completion_keys_done, mark_past_events_done,
@@ -35,5 +36,6 @@ pub use state::AppState;
 pub use store::{StoreOperation, WorkspaceDirtyState, WorkspaceStore};
 pub use undo::{
     calendar_toggle_keys, editor_undo_key, recurrence_undo_key, should_coalesce_editor_undo,
-    should_coalesce_recurrence_undo, EditorUndoGroup, EditorUndoKey, UndoRedoStack, UNDO_DEPTH,
+    should_coalesce_recurrence_undo, EditorUndoGroup, EditorUndoKey, UNDO_DEPTH,
 };
+pub use undo_store::{NavSnapshot, UndoEntry, UndoScope, UndoStore};

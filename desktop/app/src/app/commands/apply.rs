@@ -7,7 +7,7 @@ use knotq_commands::{
 
 use crate::app::{
     calendar_toggle_keys, editor_undo_key, recurrence_undo_key, should_coalesce_editor_undo,
-    should_coalesce_recurrence_undo, EditorUndoGroup, KnotQApp, UndoNavigationEntry,
+    should_coalesce_recurrence_undo, EditorUndoGroup, KnotQApp, UndoEntry,
 };
 
 use super::service_signals_for_command;
@@ -40,6 +40,7 @@ impl KnotQApp {
             self.recurrence_undo_group,
             self.active_repeat_popover_undo_key(),
         );
+        let undo_scope = self.undo_scope_for(&cmd);
         let nav_before = self.undo_navigation_snapshot();
         let toggled = calendar_toggle_keys(&cmd);
         let service_signals = service_signals_for_command(&cmd, &self.workspace);
@@ -53,19 +54,17 @@ impl KnotQApp {
                     key,
                     last_edit: Instant::now(),
                 });
-                self.redo_stack.clear();
+                self.undo_store.clear_redo_conflicting(&receipt.inverse);
                 self.reconcile_workspace_ui_state();
                 let nav_after = self.undo_navigation_snapshot();
                 if !coalesce_recurrence {
-                    self.push_undo(
-                        receipt.inverse.clone(),
-                        UndoNavigationEntry {
-                            before: nav_before,
-                            after: nav_after,
-                        },
-                    );
+                    self.push_undo(UndoEntry {
+                        inverse: receipt.inverse.clone(),
+                        scope: undo_scope,
+                        before: nav_before,
+                        after: nav_after,
+                    });
                 }
-                self.redo_navigation_stack.clear();
                 self.signal_workspace_services(service_signals);
                 cx.notify();
                 Ok(Some(receipt))
@@ -93,8 +92,7 @@ impl KnotQApp {
             Ok(receipt) => {
                 self.sync_retained_completed_calendar_items(&toggled);
                 self.clear_completed_occurrence_notifications(&completed_clear_cmd);
-                self.redo_stack.clear();
-                self.redo_navigation_stack.clear();
+                self.undo_store.clear_redo_conflicting(&receipt.inverse);
                 self.reconcile_workspace_ui_state();
                 self.signal_workspace_services(service_signals);
                 cx.notify();
@@ -122,6 +120,7 @@ impl KnotQApp {
         let now = Instant::now();
         let key = editor_undo_key(&cmd);
         let coalesce = should_coalesce_editor_undo(key, self.editor_undo_group, now);
+        let undo_scope = self.undo_scope_for(&cmd);
         let nav_before = self.undo_navigation_snapshot();
         let toggled = calendar_toggle_keys(&cmd);
         let service_signals = service_signals_for_command(&cmd, &self.workspace);
@@ -135,19 +134,17 @@ impl KnotQApp {
                     key,
                     last_edit: now,
                 });
-                self.redo_stack.clear();
+                self.undo_store.clear_redo_conflicting(&receipt.inverse);
                 self.reconcile_workspace_ui_state();
                 let nav_after = self.undo_navigation_snapshot();
                 if !coalesce {
-                    self.push_undo(
-                        receipt.inverse.clone(),
-                        UndoNavigationEntry {
-                            before: nav_before,
-                            after: nav_after,
-                        },
-                    );
+                    self.push_undo(UndoEntry {
+                        inverse: receipt.inverse.clone(),
+                        scope: undo_scope,
+                        before: nav_before,
+                        after: nav_after,
+                    });
                 }
-                self.redo_navigation_stack.clear();
                 self.signal_workspace_services(service_signals);
                 cx.notify();
                 Some(receipt)

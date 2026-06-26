@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{HashMap, HashSet};
 
 use chrono::NaiveDate;
 use knotq_commands::{Command, CommandError, CommandOrigin, CommandReceipt};
@@ -11,7 +11,8 @@ use knotq_sync::PendingCrdtEdit;
 
 use crate::{
     DailyQueueState, EditorSessions, EditorUndoGroup, EventBus, NotificationState,
-    RetainedCompletedItems, Selection, UndoRedoStack, WorkspaceDirtyState, WorkspaceStore,
+    RetainedCompletedItems, Selection, UndoScope, UndoStore, View, WorkspaceDirtyState,
+    WorkspaceStore,
 };
 
 pub struct AppState {
@@ -23,7 +24,7 @@ pub struct AppState {
     pub selection: Selection,
     pub week_offset: i32,
     pub month_offset: i32,
-    pub undo: UndoRedoStack,
+    pub undo_store: UndoStore,
     pub editor_undo_group: Option<EditorUndoGroup>,
     pub recurrence_undo_group: Option<EditorUndoGroup>,
     pub(crate) editor_sessions: EditorSessions,
@@ -52,8 +53,6 @@ pub struct AppState {
     pub retained_completed_calendar_items: HashSet<crate::CalendarOccurrenceKey>,
     pub window_size: Option<SavedWindowSize>,
     pub window_position: Option<SavedWindowPosition>,
-    pub undo_stack: VecDeque<Command>,
-    pub redo_stack: VecDeque<Command>,
 }
 
 impl AppState {
@@ -90,7 +89,7 @@ impl AppState {
             selection: Selection::default(),
             week_offset: 0,
             month_offset: 0,
-            undo: UndoRedoStack::default(),
+            undo_store: UndoStore::default(),
             editor_undo_group: None,
             recurrence_undo_group: None,
             editor_sessions: HashMap::new(),
@@ -114,8 +113,6 @@ impl AppState {
             retained_completed_calendar_items: HashSet::new(),
             window_size: settings.window_size,
             window_position: settings.window_position,
-            undo_stack: VecDeque::new(),
-            redo_stack: VecDeque::new(),
         }
     }
 
@@ -144,6 +141,26 @@ impl AppState {
             self.selection.scheme_id = Some(scheme_id);
             self.selection.view = crate::View::Scheme;
         }
+    }
+
+    /// The undo timeline a plain undo/redo keypress targets, derived from the
+    /// current view: a focused scheme undoes its own content edits; views with
+    /// no focused scheme (the calendar) fall back to the global timeline.
+    pub fn active_undo_scope(&self) -> UndoScope {
+        match self.selection.view {
+            View::Scheme | View::DailyQueue => match self.selection.scheme_id {
+                Some(scheme) => UndoScope::Scheme(scheme),
+                None => UndoScope::Workspace,
+            },
+            View::Union | View::Settings => UndoScope::Workspace,
+        }
+    }
+
+    /// The timeline a freshly applied `command` should file its undo entry
+    /// under, given where it was initiated (the current view). Lets a calendar
+    /// action that edits a per-scheme item still undo from the calendar.
+    pub fn undo_scope_for(&self, command: &Command) -> UndoScope {
+        UndoScope::for_command(command, self.active_undo_scope())
     }
 
     /// Mark the workspace as dirty due to a command. Tracks which schemes were
@@ -244,13 +261,11 @@ impl AppState {
         self.store
             .replace_workspace(workspace, WorkspaceDirtyState::default(), true);
         self.sync_workspace_from_store();
-        self.undo = UndoRedoStack::default();
+        self.undo_store.clear();
         self.editor_undo_group = None;
         self.recurrence_undo_group = None;
         self.editor_sessions.clear();
         self.retained_completed_calendar_items.clear();
-        self.undo_stack.clear();
-        self.redo_stack.clear();
 
         let daily_queue = DailyQueueState::new(today, loaded_start);
         self.daily_queue = daily_queue.clone();
@@ -301,14 +316,50 @@ impl AppState {
         workspace: Workspace,
         crdt_states: HashMap<DocumentId, Vec<u8>>,
     ) {
+        // Work out which schemes this sync run actually changed by diffing the
+        // incoming content against the current one. The replace path runs only
+        // when there are no in-flight local edits, so any item-content difference
+        // is precisely the remote delta. (We can't use `crdt_states` for this —
+        // it always carries every document, not just the changed ones.) Undo
+        // history for schemes the sync didn't touch then survives the replace.
+        let mut affected_schemes = std::collections::HashSet::new();
+        for (scheme_id, old_scheme) in &self.workspace.schemes {
+            match workspace.schemes.get(scheme_id) {
+                Some(new_scheme) if new_scheme.items == old_scheme.items => {}
+                _ => {
+                    affected_schemes.insert(*scheme_id);
+                }
+            }
+        }
+        for scheme_id in workspace.schemes.keys() {
+            if !self.workspace.schemes.contains_key(scheme_id) {
+                affected_schemes.insert(*scheme_id);
+            }
+        }
+
         let dirty = WorkspaceDirtyState::all(&workspace);
         self.store
             .replace_workspace_with_crdt_states(workspace, dirty, false, crdt_states);
         self.sync_workspace_from_store();
-        self.undo = UndoRedoStack::default();
-        self.editor_undo_group = None;
-        self.recurrence_undo_group = None;
-        self.undo_stack.clear();
-        self.redo_stack.clear();
+
+        // Discard undo/redo only for affected schemes and global entries,
+        // preserving history for unaffected schemes.
+        self.undo_store.clear_affected_by_schemes(&affected_schemes);
+
+        // Clear editor groups only if they're tied to an affected scheme.
+        if self
+            .editor_undo_group
+            .as_ref()
+            .is_some_and(|g| affected_schemes.contains(&g.key.scheme_id))
+        {
+            self.editor_undo_group = None;
+        }
+        if self
+            .recurrence_undo_group
+            .as_ref()
+            .is_some_and(|g| affected_schemes.contains(&g.key.scheme_id))
+        {
+            self.recurrence_undo_group = None;
+        }
     }
 }
