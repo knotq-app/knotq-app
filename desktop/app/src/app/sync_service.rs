@@ -45,6 +45,14 @@ use snapshot::workspace_for_background_sync;
 // back to the foreground/background cadence instead.
 const SYNC_DEBOUNCE: StdDuration = StdDuration::from_secs(2);
 const SYNC_LOCAL_CHANGE_DEBOUNCE: StdDuration = StdDuration::from_secs(30);
+// When the WebSocket transport is connected, pushes ride a persistent socket with
+// no per-edit connection cost, so the long HTTP-era debounces above collapse to
+// "feels instant" windows that still coalesce a burst of keystrokes (send) or a
+// burst of server `changed` nudges (receive) into a single sync. They apply only
+// while connected; the HTTP fallback keeps the longer debounces so an offline
+// device doesn't hammer the backend with a connection per edit.
+const SYNC_LOCAL_CHANGE_DEBOUNCE_WS: StdDuration = StdDuration::from_millis(300);
+const SYNC_DEBOUNCE_WS: StdDuration = StdDuration::from_millis(150);
 const SYNC_PENDING_RETRY: StdDuration = StdDuration::from_secs(30);
 const SYNC_POLL_FOREGROUND: StdDuration = StdDuration::from_secs(120);
 const SYNC_POLL_BACKGROUND: StdDuration = StdDuration::from_secs(30 * 60);

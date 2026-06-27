@@ -10,8 +10,8 @@ use knotq_storage_json::{load_local_sync_state, workspace_path};
 use super::snapshot::sync_snapshot;
 use super::{
     SyncNetworkUnreachable, SyncSignal, SyncSnapshot, ACCESS_REFRESH_SKEW_SECS, SYNC_DEBOUNCE,
-    SYNC_LOCAL_CHANGE_DEBOUNCE, SYNC_PENDING_RETRY, SYNC_POLL_BACKGROUND, SYNC_POLL_FOREGROUND,
-    SYNC_POLL_OFFLINE, SYNC_POLL_WS_CONNECTED,
+    SYNC_DEBOUNCE_WS, SYNC_LOCAL_CHANGE_DEBOUNCE, SYNC_LOCAL_CHANGE_DEBOUNCE_WS, SYNC_PENDING_RETRY,
+    SYNC_POLL_BACKGROUND, SYNC_POLL_FOREGROUND, SYNC_POLL_OFFLINE, SYNC_POLL_WS_CONNECTED,
 };
 use crate::app::sync_auth::{refresh_sync_backend, RefreshError};
 use crate::app::{KnotQApp, SyncAuthStatus, SyncRunStatus, View};
@@ -43,14 +43,28 @@ pub(crate) fn spawn_sync_task(
                 }
 
                 if let Some(first_signal) = received_signal {
-                    // Debounce: LocalChange waits 30 s from the *first* signal;
-                    // Immediate waits 2 s. During the wait keep listening — an
-                    // Immediate mid-wait shortens the deadline to now+2 s (only
-                    // if that is sooner than the current deadline), further
-                    // LocalChanges do not extend the 30 s deadline.
+                    // Debounce: while the WebSocket is connected these collapse to
+                    // ~instant windows (300 ms / 150 ms) since a push has no
+                    // per-edit connection cost; on the HTTP fallback they stay long
+                    // (30 s / 2 s) so an offline device doesn't reconnect per edit.
+                    // During the wait keep listening — an Immediate mid-wait shortens
+                    // the deadline to now+immediate (only if sooner), further
+                    // LocalChanges do not extend the deadline.
+                    let ws_connected = ws_sync_connected(&weak, cx);
+                    let immediate_debounce = if ws_connected {
+                        SYNC_DEBOUNCE_WS
+                    } else {
+                        SYNC_DEBOUNCE
+                    };
                     let debounce = match first_signal {
-                        SyncSignal::Immediate => SYNC_DEBOUNCE,
-                        SyncSignal::LocalChange => SYNC_LOCAL_CHANGE_DEBOUNCE,
+                        SyncSignal::Immediate => immediate_debounce,
+                        SyncSignal::LocalChange => {
+                            if ws_connected {
+                                SYNC_LOCAL_CHANGE_DEBOUNCE_WS
+                            } else {
+                                SYNC_LOCAL_CHANGE_DEBOUNCE
+                            }
+                        }
                     };
                     let mut debounce_end = std::time::Instant::now() + debounce;
                     loop {
@@ -68,10 +82,11 @@ pub(crate) fn spawn_sync_task(
                             result = signal => {
                                 match result {
                                     Ok(SyncSignal::Immediate) => {
-                                        // Shorten the deadline to 2 s from now, but
-                                        // only if that is sooner than the current end.
+                                        // Shorten the deadline to the immediate window
+                                        // from now, but only if that is sooner than
+                                        // the current end.
                                         let shortened =
-                                            std::time::Instant::now() + SYNC_DEBOUNCE;
+                                            std::time::Instant::now() + immediate_debounce;
                                         if shortened < debounce_end {
                                             debounce_end = shortened;
                                         }
@@ -133,6 +148,17 @@ fn poll_interval(weak: &gpui::WeakEntity<KnotQApp>, cx: &mut gpui::AsyncApp) -> 
         sync_poll_interval(has_pending, offline, server_rejecting, window_active)
     })
     .unwrap_or(SYNC_POLL_FOREGROUND)
+}
+
+/// Whether the live WebSocket sync client is currently connected. Used to pick the
+/// short ("instant") debounce windows over the long HTTP-fallback ones.
+fn ws_sync_connected(weak: &gpui::WeakEntity<KnotQApp>, cx: &mut gpui::AsyncApp) -> bool {
+    weak.update(cx, |app, _cx| {
+        app.ws_sync
+            .as_ref()
+            .is_some_and(|client| client.is_connected())
+    })
+    .unwrap_or(false)
 }
 
 fn record_poll_at(weak: &gpui::WeakEntity<KnotQApp>, cx: &mut gpui::AsyncApp) {
