@@ -8,6 +8,7 @@ mod fractional;
 mod local_state;
 mod persisted_state;
 mod user_id;
+pub mod ws;
 
 use chrono::{DateTime, Utc};
 use knotq_model::{DocumentId, ReplicaId, ShareId, SyncDocumentKind, WorkspaceId};
