@@ -21,7 +21,14 @@ yrs = { workspace = true }
 # [dependencies] and are accessible from integration tests in tests/.
 knotq-notifications = { workspace = true }
 ureq = { workspace = true }
+# Real WebSocket client for the ws_integration test (ws:// local backend — no TLS
+# feature needed). Exercises knotq_sync::ws against a live `wrangler dev` worker.
+tungstenite = "0.23"
 
 [[test]]
 name = "backend_integration"
 path = "tests/backend_integration.rs"
+
+[[test]]
+name = "ws_integration"
+path = "tests/ws_integration.rs"
