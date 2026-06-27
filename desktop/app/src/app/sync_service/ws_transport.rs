@@ -22,9 +22,54 @@ use knotq_sync::{
     SyncTransport,
 };
 
-use super::SyncNetworkUnreachable;
+use super::{SyncHttpClient, SyncNetworkUnreachable};
 
-/// A `SyncTransport` that carries batched pull/push over a persistent WebSocket.
+/// The live transport: prefer the WebSocket when it is connected, fall back to
+/// HTTP otherwise. A WS *transport hiccup* (not connected / dropped / timed out)
+/// silently falls back to HTTP for this run, so a sync always completes. A WS
+/// *server rejection* is returned (mapped), NOT retried over HTTP — it would be
+/// rejected the same way, and on push the engine self-heals from it.
+pub(crate) struct FallbackTransport<'a> {
+    ws: Option<&'a WsClient>,
+    http: &'a SyncHttpClient,
+}
+
+impl<'a> FallbackTransport<'a> {
+    pub(crate) fn new(ws: Option<&'a WsClient>, http: &'a SyncHttpClient) -> Self {
+        Self { ws, http }
+    }
+}
+
+impl SyncTransport for FallbackTransport<'_> {
+    fn pull(&self, request: &BatchPullRequest) -> Result<BatchPullResponse> {
+        if let Some(ws) = self.ws {
+            if ws.is_connected() {
+                match ws.request_pull(request) {
+                    Ok(response) => return Ok(response),
+                    Err(err @ WsRequestError::Server { .. }) => return Err(map_pull_error(err)),
+                    Err(_) => { /* transport hiccup → fall back to HTTP this run */ }
+                }
+            }
+        }
+        self.http.pull(request)
+    }
+
+    fn push(&self, request: &BatchPushRequest) -> Result<BatchPushResponse> {
+        if let Some(ws) = self.ws {
+            if ws.is_connected() {
+                match ws.request_push(request) {
+                    Ok(response) => return Ok(response),
+                    Err(err @ WsRequestError::Server { .. }) => return Err(map_push_error(err)),
+                    Err(_) => { /* transport hiccup → fall back to HTTP this run */ }
+                }
+            }
+        }
+        self.http.push(request)
+    }
+}
+
+/// A pure-WebSocket `SyncTransport` (no fallback). Kept for completeness/tests;
+/// the live path uses [`FallbackTransport`].
 pub(crate) struct WsSyncTransport {
     client: Arc<WsClient>,
 }

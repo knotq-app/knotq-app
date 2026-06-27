@@ -593,6 +593,16 @@ pub struct KnotQApp {
     /// Remaining pending count from the last sync run result; persisted so the
     /// poll-interval logic can see pending edits even between runs.
     pub sync_pending_hint: usize,
+    /// Persistent WebSocket sync client (online, poll-free). `None` until a
+    /// sync-enabled account is active, and only populated under the `ws-sync`
+    /// feature. When connected, sync runs prefer it and the poll loop idles.
+    pub(crate) ws_sync: Option<std::sync::Arc<knotq_sync::ws::WsClient>>,
+    /// Latest bearer token for the ws client's reconnect handshakes; the ws
+    /// supervisor thread re-reads it on every (re)connect so refreshes apply.
+    pub(crate) ws_sync_token: std::sync::Arc<std::sync::Mutex<String>>,
+    /// The api_base the current ws client was built for, so an account switch
+    /// rebuilds it.
+    pub(crate) ws_sync_api_base: Option<String>,
     pub(crate) scheme_sessions: HashMap<SchemeId, SchemeSessionState>,
     pub(crate) service_bus: AppServiceBus,
     pub(crate) workspace_save_blocked_reason: Option<String>,

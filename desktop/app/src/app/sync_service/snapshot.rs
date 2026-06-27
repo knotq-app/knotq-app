@@ -45,6 +45,10 @@ pub(super) fn sync_snapshot(snapshot: SyncSnapshot) -> Result<SyncRunResult> {
         api_base: normalize_api_base(&snapshot.account.api_base)?,
         bearer_token: snapshot.account.bearer_token.clone(),
     };
+    // Batched pull/push prefer the live WebSocket and fall back to `client` (HTTP)
+    // when the socket is down. Media transfer always uses `client` (HTTP) directly.
+    let ws_sync = snapshot.ws_sync.clone();
+    let transport = super::ws_transport::FallbackTransport::new(ws_sync.as_deref(), &client);
     // Restore the long-lived CRDT documents from disk and overlay the UI store's
     // latest states (the `snapshot`), so the sync's CRDT carries this device's stable
     // deterministic identity plus its newest local edits — never rebuilt from plain
@@ -105,7 +109,7 @@ pub(super) fn sync_snapshot(snapshot: SyncSnapshot) -> Result<SyncRunResult> {
     // workspace; the engine applies the workspace index before scheme content so
     // newly discovered schemes route correctly.
     let pull = batch_pull_and_apply(
-        &client,
+        &transport,
         &mut crdt_docs,
         &mut local_state,
         workspace,
@@ -189,7 +193,7 @@ pub(super) fn sync_snapshot(snapshot: SyncSnapshot) -> Result<SyncRunResult> {
     // sync to re-download every document from sequence zero. The merged workspace
     // above is already durable, so the cursor never runs ahead of it.
     let push_result = batch_push_pending(
-        &client,
+        &transport,
         &mut local_state,
         replica_id,
         &snapshot.notification_schedule,

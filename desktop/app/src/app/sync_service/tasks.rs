@@ -11,7 +11,7 @@ use super::snapshot::sync_snapshot;
 use super::{
     SyncNetworkUnreachable, SyncSignal, SyncSnapshot, ACCESS_REFRESH_SKEW_SECS, SYNC_DEBOUNCE,
     SYNC_LOCAL_CHANGE_DEBOUNCE, SYNC_PENDING_RETRY, SYNC_POLL_BACKGROUND, SYNC_POLL_FOREGROUND,
-    SYNC_POLL_OFFLINE,
+    SYNC_POLL_OFFLINE, SYNC_POLL_WS_CONNECTED,
 };
 use crate::app::sync_auth::{refresh_sync_backend, RefreshError};
 use crate::app::{KnotQApp, SyncAuthStatus, SyncRunStatus, View};
@@ -124,6 +124,12 @@ fn poll_interval(weak: &gpui::WeakEntity<KnotQApp>, cx: &mut gpui::AsyncApp) -> 
         let offline = app.sync_offline;
         let server_rejecting = app.sync_server_rejecting;
         let window_active = app.window_is_active;
+        // When the socket is live and we're caught up, lean on the server's
+        // `changed` nudges instead of polling; keep only a slow safety-net timer.
+        let ws_connected = app.ws_sync.as_ref().is_some_and(|client| client.is_connected());
+        if ws_connected && !has_pending && !server_rejecting {
+            return SYNC_POLL_WS_CONNECTED;
+        }
         sync_poll_interval(has_pending, offline, server_rejecting, window_active)
     })
     .unwrap_or(SYNC_POLL_FOREGROUND)
@@ -149,6 +155,9 @@ async fn run_sync_once(weak: &gpui::WeakEntity<KnotQApp>, cx: &mut gpui::AsyncAp
             if app.workspace_save_blocked_reason.is_some() {
                 return None;
             }
+            // Create/refresh (or tear down) the WebSocket sync client to match the
+            // current account before snapshotting, so the run can prefer it.
+            app.ensure_ws_sync();
             let account = app.settings.sync_account.clone()?;
             if !account.supports_sync {
                 app.sync_run_status = SyncRunStatus::Idle;
@@ -175,6 +184,7 @@ async fn run_sync_once(weak: &gpui::WeakEntity<KnotQApp>, cx: &mut gpui::AsyncAp
                 pending,
                 crdt_states,
                 notification_schedule,
+                ws_sync: app.ws_sync.clone(),
             };
             // Captured after sync_store_from_workspace above, so it only moves
             // again if the user edits while the run is in flight.

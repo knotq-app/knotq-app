@@ -119,6 +119,14 @@ impl AppServiceBus {
         let _ = self.sync_tx.try_send(SyncSignal::Immediate);
     }
 
+    /// A cloneable sender for the sync signal channel, so an off-thread callback
+    /// (e.g. the WebSocket `changed` nudge) can request an immediate sync run.
+    /// Only consumed by the `ws-sync` build today.
+    #[cfg_attr(not(feature = "ws-sync"), allow(dead_code))]
+    pub(crate) fn sync_signal_sender(&self) -> async_channel::Sender<SyncSignal> {
+        self.sync_tx.clone()
+    }
+
     pub(crate) fn signal_sync_local_change(&self) {
         let _ = self.sync_tx.try_send(SyncSignal::LocalChange);
     }

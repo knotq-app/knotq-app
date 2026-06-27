@@ -11,6 +11,7 @@ mod http;
 mod media;
 mod snapshot;
 mod tasks;
+mod ws_lifecycle;
 mod ws_transport;
 #[cfg(feature = "ws-sync")]
 mod ws_socket;
@@ -48,6 +49,10 @@ const SYNC_PENDING_RETRY: StdDuration = StdDuration::from_secs(30);
 const SYNC_POLL_FOREGROUND: StdDuration = StdDuration::from_secs(120);
 const SYNC_POLL_BACKGROUND: StdDuration = StdDuration::from_secs(30 * 60);
 const SYNC_POLL_OFFLINE: StdDuration = StdDuration::from_secs(20 * 60);
+// When the WebSocket is connected, server `changed` nudges drive syncs in real
+// time, so the timer only needs to be a slow safety net (catches a missed nudge
+// or a silently-dropped socket between reconnects).
+const SYNC_POLL_WS_CONNECTED: StdDuration = StdDuration::from_secs(10 * 60);
 // Refresh the access token this many seconds before it expires, so a sync run
 // never starts with a token that could lapse mid-flight.
 const ACCESS_REFRESH_SKEW_SECS: i64 = 120;
@@ -87,6 +92,9 @@ struct SyncSnapshot {
     /// rather than from a possibly-staler on-disk copy.
     crdt_states: HashMap<DocumentId, Vec<u8>>,
     notification_schedule: NotificationScheduleSnapshot,
+    /// The live WebSocket sync client, if connected. The run prefers it over HTTP
+    /// (see `ws_transport::FallbackTransport`); `None` falls back to HTTP only.
+    ws_sync: Option<std::sync::Arc<knotq_sync::ws::WsClient>>,
 }
 
 struct SyncRunResult {
