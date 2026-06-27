@@ -11,6 +11,9 @@ mod http;
 mod media;
 mod snapshot;
 mod tasks;
+mod ws_transport;
+#[cfg(feature = "ws-sync")]
+mod ws_socket;
 
 pub(crate) use tasks::spawn_sync_task;
 

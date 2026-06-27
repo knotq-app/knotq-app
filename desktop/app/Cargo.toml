@@ -44,3 +44,11 @@ knotq-notifications = { workspace = true }
 knotq-storage-json = { workspace = true }
 knotq-theme = { workspace = true }
 knotq-ui = { workspace = true }
+# WebSocket sync transport (opt-in while it is brought up). rustls backend matches
+# the workspace's existing rustls (via ureq), avoiding a second TLS stack.
+tungstenite = { version = "0.23", features = ["rustls-tls-webpki-roots"], optional = true }
+
+[features]
+# Enable the persistent WebSocket sync transport (desktop tungstenite socket).
+# Default build keeps the proven HTTP polling path; flip this on to test WS sync.
+ws-sync = ["dep:tungstenite"]
