@@ -2,7 +2,7 @@ use chrono::NaiveDate;
 use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
-use crate::{DocumentId, ItemId, SchemeId, SyncDocumentKind, SyncDocumentMeta};
+use crate::{DocumentId, SchemeId, SyncDocumentKind, SyncDocumentMeta};
 
 pub const DAILY_QUEUE_TITLE: &str = "Daily";
 pub const DAILY_QUEUE_COLOR_INDEX: u8 = 0;
@@ -13,9 +13,6 @@ const DAILY_QUEUE_SCHEME_NAMESPACE: [u8; 16] = [
 ];
 const DAILY_QUEUE_DOCUMENT_NAMESPACE: [u8; 16] = [
     0x26, 0x69, 0x04, 0xa5, 0xd4, 0x2f, 0x4b, 0x37, 0x8c, 0x19, 0x58, 0x69, 0xbe, 0x1f, 0x45, 0x0c,
-];
-const DAILY_QUEUE_CARRYOVER_ITEM_NAMESPACE: [u8; 16] = [
-    0x4b, 0x1a, 0x9d, 0x07, 0xe2, 0x55, 0x4c, 0x83, 0xa6, 0x71, 0x2f, 0x8c, 0x10, 0xd9, 0x3b, 0x6e,
 ];
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -45,20 +42,6 @@ pub fn daily_queue_sync_metadata(date: NaiveDate) -> SyncDocumentMeta {
     let mut meta = SyncDocumentMeta::local(SyncDocumentKind::Scheme);
     meta.id = daily_queue_document_id(date);
     meta
-}
-
-/// Deterministic [`ItemId`] for a row carried into the daily queue for
-/// `target_date`, derived from `(source_item_id, target_date)`. Carrying the same
-/// source row into the same day twice — a double click, a retry after a sync
-/// clobbered the optimistic insert, or a sync that re-creates a just-carried row —
-/// always yields the SAME id. Identical ids let the carryover skip rows already
-/// present (idempotent local insert) AND let the CRDT item-skeleton merge collapse
-/// two devices' concurrent carries of the same row into one item instead of
-/// doubling it. Mirrors [`daily_queue_scheme_id`]'s UUIDv8 derivation; uses its own
-/// namespace so a carried id can never alias a scheme/document id.
-pub fn daily_queue_carryover_item_id(source: ItemId, target_date: NaiveDate) -> ItemId {
-    let name = format!("{}@{}", source.0, target_date);
-    ItemId(stable_daily_uuid(DAILY_QUEUE_CARRYOVER_ITEM_NAMESPACE, &name))
 }
 
 fn stable_daily_uuid(namespace: [u8; 16], name: &str) -> Uuid {

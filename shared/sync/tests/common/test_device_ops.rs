@@ -390,33 +390,21 @@ impl TestDevice {
         let previous_id = self.workspace.daily_queue_scheme_id(previous_date)?;
         let today_id = self.workspace.daily_queue_scheme_id(today)?;
 
-        // Build the carried rows (DETERMINISTIC ids, matching the real
-        // `daily_queue_carryover_command`) and the list of source rows to strip, from
-        // an immutable borrow of the previous scheme. Deterministic ids make two
-        // devices' concurrent carries of the same row converge instead of doubling.
+        // Build the carried rows (fresh ids) and the list of source rows to strip,
+        // from an immutable borrow of the previous scheme.
         let (carried_items, strip_ids): (Vec<Item>, Vec<ItemId>) = {
             let previous = self.workspace.scheme(previous_id)?;
             if dq_scheme_is_blank(previous) {
                 return None;
             }
-            let existing: std::collections::HashSet<ItemId> = self
-                .workspace
-                .scheme(today_id)
-                .map(|scheme| scheme.items.iter().map(|item| item.id).collect())
-                .unwrap_or_default();
             let mut carried = Vec::new();
             let mut strip = Vec::new();
             for item in &previous.items {
                 if dq_item_is_fully_complete_task(item) {
                     continue;
                 }
-                let carried_id =
-                    knotq_model::daily_queue_carryover_item_id(item.id, today);
-                if existing.contains(&carried_id) {
-                    continue;
-                }
                 let mut clone = item.clone();
-                clone.id = carried_id;
+                clone.id = ItemId::new();
                 carried.push(clone);
                 if dq_item_has_annotations(item) {
                     strip.push(item.id);
@@ -439,23 +427,25 @@ impl TestDevice {
             }
         }
 
-        // Insert the carried rows into today, then drop the blank placeholder (if any)
-        // so carried rows don't sit under a leading blank. Matches the real
-        // `daily_queue_carryover_command`, which DELETEs the placeholder rather than
-        // reusing its (random) id — reuse would make the first carried row
-        // non-deterministic and reintroduce doubling for it.
+        // Insert the carried rows into today, replacing the blank placeholder with the
+        // first carried row (the `daily_queue_carryover_command` placeholder branch).
         {
             let today_scheme = self.scheme_mut(today_id);
-            let placeholder_id = if dq_scheme_is_blank(today_scheme) {
-                today_scheme.items.first().map(|item| item.id)
-            } else {
-                None
-            };
-            for item in carried_items {
-                today_scheme.items.push(item);
+            let replace_placeholder =
+                dq_scheme_is_blank(today_scheme) && !today_scheme.items.is_empty();
+            let mut position = today_scheme.items.len();
+            let mut carried = carried_items.into_iter();
+            if replace_placeholder {
+                if let Some(mut first) = carried.next() {
+                    first.id = today_scheme.items[0].id;
+                    today_scheme.items[0] = first;
+                }
+                position = 1;
             }
-            if let Some(placeholder_id) = placeholder_id {
-                today_scheme.items.retain(|item| item.id != placeholder_id);
+            for item in carried {
+                let at = position.min(today_scheme.items.len());
+                today_scheme.items.insert(at, item);
+                position += 1;
             }
         }
 
