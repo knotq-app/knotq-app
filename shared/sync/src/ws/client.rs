@@ -270,6 +270,12 @@ impl Drop for WsClient {
 }
 
 fn run_supervisor(shared: Arc<Shared>, factory: Box<dyn RawSocketFactory>) {
+    // Run the socket I/O + reply delivery at user-initiated QoS so an Apple caller
+    // (e.g. the iOS bridge's user-initiated queue, or GPUI's foreground work)
+    // blocking on this thread's reply isn't a priority inversion — the OS would
+    // otherwise leave this thread at a lower QoS and starve it, stalling every WS
+    // request. No-op off Apple platforms.
+    set_user_initiated_qos();
     let mut backoff = shared.config.initial_backoff;
     while !shared.stop.load(Ordering::SeqCst) {
         let stable = match factory.connect() {
@@ -292,6 +298,29 @@ fn run_supervisor(shared: Arc<Shared>, factory: Box<dyn RawSocketFactory>) {
         }
     }
 }
+
+/// Raise the current thread to user-initiated QoS on Apple platforms so callers
+/// blocking on its replies don't hit a priority inversion. Elsewhere: a no-op.
+#[cfg(any(target_os = "macos", target_os = "ios"))]
+fn set_user_initiated_qos() {
+    // `QOS_CLASS_USER_INITIATED` from <sys/qos.h>; `pthread_set_qos_class_self_np`
+    // lives in libSystem (always linked on Apple), so we declare it directly rather
+    // than depend on a libc that may not export it.
+    const QOS_CLASS_USER_INITIATED: std::os::raw::c_uint = 0x19;
+    extern "C" {
+        fn pthread_set_qos_class_self_np(
+            qos_class: std::os::raw::c_uint,
+            relative_priority: std::os::raw::c_int,
+        ) -> std::os::raw::c_int;
+    }
+    // SAFETY: documented libSystem call with no preconditions; result ignored.
+    unsafe {
+        let _ = pthread_set_qos_class_self_np(QOS_CLASS_USER_INITIATED, 0);
+    }
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "ios")))]
+fn set_user_initiated_qos() {}
 
 fn run_session(shared: &Arc<Shared>, mut socket: Box<dyn RawSocket>) {
     let (out_tx, out_rx) = mpsc::channel::<String>();
