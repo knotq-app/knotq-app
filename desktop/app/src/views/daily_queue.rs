@@ -68,8 +68,10 @@ impl KnotQApp {
                 continue;
             }
             self.daily_queue_visible_dates.insert(date);
+            let remote_cursors = self.remote_cursors_for_scheme(scheme_id);
             editor.update(cx, |editor, cx| {
                 editor.sync_from_scheme(scheme, theme, time_format, window, cx);
+                editor.set_remote_cursors(remote_cursors, cx);
                 editor.relayout_if_dirty_for_width(px(available_width), window);
                 if focused == Some(scheme_id) {
                     if let Some(item_id) = focused_item {

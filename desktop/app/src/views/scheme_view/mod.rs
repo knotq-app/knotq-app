@@ -47,8 +47,10 @@ impl KnotQApp {
         let time_format = self.time_format;
         let focused_item = self.selection.focused_item_id;
         let is_renaming = self.rename_node.is_some();
+        let remote_cursors = self.remote_cursors_for_scheme(scheme.id);
         editor.update(cx, |ed, cx| {
             ed.sync_from_scheme(scheme.clone(), theme, time_format, window, cx);
+            ed.set_remote_cursors(remote_cursors, cx);
             if let Some(item_id) = focused_item.filter(|_| !is_renaming) {
                 ed.focus_item(item_id, window, cx);
             }

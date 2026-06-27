@@ -25,6 +25,7 @@ mod editor_mgr;
 mod google_oauth;
 mod nav;
 mod node_rename;
+mod presence;
 mod services;
 mod settings;
 mod sync_auth;
@@ -603,6 +604,13 @@ pub struct KnotQApp {
     /// The api_base the current ws client was built for, so an account switch
     /// rebuilds it.
     pub(crate) ws_sync_api_base: Option<String>,
+    /// Live peer carets (multiplayer presence) per scheme, keyed by replica.
+    /// Populated from the ws `on_presence` callback; rendered as editor cursors.
+    pub(crate) presence_cursors: HashMap<SchemeId, Vec<presence::PeerCursor>>,
+    /// Funnels ws-thread presence frames to the GPUI thread (drained by
+    /// `_presence_task`). Cloned into the ws `on_presence` callback (ws-sync only).
+    #[cfg_attr(not(feature = "ws-sync"), allow(dead_code))]
+    pub(crate) presence_tx: async_channel::Sender<knotq_sync::ws::PresenceEvent>,
     pub(crate) scheme_sessions: HashMap<SchemeId, SchemeSessionState>,
     pub(crate) service_bus: AppServiceBus,
     pub(crate) workspace_save_blocked_reason: Option<String>,
@@ -619,6 +627,7 @@ pub struct KnotQApp {
     pub _sync_task: Task<()>,
     pub _google_calendar_sync_task: Task<()>,
     pub _auto_update_task: Task<()>,
+    pub _presence_task: Task<()>,
     pub _window_activation_subscription: Option<Subscription>,
     pub _editor_subscription: Option<Subscription>,
     pub _search_subscription: Option<Subscription>,

@@ -35,6 +35,23 @@ impl KnotQApp {
             spawn_notification_task(service_bus.clone(), service_receivers.notification_rx, cx);
         let state_task = spawn_timeline_task(service_receivers.timeline_rx, cx);
         let sync_task = spawn_sync_task(service_receivers.sync_rx, cx);
+        // Presence (multiplayer carets): ws-thread frames are funnelled here and
+        // applied on the GPUI thread.
+        let (presence_tx, presence_rx) =
+            async_channel::unbounded::<knotq_sync::ws::PresenceEvent>();
+        let presence_task = cx.spawn(async move |weak: gpui::WeakEntity<KnotQApp>, cx| {
+            while let Ok(event) = presence_rx.recv().await {
+                if weak
+                    .update(cx, |app, cx| {
+                        app.apply_presence_event(event);
+                        cx.notify();
+                    })
+                    .is_err()
+                {
+                    break;
+                }
+            }
+        });
         let google_calendar_sync_task = Self::spawn_google_calendar_sync_task(cx);
         let auto_update_task = spawn_auto_update_task(auto_update_rx, cx);
         let quit_subscription = cx.on_app_quit(|app, _cx| {
@@ -130,6 +147,8 @@ impl KnotQApp {
             ws_sync: None,
             ws_sync_token: std::sync::Arc::new(std::sync::Mutex::new(String::new())),
             ws_sync_api_base: None,
+            presence_cursors: HashMap::new(),
+            presence_tx,
             scheme_sessions: HashMap::new(),
             service_bus,
             workspace_save_blocked_reason,
@@ -146,6 +165,7 @@ impl KnotQApp {
             _sync_task: sync_task,
             _google_calendar_sync_task: google_calendar_sync_task,
             _auto_update_task: auto_update_task,
+            _presence_task: presence_task,
             _window_activation_subscription: None,
             _editor_subscription: None,
             _search_subscription: None,

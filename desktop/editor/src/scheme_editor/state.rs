@@ -72,7 +72,27 @@ impl SchemeEditor {
             cell_slots: HashMap::new(),
             table_control_hitboxes: Vec::new(),
             hovered_table_control: None,
+            remote_cursors: Vec::new(),
         }
+    }
+
+    /// The local caret as `(item id, char offset)` — item-relative so it can be
+    /// broadcast as presence and rendered correctly on devices with a different
+    /// row layout. `None` when the caret isn't on a known item row.
+    pub fn caret_presence(&self) -> Option<(ItemId, usize)> {
+        let head = self.selection.head;
+        let item_id = self.rows.get(head.row).map(|row| row.item.id)?;
+        Some((item_id, head.col))
+    }
+
+    /// Replace the set of remote peer carets shown in this editor. Cheap no-op when
+    /// unchanged so it can be called every render.
+    pub fn set_remote_cursors(&mut self, cursors: Vec<RemoteCursor>, cx: &mut Context<Self>) {
+        if self.remote_cursors == cursors {
+            return;
+        }
+        self.remote_cursors = cursors;
+        cx.notify();
     }
 
     pub fn focus(&mut self, window: &mut Window, cx: &mut Context<Self>) {

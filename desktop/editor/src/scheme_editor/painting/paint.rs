@@ -136,6 +136,46 @@ impl SchemeEditor {
                 token_hsla(theme.caret_color),
             ));
         }
+
+        // Remote peers' carets (multiplayer presence). Painted regardless of local
+        // focus/blink so collaborators are always visible, and located by item id
+        // so they're correct under this device's own layout.
+        self.paint_remote_cursors(text_origin, window);
+    }
+
+    fn paint_remote_cursors(&self, text_origin: Point<Pixels>, window: &mut Window) {
+        if self.remote_cursors.is_empty() {
+            return;
+        }
+        for cursor in &self.remote_cursors {
+            let Some(row) = self.rows.iter().position(|r| r.item.id == cursor.item_id) else {
+                continue;
+            };
+            if row >= self.line_map.line_count() {
+                continue;
+            }
+            let loc = self.clamp_location(TextLocation {
+                row,
+                col: cursor.col,
+            });
+            let pos = self.visual_point_for_location(loc);
+            let row_height = self.line_map.row_line_height(loc.row);
+            let caret_height = (row_height - px(4.0)).max(px(12.0));
+            let caret_top_offset = ((row_height - caret_height) / 2.0).max(px(0.0));
+            let color = token_hsla(cursor.color);
+            let x = text_origin.x + pos.x;
+            let y = text_origin.y + pos.y + caret_top_offset;
+            // A 2px caret bar, slightly wider than the local 1.5px caret.
+            window.paint_quad(fill(
+                Bounds::new(point(x, y), size(px(2.0), caret_height)),
+                color,
+            ));
+            // A small flag at the top so the peer caret reads as "someone is here".
+            window.paint_quad(fill(
+                Bounds::new(point(x, y), size(px(6.0), px(4.0))),
+                color,
+            ));
+        }
     }
 
     fn paint_block_suffix(

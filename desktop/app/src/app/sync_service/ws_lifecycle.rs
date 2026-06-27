@@ -40,13 +40,16 @@ impl KnotQApp {
                             .filter(|token| !token.is_empty())
                     });
                 let sync_tx = self.service_bus.sync_signal_sender();
+                let presence_tx = self.presence_tx.clone();
                 let callbacks = knotq_sync::ws::WsCallbacks {
                     // A peer pushed: request an immediate sync run (over the socket).
                     on_changed: Box::new(move || {
                         let _ = sync_tx.try_send(crate::app::sync_service::SyncSignal::Immediate);
                     }),
-                    // Presence (live cursors) rendering is wired separately; ignore here.
-                    on_presence: Box::new(|_event| {}),
+                    // A peer's live caret: funnel to the GPUI thread to render.
+                    on_presence: Box::new(move |event| {
+                        let _ = presence_tx.try_send(event);
+                    }),
                 };
                 let client = super::ws_socket::connect_workspace_ws(
                     &account.api_base,

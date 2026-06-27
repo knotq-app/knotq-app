@@ -312,6 +312,22 @@ pub struct SchemeEditor {
     cell_slots: HashMap<usize, CellSlot>,
     table_control_hitboxes: Vec<TableControlHitbox>,
     hovered_table_control: Option<TableControlKind>,
+    /// Other devices' live carets in this scheme (multiplayer presence). Keyed by
+    /// item so they stay correct regardless of this device's row layout/scroll.
+    /// Painted as colored bars; never affect editing.
+    remote_cursors: Vec<RemoteCursor>,
+}
+
+/// A remote peer's live caret, positioned by item (stable across devices) plus a
+/// character offset, with a display color. Set each render via
+/// [`SchemeEditor::set_remote_cursors`].
+#[derive(Clone, Debug, PartialEq)]
+pub struct RemoteCursor {
+    pub item_id: ItemId,
+    pub col: usize,
+    /// RGBA color token (0xRRGGBBAA), converted to the paint color.
+    pub color: u32,
+    pub label: String,
 }
 
 #[derive(Clone, Copy, Debug)]

@@ -164,6 +164,8 @@ impl KnotQApp {
                     self.selection.view = View::DailyQueue;
                     self.selection.scheme_id = Some(scheme_id);
                 }
+                // Broadcast the local caret as presence (no-op when ws is down).
+                self.send_local_presence(scheme_id, editor, cx);
                 cx.notify();
             }
             EditorEvent::Notice { .. } => {}
