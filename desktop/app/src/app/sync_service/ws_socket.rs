@@ -137,4 +137,53 @@ mod tests {
             "ws://localhost:8787/v1/sync/ws"
         );
     }
+
+    /// Validate the desktop's OWN tungstenite socket + `connect_workspace_ws`
+    /// against a live `wrangler dev` worker (the shared ws_integration test uses a
+    /// separate test socket, so this closes the gap on the code that actually
+    /// ships). Skips unless KNOTQ_SYNC_BACKEND_URL is set; run with:
+    ///   KNOTQ_SYNC_BACKEND_URL=http://127.0.0.1:8788 \
+    ///     cargo test -p knotq-app --features ws-sync ws_socket -- --nocapture
+    #[test]
+    fn connects_and_pulls_against_live_backend() {
+        let Ok(base_url) = std::env::var("KNOTQ_SYNC_BACKEND_URL") else {
+            println!("[ws_socket] KNOTQ_SYNC_BACKEND_URL not set — skipping live test");
+            return;
+        };
+        let base_url = base_url.trim_end_matches('/').to_string();
+
+        // Bootstrap a sync-entitled test user (KNOTQ_TEST_MODE backend).
+        let email = format!("ws-socket-{}@example.com", uuid::Uuid::new_v4());
+        let resp = ureq::post(&format!("{base_url}/__test/bootstrap"))
+            .send_json(ureq::json!({ "email": email }))
+            .expect("bootstrap")
+            .into_json::<serde_json::Value>()
+            .expect("bootstrap json");
+        let token = resp["bearer_token"].as_str().expect("token").to_string();
+
+        let token_provider: TokenProvider = std::sync::Arc::new(move || Some(token.clone()));
+        let client = connect_workspace_ws(
+            &base_url,
+            token_provider,
+            knotq_sync::ws::WsConfig::default(),
+            knotq_sync::ws::WsCallbacks::noop(),
+        );
+
+        // Wait for the socket to come up, then pull over it.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while std::time::Instant::now() < deadline && !client.is_connected() {
+            std::thread::sleep(std::time::Duration::from_millis(25));
+        }
+        assert!(client.is_connected(), "desktop ws socket failed to connect");
+
+        let request = knotq_sync::BatchPullRequest {
+            replica_id: knotq_model::ReplicaId::new(),
+            cursors: Default::default(),
+        };
+        let response = client.request_pull(&request);
+        assert!(
+            response.is_ok(),
+            "pull over the desktop ws socket failed: {response:?}"
+        );
+    }
 }
