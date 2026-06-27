@@ -61,7 +61,7 @@ pub fn scenario_m_carryover_basic(h: &mut Harness) {
     h.settle();
     h.assert_all_converged();
 
-    // Today holds exactly the carried rows (placeholder replaced by the first).
+    // Today holds exactly the carried rows (blank placeholder dropped).
     for key in h.device_keys() {
         h.assert_scheme_items(key, today_id, &["carry me", "loose note", "call dentist"]);
         // The completed task did not carry; yesterday keeps all four rows in order.
@@ -88,9 +88,11 @@ pub fn scenario_m_carryover_basic(h: &mut Harness) {
 }
 
 // Scenario m2 — Both devices roll the same yesterday into one SHARED (synced) today.
-// The blank placeholder is shared, so each device's first carried row lands on that
-// single id (de-duping the first row); the rest duplicate. Hard requirement:
-// convergence, no crdt_schema_invalid wedge, and no ItemId collision.
+// Carried rows now get DETERMINISTIC ids (derived from source id + target day), so
+// both devices mint byte-identical item skeletons and the CRDT merge collapses them:
+// today converges to exactly {A, B, C} with NO doubling. Hard requirement:
+// convergence, no crdt_schema_invalid wedge, and no ItemId collision. (Before the
+// deterministic-id fix this produced {A x1, B x2, C x2} — the rollover "doubling" bug.)
 pub fn scenario_m2_carryover_concurrent_shared_today(h: &mut Harness) {
     h.login_all();
     let yesterday = NaiveDate::from_ymd_opt(2026, 12, 8).unwrap();
@@ -122,13 +124,9 @@ pub fn scenario_m2_carryover_concurrent_shared_today(h: &mut Harness) {
     h.settle();
     h.assert_all_converged();
 
-    // Shared placeholder de-dupes the first row: {A x1, B x2, C x2}.
+    // Deterministic carried ids de-dupe EVERY row across the two devices: {A, B, C}.
     for key in h.device_keys() {
-        h.assert_scheme_items_unordered(
-            key,
-            today_id,
-            &["task A", "task B", "task B", "task C", "task C"],
-        );
+        h.assert_scheme_items_unordered(key, today_id, &["task A", "task B", "task C"]);
         assert_no_duplicate_item_ids(h, key, today_id);
         assert!(
             h.device(key).is_fully_pushed(),
@@ -138,10 +136,12 @@ pub fn scenario_m2_carryover_concurrent_shared_today(h: &mut Harness) {
 }
 
 // Scenario m3 — Both devices independently OPEN today offline (same deterministic
-// daily SchemeId, but different placeholder ItemIds) and both roll over. Two distinct
-// placeholders means both first rows survive, so every carried row duplicates. This
-// also proves the deterministic daily document keeps independent creations on ONE doc
-// rather than splitting content (the 2026-06-11 empty-daily-doc wedge class).
+// daily SchemeId, but different placeholder ItemIds) and both roll over. Even though
+// the two placeholders differ, the carried rows get DETERMINISTIC ids (source id +
+// target day), so they converge to one set {A, B} with no doubling; each device also
+// deletes its own placeholder, so neither blank survives. This also proves the
+// deterministic daily document keeps independent creations on ONE doc rather than
+// splitting content (the 2026-06-11 empty-daily-doc wedge class).
 pub fn scenario_m3_carryover_concurrent_independent_today(h: &mut Harness) {
     h.login_all();
     let yesterday = NaiveDate::from_ymd_opt(2026, 12, 15).unwrap();
@@ -176,20 +176,20 @@ pub fn scenario_m3_carryover_concurrent_independent_today(h: &mut Harness) {
     h.settle();
     h.assert_all_converged();
 
-    // Two independent placeholders => every row duplicates: {A x2, B x2}.
+    // Deterministic carried ids converge to one set {A, B}; both placeholders deleted.
     for key in h.device_keys() {
-        h.assert_scheme_items_unordered(key, today_id, &["task A", "task A", "task B", "task B"]);
+        h.assert_scheme_items_unordered(key, today_id, &["task A", "task B"]);
         assert_no_duplicate_item_ids(h, key, today_id);
         assert!(
             h.device(key).is_fully_pushed(),
             "{key:?}: push queue must drain after independent carryover"
         );
     }
-    // All four rows live on the single deterministic daily document — independent
-    // creation did not split content across two documents.
+    // Both rows live on the single deterministic daily document — independent creation
+    // did not split content across two documents.
     assert_eq!(
         h.device(D0).workspace.schemes[&today_id].items.len(),
-        4,
+        2,
         "independent daily creations must converge onto one document"
     );
 }

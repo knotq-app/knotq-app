@@ -3,8 +3,8 @@ use std::collections::HashSet;
 use chrono::{DateTime, Datelike, Duration, Local, LocalResult, NaiveDate, TimeZone, Utc};
 use knotq_commands::Command;
 use knotq_model::{
-    DocumentId, Item, ItemId, ItemMarker, NodeRef, Scheme, SchemeId, SyncDocumentKind,
-    SyncDocumentMeta, Workspace,
+    daily_queue_carryover_item_id, DocumentId, Item, ItemId, ItemMarker, NodeRef, Scheme, SchemeId,
+    SyncDocumentKind, SyncDocumentMeta, Workspace,
 };
 
 #[derive(Clone, Debug)]
@@ -43,10 +43,18 @@ pub fn daily_queue_carryover_command(
     previous: &Scheme,
     today_id: SchemeId,
     today: &Scheme,
+    today_date: NaiveDate,
 ) -> Option<Command> {
     if daily_queue_scheme_is_blank(previous) {
         return None;
     }
+
+    // Rows already in today, so a repeat carryover is idempotent: a double click, a
+    // retry after a sync clobbered the optimistic insert, or a sync that re-created a
+    // just-carried row never inserts a row whose deterministic carried id is already
+    // present. The matching ids also let the CRDT item-skeleton merge collapse two
+    // devices' concurrent carries of the same row into one item instead of doubling.
+    let existing: std::collections::HashSet<_> = today.items.iter().map(|item| item.id).collect();
 
     let mut commands = Vec::new();
     let mut carried_items = Vec::new();
@@ -56,8 +64,14 @@ pub fn daily_queue_carryover_command(
             continue;
         }
 
+        let carried_id = daily_queue_carryover_item_id(item.id, today_date);
+        if existing.contains(&carried_id) {
+            // Already carried into today — skip so re-running carryover is a no-op.
+            continue;
+        }
+
         let mut carried = item.clone();
-        carried.id = ItemId::new();
+        carried.id = carried_id;
         carried_items.push(carried);
 
         if daily_queue_item_has_annotations(item) {
@@ -74,17 +88,21 @@ pub fn daily_queue_carryover_command(
         return None;
     }
 
-    let mut position = today.items.len();
-    if daily_queue_scheme_is_blank(today) && !today.items.is_empty() {
-        let mut first = carried_items.remove(0);
-        first.id = today.items[0].id;
-        commands.push(Command::ReplaceItem {
-            scheme: today_id,
-            item: first,
-        });
-        position = 1;
-    }
+    // When today is just its blank placeholder row, drop that row so carried items
+    // don't sit under a leading blank. We DELETE it rather than reuse its id for the
+    // first carried row: the placeholder id is random, so reusing it would make the
+    // first carried row non-deterministic and reintroduce the doubling bug for it.
+    let placeholder_id = if daily_queue_scheme_is_blank(today) {
+        today.items.first().map(|item| item.id)
+    } else {
+        None
+    };
 
+    let mut position = if placeholder_id.is_some() {
+        1
+    } else {
+        today.items.len()
+    };
     for item in carried_items {
         commands.push(Command::InsertItem {
             scheme: today_id,
@@ -92,6 +110,12 @@ pub fn daily_queue_carryover_command(
             item,
         });
         position += 1;
+    }
+    if let Some(placeholder_id) = placeholder_id {
+        commands.push(Command::DeleteItem {
+            scheme: today_id,
+            item: placeholder_id,
+        });
     }
 
     (!commands.is_empty()).then_some(Command::Batch(commands))

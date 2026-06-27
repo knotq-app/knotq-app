@@ -37,7 +37,8 @@ fn carryover_moves_incomplete_items_to_today() {
     let mut today = Scheme::new("Today", 0);
     today.items.push(Item::new(""));
 
-    let command = daily_queue_carryover_command(previous.id, &previous, today.id, &today);
+    let command =
+        daily_queue_carryover_command(previous.id, &previous, today.id, &today, date(2026, 6, 16));
 
     assert!(matches!(command, Some(Command::Batch(_))));
 }
@@ -48,7 +49,8 @@ fn carryover_inserts_into_empty_today() {
     previous.items.push(Item::new("Finish draft"));
     let today = Scheme::new("Today", 0);
 
-    let command = daily_queue_carryover_command(previous.id, &previous, today.id, &today);
+    let command =
+        daily_queue_carryover_command(previous.id, &previous, today.id, &today, date(2026, 6, 16));
 
     let Some(Command::Batch(commands)) = command else {
         panic!("expected carryover batch");
@@ -57,6 +59,58 @@ fn carryover_inserts_into_empty_today() {
         commands.as_slice(),
         [Command::InsertItem { position: 0, .. }]
     ));
+}
+
+/// Carrying the same source row into the same day twice must be a no-op the second
+/// time: the deterministic carried id is already present, so nothing is re-inserted.
+/// This is the core guard against the rollover "doubling" bug.
+#[test]
+fn carryover_is_idempotent_for_same_target_day() {
+    let target = date(2026, 6, 16);
+    let mut previous = Scheme::new("Yesterday", 0);
+    previous.items.push(Item::new("Finish draft"));
+    previous.items.push(Item::new("Email advisor"));
+    let mut today = Scheme::new("Today", 0);
+    today.items.push(Item::new(""));
+
+    // First carryover: build the batch and materialize its effect on `today` so the
+    // second pass sees the carried rows already present.
+    let Some(Command::Batch(commands)) =
+        daily_queue_carryover_command(previous.id, &previous, today.id, &today, target)
+    else {
+        panic!("expected first carryover to produce a batch");
+    };
+    for command in &commands {
+        match command {
+            Command::InsertItem { item, .. } => today.items.push(item.clone()),
+            Command::DeleteItem { item, .. } => today.items.retain(|i| i.id != *item),
+            _ => {}
+        }
+    }
+    // Two rows carried in, placeholder removed.
+    assert_eq!(today.items.len(), 2);
+
+    // Second carryover with the same source and target day: nothing new to carry.
+    let again =
+        daily_queue_carryover_command(previous.id, &previous, today.id, &today, target);
+    assert!(
+        again.is_none(),
+        "re-running carryover for the same day should be a no-op, got {again:?}"
+    );
+}
+
+/// Carried ids are stable across runs for the same (source row, target day), so a
+/// row that was carried, clobbered by sync, and carried again gets the SAME id and
+/// converges instead of doubling.
+#[test]
+fn carryover_ids_are_deterministic_per_target_day() {
+    use knotq_model::daily_queue_carryover_item_id;
+    let source = Item::new("Finish draft").id;
+    let a = daily_queue_carryover_item_id(source, date(2026, 6, 16));
+    let b = daily_queue_carryover_item_id(source, date(2026, 6, 16));
+    let other_day = daily_queue_carryover_item_id(source, date(2026, 6, 17));
+    assert_eq!(a, b, "same source + day must yield the same carried id");
+    assert_ne!(a, other_day, "different target day must yield a different id");
 }
 
 #[test]
