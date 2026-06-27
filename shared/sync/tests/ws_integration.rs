@@ -33,8 +33,9 @@ use common::http_transport::{backend_bootstrap, unique_test_email};
 use common::TestDevice;
 use knotq_model::{Workspace, WorkspaceId};
 use knotq_sync::ws::{
-    RawSocket, RawSocketFactory, WsCallbacks, WsClient, WsConfig, WsRequestError,
+    PresenceEvent, RawSocket, RawSocketFactory, WsCallbacks, WsClient, WsConfig, WsRequestError,
 };
+use std::sync::Mutex;
 use knotq_sync::{
     BatchPullRequest, BatchPullResponse, BatchPushRequest, BatchPushResponse, SyncPushRejected,
     SyncTransport,
@@ -275,5 +276,47 @@ fn ws_push_broadcasts_changed_to_other_socket() {
     assert!(
         changed.load(Ordering::SeqCst) >= 1,
         "device B's socket should receive a `changed` nudge after A pushes"
+    );
+}
+
+#[test]
+fn ws_presence_relays_between_sockets_over_real_backend() {
+    let Some(base_url) = backend_url() else {
+        return;
+    };
+    let email = unique_test_email("ws-presence");
+    let resp_a = backend_bootstrap(&base_url, &email).expect("bootstrap A");
+    let resp_b = backend_bootstrap(&base_url, &email).expect("bootstrap B");
+
+    let received: Arc<Mutex<Vec<PresenceEvent>>> = Arc::new(Mutex::new(Vec::new()));
+    let client_a = start_client(&base_url, &resp_a.bearer_token, WsCallbacks::noop());
+    let client_b = start_client(
+        &base_url,
+        &resp_b.bearer_token,
+        WsCallbacks {
+            on_changed: Box::new(|| {}),
+            on_presence: {
+                let received = Arc::clone(&received);
+                Box::new(move |event| received.lock().unwrap().push(event))
+            },
+        },
+    );
+    wait_connected(&client_a);
+    wait_connected(&client_b);
+
+    // A broadcasts an ephemeral cursor; B's socket should relay it (never persisted).
+    client_a
+        .send_presence(serde_json::json!({ "item": "abc", "caret": 12 }))
+        .expect("send presence");
+
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while Instant::now() < deadline && received.lock().unwrap().is_empty() {
+        std::thread::sleep(Duration::from_millis(25));
+    }
+    let events = received.lock().unwrap();
+    assert_eq!(events.len(), 1, "B should receive exactly one presence frame");
+    assert_eq!(
+        events[0].data.as_ref().unwrap()["caret"], 12,
+        "presence payload must round-trip"
     );
 }
