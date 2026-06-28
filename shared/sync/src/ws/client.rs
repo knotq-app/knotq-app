@@ -93,7 +93,12 @@ pub struct WsConfig {
     pub poll_interval: Duration,
     /// How long `request_*` blocks for a reply before returning `Timeout`.
     pub request_timeout: Duration,
-    /// Send a keepalive ping this often (answered without waking the DO).
+    /// Send a keepalive ping this often (answered by the runtime's auto-response
+    /// without waking the DO, so it's nearly free). MUST be shorter than the
+    /// shortest idle timeout anywhere on the connection path — empirically a
+    /// sandbox socket is dropped (1006) ~13-15 s after the last frame, so a 30 s
+    /// keepalive let an idle socket die between pings. This matters most now that
+    /// the foreground does no polling: the keepalive is the *only* idle traffic.
     pub keepalive_interval: Duration,
     /// First reconnect backoff after an unstable/failed session.
     pub initial_backoff: Duration,
@@ -109,7 +114,8 @@ impl Default for WsConfig {
         Self {
             poll_interval: Duration::from_millis(50),
             request_timeout: Duration::from_secs(30),
-            keepalive_interval: Duration::from_secs(30),
+            // Well under the observed ~13-15 s idle drop, with margin for jitter.
+            keepalive_interval: Duration::from_secs(8),
             initial_backoff: Duration::from_millis(500),
             max_backoff: Duration::from_secs(30),
             stable_after: Duration::from_secs(10),
@@ -124,6 +130,12 @@ pub struct WsCallbacks {
     pub on_changed: Box<dyn Fn() + Send + Sync>,
     /// A peer's presence update (e.g. a live cursor) arrived.
     pub on_presence: Box<dyn Fn(PresenceEvent) + Send + Sync>,
+    /// A session just became connected (first connect *or* a reconnect). The
+    /// platform should run a catch-up sync: any `changed` nudge broadcast while the
+    /// socket was down was missed, so without polling this is what re-converges a
+    /// device after a transient drop. Fires on every (re)connect; a redundant
+    /// startup sync is harmless (idempotent).
+    pub on_connect: Box<dyn Fn() + Send + Sync>,
 }
 
 impl WsCallbacks {
@@ -132,6 +144,7 @@ impl WsCallbacks {
         Self {
             on_changed: Box::new(|| {}),
             on_presence: Box::new(|_| {}),
+            on_connect: Box::new(|| {}),
         }
     }
 }
@@ -326,6 +339,9 @@ fn run_session(shared: &Arc<Shared>, mut socket: Box<dyn RawSocket>) {
     let (out_tx, out_rx) = mpsc::channel::<String>();
     *lock(&shared.outgoing) = Some(out_tx);
     shared.connected.store(true, Ordering::SeqCst);
+    // Catch-up hook: the platform runs a sync now so a `changed` missed while the
+    // socket was down (or before this first connect) is reconciled without polling.
+    (shared.callbacks.on_connect)();
     let mut last_keepalive = Instant::now();
 
     let result = (|| -> io::Result<()> {
@@ -579,6 +595,7 @@ mod tests {
                 let presence = Arc::clone(&presence);
                 Box::new(move |event| lock(&presence).push(event))
             },
+            on_connect: Box::new(|| {}),
         };
         let (client, servers, _) = start_with(callbacks);
         wait_connected(&client);

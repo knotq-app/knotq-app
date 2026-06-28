@@ -40,6 +40,7 @@ impl KnotQApp {
                             .filter(|token| !token.is_empty())
                     });
                 let sync_tx = self.service_bus.sync_signal_sender();
+                let connect_tx = sync_tx.clone();
                 let presence_tx = self.presence_tx.clone();
                 let callbacks = knotq_sync::ws::WsCallbacks {
                     // A peer pushed: request an immediate sync run (over the socket).
@@ -49,6 +50,13 @@ impl KnotQApp {
                     // A peer's live caret: funnel to the GPUI thread to render.
                     on_presence: Box::new(move |event| {
                         let _ = presence_tx.try_send(event);
+                    }),
+                    // (Re)connected: run a catch-up sync so a `changed` missed while
+                    // the socket was down is reconciled. With foreground polling
+                    // removed, the socket lifecycle is the only sync trigger besides
+                    // local edits, so this is what re-converges after a transient drop.
+                    on_connect: Box::new(move || {
+                        let _ = connect_tx.try_send(crate::app::sync_service::SyncSignal::Immediate);
                     }),
                 };
                 let client = super::ws_socket::connect_workspace_ws(

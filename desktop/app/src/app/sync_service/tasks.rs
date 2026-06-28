@@ -12,6 +12,7 @@ use super::{
     SyncNetworkUnreachable, SyncSignal, SyncSnapshot, ACCESS_REFRESH_SKEW_SECS, SYNC_DEBOUNCE,
     SYNC_DEBOUNCE_WS, SYNC_LOCAL_CHANGE_DEBOUNCE, SYNC_LOCAL_CHANGE_DEBOUNCE_WS, SYNC_PENDING_RETRY,
     SYNC_POLL_BACKGROUND, SYNC_POLL_FOREGROUND, SYNC_POLL_OFFLINE, SYNC_POLL_WS_CONNECTED,
+    SYNC_POLL_WS_IDLE_RECHECK,
 };
 use crate::app::sync_auth::{refresh_sync_backend, RefreshError};
 use crate::app::{KnotQApp, SyncAuthStatus, SyncRunStatus, View};
@@ -101,6 +102,13 @@ pub(crate) fn spawn_sync_task(
                     }
                     // Drain any remaining queued signals.
                     while sync_rx.try_recv().is_ok() {}
+                } else if foreground_ws_idle(&weak, cx) {
+                    // Bare timer wake in foreground pure-WS mode: this is only a
+                    // connectivity re-check, NOT a poll. Skip the network sync and
+                    // loop to re-arm the timer (so a dropped socket still resumes
+                    // polling within ~one re-check interval). A real signal — a local
+                    // edit or a `changed`/on-connect nudge — takes the branch above.
+                    continue;
                 }
 
                 record_poll_at(&weak, cx);
@@ -139,15 +147,36 @@ fn poll_interval(weak: &gpui::WeakEntity<KnotQApp>, cx: &mut gpui::AsyncApp) -> 
         let offline = app.sync_offline;
         let server_rejecting = app.sync_server_rejecting;
         let window_active = app.window_is_active;
-        // When the socket is live and we're caught up, lean on the server's
-        // `changed` nudges instead of polling; keep only a slow safety-net timer.
+        // When the socket is live and we're caught up, lean entirely on the
+        // server's `changed` nudges + the on-(re)connect catch-up — no network
+        // polling. In the foreground the timer is just a short LOCAL re-check tick
+        // (the loop skips the actual sync via `foreground_ws_idle`), so a dropped
+        // socket is noticed within ~60 s and polling resumes. Backgrounded, keep a
+        // slow real heartbeat in case the OS throttles the socket while hidden.
         let ws_connected = app.ws_sync.as_ref().is_some_and(|client| client.is_connected());
         if ws_connected && !has_pending && !server_rejecting {
-            return SYNC_POLL_WS_CONNECTED;
+            return if window_active {
+                SYNC_POLL_WS_IDLE_RECHECK
+            } else {
+                SYNC_POLL_WS_CONNECTED
+            };
         }
         sync_poll_interval(has_pending, offline, server_rejecting, window_active)
     })
     .unwrap_or(SYNC_POLL_FOREGROUND)
+}
+
+/// Whether we are in foreground pure-WS mode: window active, socket live, and
+/// caught up. In this state the periodic timer must NOT trigger a network sync —
+/// real-time convergence is entirely socket-driven (`changed` nudges + the
+/// on-(re)connect catch-up), so a bare timer wake is only a connectivity re-check.
+fn foreground_ws_idle(weak: &gpui::WeakEntity<KnotQApp>, cx: &mut gpui::AsyncApp) -> bool {
+    weak.update(cx, |app, _cx| {
+        let has_pending = app.state.has_pending_crdt_edits() || app.sync_pending_hint > 0;
+        let ws_connected = app.ws_sync.as_ref().is_some_and(|client| client.is_connected());
+        app.window_is_active && ws_connected && !has_pending && !app.sync_server_rejecting
+    })
+    .unwrap_or(false)
 }
 
 /// Whether the live WebSocket sync client is currently connected. Used to pick the

@@ -69,11 +69,19 @@ impl Render for KnotQApp {
                     let was_active = this.window_is_active;
                     this.window_is_active = window.is_window_active();
                     if !was_active && this.window_is_active {
-                        // Signal an immediate sync on resume if the last poll was
-                        // more than 2 minutes ago (or never ran).
-                        let should_sync = this
-                            .last_sync_poll_at
-                            .is_none_or(|last| now - last >= ChronoDuration::minutes(2));
+                        // No focus repoll while the socket is live — the persistent
+                        // WebSocket's `changed` nudges + the on-(re)connect catch-up
+                        // already keep us current, so regaining focus needs nothing.
+                        // Only when the socket is down do we fall back to a catch-up
+                        // sync on resume (and only if the last poll is stale).
+                        let ws_connected = this
+                            .ws_sync
+                            .as_ref()
+                            .is_some_and(|client| client.is_connected());
+                        let should_sync = !ws_connected
+                            && this
+                                .last_sync_poll_at
+                                .is_none_or(|last| now - last >= ChronoDuration::minutes(2));
                         if should_sync {
                             this.service_bus.signal_sync();
                         }

@@ -57,10 +57,15 @@ const SYNC_PENDING_RETRY: StdDuration = StdDuration::from_secs(30);
 const SYNC_POLL_FOREGROUND: StdDuration = StdDuration::from_secs(120);
 const SYNC_POLL_BACKGROUND: StdDuration = StdDuration::from_secs(30 * 60);
 const SYNC_POLL_OFFLINE: StdDuration = StdDuration::from_secs(20 * 60);
-// When the WebSocket is connected, server `changed` nudges drive syncs in real
-// time, so the timer only needs to be a slow safety net (catches a missed nudge
-// or a silently-dropped socket between reconnects).
-const SYNC_POLL_WS_CONNECTED: StdDuration = StdDuration::from_secs(10 * 60);
+// When the WebSocket is connected, server `changed` nudges (and an on-(re)connect
+// catch-up) drive syncs in real time, so a *foreground* device does NOT poll the
+// network at all. The timer below is only a short LOCAL re-check tick: when it
+// fires in foreground-WS mode the loop skips the network sync entirely (see
+// `foreground_ws_idle`), and only re-evaluates connectivity so it can resume
+// polling promptly if the socket has dropped. Backgrounded, the WS-connected case
+// keeps a slow real heartbeat instead (`SYNC_POLL_WS_CONNECTED`).
+const SYNC_POLL_WS_IDLE_RECHECK: StdDuration = StdDuration::from_secs(60);
+const SYNC_POLL_WS_CONNECTED: StdDuration = StdDuration::from_secs(30 * 60);
 // Refresh the access token this many seconds before it expires, so a sync run
 // never starts with a token that could lapse mid-flight.
 const ACCESS_REFRESH_SKEW_SECS: i64 = 120;

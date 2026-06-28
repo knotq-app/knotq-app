@@ -51,4 +51,8 @@ tungstenite = { version = "0.23", features = ["rustls-tls-webpki-roots"], option
 [features]
 # Enable the persistent WebSocket sync transport (desktop tungstenite socket).
 # Default build keeps the proven HTTP polling path; flip this on to test WS sync.
+# TEMPORARY (websocket-sync branch local testing): ws-sync in `default` so
+# run-app.sh (no --features) bundles the socket build. REVERT to drop `default`
+# before merge — the shipped default build must keep the HTTP path.
+default = ["ws-sync"]
 ws-sync = ["dep:tungstenite"]

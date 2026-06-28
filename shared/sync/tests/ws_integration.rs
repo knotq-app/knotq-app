@@ -250,6 +250,7 @@ fn ws_push_broadcasts_changed_to_other_socket() {
                 })
             },
             on_presence: Box::new(|_| {}),
+            on_connect: Box::new(|| {}),
         },
     );
     wait_connected(&client_a);
@@ -299,6 +300,7 @@ fn ws_presence_relays_between_sockets_over_real_backend() {
                 let received = Arc::clone(&received);
                 Box::new(move |event| received.lock().unwrap().push(event))
             },
+            on_connect: Box::new(|| {}),
         },
     );
     wait_connected(&client_a);
