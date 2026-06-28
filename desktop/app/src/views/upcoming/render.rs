@@ -28,7 +28,6 @@ impl KnotQApp {
 
         for scheme in self.workspace.iter_schemes() {
             let is_daily = self.workspace.is_daily_queue_scheme(scheme.id);
-            let is_read_only = scheme.is_read_only();
             let scheme_name = self.scheme_display_name(scheme);
             for item in &scheme.items {
                 for occ in item.occurrences(today_start, horizon) {
@@ -57,7 +56,6 @@ impl KnotQApp {
                         scheme_name: scheme_name.clone(),
                         color_index: scheme.color_index,
                         is_daily,
-                        is_read_only,
                         text: item.text(),
                         is_done: occ.state.is_done(),
                         when_label,
@@ -106,7 +104,6 @@ impl KnotQApp {
                         scheme_name: scheme_name.clone(),
                         color_index: scheme.color_index,
                         is_daily,
-                        is_read_only,
                         text: item.text(),
                         is_done,
                         when_label: when_label(self.time_format, kind, item.start, item.end),
@@ -204,7 +201,6 @@ impl KnotQApp {
                 let item_text = row.text.clone();
                 let when_label = row.when_label.clone();
                 let date_color = row.date_color;
-                let editable = !row.is_read_only;
                 elements.push(
                     div()
                         .w_full()
@@ -244,9 +240,8 @@ impl KnotQApp {
                                 })
                                 .on_click(cx.listener(
                                     move |this, _event: &ClickEvent, _window, cx| {
-                                        if !editable {
-                                            return;
-                                        }
+                                        // Completion is local state, so even
+                                        // read-only imported events can be toggled.
                                         this.toggle_calendar_item(
                                             scheme_id,
                                             item_id,

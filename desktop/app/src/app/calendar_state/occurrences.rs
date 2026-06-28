@@ -14,9 +14,8 @@ impl KnotQApp {
         occurrence: OccurrenceId,
         cx: &mut Context<Self>,
     ) {
-        if self.workspace.is_scheme_read_only(scheme_id) {
-            return;
-        }
+        // Completion is local-only state, so it's allowed even on a read-only
+        // (imported) scheme — only the occurrence-shape check below can block it.
         if !self.item_allows_occurrence_toggle(scheme_id, item_id, &occurrence) {
             return;
         }

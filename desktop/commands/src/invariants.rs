@@ -78,8 +78,7 @@ pub fn ensure_command_allowed_for_user(
         | Command::SetItemPriority { scheme, .. }
         | Command::SetOccurrenceNotificationOffset { scheme, .. }
         | Command::DeleteItem { scheme, .. }
-        | Command::ReorderItem { scheme, .. }
-        | Command::ToggleOccurrence { scheme, .. } => {
+        | Command::ReorderItem { scheme, .. } => {
             if workspace
                 .schemes
                 .get(scheme)
@@ -88,6 +87,14 @@ pub fn ensure_command_allowed_for_user(
             {
                 return Err(CommandError::ReadOnlyScheme(*scheme));
             }
+        }
+        // Completion is local-only state that never syncs back to the source, so
+        // an occurrence can be marked done even on a read-only (imported) scheme.
+        Command::ToggleOccurrence { scheme, .. } => {
+            workspace
+                .schemes
+                .get(scheme)
+                .ok_or(CommandError::SchemeMissing(*scheme))?;
         }
         Command::SetSchemeColor { id, .. } => {
             workspace

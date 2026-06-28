@@ -23,7 +23,9 @@ impl KnotQApp {
 
         let kind = draft_item.kind();
         let is_done = popup.draft_done;
-        let can_toggle_done = editable;
+        // Completion is local-only state, so it can always be toggled — even on a
+        // read-only (imported) event whose content is otherwise uneditable.
+        let can_toggle_done = true;
         let has_repeating_occurrence = item.repeats.is_some() && !popup.occurrence.is_single();
         let date_presence_changed = has_repeating_occurrence
             && ((popup.start_dirty && item.start.is_some() != popup.draft_start.is_some())
@@ -164,8 +166,21 @@ impl KnotQApp {
                     .pb(px(8.0))
                     .bg(token_rgba(if t.is_dark { 0xffffff0d } else { 0x00000008 }))
                     .child(
-                        div().flex().flex_col().gap(px(2.0)).child(
+                        // Explicit pixel width (card width minus the 14px side
+                        // padding) rather than `w_full`: in GPUI a percentage
+                        // width on a flex *container* gets overridden by
+                        // shrink-to-fit, collapsing the row so the flex_1 title
+                        // column gets no room (the title then ellipsizes to "...").
+                        // A fixed length keeps the row full width so the title
+                        // shows, even next to the "Read only" badge.
+                        div()
+                            .w(px(EVENT_POPUP_WIDTH - 28.0))
+                            .flex()
+                            .flex_col()
+                            .gap(px(2.0))
+                            .child(
                             div()
+                                .w(px(EVENT_POPUP_WIDTH - 28.0))
                                 .flex()
                                 .items_start()
                                 .gap(px(EVENT_POPUP_HEADER_GAP))
@@ -382,7 +397,6 @@ fn event_title_input(
 ) -> gpui::AnyElement {
     let base = div()
         .id("popup-title-input")
-        .w_full()
         .min_w_0()
         .h(px(22.0))
         .overflow_hidden()
@@ -392,11 +406,22 @@ fn event_title_input(
         .font_weight(gpui::FontWeight::SEMIBOLD)
         .text_color(token_hsla(t.text_primary));
     if let Some(input) = input {
-        base.child(input).into_any_element()
+        // Editable: the text editor fills the column.
+        base.w_full().child(input).into_any_element()
     } else {
-        base.whitespace_nowrap()
-            .text_ellipsis()
-            .child(fallback)
+        // Read-only: wrap the title in a flex row so it's a content-sized
+        // (capped) item, exactly like the scheme chip below. A bare text div
+        // placed directly in the flex-column gets stretched to the column's
+        // collapsed width and ellipsizes down to just "...".
+        div()
+            .flex()
+            .max_w_full()
+            .child(
+                base.max_w(px(EVENT_POPUP_WIDTH - 126.0))
+                    .whitespace_nowrap()
+                    .text_ellipsis()
+                    .child(fallback),
+            )
             .into_any_element()
     }
 }

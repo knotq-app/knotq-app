@@ -146,7 +146,6 @@ impl KnotQApp {
                     let scheme_id = task.scheme_id;
                     let item_id = task.item_id;
                     let occurrence = task.occurrence.clone();
-                    let editable = !task.is_read_only;
                     children.push(
                         div()
                             .id(("month-task", week * 100 + day * 10 + idx))
@@ -160,15 +159,13 @@ impl KnotQApp {
                             .gap(px(4.0))
                             .overflow_hidden()
                             .opacity(if task.is_done { 0.78 } else { 1.0 })
-                            .when(editable, |s| s.cursor_pointer())
+                            .cursor_pointer()
                             .hover({
                                 let h = t.row_hover;
                                 move |s| s.bg(token_rgba(h))
                             })
                             .on_click(cx.listener(move |this, _: &ClickEvent, _window, cx| {
-                                if !editable {
-                                    return;
-                                }
+                                // Completion is local state — toggle on read-only too.
                                 this.toggle_calendar_item(
                                     scheme_id,
                                     item_id,

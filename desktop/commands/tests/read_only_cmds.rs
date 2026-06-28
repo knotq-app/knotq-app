@@ -22,14 +22,44 @@ fn user_item_mutations_are_rejected_for_read_only_calendar_schemes() {
     assert_eq!(workspace.schemes[&scheme_id].items[0].text(), "meeting");
 
     let err = workspace
+        .apply(Command::DeleteItem {
+            scheme: scheme_id,
+            item: item_id,
+        })
+        .unwrap_err();
+
+    assert_read_only(err, scheme_id);
+    assert_eq!(workspace.schemes[&scheme_id].items.len(), 1);
+}
+
+/// Completion is local-only state that never syncs back to the calendar, so an
+/// occurrence can be toggled done even on a read-only imported scheme — unlike
+/// the content edits rejected above.
+#[test]
+fn user_can_toggle_completion_on_read_only_calendar_schemes() {
+    let mut workspace = Workspace::new();
+    let scheme_id = insert_imported_scheme(&mut workspace, vec![Item::new("meeting")]);
+    let item_id = workspace.schemes[&scheme_id].items[0].id;
+
+    workspace
         .apply(Command::ToggleOccurrence {
             scheme: scheme_id,
             item: item_id,
             occurrence: OccurrenceId::Single,
         })
-        .unwrap_err();
+        .unwrap();
+    assert!(workspace.schemes[&scheme_id].items[0]
+        .single_state()
+        .is_done());
 
-    assert_read_only(err, scheme_id);
+    // Toggling again clears it back to not-done.
+    workspace
+        .apply(Command::ToggleOccurrence {
+            scheme: scheme_id,
+            item: item_id,
+            occurrence: OccurrenceId::Single,
+        })
+        .unwrap();
     assert!(!workspace.schemes[&scheme_id].items[0]
         .single_state()
         .is_done());

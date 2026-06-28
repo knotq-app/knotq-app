@@ -106,12 +106,13 @@ impl KnotQApp {
         else {
             return;
         };
-        if self.workspace.is_scheme_read_only(popup.scheme_id) {
-            return;
-        }
+        // On a read-only (imported) scheme only the completion toggle is allowed
+        // through — its content and schedule can't be edited locally — so the
+        // other draft changes are dropped rather than committed.
+        let read_only = self.workspace.is_scheme_read_only(popup.scheme_id);
 
         let mut commands = Vec::new();
-        if popup.title_dirty && item.text() != popup.draft_title {
+        if !read_only && popup.title_dirty && item.text() != popup.draft_title {
             commands.push(Command::UpdateItemText {
                 scheme: popup.scheme_id,
                 item: popup.item_id,
@@ -129,10 +130,10 @@ impl KnotQApp {
             draft_repeats: popup.draft_repeats.clone(),
             draft_notification_offset_secs: popup.draft_notification_offset_secs,
             draft_done: popup.draft_done,
-            start_dirty: popup.start_dirty,
-            end_dirty: popup.end_dirty,
-            repeats_dirty: popup.repeats_dirty,
-            notification_dirty: popup.notification_dirty,
+            start_dirty: !read_only && popup.start_dirty,
+            end_dirty: !read_only && popup.end_dirty,
+            repeats_dirty: !read_only && popup.repeats_dirty,
+            notification_dirty: !read_only && popup.notification_dirty,
             done_dirty: popup.done_dirty,
         };
         commands.extend(event_popup_commit_commands(

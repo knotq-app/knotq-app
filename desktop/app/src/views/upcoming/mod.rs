@@ -21,7 +21,6 @@ pub(super) struct UpRow {
     scheme_name: String,
     color_index: u8,
     is_daily: bool,
-    is_read_only: bool,
     text: String,
     is_done: bool,
     when_label: String,
