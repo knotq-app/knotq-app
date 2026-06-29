@@ -594,6 +594,11 @@ pub struct KnotQApp {
     /// Remaining pending count from the last sync run result; persisted so the
     /// poll-interval logic can see pending edits even between runs.
     pub sync_pending_hint: usize,
+    /// The notification schedule a previous sync run computed, reused by the next
+    /// run when nothing that could change it has happened since. Lets a burst of
+    /// edits that don't touch any dated item skip re-expanding recurrences and
+    /// re-hashing every occurrence on the background sync thread.
+    pub(crate) cached_notification_schedule: Option<sync_service::CachedNotificationSchedule>,
     /// Persistent WebSocket sync client (online, poll-free). `None` until a
     /// sync-enabled account is active, and only populated under the `ws-sync`
     /// feature. When connected, sync runs prefer it and the poll loop idles.
@@ -621,6 +626,11 @@ pub struct KnotQApp {
     pub cal_move: Option<CalendarMoveState>,
     pub cal_resize: Option<CalendarResizeState>,
     pub cal_swipe: CalendarSwipeState,
+    /// Memoizes recurring-item RRULE expansion across calendar repaints, keyed by
+    /// item and validated against the inputs `Item::occurrences` reads (see
+    /// [`crate::views::calendar::CalendarOccurrenceCache`]). Interior-mutable so
+    /// the `&self` task collection can refresh it.
+    pub(crate) calendar_occurrence_cache: crate::views::calendar::CalendarOccurrenceCache,
     pub _save_task: Task<()>,
     pub _notification_task: Task<()>,
     pub _state_task: Task<()>,

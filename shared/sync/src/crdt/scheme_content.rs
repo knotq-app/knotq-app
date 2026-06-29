@@ -13,6 +13,7 @@ fn init_scheme_maps(doc: &Doc) {
 pub struct YrsSchemeDocument {
     pub(crate) id: DocumentId,
     doc: Doc,
+    encode_cache: EncodeCache,
 }
 
 impl YrsSchemeDocument {
@@ -28,13 +29,23 @@ impl YrsSchemeDocument {
             OffsetKind::Utf16,
         ));
         init_scheme_maps(&doc);
-        Self { id, doc }
+        let encode_cache = EncodeCache::new(&doc);
+        Self {
+            id,
+            doc,
+            encode_cache,
+        }
     }
 
     pub(crate) fn new_with_client_id(id: DocumentId, client_id: u64) -> Self {
         let doc = Doc::with_options(yrs_doc_options(id, client_id, OffsetKind::Utf16));
         init_scheme_maps(&doc);
-        Self { id, doc }
+        let encode_cache = EncodeCache::new(&doc);
+        Self {
+            id,
+            doc,
+            encode_cache,
+        }
     }
 
     /// Build a scheme document whose clientID is either deterministic for
@@ -46,9 +57,11 @@ impl YrsSchemeDocument {
         }
     }
 
-    /// Full document state as a v1 update, for durable persistence.
+    /// Full document state as a v1 update, for durable persistence. Cached: the
+    /// document is only re-serialized when it changed since the last call.
     pub fn encode_state_v1(&self) -> Vec<u8> {
-        self.doc.transact().encode_diff_v1(&StateVector::default())
+        self.encode_cache
+            .get(|| self.doc.transact().encode_diff_v1(&StateVector::default()))
     }
 
     pub fn from_scheme(id: DocumentId, scheme: &Scheme) -> anyhow::Result<Self> {

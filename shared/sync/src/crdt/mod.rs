@@ -9,6 +9,8 @@
 //! Shared data carriers (the `*Snapshot`/`*Entry` structs) and schema constants stay
 //! in this module so the submodules — its descendants — can use them directly.
 use std::collections::{HashMap, HashSet};
+use std::sync::atomic::AtomicBool;
+use std::sync::{Arc, Mutex};
 
 use anyhow::{anyhow, Context};
 use chrono::{DateTime, NaiveDate};
@@ -26,6 +28,52 @@ use yrs::{
 };
 
 use crate::{CrdtDocumentUpdate, StoredCrdtUpdate};
+
+/// Backing for a document's `encode_state_v1` cache. Encoding a Yjs document's full
+/// state is one of the heaviest repeated costs in a sync/save (it serializes the
+/// entire document, and the workspace does it for *every* document on each run even
+/// though a typical edit touches one). [`EncodeCache::get`] returns the previously
+/// encoded bytes whenever the document has not changed since.
+///
+/// Correctness rests on the keyed update observer installed by [`EncodeCache::new`]:
+/// yrs fires `observe_update_v1` on every committed change — insert *and* delete —
+/// so `dirty` is set exactly when the serialized state would differ. A keyed
+/// observer needs no retained `Subscription` (it lives and dies with the document),
+/// keeping the document wrapper trivially constructible.
+pub(crate) struct EncodeCache {
+    dirty: Arc<AtomicBool>,
+    bytes: Mutex<Option<Vec<u8>>>,
+}
+
+impl EncodeCache {
+    /// Install the dirty-tracking observer on `doc` and return a fresh (dirty) cache.
+    pub(crate) fn new(doc: &Doc) -> Self {
+        let dirty = Arc::new(AtomicBool::new(true));
+        let flag = Arc::clone(&dirty);
+        let _ = doc.observe_update_v1_with("knotq_encode_cache", move |_txn, _evt| {
+            flag.store(true, std::sync::atomic::Ordering::Relaxed);
+        });
+        Self {
+            dirty,
+            bytes: Mutex::new(None),
+        }
+    }
+
+    /// Return the document's full `state_v1`, re-encoding via `encode` only when the
+    /// document changed since the last call.
+    pub(crate) fn get(&self, encode: impl FnOnce() -> Vec<u8>) -> Vec<u8> {
+        // Clear dirty up front: a change racing in during `encode` re-sets it, so the
+        // next call recomputes rather than serving a stale cache.
+        if !self.dirty.swap(false, std::sync::atomic::Ordering::AcqRel) {
+            if let Some(bytes) = self.bytes.lock().unwrap_or_else(|e| e.into_inner()).as_ref() {
+                return bytes.clone();
+            }
+        }
+        let bytes = encode();
+        *self.bytes.lock().unwrap_or_else(|e| e.into_inner()) = Some(bytes.clone());
+        bytes
+    }
+}
 
 mod encoding;
 mod scheme_content;
@@ -576,7 +624,9 @@ impl WorkspaceCrdtDocuments {
             }
         }
 
-        match self.materialize_workspace(current) {
+        // No scheme content has been applied yet, so reuse `current`'s scheme items
+        // wholesale; this first pass only reflects the workspace-structure document.
+        match self.materialize_workspace(current, &HashSet::new()) {
             Ok(workspace) => outcome.workspace = workspace,
             Err(err) => {
                 outcome.push_workspace_error("workspace materialization", err);
@@ -664,7 +714,7 @@ impl WorkspaceCrdtDocuments {
         }
 
         if !touched_schemes.is_empty() {
-            match self.materialize_workspace(current) {
+            match self.materialize_workspace(current, &touched_schemes) {
                 Ok(workspace) => outcome.workspace = workspace,
                 Err(err) => outcome.push_workspace_error("scheme materialization", err),
             }
@@ -673,7 +723,11 @@ impl WorkspaceCrdtDocuments {
         outcome
     }
 
-    fn materialize_workspace(&self, current: &Workspace) -> anyhow::Result<Workspace> {
+    fn materialize_workspace(
+        &self,
+        current: &Workspace,
+        changed_schemes: &HashSet<SchemeId>,
+    ) -> anyhow::Result<Workspace> {
         let snapshot: WorkspaceDocumentSnapshot = self.workspace.snapshot()?;
         let scheme_sync = snapshot
             .scheme_sync
@@ -717,17 +771,32 @@ impl WorkspaceCrdtDocuments {
         };
 
         for entry in snapshot.schemes {
-            let items = self
-                .schemes
-                .get(&entry.id)
-                .and_then(|doc| doc.scheme_items().ok())
-                .or_else(|| {
-                    current
-                        .schemes
-                        .get(&entry.id)
-                        .map(|scheme| scheme.items.clone())
-                })
-                .unwrap_or_default();
+            // Decoding a scheme's items from its CRDT document is the dominant cost of
+            // materializing a large workspace, and a sync changes a handful of schemes.
+            // For a scheme that did not change (not in `changed_schemes`) and is already
+            // present in `current`, its document is byte-identical to what produced
+            // `current`, so reuse those items instead of re-decoding. Changed or
+            // brand-new schemes are derived from the authoritative document.
+            let items = if changed_schemes.contains(&entry.id)
+                || !current.schemes.contains_key(&entry.id)
+            {
+                self.schemes
+                    .get(&entry.id)
+                    .and_then(|doc| doc.scheme_items().ok())
+                    .or_else(|| {
+                        current
+                            .schemes
+                            .get(&entry.id)
+                            .map(|scheme| scheme.items.clone())
+                    })
+                    .unwrap_or_default()
+            } else {
+                current
+                    .schemes
+                    .get(&entry.id)
+                    .map(|scheme| scheme.items.clone())
+                    .unwrap_or_default()
+            };
             workspace.schemes.insert(
                 entry.id,
                 Scheme {

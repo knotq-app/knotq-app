@@ -226,29 +226,50 @@ async fn run_sync_once(weak: &gpui::WeakEntity<KnotQApp>, cx: &mut gpui::AsyncAp
                 pending: pending.len(),
             };
             _cx.notify();
-            let notification_schedule = crate::notifications::notification_schedule_snapshot(
-                &app.workspace,
-                app.settings.notification_defaults,
-                Utc::now(),
-                0,
-            );
+            // Computing the notification schedule (recurrence expansion +
+            // per-occurrence hashing) is the heaviest step of building this snapshot,
+            // so it runs on the background sync thread, never on main. Beyond that,
+            // reuse the previous run's schedule outright when nothing that could
+            // change it has happened since: the generation counter only advances on a
+            // schedule-relevant signal, so a burst of edits that touch no dated item
+            // (typing prose) skips the recompute entirely. The reuse decision here is
+            // O(1); `None` makes the background thread recompute.
+            let notification_defaults = app.settings.notification_defaults;
+            let schedule_gen = app.service_bus.notification_schedule_generation();
+            let today = Utc::now().date_naive();
+            let reuse_schedule = app
+                .cached_notification_schedule
+                .as_ref()
+                .filter(|cache| {
+                    cache.generation == schedule_gen
+                        && cache.defaults == notification_defaults
+                        && cache.snapshot.window_start.date_naive() == today
+                })
+                .map(|cache| cache.snapshot.clone());
             let snapshot = SyncSnapshot {
                 workspace: app.workspace.clone(),
                 account,
                 replica_id: app.settings.replica_id,
                 pending,
                 crdt_states,
-                notification_schedule,
+                notification_defaults,
+                reuse_schedule,
                 ws_sync: app.ws_sync.clone(),
             };
             // Captured after sync_store_from_workspace above, so it only moves
             // again if the user edits while the run is in flight.
-            Some((snapshot, app.state.local_edit_watermark()))
+            Some((
+                snapshot,
+                app.state.local_edit_watermark(),
+                schedule_gen,
+                notification_defaults,
+            ))
         })
         .ok()
         .flatten();
 
-    let Some((snapshot, local_edit_watermark)) = snapshot else {
+    let Some((snapshot, local_edit_watermark, schedule_gen, notification_defaults)) = snapshot
+    else {
         return;
     };
 
@@ -266,11 +287,23 @@ async fn run_sync_once(weak: &gpui::WeakEntity<KnotQApp>, cx: &mut gpui::AsyncAp
             let remaining_pending = result.remaining_pending;
             let local_workspace_changed = result.local_workspace_changed;
             let media_downloaded = result.media_downloaded;
+            let notification_schedule = result.notification_schedule.clone();
             let _ = weak.update(cx, |app, cx| {
                 for pushed in pushed {
                     app.state
                         .clear_pushed_crdt_edits(pushed.document, pushed.through_local_sequence);
                 }
+                // Cache the schedule this run used against the generation it was
+                // computed at, so the next run can skip recomputing it when nothing
+                // schedule-relevant has changed since. If an edit bumped the
+                // generation while this run was in flight, the stored generation no
+                // longer matches and the next run recomputes — no stale schedule.
+                app.cached_notification_schedule =
+                    Some(crate::app::sync_service::CachedNotificationSchedule {
+                        generation: schedule_gen,
+                        defaults: notification_defaults,
+                        snapshot: notification_schedule,
+                    });
                 app.sync_run_status = SyncRunStatus::Synced {
                     pending: remaining_pending,
                 };

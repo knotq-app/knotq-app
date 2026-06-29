@@ -53,6 +53,7 @@ pub(crate) struct YrsJsonDocument {
     pub(crate) id: DocumentId,
     pub(crate) kind: SyncDocumentKind,
     doc: Doc,
+    encode_cache: EncodeCache,
 }
 
 impl YrsJsonDocument {
@@ -62,13 +63,25 @@ impl YrsJsonDocument {
         // that concurrent edits to distinct entities (e.g. two replicas each adding
         // a folder) merge additively instead of resolving as whole-document LWW.
         WorkspaceMaps::get(&doc);
-        Self { id, kind, doc }
+        let encode_cache = EncodeCache::new(&doc);
+        Self {
+            id,
+            kind,
+            doc,
+            encode_cache,
+        }
     }
 
     pub(crate) fn new_with_client_id(id: DocumentId, kind: SyncDocumentKind, client_id: u64) -> Self {
         let doc = Doc::with_options(yrs_doc_options(id, client_id, OffsetKind::Bytes));
         WorkspaceMaps::get(&doc);
-        Self { id, kind, doc }
+        let encode_cache = EncodeCache::new(&doc);
+        Self {
+            id,
+            kind,
+            doc,
+            encode_cache,
+        }
     }
 
     /// Build a workspace-index document whose clientID is either deterministic for
@@ -80,9 +93,11 @@ impl YrsJsonDocument {
         }
     }
 
-    /// Full document state as a v1 update, for durable persistence.
+    /// Full document state as a v1 update, for durable persistence. Cached: the
+    /// document is only re-serialized when it changed since the last call.
     pub(crate) fn encode_state_v1(&self) -> Vec<u8> {
-        self.doc.transact().encode_diff_v1(&StateVector::default())
+        self.encode_cache
+            .get(|| self.doc.transact().encode_diff_v1(&StateVector::default()))
     }
 
     /// Reconcile the persistent workspace document to `snapshot` and return the

@@ -19,7 +19,7 @@ fn apply_command_emits_event_marks_dirty_and_updates_index() {
     });
 
     assert!(state.is_dirty());
-    assert_eq!(state.indexed.workspace.folders[&root].children.len(), 1);
+    assert_eq!(state.indexed().workspace.folders[&root].children.len(), 1);
     assert!(matches!(
         receiver.try_recv().unwrap(),
         AppEvent::WorkspaceChanged(_)

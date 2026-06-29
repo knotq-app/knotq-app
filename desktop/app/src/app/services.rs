@@ -27,6 +27,13 @@ pub(crate) struct AppServiceBus {
     pub(super) timeline_tx: Sender<()>,
     pub(super) sync_tx: Sender<SyncSignal>,
     pub(super) notification_recompute_pending: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    /// Bumped whenever a change that can affect the notification schedule is
+    /// signalled (the same precise condition that triggers an OS-notification
+    /// recompute). The sync run reads it to decide whether the schedule it computed
+    /// last time is still valid, so a burst of edits that don't touch any dated item
+    /// (e.g. typing prose) reuses the cached schedule instead of re-expanding
+    /// recurrences and re-hashing every occurrence each run.
+    pub(super) notification_schedule_gen: std::sync::Arc<std::sync::atomic::AtomicU64>,
 }
 
 pub(crate) struct AppServiceReceivers {

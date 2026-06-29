@@ -25,6 +25,9 @@ impl AppServiceBus {
                 notification_recompute_pending: std::sync::Arc::new(
                     std::sync::atomic::AtomicBool::new(false),
                 ),
+                notification_schedule_gen: std::sync::Arc::new(
+                    std::sync::atomic::AtomicU64::new(0),
+                ),
             },
             AppServiceReceivers {
                 save_rx,
@@ -46,7 +49,22 @@ impl AppServiceBus {
         let _ = self.save_tx.try_send(());
     }
 
+    fn bump_notification_schedule_gen(&self) {
+        self.notification_schedule_gen
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    /// Current notification-schedule generation. Increments whenever a change that
+    /// can affect the schedule is signalled; the sync run compares it against the
+    /// generation its cached schedule was computed at to decide whether a recompute
+    /// is needed.
+    pub(crate) fn notification_schedule_generation(&self) -> u64 {
+        self.notification_schedule_gen
+            .load(std::sync::atomic::Ordering::Relaxed)
+    }
+
     pub(crate) fn signal_notifications(&self) {
+        self.bump_notification_schedule_gen();
         if !self
             .notification_recompute_pending
             .swap(true, std::sync::atomic::Ordering::AcqRel)
@@ -61,6 +79,10 @@ impl AppServiceBus {
         item: Item,
         defaults: NotificationDefaults,
     ) {
+        // A single dated item changed (e.g. its text, so its notification title) —
+        // the schedule may differ, so invalidate the sync's cached schedule even
+        // when the OS-recompute channel below short-circuits.
+        self.bump_notification_schedule_gen();
         // Skip item-level refresh if a full recompute is already pending.
         if self
             .notification_recompute_pending

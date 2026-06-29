@@ -20,6 +20,26 @@ use super::{SyncHttpClient, SyncRunResult, SyncSnapshot};
 pub(super) fn sync_snapshot(snapshot: SyncSnapshot) -> Result<SyncRunResult> {
     let path = workspace_path();
     let mut workspace = workspace_for_background_sync(&path, snapshot.workspace);
+    // The notification schedule is computed here on the background sync thread, never
+    // on main: recurrence expansion + per-occurrence JSON/SHA-256 hashing over the
+    // whole workspace is the heaviest part of preparing a sync. When the caller
+    // determined nothing schedule-relevant changed since the last run it hands back
+    // that run's schedule in `reuse_schedule` and we skip the recompute outright.
+    //
+    // It is computed from `workspace` — the FULL on-disk workspace overlaid with the
+    // in-memory edits — not the partial in-memory snapshot. That makes it independent
+    // of which off-screen daily-queue schemes happen to be lazily loaded into memory
+    // (so the reuse cache, keyed on the schedule generation, can't be invalidated by a
+    // mere load), and it is strictly more complete: a device that never scrolled to a
+    // future week still reports that week's notifications to the server.
+    let notification_schedule = snapshot.reuse_schedule.clone().unwrap_or_else(|| {
+        crate::notifications::notification_schedule_snapshot(
+            &workspace,
+            snapshot.notification_defaults,
+            Utc::now(),
+            0,
+        )
+    });
     let server_workspace_id = sync_workspace_id(&snapshot.account, workspace.id);
     // Capture the workspace document's id before adopting the account's canonical
     // identity, so an account switch can carry its content to the new id below.
@@ -196,7 +216,7 @@ pub(super) fn sync_snapshot(snapshot: SyncSnapshot) -> Result<SyncRunResult> {
         &transport,
         &mut local_state,
         replica_id,
-        &snapshot.notification_schedule,
+        &notification_schedule,
         &mut pushed,
         &mut crdt_docs,
         &workspace,
@@ -235,6 +255,7 @@ pub(super) fn sync_snapshot(snapshot: SyncSnapshot) -> Result<SyncRunResult> {
         remaining_pending: local_state.pending.len(),
         local_workspace_changed: local_workspace_changed || repaired_workspace_changed,
         media_downloaded,
+        notification_schedule,
     })
 }
 

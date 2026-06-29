@@ -5,7 +5,7 @@ use knotq_commands::{
     filter_recurring_occurrence_toggles, ChangeSet, Command, CommandOrigin, CommandReceipt,
     WorkspaceCommandExt,
 };
-use knotq_index::{IndexChangeSet, IndexedWorkspace};
+use knotq_index::IndexedWorkspace;
 use knotq_model::{
     DocumentId, OperationId, ReplicaId, SchemeId, SyncDocumentKind, Workspace, WorkspaceId,
 };
@@ -57,7 +57,11 @@ pub struct StoreOperation {
 
 pub struct WorkspaceStore {
     workspace: Workspace,
+    // Search/calendar/channel index over `workspace`. Nothing on the hot path
+    // reads it, so it is rebuilt lazily (see `index_stale`/`indexed`) rather than
+    // on every edit — a full re-tokenize of every item per keystroke otherwise.
     indexed: IndexedWorkspace,
+    index_stale: bool,
     dirty: WorkspaceDirtyState,
     replica_id: ReplicaId,
     next_sequence: u64,
@@ -86,6 +90,7 @@ impl WorkspaceStore {
         Self {
             workspace,
             indexed,
+            index_stale: false,
             dirty,
             replica_id,
             next_sequence: initial_sequence.max(1),
@@ -104,7 +109,15 @@ impl WorkspaceStore {
         &self.workspace
     }
 
-    pub fn indexed(&self) -> &IndexedWorkspace {
+    /// Lazily rebuild the search/calendar/channel index from the current
+    /// workspace before returning it. Edits only flag the index stale (cheap), so
+    /// the expensive rebuild happens at most once per burst, when a reader
+    /// actually asks — and only if something changed since the last read.
+    pub fn indexed(&mut self) -> &IndexedWorkspace {
+        if self.index_stale {
+            self.indexed.replace_workspace(self.workspace.clone());
+            self.index_stale = false;
+        }
         &self.indexed
     }
 
@@ -248,8 +261,8 @@ impl WorkspaceStore {
         let sync_metadata_dirty = workspace.ensure_sync_metadata();
         let mut dirty = dirty;
         dirty.index |= sync_metadata_dirty;
-        self.workspace = workspace.clone();
-        self.indexed = IndexedWorkspace::build(workspace);
+        self.workspace = workspace;
+        self.index_stale = true;
         self.crdt = restored_workspace_crdt(&self.workspace, self.replica_id, &crdt_states);
         self.dirty = dirty;
         if clear_pending_operations {
@@ -282,8 +295,18 @@ impl WorkspaceStore {
         crdt_states: &HashMap<DocumentId, Vec<u8>>,
     ) -> bool {
         let received_at = Utc::now();
+        // `crdt_states` always carries EVERY document, but a sync typically changes a
+        // handful. Applying an unchanged document's full state is a costly no-op
+        // (decode + integrate the whole document) and doing it for all documents is
+        // the dominant cost of landing a sync. Compare each incoming state against
+        // this store's current encoding (cheap — the per-document encode cache returns
+        // unchanged documents without re-serializing) and apply only what differs.
+        let current = self.crdt.document_states();
         let updates = crdt_states
             .iter()
+            .filter(|(document, state)| {
+                current.get(*document).map(Vec::as_slice) != Some(state.as_slice())
+            })
             .filter_map(|(document, state)| {
                 let kind = if *document == sync_workspace.sync.id {
                     SyncDocumentKind::PersonalWorkspace
@@ -324,8 +347,8 @@ impl WorkspaceStore {
         if !mergeable {
             return false;
         }
-        self.workspace = outcome.workspace.clone();
-        self.indexed = IndexedWorkspace::build(outcome.workspace);
+        self.workspace = outcome.workspace;
+        self.index_stale = true;
         self.dirty = WorkspaceDirtyState::all(&self.workspace);
         true
     }
@@ -403,14 +426,7 @@ impl WorkspaceStore {
             self.dirty.index = true;
             crdt_changes.workspace = true;
         }
-        self.indexed.workspace = self.workspace.clone();
-        self.indexed.apply_changeset(
-            &IndexChangeSet {
-                folders: changeset.folders.clone(),
-                schemes: changeset.schemes.clone(),
-            },
-            &knotq_rrule::DefaultExpander,
-        );
+        self.index_stale = true;
         let outcome = self.crdt.sync_changes(&self.workspace, &crdt_changes);
         for error in &outcome.errors {
             eprintln!("CRDT sync update failed: {error}");

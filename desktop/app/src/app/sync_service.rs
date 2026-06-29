@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::time::Duration as StdDuration;
 
 use knotq_model::{
-    DocumentId, ImageAssetFormat, ReplicaId, SyncAccountSettings, Workspace,
+    DocumentId, ImageAssetFormat, NotificationDefaults, ReplicaId, SyncAccountSettings, Workspace,
 };
 use knotq_sync::{NotificationScheduleSnapshot, PendingCrdtEdit, PushedDocument};
 use std::fmt;
@@ -47,11 +47,20 @@ const SYNC_DEBOUNCE: StdDuration = StdDuration::from_secs(2);
 const SYNC_LOCAL_CHANGE_DEBOUNCE: StdDuration = StdDuration::from_secs(30);
 // When the WebSocket transport is connected, pushes ride a persistent socket with
 // no per-edit connection cost, so the long HTTP-era debounces above collapse to
-// "feels instant" windows that still coalesce a burst of keystrokes (send) or a
-// burst of server `changed` nudges (receive) into a single sync. They apply only
-// while connected; the HTTP fallback keeps the longer debounces so an offline
-// device doesn't hammer the backend with a connection per edit.
-const SYNC_LOCAL_CHANGE_DEBOUNCE_WS: StdDuration = StdDuration::from_millis(300);
+// near-real-time windows that coalesce a burst of keystrokes (send) or a burst of
+// server `changed` nudges (receive) into a single sync. They apply only while
+// connected; the HTTP fallback keeps the longer debounces so an offline device
+// doesn't hammer the backend with a connection per edit.
+//
+// The local-change window is the time we wait after the *first* keystroke of a
+// burst before a sync run. It only delays how fast *our* edits reach peers —
+// inbound peer edits still arrive instantly via the `changed` nudge (which uses the
+// 150 ms Immediate window), and unpushed edits are already saved locally, so a
+// larger window costs nothing but a little outbound convergence latency. Keeping it
+// at 2 s (vs the old 300 ms) collapses a multi-second typing burst into a single
+// sync run instead of ~one every 300 ms, which is the main lever on how often the
+// per-run snapshot work (workspace clone + CRDT encode) runs while typing.
+const SYNC_LOCAL_CHANGE_DEBOUNCE_WS: StdDuration = StdDuration::from_secs(2);
 const SYNC_DEBOUNCE_WS: StdDuration = StdDuration::from_millis(150);
 const SYNC_PENDING_RETRY: StdDuration = StdDuration::from_secs(30);
 const SYNC_POLL_FOREGROUND: StdDuration = StdDuration::from_secs(120);
@@ -104,7 +113,14 @@ struct SyncSnapshot {
     /// CRDT from the UI store's latest local edits (with the same stable identity)
     /// rather than from a possibly-staler on-disk copy.
     crdt_states: HashMap<DocumentId, Vec<u8>>,
-    notification_schedule: NotificationScheduleSnapshot,
+    /// Lead-time defaults for the notification schedule. The schedule itself
+    /// (recurrence expansion + per-occurrence hashing — the heaviest snapshot step)
+    /// is computed on the background sync thread from `workspace`, not on main.
+    notification_defaults: NotificationDefaults,
+    /// The schedule computed by a previous run, reused as-is when nothing that could
+    /// change it has happened since (same generation + defaults + day — decided on
+    /// main in `run_sync_once`). `None` forces a recompute on the background thread.
+    reuse_schedule: Option<NotificationScheduleSnapshot>,
     /// The live WebSocket sync client, if connected. The run prefers it over HTTP
     /// (see `ws_transport::FallbackTransport`); `None` falls back to HTTP only.
     ws_sync: Option<std::sync::Arc<knotq_sync::ws::WsClient>>,
@@ -121,6 +137,19 @@ struct SyncRunResult {
     remaining_pending: usize,
     local_workspace_changed: bool,
     media_downloaded: bool,
+    /// The schedule used by this run (reused or freshly computed), handed back so the
+    /// caller can cache it for the next run's reuse check.
+    notification_schedule: NotificationScheduleSnapshot,
+}
+
+/// A notification schedule cached on `KnotQApp` between sync runs, with the inputs
+/// it was computed from. The next run reuses `snapshot` only when the live
+/// generation, defaults, and current day all still match — otherwise it recomputes.
+#[derive(Clone)]
+pub(crate) struct CachedNotificationSchedule {
+    pub(crate) generation: u64,
+    pub(crate) defaults: NotificationDefaults,
+    pub(crate) snapshot: NotificationScheduleSnapshot,
 }
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]

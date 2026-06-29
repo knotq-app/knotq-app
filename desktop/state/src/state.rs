@@ -17,7 +17,6 @@ use crate::{
 
 pub struct AppState {
     pub(crate) store: WorkspaceStore,
-    pub indexed: IndexedWorkspace,
     pub settings: AppSettings,
     pub dirty_schemes: HashSet<SchemeId>,
     pub index_dirty: bool,
@@ -72,7 +71,6 @@ impl AppState {
             crdt_states,
             initial_sequence,
         );
-        let indexed = store.indexed().clone();
         let daily_queue = DailyQueueState::new(today, loaded_start);
         let notifications = NotificationState {
             scheduled_ids: settings.scheduled_notification_ids.clone(),
@@ -82,7 +80,6 @@ impl AppState {
         let dirty_schemes = store.dirty().schemes.clone();
         Self {
             store,
-            indexed,
             settings: settings.clone(),
             dirty_schemes,
             index_dirty: initial_dirty,
@@ -231,9 +228,15 @@ impl AppState {
 
     pub fn sync_workspace_from_store(&mut self) {
         self.workspace = self.store.workspace().clone();
-        self.indexed = self.store.indexed().clone();
         self.sync_workspace_from_store_dirty();
         self.direct_workspace_dirty = false;
+    }
+
+    /// The search/calendar/channel index over the live workspace, rebuilt lazily
+    /// on demand (see [`WorkspaceStore::indexed`]). No render path reads this
+    /// today; it exists for query features and is kept off the per-edit hot path.
+    pub fn indexed(&mut self) -> &IndexedWorkspace {
+        self.store.indexed()
     }
 
     pub fn sync_workspace_from_store_dirty(&mut self) {
@@ -337,9 +340,19 @@ impl AppState {
             }
         }
 
-        let dirty = WorkspaceDirtyState::all(&workspace);
-        self.store
-            .replace_workspace_with_crdt_states(workspace, dirty, false, crdt_states);
+        // Apply the run's merged document states incrementally — only the documents
+        // that actually changed — instead of reconstructing every CRDT document from
+        // scratch. The replace path runs with no in-flight local edits, so applying
+        // the merged states on top of the local CRDT yields the same canonical result
+        // as a full rebuild, but skips the dominant cost of landing a sync on a large
+        // workspace (rebuilding hundreds of unchanged documents). A full rebuild
+        // remains the fallback if the incremental merge reports an invalid state.
+        self.sync_store_from_workspace();
+        if !self.store.merge_sync_crdt_states(&workspace, &crdt_states) {
+            let dirty = WorkspaceDirtyState::all(&workspace);
+            self.store
+                .replace_workspace_with_crdt_states(workspace, dirty, false, crdt_states);
+        }
         self.sync_workspace_from_store();
 
         // Discard undo/redo only for affected schemes and global entries,

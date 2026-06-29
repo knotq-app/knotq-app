@@ -96,6 +96,7 @@ mod render_blocks;
 mod tasks;
 mod week;
 
+pub(crate) use self::tasks::CalendarOccurrenceCache;
 use self::layout::*;
 use self::render_blocks::*;
 
