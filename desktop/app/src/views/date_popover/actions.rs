@@ -251,21 +251,21 @@ impl KnotQApp {
                 self.apply_date_popover_inputs(cx);
             }
             DateComponentEvent::Filled => {
-                self.apply_date_popover_inputs(cx);
+                self.commit_date_popover_input(window, cx);
                 self.focus_next_date_popover_input(input, window, cx);
             }
             DateComponentEvent::PressEnter => {
-                self.apply_date_popover_inputs(cx);
+                self.commit_date_popover_input(window, cx);
                 if !self.focus_next_date_popover_input(input, window, cx) {
                     self.focus_current_editor(window, cx);
                 }
             }
             DateComponentEvent::TabForward => {
-                self.apply_date_popover_inputs(cx);
+                self.commit_date_popover_input(window, cx);
                 self.focus_wrapped_date_popover_input(input, false, window, cx);
             }
             DateComponentEvent::TabBackward => {
-                self.apply_date_popover_inputs(cx);
+                self.commit_date_popover_input(window, cx);
                 self.focus_wrapped_date_popover_input(input, true, window, cx);
             }
             DateComponentEvent::Cancel => {
@@ -279,7 +279,11 @@ impl KnotQApp {
                 self.redo(cx);
                 self.sync_date_popover_after_history(window, cx);
             }
-            DateComponentEvent::Focus | DateComponentEvent::Blur => {
+            DateComponentEvent::Blur => {
+                self.commit_date_popover_input(window, cx);
+                cx.notify();
+            }
+            DateComponentEvent::Focus => {
                 cx.notify();
             }
         }
@@ -354,10 +358,11 @@ impl KnotQApp {
         }
     }
 
-    pub(super) fn apply_date_popover_inputs(&mut self, cx: &mut Context<Self>) {
-        let Some(popup) = self.date_popover.as_ref() else {
-            return;
-        };
+    pub(super) fn apply_date_popover_inputs(
+        &mut self,
+        cx: &mut Context<Self>,
+    ) -> Option<chrono::DateTime<Utc>> {
+        let popup = self.date_popover.as_ref()?;
         let target = (popup.scheme_id, popup.item_id, popup.kind);
         let hour_is_pm = popup.hour_is_pm;
         let year = popup.year_input.read(cx).value().to_string();
@@ -365,7 +370,7 @@ impl KnotQApp {
         let day = popup.day_input.read(cx).value().to_string();
         let hour = popup.hour_input.read(cx).value().to_string();
         let minute = popup.minute_input.read(cx).value().to_string();
-        let Some(date) = parse_popover_datetime(
+        let date = parse_popover_datetime(
             self.time_format,
             &year,
             &month,
@@ -373,9 +378,7 @@ impl KnotQApp {
             &hour,
             &minute,
             hour_is_pm,
-        ) else {
-            return;
-        };
+        )?;
         let target = DateTarget {
             scheme_id: target.0,
             item_id: target.1,
@@ -391,6 +394,18 @@ impl KnotQApp {
                 },
                 cx,
             );
+        }
+        Some(date)
+    }
+
+    /// Apply the popover inputs and, on success, normalize the displayed fields to
+    /// their canonical zero-padded form (e.g. month "8" → "08"). Called when the
+    /// user leaves a field (fill/enter/tab/blur) so a half-typed component is
+    /// padded in place instead of reverting to the previous value. Not used on
+    /// plain `Change`, which would re-pad mid-typing.
+    fn commit_date_popover_input(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(date) = self.apply_date_popover_inputs(cx) {
+            self.sync_date_popover_inputs(date, window, cx);
         }
     }
 

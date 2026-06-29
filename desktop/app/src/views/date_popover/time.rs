@@ -138,7 +138,14 @@ pub(crate) fn parse_popover_datetime(
     let day = day.trim();
     let hour = hour.trim();
     let minute = minute.trim();
-    if month.len() != 2 || day.len() != 2 || minute.is_empty() || minute.len() > 2 {
+    // Accept 1- or 2-digit month/day/minute; they are zero-padded on commit.
+    if month.is_empty()
+        || month.len() > 2
+        || day.is_empty()
+        || day.len() > 2
+        || minute.is_empty()
+        || minute.len() > 2
+    {
         return None;
     }
     let year = year.parse::<i32>().ok()?;
@@ -164,6 +171,48 @@ pub(crate) fn parse_popover_datetime(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn parse_popover_datetime_accepts_single_digit_month_and_day() {
+        let parsed = parse_popover_datetime(
+            TimeFormat::TwentyFourHour,
+            "2026",
+            "8",
+            "3",
+            "23",
+            "00",
+            false,
+        )
+        .unwrap()
+        .with_timezone(&Local);
+
+        assert_eq!(parsed.month(), 8);
+        assert_eq!(parsed.day(), 3);
+    }
+
+    #[test]
+    fn parse_popover_datetime_rejects_empty_or_long_month_or_day() {
+        assert!(parse_popover_datetime(
+            TimeFormat::TwentyFourHour,
+            "2026",
+            "",
+            "18",
+            "09",
+            "30",
+            false,
+        )
+        .is_none());
+        assert!(parse_popover_datetime(
+            TimeFormat::TwentyFourHour,
+            "2026",
+            "012",
+            "18",
+            "09",
+            "30",
+            false,
+        )
+        .is_none());
+    }
 
     #[test]
     fn parse_popover_datetime_accepts_single_digit_minutes() {
