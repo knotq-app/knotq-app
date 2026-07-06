@@ -289,6 +289,7 @@ async fn refresh_item_os_notifications(
             for refresh in item_refreshes.into_values() {
                 let err = crate::notifications::refresh_item_os_notifications(
                     refresh.scheme_id,
+                    refresh.scheme_is_daily,
                     refresh.item,
                     refresh.defaults,
                 );
@@ -314,6 +315,7 @@ async fn clear_item_os_notifications(
             for clear in item_clears.into_values() {
                 crate::notifications::clear_item_notifications_for_item(
                     clear.scheme_id,
+                    clear.scheme_is_daily,
                     clear.item,
                     clear.defaults,
                 );
@@ -331,6 +333,7 @@ async fn clear_occurrence_os_notifications(
             for clear in occurrence_clears.into_values() {
                 crate::notifications::clear_occurrence_notifications_for_item(
                     clear.scheme_id,
+                    clear.scheme_is_daily,
                     clear.item,
                     clear.occurrence,
                     clear.defaults,
@@ -345,13 +348,17 @@ async fn compute_next_timeline_deadline(
     cx: &mut gpui::AsyncApp,
 ) -> Option<DateTime<Utc>> {
     let now = Utc::now();
-    let workspace = weak.update(cx, |app, _cx| app.workspace.clone()).ok()?;
+    let (workspace, retained_deadline) = weak
+        .update(cx, |app, _cx| {
+            (app.workspace.clone(), app.retained_completed().next_expiry())
+        })
+        .ok()?;
     let event_deadline = cx
         .background_executor()
         .spawn(async move { next_event_completion_deadline(&workspace, now) })
         .await;
 
-    [event_deadline, next_daily_queue_deadline()]
+    [event_deadline, next_daily_queue_deadline(), retained_deadline]
         .into_iter()
         .flatten()
         .min()
@@ -382,6 +389,11 @@ async fn run_due_timeline_jobs(weak: &gpui::WeakEntity<KnotQApp>, cx: &mut gpui:
     let _ = weak.update(cx, |app, cx| {
         app.complete_past_event_occurrences(&completion_keys, now, cx);
         app.sync_daily_queue_day_boundary(cx);
+        // Completed-overdue rows held on the upcoming panel age out after their
+        // TTL; the purge re-renders so the row actually leaves the sidebar.
+        if app.retained_completed_mut().purge_expired(now) > 0 {
+            cx.notify();
+        }
     });
 }
 

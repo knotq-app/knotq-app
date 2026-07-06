@@ -1,7 +1,8 @@
-use chrono::{Duration, TimeZone, Utc};
+use chrono::{Duration, NaiveDate, TimeZone, Utc};
 use knotq_date_util::DateRange;
 use knotq_model::{
-    CalendarRecurrence, Item, ItemKind, NodeRef, Occurrence, OccurrenceId, Scheme, Workspace,
+    daily_queue_scheme_id, CalendarRecurrence, Item, ItemKind, NodeRef, Occurrence, OccurrenceId,
+    Scheme, Workspace,
 };
 use knotq_notifications::{
     completed_notification_keys, compute_due_notifications,
@@ -199,6 +200,41 @@ fn completed_recurring_occurrence_keys_only_target_that_instance() {
 }
 
 #[test]
+fn notification_key_is_stable_when_occurrence_is_snoozed() {
+    let trigger = Utc.with_ymd_and_hms(2026, 5, 20, 9, 0, 0).unwrap();
+    let from = trigger - Duration::hours(1);
+    let to = trigger + Duration::hours(2);
+
+    // Default schedule: a reminder fires at its start time.
+    let (mut workspace, scheme_id) =
+        workspace_and_scheme_with_item(Item::new("reminder").with_start(trigger));
+    let before = compute_due_notifications(&workspace, from, to);
+    assert_eq!(before.len(), 1);
+    assert_eq!(before[0].fire_at, trigger);
+
+    // "Remind me later 10 minutes": a per-occurrence offset pushes the fire time
+    // out on the same scheme + item, but the notification key/id must NOT change.
+    // Other devices receive this offset via sync and must reuse the same id so the
+    // already-delivered banner can be matched and cleared instead of stacking a
+    // second one.
+    workspace.schemes.get_mut(&scheme_id).unwrap().items[0].state[0]
+        .state
+        .notification_offset_secs = Some(-600);
+    let after = compute_due_notifications(&workspace, from, to);
+    assert_eq!(after.len(), 1);
+
+    assert_eq!(
+        after[0].fire_at,
+        trigger + Duration::seconds(600),
+        "snooze should move the fire time"
+    );
+    assert_eq!(
+        before[0].key, after[0].key,
+        "snooze must not change the notification key/id"
+    );
+}
+
+#[test]
 fn compute_uses_supplied_occurrence_expander() {
     let start = Utc.with_ymd_and_hms(2026, 5, 10, 12, 0, 0).unwrap();
     let workspace = workspace_with_item(Item::new("Synthetic").with_start(start));
@@ -216,8 +252,120 @@ fn compute_uses_supplied_occurrence_expander() {
     assert_eq!(notes[0].title, "Synthetic");
 }
 
+#[test]
+fn duplicate_rows_collapse_to_one_notification() {
+    let start = Utc.with_ymd_and_hms(2026, 5, 10, 12, 0, 0).unwrap();
+    // Two distinct items (fresh ids) with identical text + time in one scheme —
+    // the shape of a daily row that was carried/duplicated. Only one banner.
+    let mut scheme = Scheme::new("Daily", 0);
+    scheme
+        .items
+        .push(Item::new("Call dentist").with_start(start));
+    scheme
+        .items
+        .push(Item::new("Call dentist").with_start(start));
+    assert_ne!(scheme.items[0].id, scheme.items[1].id);
+    let workspace = workspace_with_scheme(scheme);
+
+    let notes = compute_due_notifications(
+        &workspace,
+        start - Duration::minutes(1),
+        start + Duration::minutes(1),
+    );
+
+    assert_eq!(
+        notes.len(),
+        1,
+        "identical duplicate rows schedule a single banner"
+    );
+    assert_eq!(notes[0].title, "Call dentist");
+}
+
+#[test]
+fn distinct_reminders_at_same_time_are_not_collapsed() {
+    let start = Utc.with_ymd_and_hms(2026, 5, 10, 12, 0, 0).unwrap();
+    // Guards against an over-broad de-dupe: different text ⇒ different banner,
+    // even at the same scheme/time.
+    let mut scheme = Scheme::new("Daily", 0);
+    scheme
+        .items
+        .push(Item::new("Call dentist").with_start(start));
+    scheme.items.push(Item::new("Email Sam").with_start(start));
+    let workspace = workspace_with_scheme(scheme);
+
+    let notes = compute_due_notifications(
+        &workspace,
+        start - Duration::minutes(1),
+        start + Duration::minutes(1),
+    );
+
+    assert_eq!(
+        notes.len(),
+        2,
+        "different reminders at the same time stay distinct"
+    );
+}
+
+#[test]
+fn daily_queue_notification_key_is_identical_across_rollover_days() {
+    let trigger = Utc.with_ymd_and_hms(2026, 7, 2, 9, 0, 0).unwrap();
+    let from = trigger - Duration::hours(1);
+    let to = trigger + Duration::hours(2);
+
+    // "Roll over from yesterday" MOVES an item (same ItemId) from one day's
+    // daily scheme into the next day's. The notification key must be identical
+    // on both sides of that hop, or every device re-schedules a second banner
+    // and loses snooze state after each rollover.
+    let item = Item::new("pay rent").with_start(trigger);
+
+    let key_in_daily_scheme = |date: NaiveDate| {
+        let mut scheme = Scheme::new("Daily", 0);
+        scheme.id = daily_queue_scheme_id(date);
+        scheme.items.push(item.clone());
+        let mut workspace = workspace_with_scheme(scheme);
+        workspace
+            .daily_queue
+            .insert(date, daily_queue_scheme_id(date));
+        let notes = compute_due_notifications(&workspace, from, to);
+        assert_eq!(notes.len(), 1);
+        notes[0].key.clone()
+    };
+
+    let day1 = NaiveDate::from_ymd_opt(2026, 7, 2).unwrap();
+    let day2 = NaiveDate::from_ymd_opt(2026, 7, 3).unwrap();
+    assert_eq!(
+        key_in_daily_scheme(day1),
+        key_in_daily_scheme(day2),
+        "the key must survive the rollover hop between per-day daily schemes"
+    );
+
+    // The same item in a REGULAR scheme keys on the scheme id — moving an item
+    // between ordinary schemes intentionally changes its notification identity.
+    let regular = workspace_and_scheme_with_item(item.clone()).0;
+    let regular_notes = compute_due_notifications(&regular, from, to);
+    assert_eq!(regular_notes.len(), 1);
+    assert_ne!(
+        regular_notes[0].key,
+        key_in_daily_scheme(day1),
+        "non-daily schemes must keep scheme-scoped keys"
+    );
+}
+
 fn workspace_with_item(item: Item) -> Workspace {
     workspace_and_scheme_with_item(item).0
+}
+
+fn workspace_with_scheme(scheme: Scheme) -> Workspace {
+    let mut workspace = Workspace::new();
+    let scheme_id = scheme.id;
+    workspace.schemes.insert(scheme_id, scheme);
+    workspace
+        .folders
+        .get_mut(&workspace.root)
+        .unwrap()
+        .children
+        .push(NodeRef::Scheme(scheme_id));
+    workspace
 }
 
 fn workspace_and_scheme_with_item(item: Item) -> (Workspace, knotq_model::SchemeId) {

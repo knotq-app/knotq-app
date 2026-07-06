@@ -197,7 +197,13 @@ impl KnotQApp {
             let Some(today_scheme) = self.workspace.scheme(today_id) else {
                 return;
             };
-            daily_queue_carryover_command(previous_id, previous, today_id, today_scheme)
+            daily_queue_carryover_command(
+                previous_id,
+                previous_date,
+                previous,
+                today_id,
+                today_scheme,
+            )
         };
         let Some(command) = command else {
             return;

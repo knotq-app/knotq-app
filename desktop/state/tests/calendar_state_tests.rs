@@ -1,9 +1,11 @@
 use chrono::{Duration, TimeZone, Utc};
 use knotq_model::{
-    CalendarRecurrence, Item, OccurrenceId, OccurrenceOverride, OccurrenceOverrideStatus,
+    CalendarRecurrence, Item, ItemId, OccurrenceId, OccurrenceOverride, OccurrenceOverrideStatus,
+    SchemeId,
 };
 use knotq_state::{
     mark_past_event_completion_keys_done, mark_past_events_done, past_event_completion_keys,
+    CalendarOccurrenceKey, RetainedCompletedItems, RETAINED_COMPLETED_TTL_SECS,
 };
 
 mod support;
@@ -87,6 +89,77 @@ fn mark_past_events_done_completes_elapsed_recurring_occurrences() {
     assert!(item
         .state_for_occurrence(&OccurrenceId::recurring_utc(start))
         .is_done());
+}
+
+fn occurrence_key() -> CalendarOccurrenceKey {
+    CalendarOccurrenceKey {
+        scheme_id: SchemeId::new(),
+        item_id: ItemId::new(),
+        occurrence: OccurrenceId::Single,
+    }
+}
+
+#[test]
+fn retained_completed_items_hold_their_place_until_the_ttl_elapses() {
+    let completed_at = Utc.with_ymd_and_hms(2026, 6, 1, 12, 0, 0).unwrap();
+    let key = occurrence_key();
+    let mut retained = RetainedCompletedItems::default();
+    retained.insert(key.clone(), completed_at);
+
+    // Freshly completed: the row keeps its place (no layout shift)...
+    assert!(retained.is_retained(&key, completed_at));
+    assert!(retained.is_retained(
+        &key,
+        completed_at + Duration::seconds(RETAINED_COMPLETED_TTL_SECS - 1)
+    ));
+    // ...but not forever: once the TTL elapses it reads as gone, even before a
+    // purge sweeps the entry out.
+    assert!(!retained.is_retained(
+        &key,
+        completed_at + Duration::seconds(RETAINED_COMPLETED_TTL_SECS)
+    ));
+    assert!(!retained.is_retained(&key, completed_at + Duration::days(2)));
+    // Unknown keys were never retained.
+    assert!(!retained.is_retained(&occurrence_key(), completed_at));
+}
+
+#[test]
+fn retained_completed_purge_drops_only_expired_entries() {
+    let now = Utc.with_ymd_and_hms(2026, 6, 1, 12, 0, 0).unwrap();
+    let fresh = occurrence_key();
+    let stale = occurrence_key();
+    let mut retained = RetainedCompletedItems::default();
+    retained.insert(fresh.clone(), now - Duration::minutes(5));
+    retained.insert(
+        stale.clone(),
+        now - Duration::seconds(RETAINED_COMPLETED_TTL_SECS + 1),
+    );
+
+    assert_eq!(retained.purge_expired(now), 1);
+    assert!(retained.contains(&fresh));
+    assert!(!retained.contains(&stale));
+    assert_eq!(retained.purge_expired(now), 0, "purge is idempotent");
+}
+
+#[test]
+fn retained_completed_next_expiry_tracks_the_earliest_completion() {
+    let now = Utc.with_ymd_and_hms(2026, 6, 1, 12, 0, 0).unwrap();
+    let ttl = Duration::seconds(RETAINED_COMPLETED_TTL_SECS);
+    let mut retained = RetainedCompletedItems::default();
+    assert_eq!(retained.next_expiry(), None);
+
+    let early = occurrence_key();
+    retained.insert(occurrence_key(), now);
+    retained.insert(early.clone(), now - Duration::minutes(30));
+    assert_eq!(
+        retained.next_expiry(),
+        Some(now - Duration::minutes(30) + ttl),
+        "the timeline task must wake when the OLDEST completion ages out"
+    );
+
+    // Re-completing an entry restarts its TTL.
+    retained.insert(early, now);
+    assert_eq!(retained.next_expiry(), Some(now + ttl));
 }
 
 #[test]

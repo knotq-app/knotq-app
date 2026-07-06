@@ -47,9 +47,10 @@ use std::collections::{BTreeMap, HashMap};
 use anyhow::anyhow;
 use chrono::{Duration, NaiveDate, Utc};
 use knotq_model::{
-    daily_queue_scheme_id, CalendarProvider, DocumentId, Folder, FolderId, ImageAssetFormat,
-    ImageInline, ImportedCalendarSource, Item, ItemId, ItemMarker, NodeRef, OperationId, ReplicaId,
-    Scheme, SchemeId, SchemeSource, SyncDocumentKind, Workspace, WorkspaceId,
+    daily_queue_displaced_item_id, daily_queue_scheme_id, CalendarProvider, DocumentId, Folder,
+    FolderId, ImageAssetFormat, ImageInline, ImportedCalendarSource, Item, ItemId, ItemMarker,
+    NodeRef, OperationId, ReplicaId, Scheme, SchemeId, SchemeSource, SyncDocumentKind, Workspace,
+    WorkspaceId,
 };
 use knotq_sync::{
     batch_pull_and_apply, batch_push_pending, queue_workspace_bootstrap_updates,
@@ -67,11 +68,11 @@ use summaries::{
     WorkspaceSummary,
 };
 pub use test_server::TestServer;
-use util::{
-    dq_item_has_annotations, dq_item_is_fully_complete_task, dq_last_nonblank_day,
-    dq_scheme_is_blank, dq_strip_annotations, merge_state, test_notification_schedule,
-};
 pub use util::Rng;
+use util::{
+    dq_item_is_fully_complete_task, dq_last_nonblank_day, dq_scheme_is_blank, dq_strip_annotations,
+    merge_state, test_notification_schedule,
+};
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq, Ord, PartialOrd)]
 pub struct DeviceKey(pub usize);

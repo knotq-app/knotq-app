@@ -104,22 +104,24 @@ pub fn clear_item_notifications(
 
 pub(crate) fn clear_item_notifications_for_item(
     scheme_id: SchemeId,
+    scheme_is_daily: bool,
     item: Item,
     defaults: NotificationDefaults,
 ) {
     let item_id = item.id;
-    let workspace = workspace_for_item(scheme_id, item);
+    let workspace = workspace_for_item(scheme_id, item, scheme_is_daily);
     clear_item_notifications(&workspace, defaults, scheme_id, item_id);
 }
 
 pub(crate) fn clear_occurrence_notifications_for_item(
     scheme_id: SchemeId,
+    scheme_is_daily: bool,
     item: Item,
     occurrence: OccurrenceId,
     defaults: NotificationDefaults,
 ) {
     let item_id = item.id;
-    let workspace = workspace_for_item(scheme_id, item);
+    let workspace = workspace_for_item(scheme_id, item, scheme_is_daily);
 
     let now = Utc::now();
     let ids = keys_to_ids(notification_keys_for_occurrence(

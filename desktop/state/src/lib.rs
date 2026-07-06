@@ -14,8 +14,8 @@ mod undo_store;
 
 pub use calendar_state::{
     complete_past_events, mark_past_event_completion_keys_done, mark_past_events_done,
-    past_event_completion_keys, sync_retained_completed_calendar_items, CalendarOccurrenceKey,
-    RetainedCompletedItems,
+    past_event_completion_keys, CalendarOccurrenceKey, RetainedCompletedItems,
+    RETAINED_COMPLETED_TTL_SECS,
 };
 pub use daily_queue::{
     daily_queue_carryover_command, daily_queue_scheme_is_blank, daily_queue_scheme_name,

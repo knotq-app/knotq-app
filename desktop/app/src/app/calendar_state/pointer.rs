@@ -1,3 +1,4 @@
+use chrono::Utc;
 use gpui::Context;
 use knotq_model::{ItemId, OccurrenceId, SchemeId};
 
@@ -22,12 +23,14 @@ impl KnotQApp {
         item_id: ItemId,
         occurrence: &OccurrenceId,
     ) -> bool {
-        self.retained_completed_calendar_items
-            .contains(&CalendarOccurrenceKey {
+        self.retained_completed().is_retained(
+            &CalendarOccurrenceKey {
                 scheme_id,
                 item_id,
                 occurrence: occurrence.clone(),
-            })
+            },
+            Utc::now(),
+        )
     }
 
     pub(crate) fn sync_retained_completed_calendar_items(
@@ -36,9 +39,9 @@ impl KnotQApp {
     ) {
         for key in keys.iter().cloned() {
             if self.calendar_occurrence_is_done(&key) {
-                self.retained_completed_calendar_items.insert(key);
+                self.retained_completed_mut().insert(key, Utc::now());
             } else {
-                self.retained_completed_calendar_items.remove(&key);
+                self.retained_completed_mut().remove(&key);
             }
         }
     }

@@ -39,17 +39,36 @@ pub fn compute_due_notifications_with_expander(
     let mut out = Vec::new();
     let range = expansion_range(lead_times, from, to);
     for scheme in workspace.iter_schemes() {
+        let is_daily = scheme_is_daily(workspace, scheme.id);
         for item in &scheme.items {
             for occurrence in expander.expand(item, range) {
-                if let Some(note) =
-                    scheduled_notification(scheme.id, item, occurrence, lead_times, from, to, true)
-                {
+                if let Some(note) = scheduled_notification(
+                    scheme.id, is_daily, item, occurrence, lead_times, from, to, true,
+                ) {
                     out.push(note);
                 }
             }
         }
     }
-    out.sort_by_key(|n| n.fire_at);
+    out.sort_by(|a, b| a.fire_at.cmp(&b.fire_at).then_with(|| a.key.cmp(&b.key)));
+    // Collapse notifications that render as the same banner — same scheme, kind,
+    // timing, and text — but originate from distinct items. That is exactly the
+    // shape of a duplicated daily row (a carryover that re-ran on view/reload, or
+    // the same row rolled forward independently on two devices): two rows with
+    // fresh ids would otherwise schedule two identical banners. Keep one
+    // deterministic representative (smallest key at a given fire time) so every
+    // device drops the same duplicate and cross-device clearing stays consistent.
+    let mut seen = std::collections::HashSet::new();
+    out.retain(|note| {
+        seen.insert((
+            note.scheme_id,
+            note.kind,
+            note.fire_at,
+            note.trigger_at,
+            note.title.clone(),
+            note.body.clone(),
+        ))
+    });
     out
 }
 
@@ -90,11 +109,12 @@ pub fn notification_keys_for_item_with_expander(
         .iter_schemes()
         .filter(|scheme| scheme.id == scheme_id)
     {
+        let is_daily = scheme_is_daily(workspace, scheme.id);
         for item in scheme.items.iter().filter(|item| item.id == item_id) {
             for occurrence in expander.expand(item, range) {
-                if let Some(note) =
-                    scheduled_notification(scheme.id, item, occurrence, lead_times, from, to, false)
-                {
+                if let Some(note) = scheduled_notification(
+                    scheme.id, is_daily, item, occurrence, lead_times, from, to, false,
+                ) {
                     out.push(note.key);
                 }
             }
@@ -127,6 +147,7 @@ pub fn notification_keys_for_occurrence(
     )
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn notification_keys_for_occurrence_with_expander(
     workspace: &Workspace,
     lead_times: NotificationLeadTimes,
@@ -143,15 +164,16 @@ pub fn notification_keys_for_occurrence_with_expander(
         .iter_schemes()
         .filter(|scheme| scheme.id == scheme_id)
     {
+        let is_daily = scheme_is_daily(workspace, scheme.id);
         for item in scheme.items.iter().filter(|item| item.id == item_id) {
             for occurrence in expander
                 .expand(item, range)
                 .into_iter()
                 .filter(|occurrence| &occurrence.id == occurrence_id)
             {
-                if let Some(note) =
-                    scheduled_notification(scheme.id, item, occurrence, lead_times, from, to, false)
-                {
+                if let Some(note) = scheduled_notification(
+                    scheme.id, is_daily, item, occurrence, lead_times, from, to, false,
+                ) {
                     out.push(note.key);
                 }
             }
@@ -182,14 +204,15 @@ pub fn completed_notification_keys_with_expander(
     let range = expansion_range(lead_times, from, to);
     let mut out = Vec::new();
     for scheme in workspace.iter_schemes() {
+        let is_daily = scheme_is_daily(workspace, scheme.id);
         for item in &scheme.items {
             for occurrence in expander.expand(item, range) {
                 if !occurrence.state.is_done() {
                     continue;
                 }
-                if let Some(note) =
-                    scheduled_notification(scheme.id, item, occurrence, lead_times, from, to, false)
-                {
+                if let Some(note) = scheduled_notification(
+                    scheme.id, is_daily, item, occurrence, lead_times, from, to, false,
+                ) {
                     out.push(note.key);
                 }
             }
@@ -219,6 +242,7 @@ pub fn expired_event_notification_keys_with_expander(
     let mut out = Vec::new();
 
     for scheme in workspace.iter_schemes() {
+        let is_daily = scheme_is_daily(workspace, scheme.id);
         let range = DateRange {
             start: now - Duration::days(NOTIFICATION_LOOKBACK_DAYS),
             end: now + Duration::seconds(1),
@@ -243,10 +267,10 @@ pub fn expired_event_notification_keys_with_expander(
                 }
                 out.push(ScheduledNotification::make_key(
                     scheme.id,
+                    is_daily,
                     item.id,
                     &occurrence.id,
                     NotificationKind::Event,
-                    fire_at,
                 ));
             }
         }
@@ -278,8 +302,17 @@ fn expansion_range(
     }
 }
 
+/// Whether `scheme_id` is one of the workspace's per-day daily-queue schemes —
+/// these get the stable "daily" key fragment so notification identity survives
+/// the rollover hop from one day's scheme to the next.
+fn scheme_is_daily(workspace: &Workspace, scheme_id: SchemeId) -> bool {
+    workspace.is_daily_queue_scheme(scheme_id)
+}
+
+#[allow(clippy::too_many_arguments)]
 fn scheduled_notification(
     scheme_id: SchemeId,
+    scheme_is_daily: bool,
     item: &Item,
     occurrence: Occurrence,
     lead_times: NotificationLeadTimes,
@@ -300,7 +333,13 @@ fn scheduled_notification(
         return None;
     }
     Some(ScheduledNotification {
-        key: ScheduledNotification::make_key(scheme_id, item.id, &occurrence.id, kind, fire_at),
+        key: ScheduledNotification::make_key(
+            scheme_id,
+            scheme_is_daily,
+            item.id,
+            &occurrence.id,
+            kind,
+        ),
         fire_at,
         expires_at,
         end_at: event_end_at(kind, &occurrence),

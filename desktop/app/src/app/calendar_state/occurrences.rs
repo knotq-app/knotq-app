@@ -52,6 +52,7 @@ impl KnotQApp {
             }
             self.service_bus.signal_clear_occurrence_notifications(
                 key.scheme_id,
+                self.workspace.is_daily_queue_scheme(key.scheme_id),
                 item.clone(),
                 key.occurrence.clone(),
                 self.notification_defaults,

@@ -6,7 +6,7 @@ use knotq_model::{
     DEFAULT_EVENT_NOTIFICATION_OFFSET_SECS,
 };
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum NotificationKind {
     Reminder,
@@ -67,16 +67,36 @@ pub struct ScheduledNotification {
 }
 
 impl ScheduledNotification {
+    /// Stable identity for an occurrence's notification.
+    ///
+    /// Deliberately excludes `fire_at`: the key must stay constant when a
+    /// reschedule ("remind me later") shifts the fire time, so that the
+    /// already-delivered notification on every device shares an id with the
+    /// rescheduled one and can be cleared. `fire_at` changes are still detected
+    /// for reschedule purposes via the manifest fingerprint, which hashes it
+    /// separately (see `schedule::request_fingerprint`).
+    ///
+    /// Daily-queue schemes use a constant scheme fragment instead of their
+    /// per-day id: "roll over from yesterday" moves an item (same id) from one
+    /// day's scheme to the next, and the key must survive that hop so the
+    /// carried item keeps its pending schedule, delivered banner, and snooze
+    /// state on every device. Item ids are unique, so the constant fragment
+    /// cannot collide across days.
     pub(crate) fn make_key(
         scheme: SchemeId,
+        scheme_is_daily: bool,
         item: ItemId,
         occurrence: &OccurrenceId,
         kind: NotificationKind,
-        fire_at: DateTime<Utc>,
     ) -> String {
+        let scheme_fragment = if scheme_is_daily {
+            "daily".to_string()
+        } else {
+            scheme.0.to_string()
+        };
         format!(
-            "{}|{}|{}|{}|{}",
-            scheme.0,
+            "{}|{}|{}|{}",
+            scheme_fragment,
             item.0,
             occurrence_key_fragment(occurrence),
             match kind {
@@ -84,7 +104,6 @@ impl ScheduledNotification {
                 NotificationKind::Event => "e",
                 NotificationKind::Assignment => "a",
             },
-            fire_at.to_rfc3339()
         )
     }
 }

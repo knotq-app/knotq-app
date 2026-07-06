@@ -86,10 +86,11 @@ pub(crate) fn notification_schedule_snapshot(
 
 pub(crate) fn pending_notification_requests_for_item(
     scheme_id: SchemeId,
+    scheme_is_daily: bool,
     item: Item,
     defaults: NotificationDefaults,
 ) -> Vec<NotificationRequest> {
-    let workspace = workspace_for_item(scheme_id, item);
+    let workspace = workspace_for_item(scheme_id, item, scheme_is_daily);
 
     pending_notifications(&workspace, defaults)
         .into_iter()

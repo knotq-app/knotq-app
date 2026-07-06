@@ -25,9 +25,9 @@ impl AppServiceBus {
                 notification_recompute_pending: std::sync::Arc::new(
                     std::sync::atomic::AtomicBool::new(false),
                 ),
-                notification_schedule_gen: std::sync::Arc::new(
-                    std::sync::atomic::AtomicU64::new(0),
-                ),
+                notification_schedule_gen: std::sync::Arc::new(std::sync::atomic::AtomicU64::new(
+                    0,
+                )),
             },
             AppServiceReceivers {
                 save_rx,
@@ -76,6 +76,7 @@ impl AppServiceBus {
     pub(crate) fn signal_item_notifications(
         &self,
         scheme_id: SchemeId,
+        scheme_is_daily: bool,
         item: Item,
         defaults: NotificationDefaults,
     ) {
@@ -94,6 +95,7 @@ impl AppServiceBus {
             .notification_tx
             .try_send(NotificationSignal::RefreshItem(NotificationItemRefresh {
                 scheme_id,
+                scheme_is_daily,
                 item,
                 defaults,
             }));
@@ -102,6 +104,7 @@ impl AppServiceBus {
     pub(crate) fn signal_clear_item_notifications(
         &self,
         scheme_id: SchemeId,
+        scheme_is_daily: bool,
         item: Item,
         defaults: NotificationDefaults,
     ) {
@@ -109,6 +112,7 @@ impl AppServiceBus {
             self.notification_tx
                 .try_send(NotificationSignal::ClearItem(NotificationItemRefresh {
                     scheme_id,
+                    scheme_is_daily,
                     item,
                     defaults,
                 }));
@@ -117,6 +121,7 @@ impl AppServiceBus {
     pub(crate) fn signal_clear_occurrence_notifications(
         &self,
         scheme_id: SchemeId,
+        scheme_is_daily: bool,
         item: Item,
         occurrence: OccurrenceId,
         defaults: NotificationDefaults,
@@ -126,6 +131,7 @@ impl AppServiceBus {
             .try_send(NotificationSignal::ClearOccurrence(
                 NotificationOccurrenceClear {
                     scheme_id,
+                    scheme_is_daily,
                     item,
                     occurrence,
                     defaults,

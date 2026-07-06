@@ -89,6 +89,7 @@ impl KnotQApp {
                     if let Some(item) = workspace_item(&self.workspace, scheme_id, item_id) {
                         self.service_bus.signal_item_notifications(
                             scheme_id,
+                            self.workspace.is_daily_queue_scheme(scheme_id),
                             item.clone(),
                             self.notification_defaults,
                         );

@@ -49,7 +49,6 @@ pub struct AppState {
     pub daily_queue_loaded_start: NaiveDate,
     pub daily_queue_visible_dates: HashSet<NaiveDate>,
     pub daily_queue_loaded_calendar_months: HashSet<(i32, u32)>,
-    pub retained_completed_calendar_items: HashSet<crate::CalendarOccurrenceKey>,
     pub window_size: Option<SavedWindowSize>,
     pub window_position: Option<SavedWindowPosition>,
 }
@@ -107,7 +106,6 @@ impl AppState {
             daily_queue_loaded_start: loaded_start,
             daily_queue_visible_dates: daily_queue.visible_dates,
             daily_queue_loaded_calendar_months: daily_queue.loaded_calendar_months,
-            retained_completed_calendar_items: HashSet::new(),
             window_size: settings.window_size,
             window_position: settings.window_position,
         }
@@ -131,6 +129,10 @@ impl AppState {
 
     pub fn retained_completed(&self) -> &RetainedCompletedItems {
         &self.retained_completed
+    }
+
+    pub fn retained_completed_mut(&mut self) -> &mut RetainedCompletedItems {
+        &mut self.retained_completed
     }
 
     pub fn select_node(&mut self, target: NodeRef) {
@@ -268,7 +270,7 @@ impl AppState {
         self.editor_undo_group = None;
         self.recurrence_undo_group = None;
         self.editor_sessions.clear();
-        self.retained_completed_calendar_items.clear();
+        self.retained_completed.clear();
 
         let daily_queue = DailyQueueState::new(today, loaded_start);
         self.daily_queue = daily_queue.clone();

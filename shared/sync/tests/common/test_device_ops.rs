@@ -376,11 +376,14 @@ impl TestDevice {
     /// Mirror of the desktop "roll over from yesterday" action — the net effect of
     /// `knotq_state::daily_queue_carryover_command` applied via
     /// `App::carryover_daily_queue`. Every not-fully-complete row from the most recent
-    /// non-blank prior day (within the 14-day lookback) is cloned forward into `today`
-    /// with a FRESH `ItemId`; the source rows keep their text but have their date
-    /// annotations stripped; and today's blank placeholder is replaced by the first
-    /// carried row. The action touches BOTH the previous and today scheme documents in
-    /// one logical batch — the cross-document property that makes it a hard sync case.
+    /// non-blank prior day (within the 14-day lookback) is moved forward into `today`
+    /// KEEPING its `ItemId` (so notification identity and cross-device dedupe follow
+    /// the live item); the row left on the source day is re-identified with the
+    /// deterministic displaced id and has its date annotations stripped; rows whose id
+    /// is already in today are skipped (idempotent re-roll); and today's blank
+    /// placeholder is deleted. The action touches BOTH the previous and today scheme
+    /// documents in one logical batch — the cross-document property that makes it a
+    /// hard sync case.
     ///
     /// `today`'s scheme must already exist (the scenario creates it, as the real app's
     /// `ensure_daily_queue_scheme` does before carrying over). Returns the carried row
@@ -390,62 +393,64 @@ impl TestDevice {
         let previous_id = self.workspace.daily_queue_scheme_id(previous_date)?;
         let today_id = self.workspace.daily_queue_scheme_id(today)?;
 
-        // Build the carried rows (fresh ids) and the list of source rows to strip,
-        // from an immutable borrow of the previous scheme.
-        let (carried_items, strip_ids): (Vec<Item>, Vec<ItemId>) = {
+        // Build the carried rows (source ids kept) from an immutable borrow of the
+        // previous scheme, skipping ids already present in today.
+        let existing: std::collections::HashSet<ItemId> = self
+            .workspace
+            .scheme(today_id)?
+            .items
+            .iter()
+            .map(|item| item.id)
+            .collect();
+        let carried_items: Vec<Item> = {
             let previous = self.workspace.scheme(previous_id)?;
             if dq_scheme_is_blank(previous) {
                 return None;
             }
-            let mut carried = Vec::new();
-            let mut strip = Vec::new();
-            for item in &previous.items {
-                if dq_item_is_fully_complete_task(item) {
-                    continue;
-                }
-                let mut clone = item.clone();
-                clone.id = ItemId::new();
-                carried.push(clone);
-                if dq_item_has_annotations(item) {
-                    strip.push(item.id);
-                }
-            }
-            (carried, strip)
+            previous
+                .items
+                .iter()
+                .filter(|item| !dq_item_is_fully_complete_task(item))
+                .filter(|item| !existing.contains(&item.id))
+                .cloned()
+                .collect()
         };
         if carried_items.is_empty() {
             return None;
         }
         let carried_texts: Vec<String> = carried_items.iter().map(|i| i.text()).collect();
+        let carried_ids: Vec<ItemId> = carried_items.iter().map(|i| i.id).collect();
 
-        // Strip date annotations from the source rows on the previous day.
+        // Re-identify the archived source rows (their ids now live in today) with the
+        // deterministic displaced id, stripping date annotations.
         {
             let previous = self.scheme_mut(previous_id);
             for item in previous.items.iter_mut() {
-                if strip_ids.contains(&item.id) {
+                if carried_ids.contains(&item.id) {
+                    item.id = daily_queue_displaced_item_id(item.id, previous_date);
                     dq_strip_annotations(item);
                 }
             }
         }
 
-        // Insert the carried rows into today, replacing the blank placeholder with the
-        // first carried row (the `daily_queue_carryover_command` placeholder branch).
+        // Insert the carried rows into today; a blank placeholder is deleted rather
+        // than its id reused, so every carried row keeps its source id.
         {
             let today_scheme = self.scheme_mut(today_id);
-            let replace_placeholder =
+            let had_placeholder =
                 dq_scheme_is_blank(today_scheme) && !today_scheme.items.is_empty();
-            let mut position = today_scheme.items.len();
-            let mut carried = carried_items.into_iter();
-            if replace_placeholder {
-                if let Some(mut first) = carried.next() {
-                    first.id = today_scheme.items[0].id;
-                    today_scheme.items[0] = first;
-                }
-                position = 1;
-            }
-            for item in carried {
+            let mut position = if had_placeholder {
+                1
+            } else {
+                today_scheme.items.len()
+            };
+            for item in carried_items {
                 let at = position.min(today_scheme.items.len());
                 today_scheme.items.insert(at, item);
                 position += 1;
+            }
+            if had_placeholder {
+                today_scheme.items.remove(0);
             }
         }
 

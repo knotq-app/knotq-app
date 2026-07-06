@@ -1,13 +1,17 @@
 //! Daily-queue "roll over from yesterday" (carryover) scenarios (m/m2–m5/n).
 //!
-//! Carryover is a single user action that mutates TWO scheme documents at once —
-//! the source day (date annotations stripped) and today (carried clones inserted) —
-//! while minting a FRESH ItemId for every carried row. That cross-document, fresh-id
-//! shape is exactly the class of edit that has wedged production sync before
-//! (empty/duplicate daily docs, item-id collisions). These scenarios stress it.
+//! Carryover is a single user action that mutates TWO scheme documents at once:
+//! every carried row MOVES its ItemId into today (notification identity and
+//! cross-device dedupe follow the live item), while the row left on the source day
+//! is re-identified with the deterministic displaced id and has its date
+//! annotations stripped. That cross-document, id-moving shape is exactly the class
+//! of edit that has wedged production sync before (empty/duplicate daily docs,
+//! item-id collisions). These scenarios stress it — including that two devices
+//! rolling the same day concurrently now CONVERGE to single rows (matching ids
+//! dedupe through the CRDT item skeletons) instead of doubling.
 
 use chrono::{NaiveDate, TimeZone, Utc};
-use knotq_model::{Item, ItemMarker, SchemeId};
+use knotq_model::{daily_queue_displaced_item_id, Item, ItemMarker, SchemeId};
 
 use super::super::{DeviceKey, Harness, D0, D1};
 
@@ -33,6 +37,8 @@ pub fn scenario_m_carryover_basic(h: &mut Harness) {
     let due = Utc.with_ymd_and_hms(2026, 12, 1, 9, 0, 0).unwrap();
 
     // Yesterday mixes carryable and non-carryable rows.
+    let dentist = Item::new("call dentist").with_start(due); // dated -> carried, source stripped
+    let dentist_source_id = dentist.id;
     let prev = h.seed_daily_queue(
         D0,
         yesterday,
@@ -42,7 +48,7 @@ pub fn scenario_m_carryover_basic(h: &mut Harness) {
                 .with_marker(ItemMarker::Checkbox)
                 .done(), // done -> NOT carried
             Item::new("loose note"),                                 // plain -> carried
-            Item::new("call dentist").with_start(due), // dated -> carried, source stripped
+            dentist,
         ],
     );
     // A freshly opened today is a single blank placeholder row.
@@ -72,39 +78,52 @@ pub fn scenario_m_carryover_basic(h: &mut Harness) {
         );
     }
 
-    // The cross-document split: the dated SOURCE row was stripped on yesterday, but
-    // the carried COPY in today keeps its date — and both halves reach every device.
+    // The cross-document split: the archived row on yesterday was stripped and
+    // re-identified with the displaced id, while the carried row in today keeps
+    // BOTH its date and its source ItemId — and both halves reach every device.
     for key in h.device_keys() {
+        let archived = find_item(h, key, prev, "call dentist");
         assert!(
-            find_item(h, key, prev, "call dentist").start.is_none(),
-            "{key:?}: source row date should be stripped on yesterday"
+            archived.start.is_none(),
+            "{key:?}: archived row date should be stripped on yesterday"
         );
         assert_eq!(
-            find_item(h, key, today_id, "call dentist").start,
+            archived.id,
+            daily_queue_displaced_item_id(dentist_source_id, yesterday),
+            "{key:?}: archived row should carry the deterministic displaced id"
+        );
+        let carried = find_item(h, key, today_id, "call dentist");
+        assert_eq!(
+            carried.start,
             Some(due),
             "{key:?}: carried row should keep its date in today"
+        );
+        assert_eq!(
+            carried.id, dentist_source_id,
+            "{key:?}: carried row should keep the source item id"
         );
     }
 }
 
 // Scenario m2 — Both devices roll the same yesterday into one SHARED (synced) today.
-// The blank placeholder is shared, so each device's first carried row lands on that
-// single id (de-duping the first row); the rest duplicate. Hard requirement:
+// Carried rows keep their SOURCE ids and the displaced archive ids are
+// deterministic, so the two concurrent carries encode matching item skeletons on
+// both documents and the merge collapses them: ONE row per task in today, ONE
+// archived row per task on yesterday — no row doubling, and the identical
+// concurrent fills merge to clean (undoubled) text. Hard requirement:
 // convergence, no crdt_schema_invalid wedge, and no ItemId collision.
 pub fn scenario_m2_carryover_concurrent_shared_today(h: &mut Harness) {
     h.login_all();
     let yesterday = NaiveDate::from_ymd_opt(2026, 12, 8).unwrap();
     let today = NaiveDate::from_ymd_opt(2026, 12, 9).unwrap();
 
-    h.seed_daily_queue(
-        D0,
-        yesterday,
-        vec![
-            Item::new("task A").with_marker(ItemMarker::Checkbox),
-            Item::new("task B").with_marker(ItemMarker::Checkbox),
-            Item::new("task C").with_marker(ItemMarker::Checkbox),
-        ],
-    );
+    let sources = vec![
+        Item::new("task A").with_marker(ItemMarker::Checkbox),
+        Item::new("task B").with_marker(ItemMarker::Checkbox),
+        Item::new("task C").with_marker(ItemMarker::Checkbox),
+    ];
+    let source_ids: Vec<_> = sources.iter().map(|item| item.id).collect();
+    let prev = h.seed_daily_queue(D0, yesterday, sources);
     let today_id = h.set_daily_queue(D0, today, &[""]);
     h.settle();
     h.assert_all_converged();
@@ -122,14 +141,45 @@ pub fn scenario_m2_carryover_concurrent_shared_today(h: &mut Harness) {
     h.settle();
     h.assert_all_converged();
 
-    // Shared placeholder de-dupes the first row: {A x1, B x2, C x2}.
+    // Matching carried ids collapse the concurrent carries: 3 rows in today (the
+    // source ids), 3 archived rows on yesterday (the displaced ids).
     for key in h.device_keys() {
-        h.assert_scheme_items_unordered(
-            key,
-            today_id,
-            &["task A", "task B", "task B", "task C", "task C"],
+        h.assert_scheme_items_unordered(key, today_id, &["task A", "task B", "task C"]);
+        h.assert_scheme_items_unordered(key, prev, &["task A", "task B", "task C"]);
+        let today_ids: Vec<_> = h.device(key).workspace.schemes[&today_id]
+            .items
+            .iter()
+            .map(|item| item.id)
+            .collect();
+        assert_eq!(
+            today_ids.len(),
+            3,
+            "{key:?}: concurrent carries of the same rows must collapse to one row each"
         );
+        for source_id in &source_ids {
+            assert!(
+                today_ids.contains(source_id),
+                "{key:?}: carried row must keep source id {source_id}"
+            );
+        }
+        let prev_ids: Vec<_> = h.device(key).workspace.schemes[&prev]
+            .items
+            .iter()
+            .map(|item| item.id)
+            .collect();
+        assert_eq!(
+            prev_ids.len(),
+            3,
+            "{key:?}: concurrent displacement must converge to one archived row each"
+        );
+        for source_id in &source_ids {
+            assert!(
+                prev_ids.contains(&daily_queue_displaced_item_id(*source_id, yesterday)),
+                "{key:?}: yesterday must hold the deterministic displaced id for {source_id}"
+            );
+        }
         assert_no_duplicate_item_ids(h, key, today_id);
+        assert_no_duplicate_item_ids(h, key, prev);
         assert!(
             h.device(key).is_fully_pushed(),
             "{key:?}: push queue must drain after concurrent carryover"
@@ -138,23 +188,22 @@ pub fn scenario_m2_carryover_concurrent_shared_today(h: &mut Harness) {
 }
 
 // Scenario m3 — Both devices independently OPEN today offline (same deterministic
-// daily SchemeId, but different placeholder ItemIds) and both roll over. Two distinct
-// placeholders means both first rows survive, so every carried row duplicates. This
-// also proves the deterministic daily document keeps independent creations on ONE doc
+// daily SchemeId, but different placeholder ItemIds) and both roll over. Carried
+// rows keep their source ids, so even with two distinct placeholders (each device
+// deletes only its own) the carried rows collapse to one per task. This also
+// proves the deterministic daily document keeps independent creations on ONE doc
 // rather than splitting content (the 2026-06-11 empty-daily-doc wedge class).
 pub fn scenario_m3_carryover_concurrent_independent_today(h: &mut Harness) {
     h.login_all();
     let yesterday = NaiveDate::from_ymd_opt(2026, 12, 15).unwrap();
     let today = NaiveDate::from_ymd_opt(2026, 12, 16).unwrap();
 
-    h.seed_daily_queue(
-        D0,
-        yesterday,
-        vec![
-            Item::new("task A").with_marker(ItemMarker::Checkbox),
-            Item::new("task B").with_marker(ItemMarker::Checkbox),
-        ],
-    );
+    let sources = vec![
+        Item::new("task A").with_marker(ItemMarker::Checkbox),
+        Item::new("task B").with_marker(ItemMarker::Checkbox),
+    ];
+    let source_ids: Vec<_> = sources.iter().map(|item| item.id).collect();
+    h.seed_daily_queue(D0, yesterday, sources);
     h.settle();
     h.assert_all_converged();
 
@@ -176,28 +225,41 @@ pub fn scenario_m3_carryover_concurrent_independent_today(h: &mut Harness) {
     h.settle();
     h.assert_all_converged();
 
-    // Two independent placeholders => every row duplicates: {A x2, B x2}.
+    // Matching carried ids collapse both carries to one row per task, and each
+    // device's placeholder was deleted by its own carry: exactly {A, B}.
     for key in h.device_keys() {
-        h.assert_scheme_items_unordered(key, today_id, &["task A", "task A", "task B", "task B"]);
+        h.assert_scheme_items_unordered(key, today_id, &["task A", "task B"]);
+        let today_ids: Vec<_> = h.device(key).workspace.schemes[&today_id]
+            .items
+            .iter()
+            .map(|item| item.id)
+            .collect();
+        assert_eq!(
+            today_ids.len(),
+            2,
+            "{key:?}: independent concurrent carries must collapse to one row each"
+        );
+        for source_id in &source_ids {
+            assert!(
+                today_ids.contains(source_id),
+                "{key:?}: carried row must keep source id {source_id}"
+            );
+        }
         assert_no_duplicate_item_ids(h, key, today_id);
         assert!(
             h.device(key).is_fully_pushed(),
             "{key:?}: push queue must drain after independent carryover"
         );
     }
-    // All four rows live on the single deterministic daily document — independent
-    // creation did not split content across two documents.
-    assert_eq!(
-        h.device(D0).workspace.schemes[&today_id].items.len(),
-        4,
-        "independent daily creations must converge onto one document"
-    );
 }
 
 // Scenario m4 — D0 rolls yesterday forward while D1 keeps editing yesterday
-// concurrently. The carried rows in today are independent CLONES (fresh ids in a
-// different document), so they keep the snapshot D0 captured; yesterday converges
-// with D1's later edits.
+// concurrently. The roll MOVES each row's id into today and re-identifies the
+// archived copy on yesterday, so D1's concurrent edit to a rolled row targets the
+// (now tombstoned) source container and is superseded: the archived rows keep the
+// snapshot D0 rolled. That is the accepted tradeoff of id-moving carryover — the
+// live row is in today now, and yesterday is an archive. D1's concurrent NEW row
+// on yesterday still converges in.
 pub fn scenario_m4_carryover_vs_yesterday_edit(h: &mut Harness) {
     h.login_all();
     let yesterday = NaiveDate::from_ymd_opt(2026, 12, 22).unwrap();
@@ -232,13 +294,20 @@ pub fn scenario_m4_carryover_vs_yesterday_edit(h: &mut Harness) {
     for key in h.device_keys() {
         // Today keeps the carryover snapshot, independent of D1's later edits.
         h.assert_scheme_items(key, today_id, &["ship release", "write changelog"]);
-        // Yesterday converges with D1's edits.
+        // Yesterday holds the archived (displaced) snapshot rows plus D1's new row;
+        // D1's edit to the rolled row was superseded by the roll.
         let texts = h.device(key).scheme_item_texts(prev);
         assert_eq!(
-            texts,
-            vec!["ship release", "write changelog v2", "tag the build"],
-            "{key:?}: yesterday did not converge with concurrent edits"
+            texts.len(),
+            3,
+            "{key:?}: yesterday should hold 2 archived rows + D1's new row: {texts:?}"
         );
+        for expected in ["ship release", "write changelog", "tag the build"] {
+            assert!(
+                texts.iter().any(|text| text == expected),
+                "{key:?}: yesterday is missing {expected:?}: {texts:?}"
+            );
+        }
     }
 }
 
@@ -287,7 +356,9 @@ pub fn scenario_m5_carryover_offline_restart(h: &mut Harness) {
 // Scenario n — Repeated carryover chain across devices, skipping a blank gap day.
 // d1 has content; d2 is never created (blank gap); D0 carries d1 -> d3 (the 14-day
 // lookback skips d2); then D1 carries the already-carried d3 -> d4. Exercises the
-// lookback gap-skip and a carryover whose source is itself carried content.
+// lookback gap-skip and a carryover whose source is itself carried content — and
+// that the LIVE ItemId (notification identity) rides the whole chain unchanged
+// across devices, leaving a distinct per-day displaced id behind on each hop.
 pub fn scenario_n_carryover_chain(h: &mut Harness) {
     h.login_all();
     let d1 = NaiveDate::from_ymd_opt(2027, 2, 1).unwrap();
@@ -295,14 +366,12 @@ pub fn scenario_n_carryover_chain(h: &mut Harness) {
     let d3 = NaiveDate::from_ymd_opt(2027, 2, 3).unwrap();
     let d4 = NaiveDate::from_ymd_opt(2027, 2, 4).unwrap();
 
-    h.seed_daily_queue(
-        D0,
-        d1,
-        vec![
-            Item::new("standup notes").with_marker(ItemMarker::Checkbox),
-            Item::new("inbox zero").with_marker(ItemMarker::Checkbox),
-        ],
-    );
+    let sources = vec![
+        Item::new("standup notes").with_marker(ItemMarker::Checkbox),
+        Item::new("inbox zero").with_marker(ItemMarker::Checkbox),
+    ];
+    let source_ids: Vec<_> = sources.iter().map(|item| item.id).collect();
+    let d1_id = h.seed_daily_queue(D0, d1, sources);
     let d3_id = h.set_daily_queue(D0, d3, &[""]);
     h.settle();
     h.assert_all_converged();
@@ -314,6 +383,7 @@ pub fn scenario_n_carryover_chain(h: &mut Harness) {
     h.assert_all_converged();
     for key in h.device_keys() {
         h.assert_scheme_items(key, d3_id, &["standup notes", "inbox zero"]);
+        assert_carried_and_displaced(h, key, d3_id, d1_id, &source_ids, d1);
     }
 
     // Hop 2 on a DIFFERENT device: D1 rolls the already-carried d3 forward into d4.
@@ -325,6 +395,46 @@ pub fn scenario_n_carryover_chain(h: &mut Harness) {
     h.assert_all_converged();
     for key in h.device_keys() {
         h.assert_scheme_items(key, d4_id, &["standup notes", "inbox zero"]);
+        // The SAME source ids carried again — the id (and with it the "daily"
+        // notification key) follows the live row across the whole chain, while
+        // d3's archive got its own date-scoped displaced ids.
+        assert_carried_and_displaced(h, key, d4_id, d3_id, &source_ids, d3);
+    }
+}
+
+/// Assert the id-transfer contract for one hop on device `key`: every id in
+/// `source_ids` lives ON in `today` (the carried rows), while `prev` instead
+/// holds the deterministic displaced id derived from (source, `prev_date`).
+fn assert_carried_and_displaced(
+    h: &Harness,
+    key: DeviceKey,
+    today: SchemeId,
+    prev: SchemeId,
+    source_ids: &[knotq_model::ItemId],
+    prev_date: NaiveDate,
+) {
+    let ids_in = |scheme: SchemeId| -> Vec<_> {
+        h.device(key).workspace.schemes[&scheme]
+            .items
+            .iter()
+            .map(|item| item.id)
+            .collect()
+    };
+    let today_ids = ids_in(today);
+    let prev_ids = ids_in(prev);
+    for source_id in source_ids {
+        assert!(
+            today_ids.contains(source_id),
+            "{key:?}: carried row must keep source id {source_id} in {today}"
+        );
+        assert!(
+            !prev_ids.contains(source_id),
+            "{key:?}: source id {source_id} must have MOVED off {prev}"
+        );
+        assert!(
+            prev_ids.contains(&daily_queue_displaced_item_id(*source_id, prev_date)),
+            "{key:?}: {prev} must hold the displaced id for {source_id}@{prev_date}"
+        );
     }
 }
 

@@ -190,11 +190,9 @@ fn notification_action_target(response: NotificationResponse) -> Option<Notifica
 }
 
 fn notification_key_kind(key: &str) -> Option<&str> {
-    // Keys are scheme|item|occurrence|kind|fire_at.
-    match key.split('|').count() {
-        5 => key.split('|').nth(3),
-        _ => None,
-    }
+    // Keys are scheme|item|occurrence|kind.
+    let parts: Vec<&str> = key.split('|').collect();
+    (parts.len() == 4).then(|| parts[3])
 }
 
 fn notification_kind_code(kind: ItemKind) -> Option<&'static str> {

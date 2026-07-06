@@ -1,10 +1,16 @@
-use std::collections::HashSet;
+use std::collections::HashMap;
 
 use chrono::{DateTime, Duration, Utc};
 use knotq_model::{Item, ItemKind, OccurrenceId, OccurrenceOverrideStatus, SchemeId, Workspace};
 use knotq_rrule::ItemOccurrenceExt;
 
 const COMPLETION_LOOKBACK_DAYS: i64 = 7;
+
+/// How long a completed overdue occurrence keeps its place on the upcoming/overdue
+/// panel after being checked off. Long enough that checking a row off never yanks
+/// it out from under the pointer (no layout shift), short enough that finished
+/// work doesn't haunt the panel for the rest of the session.
+pub const RETAINED_COMPLETED_TTL_SECS: i64 = 3600;
 
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
 pub struct CalendarOccurrenceKey {
@@ -13,27 +19,59 @@ pub struct CalendarOccurrenceKey {
     pub occurrence: OccurrenceId,
 }
 
+/// Overdue occurrences that were completed this session and should stay visible
+/// (faded, in place) on the upcoming/overdue panel — each with its completion
+/// time, so retention expires after [`RETAINED_COMPLETED_TTL_SECS`].
 #[derive(Clone, Debug, Default)]
 pub struct RetainedCompletedItems {
-    keys: HashSet<CalendarOccurrenceKey>,
+    completed_at: HashMap<CalendarOccurrenceKey, DateTime<Utc>>,
 }
 
 impl RetainedCompletedItems {
     pub fn contains(&self, key: &CalendarOccurrenceKey) -> bool {
-        self.keys.contains(key)
+        self.completed_at.contains_key(key)
     }
 
-    pub fn insert(&mut self, key: CalendarOccurrenceKey) {
-        self.keys.insert(key);
+    /// Record `key` as completed at `completed_at`; re-inserting restarts the TTL.
+    pub fn insert(&mut self, key: CalendarOccurrenceKey, completed_at: DateTime<Utc>) {
+        self.completed_at.insert(key, completed_at);
     }
 
     pub fn remove(&mut self, key: &CalendarOccurrenceKey) {
-        self.keys.remove(key);
+        self.completed_at.remove(key);
     }
 
-    pub fn as_set(&self) -> &HashSet<CalendarOccurrenceKey> {
-        &self.keys
+    /// Whether `key` should still hold its place on the panel at `now`. False for
+    /// unknown keys AND for completions older than the TTL — expired entries read
+    /// as gone even before [`Self::purge_expired`] sweeps them out.
+    pub fn is_retained(&self, key: &CalendarOccurrenceKey, now: DateTime<Utc>) -> bool {
+        self.completed_at
+            .get(key)
+            .is_some_and(|at| now.signed_duration_since(*at) < retention_ttl())
     }
+
+    /// When the earliest-completed entry expires — the wakeup deadline for a
+    /// timeline task that wants to re-render right as a row ages out.
+    pub fn next_expiry(&self) -> Option<DateTime<Utc>> {
+        self.completed_at.values().min().map(|at| *at + retention_ttl())
+    }
+
+    /// Drop entries past the TTL; returns how many were removed (non-zero means
+    /// the panel contents changed and a re-render is due).
+    pub fn purge_expired(&mut self, now: DateTime<Utc>) -> usize {
+        let before = self.completed_at.len();
+        self.completed_at
+            .retain(|_, at| now.signed_duration_since(*at) < retention_ttl());
+        before - self.completed_at.len()
+    }
+
+    pub fn clear(&mut self) {
+        self.completed_at.clear();
+    }
+}
+
+fn retention_ttl() -> Duration {
+    Duration::seconds(RETAINED_COMPLETED_TTL_SECS)
 }
 
 pub fn complete_past_events(state: &mut crate::AppState, now: DateTime<Utc>) -> usize {
@@ -47,21 +85,6 @@ pub fn complete_past_events(state: &mut crate::AppState, now: DateTime<Utc>) -> 
         state.mark_direct_workspace_dirty();
     }
     changed
-}
-
-pub fn sync_retained_completed_calendar_items(
-    state: &mut crate::AppState,
-    toggled: &[CalendarOccurrenceKey],
-) {
-    for key in toggled {
-        if state.retained_completed_calendar_items.contains(key) {
-            state.retained_completed_calendar_items.remove(key);
-            state.retained_completed.remove(key);
-        } else {
-            state.retained_completed_calendar_items.insert(key.clone());
-            state.retained_completed.insert(key.clone());
-        }
-    }
 }
 
 pub fn past_event_completion_keys(

@@ -55,6 +55,10 @@ pub(crate) enum NotificationSignal {
 #[derive(Clone)]
 pub(crate) struct NotificationItemRefresh {
     pub(crate) scheme_id: SchemeId,
+    /// Whether `scheme_id` is a daily-queue scheme. Item-level refresh/clear runs
+    /// against a synthetic one-scheme workspace, which would otherwise lose the
+    /// daily-ness that selects the stable "daily" notification-key fragment.
+    pub(crate) scheme_is_daily: bool,
     pub(crate) item: Item,
     pub(crate) defaults: NotificationDefaults,
 }
@@ -62,6 +66,8 @@ pub(crate) struct NotificationItemRefresh {
 #[derive(Clone)]
 pub(crate) struct NotificationOccurrenceClear {
     pub(crate) scheme_id: SchemeId,
+    /// See [`NotificationItemRefresh::scheme_is_daily`].
+    pub(crate) scheme_is_daily: bool,
     pub(crate) item: Item,
     pub(crate) occurrence: OccurrenceId,
     pub(crate) defaults: NotificationDefaults,

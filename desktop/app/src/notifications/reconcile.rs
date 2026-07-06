@@ -3,9 +3,10 @@
 use chrono::Utc;
 use knotq_model::{Item, ItemId, SchemeId};
 use knotq_notifications::{
-    delivered_backlog_exceeds, DurableNotificationSchedule, NotificationRequest,
-    NotificationScheduler, PlatformSchedulePolicy, PlatformScheduleSnapshot, ReconciliationMode,
-    RetentionReport, ScheduleReconciliationPlan, DEFAULT_DURABLE_NOTIFICATION_LIMIT,
+    delivered_backlog_exceeds, DesiredPlatformSchedule, DurableNotificationSchedule,
+    NotificationRequest, NotificationScheduler, PlatformSchedulePolicy, PlatformScheduleSnapshot,
+    ReconciliationMode, RetentionReport, ScheduleReconciliationPlan,
+    DEFAULT_DURABLE_NOTIFICATION_LIMIT,
 };
 use knotq_storage_json::NotificationDefaults;
 use std::collections::BTreeSet;
@@ -31,11 +32,13 @@ pub fn schedule_os_notifications_for_shutdown(requests: &[NotificationRequest]) 
 
 pub(crate) fn refresh_item_os_notifications(
     scheme_id: SchemeId,
+    scheme_is_daily: bool,
     item: Item,
     defaults: NotificationDefaults,
 ) -> Option<String> {
     let item_id = item.id;
-    let requests = pending_notification_requests_for_item(scheme_id, item, defaults);
+    let requests =
+        pending_notification_requests_for_item(scheme_id, scheme_is_daily, item, defaults);
     if requests.is_empty() {
         return None;
     }
@@ -69,6 +72,7 @@ fn schedule_os_notifications_reconciled(
     let backlog_error = prune_delivered_notification_backlog(&scheduler, &snapshot, policy);
     let mut manifest = load_schedule_manifest();
     let desired = durable.platform_window(policy);
+    clear_rescheduled_delivered_banners(&scheduler, &snapshot, &desired);
     let plan =
         ScheduleReconciliationPlan::new(&snapshot, &desired, &manifest, ReconciliationMode::Full);
 
@@ -146,6 +150,7 @@ fn refresh_item_os_notifications_reconciled(
         DEFAULT_DURABLE_NOTIFICATION_LIMIT,
     )
     .platform_window(policy);
+    clear_rescheduled_delivered_banners(scheduler, &snapshot, &desired);
     let mut manifest = load_schedule_manifest();
     let plan = ScheduleReconciliationPlan::new(
         &snapshot,
@@ -199,6 +204,40 @@ fn platform_schedule_snapshot(
     let pending = scheduler.pending_ids().map_err(|err| format!("{err}"))?;
     let delivered = scheduler.delivered_ids().map_err(|err| format!("{err}"))?;
     Ok(PlatformScheduleSnapshot::new(pending, delivered))
+}
+
+/// Remove delivered banners whose id is also in the *future* desired set.
+///
+/// Notification ids are stable per occurrence (the fire time is not part of the
+/// key), so a delivered banner sharing an id with a future desired request can
+/// only mean that occurrence was rescheduled — e.g. "remind me later" picked on
+/// another device and synced here. The already-fired banner would otherwise
+/// linger next to the rescheduled one. A normally-delivered, still-open
+/// notification has already fired, so its id never appears in `desired`; and a
+/// later recurrence carries a different occurrence id, so it is never matched.
+fn clear_rescheduled_delivered_banners(
+    scheduler: &NotificationScheduler,
+    snapshot: &PlatformScheduleSnapshot,
+    desired: &DesiredPlatformSchedule,
+) {
+    let stale = desired
+        .ids()
+        .intersection(snapshot.delivered())
+        .cloned()
+        .collect::<Vec<_>>();
+    if stale.is_empty() {
+        return;
+    }
+    match scheduler.remove_delivered(&stale) {
+        Ok(()) => notif_log(&format!(
+            "OS cleared {} delivered banner(s) for rescheduled occurrence(s)",
+            stale.len()
+        )),
+        Err(err) => notif_log(&format!(
+            "remove_delivered for {} rescheduled banner(s) failed: {err}",
+            stale.len()
+        )),
+    }
 }
 
 fn cancel_notifications(

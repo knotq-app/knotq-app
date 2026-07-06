@@ -3,8 +3,8 @@ use std::collections::HashSet;
 use chrono::{DateTime, Datelike, Duration, Local, LocalResult, NaiveDate, TimeZone, Utc};
 use knotq_commands::Command;
 use knotq_model::{
-    DocumentId, Item, ItemId, ItemMarker, NodeRef, Scheme, SchemeId, SyncDocumentKind,
-    SyncDocumentMeta, Workspace,
+    daily_queue_displaced_item_id, DocumentId, Item, ItemId, ItemMarker, NodeRef, Scheme, SchemeId,
+    SyncDocumentKind, SyncDocumentMeta, Workspace,
 };
 
 #[derive(Clone, Debug)]
@@ -40,6 +40,7 @@ pub fn daily_queue_scheme_name(date: NaiveDate) -> String {
 
 pub fn daily_queue_carryover_command(
     previous_id: SchemeId,
+    previous_date: NaiveDate,
     previous: &Scheme,
     today_id: SchemeId,
     today: &Scheme,
@@ -48,43 +49,67 @@ pub fn daily_queue_carryover_command(
         return None;
     }
 
+    // The carried row KEEPS the source item's id — notification identity, and any
+    // annotation state keyed by item id, follow the live item into today. The row
+    // left behind on the source day is re-identified with a deterministic
+    // displaced id instead (see `daily_queue_displaced_item_id`). Skipping ids
+    // already present in today makes a repeat carryover idempotent: a double
+    // click, a retry after a sync clobbered the optimistic insert, or a sync that
+    // re-created a just-carried row never inserts a second copy — and the shared
+    // ids let the CRDT item-skeleton merge collapse two devices' concurrent
+    // carries of the same row into one item instead of doubling it.
+    let existing: HashSet<ItemId> = today.items.iter().map(|item| item.id).collect();
+
     let mut commands = Vec::new();
     let mut carried_items = Vec::new();
 
-    for item in &previous.items {
+    for (source_position, item) in previous.items.iter().enumerate() {
         if daily_queue_item_is_fully_complete_task(item) {
             continue;
         }
-
-        let mut carried = item.clone();
-        carried.id = ItemId::new();
-        carried_items.push(carried);
-
-        if daily_queue_item_has_annotations(item) {
-            let mut stripped = item.clone();
-            strip_daily_queue_annotations(&mut stripped);
-            commands.push(Command::ReplaceItem {
-                scheme: previous_id,
-                item: stripped,
-            });
+        if existing.contains(&item.id) {
+            // Already carried into today — skip so re-running carryover is a no-op.
+            continue;
         }
+
+        carried_items.push(item.clone());
+
+        // Re-identify the archived source row (its id now lives in today) and
+        // strip its date annotations so it stops scheduling anything. ReplaceItem
+        // locates rows by id, so an id change needs a delete + insert pair; the
+        // pair is position-neutral, so later indices stay valid.
+        let mut displaced = item.clone();
+        displaced.id = daily_queue_displaced_item_id(item.id, previous_date);
+        strip_daily_queue_annotations(&mut displaced);
+        commands.push(Command::DeleteItem {
+            scheme: previous_id,
+            item: item.id,
+        });
+        commands.push(Command::InsertItem {
+            scheme: previous_id,
+            position: source_position,
+            item: displaced,
+        });
     }
 
     if carried_items.is_empty() {
         return None;
     }
 
-    let mut position = today.items.len();
-    if daily_queue_scheme_is_blank(today) && !today.items.is_empty() {
-        let mut first = carried_items.remove(0);
-        first.id = today.items[0].id;
-        commands.push(Command::ReplaceItem {
-            scheme: today_id,
-            item: first,
-        });
-        position = 1;
-    }
+    // When today is just its blank placeholder row, drop that row so carried items
+    // don't sit under a leading blank. It is DELETED rather than its id reused for
+    // the first carried row, so every carried row keeps its source id.
+    let placeholder_id = if daily_queue_scheme_is_blank(today) {
+        today.items.first().map(|item| item.id)
+    } else {
+        None
+    };
 
+    let mut position = if placeholder_id.is_some() {
+        1
+    } else {
+        today.items.len()
+    };
     for item in carried_items {
         commands.push(Command::InsertItem {
             scheme: today_id,
@@ -92,6 +117,12 @@ pub fn daily_queue_carryover_command(
             item,
         });
         position += 1;
+    }
+    if let Some(placeholder_id) = placeholder_id {
+        commands.push(Command::DeleteItem {
+            scheme: today_id,
+            item: placeholder_id,
+        });
     }
 
     (!commands.is_empty()).then_some(Command::Batch(commands))

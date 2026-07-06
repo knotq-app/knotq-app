@@ -88,7 +88,7 @@ mod tests {
         let target = NotificationActionTarget {
             notification_id: "notification".to_string(),
             action_id: ACTION_MARK_DONE.to_string(),
-            notification_key: Some(format!("{scheme_id}|single|r|{}", trigger_at.to_rfc3339())),
+            notification_key: Some(format!("{scheme_id}|{item_id}|single|r")),
             scheme_id,
             item_id: ItemId::new(),
             occurrence: OccurrenceId::Single,
@@ -116,7 +116,7 @@ mod tests {
         let target = NotificationActionTarget {
             notification_id: "notification".to_string(),
             action_id: ACTION_MARK_DONE.to_string(),
-            notification_key: Some(format!("{scheme_id}|single|r|{}", trigger_at.to_rfc3339())),
+            notification_key: Some(format!("{scheme_id}|{}|single|r", ItemId::new())),
             scheme_id,
             item_id: ItemId::new(),
             occurrence: OccurrenceId::Single,

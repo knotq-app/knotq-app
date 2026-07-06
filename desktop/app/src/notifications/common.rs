@@ -113,12 +113,24 @@ pub(crate) fn keys_to_ids(keys: impl IntoIterator<Item = String>) -> Vec<String>
 
 /// Build a throwaway single-item workspace so the notification computation can
 /// run against one item in isolation.
-pub(crate) fn workspace_for_item(scheme_id: SchemeId, item: Item) -> Workspace {
+pub(crate) fn workspace_for_item(
+    scheme_id: SchemeId,
+    item: Item,
+    scheme_is_daily: bool,
+) -> Workspace {
     let mut workspace = Workspace::empty();
     let mut scheme = Scheme::new("", 0);
     scheme.id = scheme_id;
     scheme.items.push(item);
     workspace.schemes.insert(scheme_id, scheme);
+    if scheme_is_daily {
+        // Register the scheme as a daily queue (the date itself is irrelevant to
+        // key derivation) so this synthetic workspace computes the same stable
+        // "daily" notification-key fragment as the full-workspace passes.
+        workspace
+            .daily_queue
+            .insert(chrono::NaiveDate::MIN, scheme_id);
+    }
     workspace
 }
 
