@@ -165,8 +165,19 @@ impl SchemeEditor {
         }
 
         let next = cur.row as isize + delta;
-        if next < 0 || next as usize >= n {
-            return cur;
+        if next < 0 {
+            // Already on the first line: snap to the start of the line.
+            return TextLocation {
+                row: cur.row,
+                col: 0,
+            };
+        }
+        if next as usize >= n {
+            // Already on the last line: snap to the end of the line.
+            return TextLocation {
+                row: cur.row,
+                col: self.line_len(cur.row),
+            };
         }
         let next = next as usize;
         let next_path = self.rows[next].path;
