@@ -197,6 +197,17 @@ impl KnotQApp {
                     "Looking for changes.".into()
                 }),
             },
+            // Being offline isn't an error: edits keep landing locally and the
+            // daemon resyncs on its own once the connection returns, so present
+            // it as a waiting state instead of surfacing the transport error.
+            SyncRunStatus::Error { .. } if self.sync_offline => SyncStatusView {
+                dot_color: STATUS_PENDING,
+                headline: "Offline".into(),
+                detail: Some(
+                    "Changes are saved on this device and will sync automatically when you're back online."
+                        .into(),
+                ),
+            },
             SyncRunStatus::Error { message, .. } => SyncStatusView {
                 dot_color: STATUS_ERROR,
                 headline: "Sync error".into(),

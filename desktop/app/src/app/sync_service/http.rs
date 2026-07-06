@@ -8,7 +8,7 @@ use knotq_sync::{
 };
 
 use super::media::media_content_type;
-use super::{SyncHttpClient, SyncMediaAsset, SyncNetworkUnreachable};
+use super::{SyncHttpClient, SyncMediaAsset, SyncNetworkUnreachable, SyncUnauthorized};
 
 impl SyncTransport for SyncHttpClient {
     fn pull(&self, request: &BatchPullRequest) -> Result<BatchPullResponse> {
@@ -103,6 +103,12 @@ fn sync_http_error(error: ureq::Error) -> anyhow::Error {
                 .into_json::<ErrorResponse>()
                 .map(|error| error.code)
                 .unwrap_or_else(|_| status.to_string());
+            // Attach SyncUnauthorized so the scheduler can force-refresh the
+            // token and retry instead of surfacing an opaque failure.
+            if status == 401 || code == "unauthorized" {
+                return anyhow::Error::new(SyncUnauthorized)
+                    .context(format!("sync backend rejected request: {code}"));
+            }
             anyhow!("sync backend rejected request: {code}")
         }
         // Transport / connection failures: attach SyncNetworkUnreachable so the
@@ -139,4 +145,55 @@ fn is_secure_api_base(url: &str) -> bool {
         return matches!(host.as_str(), "127.0.0.1" | "localhost" | "[::1]" | "::1");
     }
     false
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn status_error(status: u16, body: &str) -> ureq::Error {
+        let response = ureq::Response::new(status, "status", body).expect("synthetic response");
+        ureq::Error::Status(status, response)
+    }
+
+    /// The backend's error body shape (`ErrorResponse` requires BOTH fields —
+    /// a body missing `message` falls back to the bare status code).
+    fn error_body(code: &str) -> String {
+        format!(r#"{{"code":"{code}","message":"test"}}"#)
+    }
+
+    #[test]
+    fn status_401_maps_to_sync_unauthorized() {
+        let err = sync_http_error(status_error(401, &error_body("unauthorized")));
+        assert!(
+            err.downcast_ref::<SyncUnauthorized>().is_some(),
+            "401 must surface as SyncUnauthorized so the scheduler force-refreshes and retries"
+        );
+        assert!(err.downcast_ref::<SyncNetworkUnreachable>().is_none());
+        assert!(format!("{err:#}").contains("unauthorized"));
+    }
+
+    #[test]
+    fn status_401_with_unparseable_body_still_maps_to_sync_unauthorized() {
+        // A proxy or edge error page can replace the JSON body; the bare status
+        // must still be recognized as an auth rejection.
+        let err = sync_http_error(status_error(401, "<html>gateway says no</html>"));
+        assert!(err.downcast_ref::<SyncUnauthorized>().is_some());
+    }
+
+    #[test]
+    fn unauthorized_code_maps_to_sync_unauthorized_regardless_of_status() {
+        let err = sync_http_error(status_error(403, &error_body("unauthorized")));
+        assert!(err.downcast_ref::<SyncUnauthorized>().is_some());
+    }
+
+    #[test]
+    fn content_rejection_is_not_unauthorized() {
+        // crdt_schema_invalid must keep flowing to the engine's reseed self-heal,
+        // never into the token-refresh retry loop.
+        let err = sync_http_error(status_error(400, &error_body("crdt_schema_invalid")));
+        assert!(err.downcast_ref::<SyncUnauthorized>().is_none());
+        assert!(err.downcast_ref::<SyncNetworkUnreachable>().is_none());
+        assert!(format!("{err:#}").contains("crdt_schema_invalid"));
+    }
 }

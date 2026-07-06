@@ -9,10 +9,10 @@ use knotq_storage_json::{load_local_sync_state, workspace_path};
 
 use super::snapshot::sync_snapshot;
 use super::{
-    SyncNetworkUnreachable, SyncSignal, SyncSnapshot, ACCESS_REFRESH_SKEW_SECS, SYNC_DEBOUNCE,
-    SYNC_DEBOUNCE_WS, SYNC_LOCAL_CHANGE_DEBOUNCE, SYNC_LOCAL_CHANGE_DEBOUNCE_WS, SYNC_PENDING_RETRY,
-    SYNC_POLL_BACKGROUND, SYNC_POLL_FOREGROUND, SYNC_POLL_OFFLINE, SYNC_POLL_WS_CONNECTED,
-    SYNC_POLL_WS_IDLE_RECHECK,
+    SyncNetworkUnreachable, SyncSignal, SyncSnapshot, SyncUnauthorized, ACCESS_REFRESH_SKEW_SECS,
+    SYNC_DEBOUNCE, SYNC_DEBOUNCE_WS, SYNC_LOCAL_CHANGE_DEBOUNCE, SYNC_LOCAL_CHANGE_DEBOUNCE_WS,
+    SYNC_PENDING_RETRY, SYNC_POLL_BACKGROUND, SYNC_POLL_FOREGROUND, SYNC_POLL_OFFLINE,
+    SYNC_POLL_WS_CONNECTED, SYNC_POLL_WS_IDLE_RECHECK,
 };
 use crate::app::sync_auth::{refresh_sync_backend, RefreshError};
 use crate::app::{KnotQApp, SyncAuthStatus, SyncRunStatus, View};
@@ -153,7 +153,10 @@ fn poll_interval(weak: &gpui::WeakEntity<KnotQApp>, cx: &mut gpui::AsyncApp) -> 
         // (the loop skips the actual sync via `foreground_ws_idle`), so a dropped
         // socket is noticed within ~60 s and polling resumes. Backgrounded, keep a
         // slow real heartbeat in case the OS throttles the socket while hidden.
-        let ws_connected = app.ws_sync.as_ref().is_some_and(|client| client.is_connected());
+        let ws_connected = app
+            .ws_sync
+            .as_ref()
+            .is_some_and(|client| client.is_connected());
         if ws_connected && !has_pending && !server_rejecting {
             return if window_active {
                 SYNC_POLL_WS_IDLE_RECHECK
@@ -173,7 +176,10 @@ fn poll_interval(weak: &gpui::WeakEntity<KnotQApp>, cx: &mut gpui::AsyncApp) -> 
 fn foreground_ws_idle(weak: &gpui::WeakEntity<KnotQApp>, cx: &mut gpui::AsyncApp) -> bool {
     weak.update(cx, |app, _cx| {
         let has_pending = app.state.has_pending_crdt_edits() || app.sync_pending_hint > 0;
-        let ws_connected = app.ws_sync.as_ref().is_some_and(|client| client.is_connected());
+        let ws_connected = app
+            .ws_sync
+            .as_ref()
+            .is_some_and(|client| client.is_connected());
         app.window_is_active && ws_connected && !has_pending && !app.sync_server_rejecting
     })
     .unwrap_or(false)
@@ -201,10 +207,51 @@ async fn run_sync_once(weak: &gpui::WeakEntity<KnotQApp>, cx: &mut gpui::AsyncAp
     // Refresh the (short-lived) access token before syncing if it's near expiry,
     // persisting the rotated credentials immediately so a rotated refresh token is
     // never lost to a later sync failure. Aborts this tick if the session is gone.
-    if ensure_fresh_token(weak, cx).await.is_err() {
+    if ensure_fresh_token(weak, cx, false).await.is_err() {
         return;
     }
 
+    // At most one reactive force-refresh per run: the proactive expiry check above
+    // can't catch a token the server rejects early (revocation, key rotation, clock
+    // skew), so an `unauthorized` rejection triggers a forced refresh + one retry
+    // instead of surfacing "sync failed: unauthorized" to a signed-in user. Mirrors
+    // the mobile shells' bounded refresh-retry.
+    let mut tried_auth_refresh = false;
+    loop {
+        // With the retry spent, an unauthorized failure surfaces as a normal sync
+        // error inside the attempt, which then reports `Done`.
+        if run_sync_attempt(weak, cx, !tried_auth_refresh).await == AttemptOutcome::Done {
+            return;
+        }
+        tried_auth_refresh = true;
+        eprintln!("sync rejected as unauthorized; force-refreshing token and retrying");
+        if ensure_fresh_token(weak, cx, true).await.is_err() {
+            return;
+        }
+        // Tear down the WebSocket client: its session was authenticated with the
+        // rejected token. The retry's `ensure_ws_sync` rebuilds it immediately, so
+        // the new handshake presents the fresh token instead of waiting out the
+        // supervisor's backoff on the dead credential (which would leave the app
+        // parked on HTTP polling).
+        let _ = weak.update(cx, |app, _cx| app.teardown_ws_sync());
+    }
+}
+
+#[derive(Eq, PartialEq)]
+enum AttemptOutcome {
+    /// The attempt ran to a final state (success, skip, or a surfaced error).
+    Done,
+    /// The backend rejected the token and `allow_auth_retry` was set: no error
+    /// state was written (the run status stays `Running`) so the caller's forced
+    /// refresh + retry can resolve it invisibly.
+    Unauthorized,
+}
+
+async fn run_sync_attempt(
+    weak: &gpui::WeakEntity<KnotQApp>,
+    cx: &mut gpui::AsyncApp,
+    allow_auth_retry: bool,
+) -> AttemptOutcome {
     let snapshot = weak
         .update(cx, |app, _cx| {
             if app.workspace_save_blocked_reason.is_some() {
@@ -270,7 +317,7 @@ async fn run_sync_once(weak: &gpui::WeakEntity<KnotQApp>, cx: &mut gpui::AsyncAp
 
     let Some((snapshot, local_edit_watermark, schedule_gen, notification_defaults)) = snapshot
     else {
-        return;
+        return AttemptOutcome::Done;
     };
 
     let result = cx
@@ -365,8 +412,15 @@ async fn run_sync_once(weak: &gpui::WeakEntity<KnotQApp>, cx: &mut gpui::AsyncAp
                 }
                 cx.notify();
             });
+            AttemptOutcome::Done
         }
         Err(err) => {
+            if allow_auth_retry && err.downcast_ref::<SyncUnauthorized>().is_some() {
+                // Leave the run status as `Running`: the caller immediately
+                // force-refreshes the token and retries, so flashing an error at
+                // the user here would be noise for a self-healing condition.
+                return AttemptOutcome::Unauthorized;
+            }
             eprintln!("sync failed: {err:#}");
             let is_offline = err.downcast_ref::<SyncNetworkUnreachable>().is_some();
             let message = format!("{err:#}");
@@ -387,6 +441,7 @@ async fn run_sync_once(weak: &gpui::WeakEntity<KnotQApp>, cx: &mut gpui::AsyncAp
                 };
                 cx.notify();
             });
+            AttemptOutcome::Done
         }
     }
 }
@@ -398,6 +453,7 @@ async fn run_sync_once(weak: &gpui::WeakEntity<KnotQApp>, cx: &mut gpui::AsyncAp
 async fn ensure_fresh_token(
     weak: &gpui::WeakEntity<KnotQApp>,
     cx: &mut gpui::AsyncApp,
+    force: bool,
 ) -> Result<(), ()> {
     let account = weak
         .update(cx, |app, _cx| app.settings.sync_account.clone())
@@ -410,8 +466,12 @@ async fn ensure_fresh_token(
     // server-side and updates the local `supports_sync` cache, so a subscription
     // purchased on the website reaches a signed-in client within one token
     // lifetime instead of never.
-    // Only refresh when the access token is at/near expiry.
-    if account.expires_at > Utc::now() + chrono::Duration::seconds(ACCESS_REFRESH_SKEW_SECS) {
+    // Only refresh when the access token is at/near expiry — unless the caller
+    // saw the server reject the current token (`force`), which the local expiry
+    // clock can't detect.
+    if !force
+        && account.expires_at > Utc::now() + chrono::Duration::seconds(ACCESS_REFRESH_SKEW_SECS)
+    {
         return Ok(());
     }
     let Some(refresh_token) = account.refresh_token.clone() else {

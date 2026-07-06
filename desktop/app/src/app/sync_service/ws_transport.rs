@@ -22,7 +22,7 @@ use knotq_sync::{
     SyncTransport,
 };
 
-use super::{SyncHttpClient, SyncNetworkUnreachable};
+use super::{SyncHttpClient, SyncNetworkUnreachable, SyncUnauthorized};
 
 /// The live transport: prefer the WebSocket when it is connected, fall back to
 /// HTTP otherwise. A WS *transport hiccup* (not connected / dropped / timed out)
@@ -95,10 +95,13 @@ impl SyncTransport for WsSyncTransport {
 /// on a pull is a plain rejection (pull has no self-heal path).
 fn map_pull_error(error: WsRequestError) -> anyhow::Error {
     match error {
-        WsRequestError::NotConnected
-        | WsRequestError::Disconnected
-        | WsRequestError::Timeout => unreachable_network(error),
-        WsRequestError::Server { code, .. } => {
+        WsRequestError::NotConnected | WsRequestError::Disconnected | WsRequestError::Timeout => {
+            unreachable_network(error)
+        }
+        WsRequestError::Server { status, code } => {
+            if is_unauthorized(status, &code) {
+                return unauthorized(&code);
+            }
             anyhow!("sync backend rejected request: {code}")
         }
         WsRequestError::Decode(msg) => anyhow!("parse websocket pull response: {msg}"),
@@ -109,13 +112,29 @@ fn map_pull_error(error: WsRequestError) -> anyhow::Error {
 /// `batch_push_pending`'s reseed/self-heal path fires (matching the HTTP contract).
 fn map_push_error(error: WsRequestError) -> anyhow::Error {
     match error {
-        WsRequestError::NotConnected
-        | WsRequestError::Disconnected
-        | WsRequestError::Timeout => unreachable_network(error),
-        WsRequestError::Server { code, .. } => anyhow::Error::new(SyncPushRejected { code: code.clone() })
-            .context(format!("sync backend rejected request: {code}")),
+        WsRequestError::NotConnected | WsRequestError::Disconnected | WsRequestError::Timeout => {
+            unreachable_network(error)
+        }
+        WsRequestError::Server { status, code } => {
+            // An auth rejection must NOT become SyncPushRejected: the engine's
+            // reseed self-heal is for content rejections (crdt_schema_invalid),
+            // not a stale token. The scheduler force-refreshes and retries.
+            if is_unauthorized(status, &code) {
+                return unauthorized(&code);
+            }
+            anyhow::Error::new(SyncPushRejected { code: code.clone() })
+                .context(format!("sync backend rejected request: {code}"))
+        }
         WsRequestError::Decode(msg) => anyhow!("parse websocket push response: {msg}"),
     }
+}
+
+fn is_unauthorized(status: Option<u16>, code: &str) -> bool {
+    status == Some(401) || code == "unauthorized"
+}
+
+fn unauthorized(code: &str) -> anyhow::Error {
+    anyhow::Error::new(SyncUnauthorized).context(format!("sync backend rejected request: {code}"))
 }
 
 fn unreachable_network(error: WsRequestError) -> anyhow::Error {
@@ -170,5 +189,36 @@ mod tests {
         });
         assert!(err.downcast_ref::<SyncPushRejected>().is_none());
         assert!(err.downcast_ref::<SyncNetworkUnreachable>().is_none());
+    }
+
+    #[test]
+    fn auth_rejection_maps_to_sync_unauthorized_on_pull_and_push() {
+        // Both the explicit 401 status and a bare `unauthorized` code must be
+        // recognized, on both request kinds.
+        for error in [
+            WsRequestError::Server {
+                status: Some(401),
+                code: "unauthorized".to_string(),
+            },
+            WsRequestError::Server {
+                status: None,
+                code: "unauthorized".to_string(),
+            },
+        ] {
+            let pull = map_pull_error(error.clone());
+            assert!(
+                pull.downcast_ref::<SyncUnauthorized>().is_some(),
+                "pull auth rejection must surface as SyncUnauthorized"
+            );
+            let push = map_push_error(error);
+            assert!(
+                push.downcast_ref::<SyncUnauthorized>().is_some(),
+                "push auth rejection must surface as SyncUnauthorized"
+            );
+            // A stale token must NOT fire the push reseed self-heal or read as
+            // offline.
+            assert!(push.downcast_ref::<SyncPushRejected>().is_none());
+            assert!(push.downcast_ref::<SyncNetworkUnreachable>().is_none());
+        }
     }
 }

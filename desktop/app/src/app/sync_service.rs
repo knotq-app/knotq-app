@@ -12,20 +12,20 @@ mod media;
 mod snapshot;
 mod tasks;
 mod ws_lifecycle;
-mod ws_transport;
 #[cfg(feature = "ws-sync")]
 mod ws_socket;
+mod ws_transport;
 
 pub(crate) use tasks::spawn_sync_task;
 
 #[cfg(test)]
 use http::normalize_api_base;
 #[cfg(test)]
-use tasks::sync_poll_interval;
-#[cfg(test)]
 use media::media_asset_needs_download;
 #[cfg(test)]
 use snapshot::workspace_for_background_sync;
+#[cfg(test)]
+use tasks::sync_poll_interval;
 
 // ── Sync scheduling constants ─────────────────────────────────────────────
 //
@@ -102,6 +102,21 @@ impl fmt::Display for SyncNetworkUnreachable {
 }
 
 impl std::error::Error for SyncNetworkUnreachable {}
+
+/// Marker error attached when the backend rejects the bearer token (HTTP 401 /
+/// `unauthorized`). The scheduler reacts by force-refreshing the access token and
+/// retrying the run once — the local expiry check alone can't catch a token the
+/// server rejects early (revocation, key rotation, clock skew).
+#[derive(Debug)]
+struct SyncUnauthorized;
+
+impl fmt::Display for SyncUnauthorized {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("sync backend rejected the access token")
+    }
+}
+
+impl std::error::Error for SyncUnauthorized {}
 
 #[derive(Clone)]
 struct SyncSnapshot {

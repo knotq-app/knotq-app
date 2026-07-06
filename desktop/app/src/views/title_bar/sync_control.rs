@@ -147,6 +147,12 @@ impl KnotQApp {
                 label: "Sync".to_string(),
                 dot_color: STATUS_SYNCING,
             },
+            // Offline is a waiting state, not a failure — the pending dot says
+            // "changes will sync later" without alarming red.
+            SyncRunStatus::Error { .. } if self.sync_offline => TitleSyncStatus {
+                label: "Offline".to_string(),
+                dot_color: STATUS_PENDING,
+            },
             SyncRunStatus::Error { .. } => TitleSyncStatus {
                 label: "Sync".to_string(),
                 dot_color: STATUS_ERROR,
