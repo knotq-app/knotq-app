@@ -465,10 +465,15 @@ impl World {
                     .try_sync(&self.accounts[account].server)
                     .unwrap_or_else(|e| panic!("seed {seed}: fresh puller on account {account} failed to sync: {e:#}"));
             }
-            assert!(
-                puller.converges_with(&self.devices[first].dev),
-                "seed {seed}: a fresh device on account {account} sees different content than existing devices (server-state divergence / silent loss)"
-            );
+            if !puller.converges_with(&self.devices[first].dev) {
+                let fa = fingerprint(&self.devices[first].dev);
+                let fb = fingerprint(&puller);
+                let only_dev: Vec<_> = fa.iter().filter(|x| !fb.contains(x)).collect();
+                let only_puller: Vec<_> = fb.iter().filter(|x| !fa.contains(x)).collect();
+                panic!(
+                    "seed {seed}: a fresh device on account {account} sees different content than existing devices (server-state divergence / silent loss)\n  only on dev{first}: {only_dev:#?}\n  only on fresh puller: {only_puller:#?}"
+                );
+            }
         }
     }
 }

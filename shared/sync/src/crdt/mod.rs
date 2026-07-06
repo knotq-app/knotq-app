@@ -605,10 +605,17 @@ impl WorkspaceCrdtDocuments {
                 continue;
             }
             match self.workspace.apply_update_v1(&update.update_v1) {
-                Ok(()) => {
+                // Only a merge that actually changed the document counts as
+                // applied. An echo of this replica's own push (the server
+                // broadcasts `changed` to every device, including the origin)
+                // merges as a no-op and must not trigger re-materialization —
+                // otherwise every local edit bounces back as a phantom "remote
+                // change" that rebuilds views and clobbers in-progress editing.
+                Ok(true) => {
                     outcome.applied += 1;
                     workspace_applied = true;
                 }
+                Ok(false) => {}
                 Err(err) => outcome
                     .push_workspace_error(format!("workspace update {}", update.sequence), err),
             }
@@ -626,11 +633,16 @@ impl WorkspaceCrdtDocuments {
 
         // No scheme content has been applied yet, so reuse `current`'s scheme items
         // wholesale; this first pass only reflects the workspace-structure document.
-        match self.materialize_workspace(current, &HashSet::new()) {
-            Ok(workspace) => outcome.workspace = workspace,
-            Err(err) => {
-                outcome.push_workspace_error("workspace materialization", err);
-                return outcome;
+        // When no workspace update changed the doc (empty batch or pure echo),
+        // `outcome.workspace` stays the `current` clone — re-materializing would
+        // only re-derive the same content.
+        if workspace_applied {
+            match self.materialize_workspace(current, &HashSet::new()) {
+                Ok(workspace) => outcome.workspace = workspace,
+                Err(err) => {
+                    outcome.push_workspace_error("workspace materialization", err);
+                    return outcome;
+                }
             }
         }
 
@@ -670,10 +682,15 @@ impl WorkspaceCrdtDocuments {
                 .or_insert_with(|| YrsSchemeDocument::for_replica(update.document, None))
                 .apply_update_v1(&update.update_v1)
             {
-                Ok(()) => {
+                // As with the workspace document above: an echoed no-op merge
+                // must not mark the scheme touched, or the scheme the user is
+                // actively editing gets re-materialized (and the UI reloaded)
+                // on every round-trip of their own keystrokes.
+                Ok(true) => {
                     outcome.applied += 1;
                     touched_schemes.insert(scheme_id);
                 }
+                Ok(false) => {}
                 Err(err) => {
                     let doc_id = update.document;
                     outcome.push_document_error(

@@ -345,3 +345,46 @@ fn concurrent_scheme_additions_under_root_merge_without_loss() {
     assert!(root_children.contains(&NodeRef::Scheme(scheme_a)));
     assert!(root_children.contains(&NodeRef::Scheme(scheme_b)));
 }
+
+/// Pulling back the echo of this replica's own push must be a complete no-op:
+/// zero updates counted as applied and the materialized workspace reused as-is
+/// (`current`'s items untouched). Anything else makes every local edit bounce
+/// back as a phantom remote change that reloads the editor mid-type.
+#[test]
+fn own_push_echo_applies_zero_updates_and_reuses_current_workspace() {
+    let mut workspace = Workspace::new();
+    let scheme_id = add_root_scheme(&mut workspace, "Plan");
+    workspace
+        .schemes
+        .get_mut(&scheme_id)
+        .unwrap()
+        .items
+        .push(Item::new("First"));
+    workspace.ensure_sync_metadata();
+
+    let mut docs = WorkspaceCrdtDocuments::try_new(&workspace).unwrap();
+
+    // A local edit produces the updates this device pushes...
+    workspace.schemes.get_mut(&scheme_id).unwrap().items[0].set_text("First edited");
+    let pushed = docs
+        .sync_changes(
+            &workspace,
+            &WorkspaceCrdtChangeSet::default()
+                .workspace()
+                .touch_scheme(scheme_id),
+        )
+        .updates;
+    assert!(!pushed.is_empty());
+
+    // ...and the server's `changed` broadcast makes the same device pull them
+    // right back (the server has no origin id to skip the pusher).
+    let outcome = docs.apply_remote_updates(&workspace, &stored_updates(workspace.id, pushed));
+
+    assert!(outcome.is_ok(), "{:?}", outcome.document_errors);
+    assert_eq!(outcome.applied, 0, "own echo must not count as applied");
+    assert_eq!(
+        outcome.workspace.schemes[&scheme_id].items[0].text(),
+        "First edited",
+        "current workspace content is reused untouched"
+    );
+}

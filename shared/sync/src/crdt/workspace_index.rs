@@ -327,11 +327,16 @@ impl YrsJsonDocument {
         Ok(changed)
     }
 
-    pub(crate) fn apply_update_v1(&self, update: &[u8]) -> anyhow::Result<()> {
-        self.doc
-            .transact_mut()
-            .apply_update(Update::decode_v1(update)?)?;
-        Ok(())
+    /// Applies a remote update and reports whether it changed this document.
+    /// An echo of state this replica already holds (e.g. the server broadcasting
+    /// our own push back) merges as a no-op; comparing the (state vector,
+    /// delete set) snapshot before/after detects that — including delete-only
+    /// updates, which advance no clock.
+    pub(crate) fn apply_update_v1(&self, update: &[u8]) -> anyhow::Result<bool> {
+        let mut txn = self.doc.transact_mut();
+        let before = txn.snapshot();
+        txn.apply_update(Update::decode_v1(update)?)?;
+        Ok(txn.snapshot() != before)
     }
 
     pub(crate) fn validate(&self) -> anyhow::Result<()> {

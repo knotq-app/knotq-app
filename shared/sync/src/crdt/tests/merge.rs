@@ -356,3 +356,118 @@ fn replace_scheme_dedupes_concurrent_same_item_creation() {
     validate_crdt_update_sequence(SyncDocumentKind::Scheme, [state.as_slice()])
         .expect("concurrent same-item creation must merge to a valid document");
 }
+
+/// The server broadcasts `changed` to every device — including the one whose
+/// push caused it — so each client re-pulls its own update. That echo must
+/// merge as a reported no-op (`apply_update_v1 -> false`) so callers don't
+/// treat it as a remote change and rebuild/reload the document the user is
+/// actively editing.
+#[test]
+fn reapplying_an_already_merged_update_reports_no_change() {
+    let document = DocumentId::new();
+    let mut scheme = Scheme::new("Plan", 0);
+    scheme.items.push(Item::new("First"));
+    let left = YrsSchemeDocument::from_scheme(document, &scheme).unwrap();
+
+    let right = YrsSchemeDocument::new(document);
+    let update = left.encode_update_v1(&right.state_vector_v1()).unwrap();
+    assert!(
+        right.apply_update_v1(&update).unwrap(),
+        "first merge introduces new state"
+    );
+    assert!(
+        !right.apply_update_v1(&update).unwrap(),
+        "echo of an already-merged update is a no-op"
+    );
+    // The origin replica already holds everything it encoded.
+    assert!(
+        !left.apply_update_v1(&update).unwrap(),
+        "a replica's own update echoed back is a no-op"
+    );
+}
+
+/// Item removal syncs as a tombstone insert plus (in races) hard map removes,
+/// whose effects can live partly in the delete set rather than the state
+/// vector — the changed-detection must not mistake a deletion delta for an
+/// echo.
+#[test]
+fn delete_only_update_reports_a_change() {
+    let document = DocumentId::new();
+    let mut base = Scheme::new("Plan", 0);
+    base.items.push(Item::new("First"));
+    base.items.push(Item::new("Second"));
+
+    let left = YrsSchemeDocument::from_scheme(document, &base).unwrap();
+    let right = YrsSchemeDocument::new(document);
+    right
+        .apply_update_v1(&left.encode_update_v1(&[]).unwrap())
+        .unwrap();
+    let synced_state = right.state_vector_v1();
+
+    // Left deletes an item; the delta to an in-sync peer is delete-dominated.
+    let mut edited = base.clone();
+    edited.items.remove(1);
+    left.sync_scheme(&edited).unwrap();
+    let delta = left.encode_update_v1(&synced_state).unwrap();
+
+    assert!(
+        right.apply_update_v1(&delta).unwrap(),
+        "a deletion must count as a change"
+    );
+    // The tombstone arrived: the deleted item is gone from materialization.
+    let texts: Vec<String> = right
+        .scheme_items()
+        .unwrap()
+        .iter()
+        .map(|item| item.text())
+        .collect();
+    assert_eq!(texts, vec!["First"]);
+    // Re-applying the same deletion is an echo again.
+    assert!(!right.apply_update_v1(&delta).unwrap());
+}
+
+/// Re-adding an item after a soft-delete with byte-identical snapshot+position
+/// (undo of a delete) must clear the tombstone in the DOC, not just the local
+/// workspace. The metadata write is what sets `deleted=false`; skipping it as
+/// "unchanged" leaves every peer (and this doc's own materialization)
+/// considering the item deleted while the local workspace shows it alive.
+#[test]
+fn readding_a_tombstoned_item_untombstones_it() {
+    let document = DocumentId::new();
+    let mut scheme = Scheme::new("Plan", 0);
+    scheme.items.push(Item::new("First"));
+    scheme.items.push(Item::new("Second"));
+
+    let doc = YrsSchemeDocument::from_scheme(document, &scheme).unwrap();
+    let peer = YrsSchemeDocument::new(document);
+    peer.apply_update_v1(&doc.encode_update_v1(&[]).unwrap())
+        .unwrap();
+
+    // Delete "Second" (tombstone), then undo — the identical item comes back.
+    let mut without = scheme.clone();
+    without.items.remove(1);
+    doc.sync_scheme(&without).unwrap();
+    let readd = doc.sync_scheme(&scheme).unwrap();
+
+    let texts = |d: &YrsSchemeDocument| -> Vec<String> {
+        d.scheme_items()
+            .unwrap()
+            .iter()
+            .map(|item| item.text())
+            .collect()
+    };
+    assert_eq!(
+        texts(&doc),
+        vec!["First", "Second"],
+        "the un-delete must stick in this doc's own materialization"
+    );
+
+    // And it must reach peers: the re-add emits an update carrying the un-delete.
+    assert!(
+        readd.is_some(),
+        "re-adding a tombstoned item must emit an update"
+    );
+    peer.apply_update_v1(&doc.encode_update_v1(&peer.state_vector_v1()).unwrap())
+        .unwrap();
+    assert_eq!(texts(&peer), vec!["First", "Second"]);
+}
