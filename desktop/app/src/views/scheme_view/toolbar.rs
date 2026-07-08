@@ -16,7 +16,7 @@ impl KnotQApp {
         if scheme.is_read_only() {
             let account_label = self
                 .imported_calendar_account_label(scheme)
-                .unwrap_or_else(|| "Imported calendar".to_string());
+                .unwrap_or_else(|| knotq_l10n::t("scheme.toolbar.imported_calendar").to_string());
             let google_state = match &scheme.source {
                 SchemeSource::ImportedCalendar(source)
                     if source.provider == CalendarProvider::Google =>
@@ -93,7 +93,7 @@ impl KnotQApp {
                         "scheme-toolbar-blank",
                         ItemMarker::Blank,
                         ToolbarGlyph::Plain,
-                        "plain line (⌘1)",
+                        knotq_l10n::t("scheme.toolbar.plain_line"),
                         editor.clone(),
                         cx,
                     ))
@@ -101,7 +101,7 @@ impl KnotQApp {
                         "scheme-toolbar-checkbox",
                         ItemMarker::Checkbox,
                         ToolbarGlyph::Checkbox,
-                        "checkbox line (⌘2)",
+                        knotq_l10n::t("scheme.toolbar.checkbox_line"),
                         editor.clone(),
                         cx,
                     ))
@@ -109,7 +109,7 @@ impl KnotQApp {
                         "scheme-toolbar-bullet",
                         ItemMarker::Bullet,
                         ToolbarGlyph::Bullet,
-                        "bullet line (⌘3)",
+                        knotq_l10n::t("scheme.toolbar.bullet_line"),
                         editor.clone(),
                         cx,
                     ))
@@ -117,17 +117,17 @@ impl KnotQApp {
                         "scheme-toolbar-numbered",
                         ItemMarker::Numbered,
                         ToolbarGlyph::Numbered,
-                        "numbered line (⌘4)",
+                        knotq_l10n::t("scheme.toolbar.numbered_line"),
                         editor.clone(),
                         cx,
                     ))
                     .child(toolbar_separator(c.toolbar_chip_separator))
                     .child(toolbar_date_button(
                         "scheme-toolbar-start",
-                        "start",
+                        knotq_l10n::t("scheme.toolbar.start_label"),
                         state.has_start,
                         c,
-                        "start date (⌘S)",
+                        knotq_l10n::t("scheme.toolbar.start_date"),
                         editor.clone(),
                         cx.listener(move |_this, _: &ClickEvent, _window, cx| {
                             start_editor
@@ -136,10 +136,10 @@ impl KnotQApp {
                     ))
                     .child(toolbar_date_button(
                         "scheme-toolbar-end",
-                        "end",
+                        knotq_l10n::t("scheme.toolbar.end_label"),
                         state.has_end,
                         c,
-                        "end date (⌘E)",
+                        knotq_l10n::t("scheme.toolbar.end_date"),
                         editor.clone(),
                         cx.listener(move |_this, _: &ClickEvent, _window, cx| {
                             end_editor
@@ -148,10 +148,10 @@ impl KnotQApp {
                     ))
                     .child(toolbar_date_button(
                         "scheme-toolbar-repeat",
-                        "repeat",
+                        knotq_l10n::t("scheme.toolbar.repeat_label"),
                         state.has_repeat,
                         c,
-                        "repeat (⌘R)",
+                        knotq_l10n::t("scheme.toolbar.repeat"),
                         editor.clone(),
                         cx.listener(move |_this, _: &ClickEvent, _window, cx| {
                             repeat_editor
@@ -162,7 +162,7 @@ impl KnotQApp {
                     .child(toolbar_bold_button(
                         state.bold,
                         c,
-                        "bold (⌘B)",
+                        knotq_l10n::t("scheme.toolbar.bold"),
                         editor.clone(),
                         cx.listener(move |_this, _: &ClickEvent, _window, cx| {
                             bold_editor
@@ -172,7 +172,7 @@ impl KnotQApp {
                     .child(toolbar_italic_button(
                         state.italic,
                         c,
-                        "italic (⌘I)",
+                        knotq_l10n::t("scheme.toolbar.italic"),
                         editor.clone(),
                         cx.listener(move |_this, _: &ClickEvent, _window, cx| {
                             italic_editor
@@ -182,7 +182,7 @@ impl KnotQApp {
                     .child(toolbar_highlight_button(
                         state.highlight,
                         c,
-                        "highlight",
+                        knotq_l10n::t("scheme.toolbar.highlight"),
                         editor.clone(),
                         cx.listener(move |_this, _: &ClickEvent, _window, cx| {
                             highlight_editor
@@ -192,7 +192,7 @@ impl KnotQApp {
                     .child(toolbar_strikethrough_button(
                         state.strikethrough,
                         c,
-                        "strikethrough (⌘⇧X)",
+                        knotq_l10n::t("scheme.toolbar.strikethrough"),
                         editor.clone(),
                         cx.listener(move |_this, _: &ClickEvent, _window, cx| {
                             strikethrough_editor.update(cx, |editor, cx| {
@@ -205,7 +205,7 @@ impl KnotQApp {
                         state.heading,
                         ToolbarGlyph::Heading,
                         c,
-                        "heading (⌘J)",
+                        knotq_l10n::t("scheme.toolbar.heading"),
                         editor.clone(),
                         cx.listener(move |_this, _: &ClickEvent, _window, cx| {
                             heading_editor
@@ -218,7 +218,7 @@ impl KnotQApp {
                         false,
                         ToolbarGlyph::Table,
                         c,
-                        "insert table (⌘⇧T)",
+                        knotq_l10n::t("scheme.toolbar.insert_table"),
                         editor.clone(),
                         cx.listener(move |_this, _: &ClickEvent, window, cx| {
                             table_editor.update(cx, |editor, cx| {
@@ -232,7 +232,7 @@ impl KnotQApp {
                         false,
                         ToolbarGlyph::Unindent,
                         c,
-                        "unindent (⇧Tab)",
+                        knotq_l10n::t("scheme.toolbar.unindent"),
                         editor.clone(),
                         cx.listener(move |_this, _: &ClickEvent, _window, cx| {
                             unindent_editor
@@ -244,7 +244,7 @@ impl KnotQApp {
                         false,
                         ToolbarGlyph::Indent,
                         c,
-                        "indent (Tab)",
+                        knotq_l10n::t("scheme.toolbar.indent"),
                         editor.clone(),
                         cx.listener(move |_this, _: &ClickEvent, _window, cx| {
                             indent_editor
@@ -296,7 +296,7 @@ fn read_only_toolbar(
                     div()
                         .font_weight(gpui::FontWeight::SEMIBOLD)
                         .text_color(read_only_text)
-                        .child("Read only"),
+                        .child(knotq_l10n::t("scheme.toolbar.read_only")),
                 )
                 .child(toolbar_separator(c.toolbar_chip_separator))
                 .child(
@@ -363,9 +363,9 @@ fn read_only_refresh_button(
         })
         .tooltip(move |window, cx| {
             Tooltip::new(if syncing {
-                "refreshing Google Calendar"
+                knotq_l10n::t("scheme.toolbar.refreshing_google_calendar")
             } else {
-                "refresh Google Calendar"
+                knotq_l10n::t("scheme.toolbar.refresh_google_calendar")
             })
             .build(window, cx)
         })
@@ -408,9 +408,9 @@ fn read_only_reconnect_button(
         })
         .tooltip(move |window, cx| {
             Tooltip::new(if syncing {
-                "connecting Google Calendar"
+                knotq_l10n::t("scheme.toolbar.connecting_google_calendar")
             } else {
-                "sign in locally for this Google Calendar"
+                knotq_l10n::t("scheme.toolbar.sign_in_locally_google_calendar")
             })
             .build(window, cx)
         })
@@ -426,7 +426,11 @@ fn read_only_reconnect_button(
                 .text_size(px(11.0))
                 .font_weight(gpui::FontWeight::SEMIBOLD)
                 .text_color(if syncing { muted_text } else { text_color })
-                .child(if syncing { "Connecting" } else { "Sign in" }),
+                .child(if syncing {
+                    knotq_l10n::t("scheme.toolbar.connecting")
+                } else {
+                    knotq_l10n::t("scheme.toolbar.sign_in")
+                }),
         )
         .into_any_element()
 }

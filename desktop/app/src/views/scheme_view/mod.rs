@@ -25,7 +25,7 @@ impl KnotQApp {
                 .items_center()
                 .justify_center()
                 .text_color(token_hsla(t.text_muted))
-                .child("Pick a list on the left")
+                .child(knotq_l10n::t("scheme.empty.pick_a_list"))
                 .into_any_element();
         };
 
@@ -39,7 +39,7 @@ impl KnotQApp {
                     .items_center()
                     .justify_center()
                     .text_color(token_hsla(t.text_muted))
-                    .child("Editor not available")
+                    .child(knotq_l10n::t("scheme.empty.editor_not_available"))
                     .into_any_element();
             }
         };

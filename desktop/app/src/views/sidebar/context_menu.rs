@@ -32,7 +32,7 @@ impl KnotQApp {
             SidebarContextTarget::Background => {
                 items.push(sidebar_context_item(
                     "sidebar-menu-new-root-item",
-                    "New Item",
+                    knotq_l10n::t("sidebar.context.new_item"),
                     t,
                     cx.listener(move |this, _: &ClickEvent, window, cx| {
                         this.close_sidebar_context_menu(cx);
@@ -41,7 +41,7 @@ impl KnotQApp {
                 ));
                 items.push(sidebar_context_item(
                     "sidebar-menu-new-folder",
-                    "New Folder",
+                    knotq_l10n::t("sidebar.context.new_folder"),
                     t,
                     cx.listener(move |this, _: &ClickEvent, window, cx| {
                         this.close_sidebar_context_menu(cx);
@@ -52,7 +52,7 @@ impl KnotQApp {
             SidebarContextTarget::NewMenu { parent } => {
                 items.push(sidebar_context_item_with_shortcut(
                     "sidebar-menu-new-item",
-                    "Item",
+                    knotq_l10n::t("sidebar.context.item"),
                     Some("⌘N"),
                     t,
                     cx.listener(move |this, _: &ClickEvent, window, cx| {
@@ -62,7 +62,7 @@ impl KnotQApp {
                 ));
                 items.push(sidebar_context_item_with_shortcut(
                     "sidebar-menu-new-folder",
-                    "Folder",
+                    knotq_l10n::t("sidebar.context.folder"),
                     Some("⇧⌘N"),
                     t,
                     cx.listener(move |this, _: &ClickEvent, window, cx| {
@@ -73,7 +73,7 @@ impl KnotQApp {
                 items.push(sidebar_context_separator(t));
                 items.push(sidebar_context_item(
                     "sidebar-menu-new-google-calendar",
-                    "Google Calendar",
+                    knotq_l10n::t("sidebar.context.google_calendar"),
                     t,
                     cx.listener(move |this, event: &ClickEvent, _window, cx| {
                         this.open_google_calendar_picker(parent, event.position(), cx);
@@ -86,7 +86,7 @@ impl KnotQApp {
             SidebarContextTarget::Archive => {
                 items.push(sidebar_context_item(
                     "sidebar-menu-empty-archive",
-                    "Empty Archive",
+                    knotq_l10n::t("sidebar.context.empty_archive"),
                     t,
                     cx.listener(move |this, _: &ClickEvent, _window, cx| {
                         this.close_sidebar_context_menu(cx);
@@ -97,7 +97,7 @@ impl KnotQApp {
             SidebarContextTarget::Folder(folder_id) => {
                 items.push(sidebar_context_item(
                     "sidebar-menu-new-item",
-                    "New Item",
+                    knotq_l10n::t("sidebar.context.new_item"),
                     t,
                     cx.listener(move |this, _: &ClickEvent, window, cx| {
                         this.close_sidebar_context_menu(cx);
@@ -106,7 +106,7 @@ impl KnotQApp {
                 ));
                 items.push(sidebar_context_item(
                     "sidebar-menu-new-folder",
-                    "New Folder",
+                    knotq_l10n::t("sidebar.context.new_folder"),
                     t,
                     cx.listener(move |this, _: &ClickEvent, window, cx| {
                         this.close_sidebar_context_menu(cx);
@@ -116,7 +116,7 @@ impl KnotQApp {
                 items.push(sidebar_context_separator(t));
                 items.push(sidebar_context_item(
                     "sidebar-menu-rename-folder",
-                    "Rename",
+                    knotq_l10n::t("common.rename"),
                     t,
                     cx.listener(move |this, _: &ClickEvent, window, cx| {
                         this.close_sidebar_context_menu(cx);
@@ -125,7 +125,7 @@ impl KnotQApp {
                 ));
                 items.push(sidebar_context_item(
                     "sidebar-menu-delete-folder",
-                    "Archive",
+                    knotq_l10n::t("sidebar.context.archive"),
                     t,
                     cx.listener(move |this, _: &ClickEvent, _window, cx| {
                         this.close_sidebar_context_menu(cx);
@@ -136,7 +136,7 @@ impl KnotQApp {
             SidebarContextTarget::Scheme { scheme_id } => {
                 items.push(sidebar_context_item(
                     "sidebar-menu-rename-scheme",
-                    "Rename",
+                    knotq_l10n::t("common.rename"),
                     t,
                     cx.listener(move |this, _: &ClickEvent, window, cx| {
                         this.close_sidebar_context_menu(cx);
@@ -146,7 +146,7 @@ impl KnotQApp {
                 items.push(sidebar_context_separator(t));
                 items.push(sidebar_context_item(
                     "sidebar-menu-delete-scheme",
-                    "Archive",
+                    knotq_l10n::t("sidebar.context.archive"),
                     t,
                     cx.listener(move |this, _: &ClickEvent, _window, cx| {
                         this.close_sidebar_context_menu(cx);
@@ -157,7 +157,7 @@ impl KnotQApp {
             SidebarContextTarget::DeletedScheme { scheme_id } => {
                 items.push(sidebar_context_item(
                     "sidebar-menu-restore-deleted-scheme",
-                    "Restore",
+                    knotq_l10n::t("sidebar.context.restore"),
                     t,
                     cx.listener(move |this, _: &ClickEvent, _window, cx| {
                         this.close_sidebar_context_menu(cx);
@@ -167,7 +167,7 @@ impl KnotQApp {
                 items.push(sidebar_context_separator(t));
                 items.push(sidebar_context_item(
                     "sidebar-menu-permanently-delete-scheme",
-                    "Permanently Delete",
+                    knotq_l10n::t("sidebar.context.permanently_delete"),
                     t,
                     cx.listener(move |this, _: &ClickEvent, _window, cx| {
                         this.close_sidebar_context_menu(cx);
@@ -178,7 +178,7 @@ impl KnotQApp {
             SidebarContextTarget::DeletedFolder { folder_id } => {
                 items.push(sidebar_context_item(
                     "sidebar-menu-restore-deleted-folder",
-                    "Restore",
+                    knotq_l10n::t("sidebar.context.restore"),
                     t,
                     cx.listener(move |this, _: &ClickEvent, _window, cx| {
                         this.close_sidebar_context_menu(cx);
@@ -188,7 +188,7 @@ impl KnotQApp {
                 items.push(sidebar_context_separator(t));
                 items.push(sidebar_context_item(
                     "sidebar-menu-permanently-delete-folder",
-                    "Permanently Delete",
+                    knotq_l10n::t("sidebar.context.permanently_delete"),
                     t,
                     cx.listener(move |this, _: &ClickEvent, _window, cx| {
                         this.close_sidebar_context_menu(cx);
@@ -270,7 +270,7 @@ impl KnotQApp {
             GoogleCalendarPickerStatus::Loading => {
                 items.push(sidebar_context_disabled_item(
                     "sidebar-google-calendar-loading",
-                    "Loading calendars...",
+                    knotq_l10n::t("sidebar.context.google_loading"),
                     None::<SharedString>,
                     t,
                 ));
@@ -289,7 +289,7 @@ impl KnotQApp {
                 if accounts.is_empty() {
                     items.push(sidebar_context_disabled_item(
                         "sidebar-google-calendar-empty",
-                        "No local Google accounts",
+                        knotq_l10n::t("sidebar.context.google_no_accounts"),
                         None::<SharedString>,
                         t,
                     ));
@@ -313,7 +313,7 @@ impl KnotQApp {
                         } else if account.calendars.is_empty() {
                             items.push(sidebar_context_disabled_item(
                                 format!("sidebar-google-calendar-account-empty-{account_idx}"),
-                                "No calendars available",
+                                knotq_l10n::t("sidebar.context.google_no_calendars"),
                                 None::<SharedString>,
                                 t,
                             ));
@@ -327,7 +327,7 @@ impl KnotQApp {
                                     items.push(sidebar_context_disabled_item(
                                         id,
                                         calendar.label,
-                                        Some("Added"),
+                                        Some(knotq_l10n::t("sidebar.context.added")),
                                         t,
                                     ));
                                 } else {
@@ -367,7 +367,7 @@ fn add_google_account_item(
 ) -> gpui::AnyElement {
     sidebar_context_item(
         "sidebar-google-calendar-add-account",
-        "Add Google Account...",
+        knotq_l10n::t("sidebar.context.add_google_account"),
         t,
         cx.listener(move |this, _: &ClickEvent, _window, cx| {
             this.close_sidebar_context_menu(cx);

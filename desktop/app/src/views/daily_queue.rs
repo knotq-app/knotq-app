@@ -337,11 +337,14 @@ impl KnotQApp {
         let text = t.link;
         let hover_text = t.link_hover;
         let label = if (today - source_date).num_days() == 1 {
-            "roll over yesterday".to_string()
+            knotq_l10n::t("daily.carryover.yesterday").to_string()
         } else {
-            format!(
-                "roll over from {}",
-                format_contextual_date(source_date, today.year())
+            knotq_l10n::t_with(
+                "daily.carryover.from_date",
+                &[(
+                    "date",
+                    &format_contextual_date(source_date, today.year()),
+                )],
             )
         };
 

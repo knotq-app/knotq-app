@@ -45,16 +45,29 @@ pub(super) fn when_label(
 ) -> String {
     match kind {
         ItemKind::Assignment => end
-            .map(|dt| format!("Due {}", date_label(time_format, dt.with_timezone(&Local))))
+            .map(|dt| {
+                knotq_l10n::t_with(
+                    "upcoming.when.due",
+                    &[("when", &date_label(time_format, dt.with_timezone(&Local)))],
+                )
+            })
             .unwrap_or_default(),
         ItemKind::Reminder => start
-            .map(|dt| format!("At {}", date_label(time_format, dt.with_timezone(&Local))))
+            .map(|dt| {
+                knotq_l10n::t_with(
+                    "upcoming.when.at",
+                    &[("when", &date_label(time_format, dt.with_timezone(&Local)))],
+                )
+            })
             .unwrap_or_default(),
         ItemKind::Event => match (start, end) {
             (Some(start), Some(end)) => {
                 let start = start.with_timezone(&Local);
                 let end = end.with_timezone(&Local);
                 if start.date_naive() == end.date_naive() {
+                    // The " → " separator is re-parsed verbatim by
+                    // `when_label_element` below, so it is kept as a fixed
+                    // internal delimiter rather than a translatable string.
                     format!(
                         "{} → {}",
                         date_label(time_format, start),
@@ -68,15 +81,17 @@ pub(super) fn when_label(
                     )
                 }
             }
-            (Some(start), None) => {
-                format!(
-                    "At {}",
-                    date_label(time_format, start.with_timezone(&Local))
-                )
-            }
-            (None, Some(end)) => {
-                format!("Due {}", date_label(time_format, end.with_timezone(&Local)))
-            }
+            (Some(start), None) => knotq_l10n::t_with(
+                "upcoming.when.at",
+                &[(
+                    "when",
+                    &date_label(time_format, start.with_timezone(&Local)),
+                )],
+            ),
+            (None, Some(end)) => knotq_l10n::t_with(
+                "upcoming.when.due",
+                &[("when", &date_label(time_format, end.with_timezone(&Local)))],
+            ),
             _ => String::new(),
         },
         ItemKind::Procedure => String::new(),
@@ -89,11 +104,15 @@ fn date_label(time_format: knotq_storage_json::TimeFormat, dt: chrono::DateTime<
     let day_part = if dn == today {
         String::new()
     } else if dn == today + chrono::Duration::days(1) {
-        "Tomorrow".to_string()
+        knotq_l10n::t("upcoming.date.tomorrow").to_string()
     } else if dn < today + chrono::Duration::days(7) && dn > today {
-        dt.format("%a").to_string()
+        knotq_date_util::weekday_short_name(dt.weekday()).to_string()
     } else {
-        dt.format("%b %d").to_string()
+        format!(
+            "{} {:02}",
+            knotq_date_util::month_short_name(dt.month()),
+            dt.day()
+        )
     };
     let time = format_time(time_format, dt);
     if day_part.is_empty() {

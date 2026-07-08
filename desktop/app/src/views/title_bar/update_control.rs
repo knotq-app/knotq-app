@@ -2,6 +2,7 @@ use gpui::prelude::*;
 use gpui::{div, px, ClickEvent, Context, IntoElement};
 use gpui_component::tooltip::Tooltip;
 use gpui_component::{Icon, IconName, Sizable};
+use knotq_l10n::{t as tr, t_with as tr_with};
 
 use crate::app::auto_update::AutoUpdateUiStatus;
 use crate::app::KnotQApp;
@@ -22,25 +23,36 @@ impl KnotQApp {
     ) -> Option<gpui::AnyElement> {
         let (label, tooltip, action) = match &self.auto_update_status {
             AutoUpdateUiStatus::Available { update, .. } => (
-                "Update",
-                format!("Update and restart KnotQ to {}.", update.version),
+                tr("update.action.update"),
+                tr_with(
+                    "update.tooltip.update_and_restart",
+                    &[("version", &update.version.to_string())],
+                ),
                 Some(TitleUpdateAction::Download),
             ),
-            AutoUpdateUiStatus::Downloading { version } => {
-                ("Updating", format!("Updating KnotQ {version}..."), None)
-            }
+            AutoUpdateUiStatus::Downloading { version } => (
+                tr("update.action.updating"),
+                tr_with("update.tooltip.updating", &[("version", version.as_str())]),
+                None,
+            ),
             AutoUpdateUiStatus::Ready { update } => {
                 let label = match update.install_strategy {
-                    knotq_auto_update::InstallStrategy::InstalledOnRestart => "Restart to update",
-                    knotq_auto_update::InstallStrategy::RunInstallerAndQuit => "Install update",
-                };
-                let tooltip = match update.install_strategy {
                     knotq_auto_update::InstallStrategy::InstalledOnRestart => {
-                        format!("Restart KnotQ to finish updating to {}.", update.version)
+                        tr("update.action.restart_to_update")
                     }
                     knotq_auto_update::InstallStrategy::RunInstallerAndQuit => {
-                        format!("Run the KnotQ {} installer.", update.version)
+                        tr("update.action.install_update")
                     }
+                };
+                let tooltip = match update.install_strategy {
+                    knotq_auto_update::InstallStrategy::InstalledOnRestart => tr_with(
+                        "update.tooltip.restart_to_finish",
+                        &[("version", &update.version.to_string())],
+                    ),
+                    knotq_auto_update::InstallStrategy::RunInstallerAndQuit => tr_with(
+                        "update.tooltip.run_installer",
+                        &[("version", &update.version.to_string())],
+                    ),
                 };
                 (label, tooltip, Some(TitleUpdateAction::Install))
             }
@@ -48,8 +60,11 @@ impl KnotQApp {
                 update: Some(update),
                 ..
             } => (
-                "Update",
-                format!("Retry downloading KnotQ {}.", update.version),
+                tr("update.action.update"),
+                tr_with(
+                    "update.tooltip.retry_download",
+                    &[("version", &update.version.to_string())],
+                ),
                 Some(TitleUpdateAction::Download),
             ),
             _ => return None,

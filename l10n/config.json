@@ -1,0 +1,6 @@
+{
+  "ios_xcstrings": "mobile/ios/KnotQMobile/Localizable.xcstrings",
+  "android_res_dir": "mobile/android/app/src/main/res",
+  "android_l10n_kt": "mobile/android/app/src/main/kotlin/com/enigmadux/knotq/L10n.kt",
+  "website_i18n_dir": "../website/js/i18n"
+}

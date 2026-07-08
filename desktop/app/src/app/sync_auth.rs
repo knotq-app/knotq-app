@@ -105,18 +105,20 @@ fn default_supports_sync() -> bool {
 fn normalize_api_base(raw: &str) -> Result<String> {
     let trimmed = raw.trim().trim_end_matches('/');
     if trimmed.is_empty() {
-        return Err(anyhow!("Enter a sync API URL."));
+        return Err(anyhow!(knotq_l10n::t("sync.error.api_url_required")));
     }
     if let Some(after_scheme) = trimmed.strip_prefix("http://") {
         // Bearer tokens must never travel in cleartext, so plain http is only
         // permitted to a loopback host (local dev / self-hosted Worker on-box).
         if !is_loopback_http_authority(after_scheme) {
-            return Err(anyhow!(
-                "Sync API must use https:// (plain http is only allowed for localhost)."
-            ));
+            return Err(anyhow!(knotq_l10n::t(
+                "sync.error.api_url_https_required"
+            )));
         }
     } else if trimmed.strip_prefix("https://").is_none() {
-        return Err(anyhow!("Sync API must start with http:// or https://."));
+        return Err(anyhow!(knotq_l10n::t(
+            "sync.error.api_url_scheme_required"
+        )));
     }
     Ok(trimmed.to_string())
 }

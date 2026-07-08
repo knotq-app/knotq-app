@@ -51,7 +51,13 @@ pub fn format_datetime(format: TimeFormat, dt: DateTime<Utc>) -> String {
 }
 
 pub fn format_date_time(format: TimeFormat, dt: DateTime<Local>) -> String {
-    format!("{} {}", dt.format("%a %b %d"), format_time(format, dt))
+    format!(
+        "{} {} {:02} {}",
+        crate::names::weekday_short_name(dt.weekday()),
+        crate::names::month_short_name(dt.month()),
+        dt.day(),
+        format_time(format, dt)
+    )
 }
 
 pub fn format_contextual_datetime(

@@ -26,10 +26,10 @@ pub(super) enum RepeatMode {
 impl RepeatMode {
     pub(super) fn label(self) -> &'static str {
         match self {
-            Self::Daily => "Daily",
-            Self::Weekly => "Weekly",
-            Self::Monthly => "Monthly",
-            Self::Yearly => "Yearly",
+            Self::Daily => knotq_l10n::t("repeat.daily"),
+            Self::Weekly => knotq_l10n::t("repeat.weekly"),
+            Self::Monthly => knotq_l10n::t("repeat.monthly"),
+            Self::Yearly => knotq_l10n::t("repeat.yearly"),
         }
     }
 }

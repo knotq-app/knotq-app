@@ -1,5 +1,6 @@
 use gpui::prelude::*;
 use gpui::{div, px, ClickEvent, Context, IntoElement};
+use knotq_l10n::t as tr;
 
 use crate::app::{KnotQApp, SyncAuthStatus, SyncRunStatus, View};
 use crate::theme_gpui::{token_hsla, token_rgba, Theme};
@@ -112,7 +113,7 @@ impl KnotQApp {
                     .text_size(px(12.0))
                     .font_weight(gpui::FontWeight::NORMAL)
                     .text_color(token_hsla(t.text_dim))
-                    .child("Enable sync"),
+                    .child(tr("titlebar.sync.enable_sync")),
             )
             .into_any_element()
     }
@@ -123,46 +124,46 @@ impl KnotQApp {
 
         if matches!(self.sync_auth_status, SyncAuthStatus::InProgress) {
             return TitleSyncStatus {
-                label: "Sync".to_string(),
+                label: tr("sync.status.sync").to_string(),
                 dot_color: STATUS_SYNCING,
             };
         }
 
         if account.is_none() {
             return TitleSyncStatus {
-                label: "Sync".to_string(),
+                label: tr("sync.status.sync").to_string(),
                 dot_color: t.text_muted,
             };
         }
 
         if account.is_some_and(|account| !account.supports_sync) {
             return TitleSyncStatus {
-                label: "Sync inactive".to_string(),
+                label: tr("sync.status.sync_inactive").to_string(),
                 dot_color: STATUS_ERROR,
             };
         }
 
         match &self.sync_run_status {
             SyncRunStatus::Running { .. } => TitleSyncStatus {
-                label: "Sync".to_string(),
+                label: tr("sync.status.sync").to_string(),
                 dot_color: STATUS_SYNCING,
             },
             // Offline is a waiting state, not a failure — the pending dot says
             // "changes will sync later" without alarming red.
             SyncRunStatus::Error { .. } if self.sync_offline => TitleSyncStatus {
-                label: "Offline".to_string(),
+                label: tr("sync.status.offline").to_string(),
                 dot_color: STATUS_PENDING,
             },
             SyncRunStatus::Error { .. } => TitleSyncStatus {
-                label: "Sync".to_string(),
+                label: tr("sync.status.sync").to_string(),
                 dot_color: STATUS_ERROR,
             },
             _ if pending > 0 => TitleSyncStatus {
-                label: "Sync".to_string(),
+                label: tr("sync.status.sync").to_string(),
                 dot_color: STATUS_PENDING,
             },
             _ => TitleSyncStatus {
-                label: "Sync".to_string(),
+                label: tr("sync.status.sync").to_string(),
                 dot_color: STATUS_OK,
             },
         }

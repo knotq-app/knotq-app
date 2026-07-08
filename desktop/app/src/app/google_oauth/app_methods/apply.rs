@@ -1,5 +1,20 @@
 use super::super::*;
 
+/// Localized "Google Calendar {label} failed" title for the sync-result notice
+/// modal. `label` is the internal (English, log-oriented) stage identifier
+/// passed by the various sync entry points ("import", "refresh",
+/// "background sync"); unrecognized labels fall back to the raw English
+/// template rather than panicking.
+fn google_calendar_sync_failed_title(label: &str) -> String {
+    let key = match label {
+        "import" => "google.calendar.import_failed_title",
+        "refresh" => "google.calendar.refresh_failed_title",
+        "background sync" => "google.calendar.background_sync_failed_title",
+        _ => return format!("Google Calendar {label} failed"),
+    };
+    knotq_l10n::t(key).to_string()
+}
+
 impl KnotQApp {
     pub(super) fn finish_google_calendar_import(
         &mut self,
@@ -135,7 +150,7 @@ impl KnotQApp {
                     }
                     if always_notify {
                         self.show_google_calendar_error(
-                            format!("Google Calendar {label} failed"),
+                            google_calendar_sync_failed_title(label),
                             failures.join("\n"),
                         );
                         self.google_oauth_status = GoogleOAuthStatus::Error;
@@ -164,7 +179,7 @@ impl KnotQApp {
                         self.google_oauth_status = GoogleOAuthStatus::Idle;
                     } else {
                         self.show_google_calendar_error(
-                            format!("Google Calendar {label} failed"),
+                            google_calendar_sync_failed_title(label),
                             err.clone(),
                         );
                         self.google_oauth_status = GoogleOAuthStatus::Error;
@@ -183,7 +198,7 @@ impl KnotQApp {
         self.notice_modal = Some(NoticeModal {
             title: title.into(),
             message: message.into(),
-            button_label: "OK".to_string(),
+            button_label: knotq_l10n::t("common.ok").to_string(),
         });
     }
 

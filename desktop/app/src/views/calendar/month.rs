@@ -49,7 +49,7 @@ impl KnotQApp {
                     .text_size(px(FONT_SIZE_BODY))
                     .font_weight(gpui::FontWeight::MEDIUM)
                     .text_color(token_hsla(t.text_dim))
-                    .child(weekday_label(weekday))
+                    .child(knotq_date_util::weekday_short_name(weekday))
                     .into_any_element(),
             );
         }
@@ -69,7 +69,11 @@ impl KnotQApp {
                     .text_size(px(15.0))
                     .font_weight(gpui::FontWeight::SEMIBOLD)
                     .text_color(token_hsla(t.text_primary))
-                    .child(format!("{}", month_start.format("%B %Y"))),
+                    .child(format!(
+                        "{} {}",
+                        knotq_date_util::month_name(month_start.month()),
+                        month_start.year()
+                    )),
             )
             .child(month_nav(t, cx));
 
@@ -202,7 +206,10 @@ impl KnotQApp {
                             .px(px(4.0))
                             .text_size(px(10.0))
                             .text_color(token_hsla(t.text_muted))
-                            .child(format!("+{} more", tasks.len() - 4))
+                            .child(knotq_l10n::t_count(
+                                "calendar.month.more_count",
+                                (tasks.len() - 4) as i64,
+                            ))
                             .into_any_element(),
                     );
                 }
@@ -261,7 +268,7 @@ impl KnotQApp {
     }
     fn month_task_label(&self, task: &CalendarTask) -> String {
         let text = if task.text.trim().is_empty() {
-            "(untitled)"
+            knotq_l10n::t("calendar.task.untitled")
         } else {
             task.text.as_str()
         };
@@ -272,11 +279,21 @@ impl KnotQApp {
                 .unwrap_or_else(|| text.to_string()),
             ItemKind::Reminder => task
                 .start
-                .map(|dt| format!("At {} {}", format_time(self.time_format, dt), text))
+                .map(|dt| {
+                    knotq_l10n::t_with(
+                        "calendar.task.at_time_label",
+                        &[("time", &format_time(self.time_format, dt)), ("text", text)],
+                    )
+                })
                 .unwrap_or_else(|| text.to_string()),
             ItemKind::Assignment => task
                 .end
-                .map(|dt| format!("Due {} {}", format_time(self.time_format, dt), text))
+                .map(|dt| {
+                    knotq_l10n::t_with(
+                        "calendar.task.due_time_label",
+                        &[("time", &format_time(self.time_format, dt)), ("text", text)],
+                    )
+                })
                 .unwrap_or_else(|| text.to_string()),
             ItemKind::Procedure => text.to_string(),
         }
@@ -333,18 +350,6 @@ fn month_nav(t: Theme, cx: &mut Context<KnotQApp>) -> gpui::AnyElement {
                 .child("›"),
         )
         .into_any_element()
-}
-
-fn weekday_label(weekday: Weekday) -> &'static str {
-    match weekday {
-        Weekday::Mon => "Mon",
-        Weekday::Tue => "Tue",
-        Weekday::Wed => "Wed",
-        Weekday::Thu => "Thu",
-        Weekday::Fri => "Fri",
-        Weekday::Sat => "Sat",
-        Weekday::Sun => "Sun",
-    }
 }
 
 fn month_grid_start(month_start: chrono::NaiveDate) -> chrono::NaiveDate {

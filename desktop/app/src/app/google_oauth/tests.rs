@@ -96,13 +96,13 @@
     #[test]
     fn google_oauth_browser_cancel_and_timeout_errors_are_non_modal() {
         assert!(is_google_oauth_browser_cancel_or_timeout(
-            GOOGLE_OAUTH_CALLBACK_CANCELLED
+            google_oauth_error_cancelled()
         ));
         assert!(is_google_oauth_browser_cancel_or_timeout(
-            GOOGLE_OAUTH_CALLBACK_TIMEOUT
+            google_oauth_error_timeout()
         ));
         assert!(is_google_oauth_browser_cancel_or_timeout(
-            GOOGLE_OAUTH_ACCESS_DENIED
+            &google_oauth_error_access_denied()
         ));
         assert!(!is_google_oauth_browser_cancel_or_timeout(
             "Google OAuth HTTP 400: invalid_request"
@@ -125,7 +125,7 @@
         )
         .unwrap_err();
 
-        assert!(format!("{err:#}").contains(GOOGLE_OAUTH_CALLBACK_CANCELLED));
+        assert!(format!("{err:#}").contains(google_oauth_error_cancelled()));
     }
 
     #[test]

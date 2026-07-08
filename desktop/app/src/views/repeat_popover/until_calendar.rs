@@ -1,5 +1,16 @@
 use super::*;
-use knotq_date_util::{days_in_month, next_month, prev_month};
+use chrono::Weekday;
+use knotq_date_util::{days_in_month, next_month, prev_month, weekday_name_initial};
+
+const RP_UNTIL_CALENDAR_WEEKDAY_ORDER: [Weekday; 7] = [
+    Weekday::Sun,
+    Weekday::Mon,
+    Weekday::Tue,
+    Weekday::Wed,
+    Weekday::Thu,
+    Weekday::Fri,
+    Weekday::Sat,
+];
 
 pub(super) fn rp_until_calendar(
     display_month: NaiveDate,
@@ -14,10 +25,14 @@ pub(super) fn rp_until_calendar(
         .unwrap_or(display_month);
     let first_weekday = month_start.weekday().num_days_from_sunday() as usize;
     let num_days = days_in_month(display_month.year(), display_month.month()) as usize;
-    let month_label = display_month.format("%B %Y").to_string();
+    let month_label = format!(
+        "{} {}",
+        knotq_date_util::month_name(display_month.month()),
+        display_month.year()
+    );
     let selected_day_text = selected_date_text_color(t);
 
-    let day_headers = ["S", "M", "T", "W", "T", "F", "S"]
+    let day_headers = RP_UNTIL_CALENDAR_WEEKDAY_ORDER
         .iter()
         .map(|d| {
             div()
@@ -28,7 +43,7 @@ pub(super) fn rp_until_calendar(
                 .text_size(px(10.0))
                 .font_family(crate::theme_gpui::FONT_UI)
                 .text_color(token_hsla(t.text_dim))
-                .child(*d)
+                .child(weekday_name_initial(*d))
                 .into_any_element()
         })
         .collect::<Vec<_>>();

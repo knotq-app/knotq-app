@@ -85,6 +85,10 @@ pub struct AppSettings {
     pub google_accounts: Vec<GoogleOAuthAccount>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sync_account: Option<SyncAccountSettings>,
+    /// UI language as a code from `l10n/locales.json`; `None` follows the OS
+    /// language.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub language: Option<String>,
     #[serde(default)]
     pub onboarding_completed: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -108,6 +112,7 @@ impl Default for AppSettings {
             window_position: None,
             google_accounts: Vec::new(),
             sync_account: None,
+            language: None,
             onboarding_completed: false,
             last_view: None,
             last_scheme_id: None,

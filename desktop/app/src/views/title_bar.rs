@@ -2,6 +2,7 @@ use gpui::prelude::*;
 use gpui::{div, px, ClickEvent, Context, IntoElement, MouseButton, Window, WindowControlArea};
 use gpui_component::{Icon, IconName, Sizable};
 use knotq_commands::Command;
+use knotq_l10n::t as tr;
 use knotq_model::SchemeId;
 use knotq_storage_json::CalendarViewMode;
 
@@ -127,8 +128,8 @@ impl KnotQApp {
         let mut calendar_mode_controls: Vec<gpui::AnyElement> = Vec::new();
         if view == View::Union {
             for (i, (label, mode)) in [
-                ("Week", CalendarViewMode::Week),
-                ("Month", CalendarViewMode::Month),
+                (tr("titlebar.calendar_mode.week"), CalendarViewMode::Week),
+                (tr("titlebar.calendar_mode.month"), CalendarViewMode::Month),
             ]
             .into_iter()
             .enumerate()

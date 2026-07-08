@@ -13,24 +13,33 @@ pub(super) fn format_optional_datetime(
             format_date_time(time_format, local)
         }
     })
-    .unwrap_or_else(|| "None".to_string())
+    .unwrap_or_else(|| knotq_l10n::t("event.value.none").to_string())
 }
 
 fn format_relative_datetime(time_format: TimeFormat, dt: DateTime<Local>) -> String {
     let today = Local::now().date_naive();
     let date = dt.date_naive();
     let day = if date == today {
-        "Today".to_string()
+        knotq_l10n::t("event.date.today").to_string()
     } else if date == today + Duration::days(1) {
-        "Tomorrow".to_string()
+        knotq_l10n::t("event.date.tomorrow").to_string()
     } else if date == today - Duration::days(1) {
-        "Yesterday".to_string()
+        knotq_l10n::t("event.date.yesterday").to_string()
     } else if date > today && date < today + Duration::days(7) {
-        dt.format("%a").to_string()
+        knotq_date_util::weekday_short_name(dt.weekday()).to_string()
     } else if date.year() == today.year() {
-        dt.format("%b %d").to_string()
+        format!(
+            "{} {:02}",
+            knotq_date_util::month_short_name(dt.month()),
+            dt.day()
+        )
     } else {
-        dt.format("%Y %b %d").to_string()
+        format!(
+            "{} {} {:02}",
+            dt.year(),
+            knotq_date_util::month_short_name(dt.month()),
+            dt.day()
+        )
     };
     format!("{day} {}", format_time(time_format, dt))
 }
@@ -41,7 +50,7 @@ pub(super) fn format_lead_time(
     trigger_at: Option<DateTime<Utc>>,
 ) -> String {
     if offset_secs == 0 {
-        return "At time".to_string();
+        return knotq_l10n::t("event.notification.at_time").to_string();
     }
     if offset_secs < 0 {
         if let Some(trigger_at) = trigger_at {
@@ -49,7 +58,11 @@ pub(super) fn format_lead_time(
             return format_relative_datetime(time_format, fire_at.with_timezone(&Local));
         }
     }
-    let suffix = if offset_secs > 0 { "before" } else { "after" };
+    let suffix = if offset_secs > 0 {
+        knotq_l10n::t("event.notification.before")
+    } else {
+        knotq_l10n::t("event.notification.after")
+    };
     format!("{} {suffix}", format_duration(offset_secs.abs()))
 }
 
@@ -68,54 +81,55 @@ pub(super) fn notification_trigger_at(
 fn format_duration(seconds: i64) -> String {
     let days = seconds / 86_400;
     if days > 0 && seconds % 86_400 == 0 {
-        return plural(days, "day");
+        return knotq_l10n::t_count("event.duration.days", days);
     }
     let hours = seconds / 3_600;
     if hours > 0 && seconds % 3_600 == 0 {
-        return plural(hours, "hour");
+        return knotq_l10n::t_count("event.duration.hours", hours);
     }
     let minutes = seconds / 60;
     if minutes > 0 {
-        return plural(minutes, "minute");
+        return knotq_l10n::t_count("event.duration.minutes", minutes);
     }
-    plural(seconds, "second")
-}
-
-fn plural(value: i64, unit: &str) -> String {
-    if value == 1 {
-        format!("1 {unit}")
-    } else {
-        format!("{value} {unit}s")
-    }
+    knotq_l10n::t_count("event.duration.seconds", seconds)
 }
 
 pub(super) fn repeat_summary(recurrence: Option<&Recurrence>, time_format: TimeFormat) -> String {
     let Some(recurrence) = recurrence else {
-        return "None".to_string();
+        return knotq_l10n::t("event.value.none").to_string();
     };
     if let Some(simple) = editable_simple_recurrence(recurrence) {
         return simple_repeat_summary(&simple, time_format);
     }
     let mut parts = Vec::new();
     if !recurrence.rrules.is_empty() {
-        parts.push(format!(
-            "RRULE {}",
-            truncate(&recurrence.rrules.join(", "), 72)
+        parts.push(knotq_l10n::t_with(
+            "event.repeat.rrule_summary",
+            &[("rule", &truncate(&recurrence.rrules.join(", "), 72))],
         ));
     }
     if !recurrence.rdates.is_empty() {
-        parts.push(format!("{} extra date(s)", recurrence.rdates.len()));
+        parts.push(knotq_l10n::t_count(
+            "event.repeat.extra_dates",
+            recurrence.rdates.len() as i64,
+        ));
     }
     if !recurrence.exdates.is_empty() {
-        parts.push(format!("{} exception date(s)", recurrence.exdates.len()));
+        parts.push(knotq_l10n::t_count(
+            "event.repeat.exception_dates",
+            recurrence.exdates.len() as i64,
+        ));
     }
     if !recurrence.overrides.is_empty() {
-        parts.push(format!("{} override(s)", recurrence.overrides.len()));
+        parts.push(knotq_l10n::t_count(
+            "event.repeat.overrides",
+            recurrence.overrides.len() as i64,
+        ));
     }
     if parts.is_empty() {
-        "Custom calendar rule".to_string()
+        knotq_l10n::t("event.repeat.custom_rule").to_string()
     } else {
-        format!("Custom: {}", parts.join(" · "))
+        knotq_l10n::t_with("event.repeat.custom_summary", &[("parts", &parts.join(" · "))])
     }
 }
 
@@ -123,9 +137,9 @@ fn simple_repeat_summary(simple: &SimpleRecurrence, _time_format: TimeFormat) ->
     match simple {
         SimpleRecurrence::Daily { interval, .. } => {
             if *interval <= 1 {
-                "Daily".to_string()
+                knotq_l10n::t("repeat.daily").to_string()
             } else {
-                format!("Every {} days", interval)
+                knotq_l10n::t_count("repeat.every_n_days", *interval as i64)
             }
         }
         SimpleRecurrence::Weekly {
@@ -134,23 +148,23 @@ fn simple_repeat_summary(simple: &SimpleRecurrence, _time_format: TimeFormat) ->
             end: _,
         } => {
             if *interval <= 1 {
-                "Weekly".to_string()
+                knotq_l10n::t("repeat.weekly").to_string()
             } else {
-                format!("Every {} weeks", interval)
+                knotq_l10n::t_count("repeat.every_n_weeks", *interval as i64)
             }
         }
         SimpleRecurrence::Monthly { interval, .. } => {
             if *interval <= 1 {
-                "Monthly".to_string()
+                knotq_l10n::t("repeat.monthly").to_string()
             } else {
-                format!("Every {} months", interval)
+                knotq_l10n::t_count("repeat.every_n_months", *interval as i64)
             }
         }
         SimpleRecurrence::Yearly { interval, .. } => {
             if *interval <= 1 {
-                "Yearly".to_string()
+                knotq_l10n::t("repeat.yearly").to_string()
             } else {
-                format!("Every {} years", interval)
+                knotq_l10n::t_count("repeat.every_n_years", *interval as i64)
             }
         }
     }

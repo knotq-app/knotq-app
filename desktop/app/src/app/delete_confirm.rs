@@ -1,4 +1,5 @@
 use gpui::Context;
+use knotq_l10n::{t, t_count, t_with};
 use knotq_model::{FolderId, SchemeId};
 
 use super::{ConfirmationTarget, KnotQApp};
@@ -40,11 +41,9 @@ impl KnotQApp {
     ) {
         self.pending_delete = Some(super::DeleteConfirmation {
             target: ConfirmationTarget::GoogleAccount { account_id },
-            title: "Unlink Google account?".to_string(),
-            message: format!(
-                "This unlinks local Google Calendar access for {label}. Synced Google calendar schemes remain, but they will show as offline until you sign in locally again."
-            ),
-            confirm_label: "Unlink".to_string(),
+            title: t("modal.unlink_google_title").to_string(),
+            message: t_with("modal.unlink_google_message", &[("label", &label)]),
+            confirm_label: t("modal.unlink_google_confirm").to_string(),
         });
         cx.notify();
     }
@@ -55,14 +54,11 @@ impl KnotQApp {
             return;
         }
 
-        let item_label = if count == 1 { "scheme" } else { "schemes" };
         self.pending_delete = Some(super::DeleteConfirmation {
             target: ConfirmationTarget::EmptyArchive,
-            title: "Empty archive?".to_string(),
-            message: format!(
-                "This permanently deletes {count} archived {item_label}. This cannot be undone."
-            ),
-            confirm_label: "Empty Archive".to_string(),
+            title: t("archive.empty_confirm_title").to_string(),
+            message: t_count("archive.delete_confirm_body", count as i64),
+            confirm_label: t("archive.empty_confirm_button").to_string(),
         });
         cx.notify();
     }

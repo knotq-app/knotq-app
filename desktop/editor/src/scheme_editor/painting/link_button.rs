@@ -36,7 +36,7 @@ impl SchemeEditor {
             text_origin.y + base_y + anchor_intra.y,
         );
 
-        let label = "\u{2197} Visit".to_string();
+        let label = knotq_l10n::t("editor.link.visit").to_string();
         let mut font = window.text_style().font();
         font.family = SharedString::new(FONT_UI);
         let color = token_hsla(self.theme.link);

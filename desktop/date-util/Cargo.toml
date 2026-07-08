@@ -6,3 +6,4 @@ edition = "2021"
 [dependencies]
 chrono = { workspace = true }
 knotq-model = { workspace = true }
+knotq-l10n = { workspace = true }

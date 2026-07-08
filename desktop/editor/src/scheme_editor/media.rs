@@ -86,37 +86,52 @@ pub(super) fn media_rejection_message(rejections: &[(Option<String>, MediaError)
     let lines = rejections
         .iter()
         .map(|(name, error)| {
-            let label = name.as_deref().unwrap_or("Image");
-            format!("\u{2022} {label}: {}", short_media_reason(error))
+            let label = name.as_deref().unwrap_or_else(|| knotq_l10n::t("editor.media.fallback_label"));
+            knotq_l10n::t_with(
+                "editor.media.rejected_line",
+                &[("label", label), ("reason", &short_media_reason(error))],
+            )
         })
         .collect::<Vec<_>>()
         .join("\n");
-    format!("{} images couldn't be added:\n{lines}", rejections.len())
+    knotq_l10n::t_with(
+        "editor.media.rejected_count",
+        &[("count", &rejections.len().to_string()), ("lines", &lines)],
+    )
 }
 
 fn single_media_rejection_message(name: Option<&str>, error: &MediaError) -> String {
     let subject = match name {
-        Some(name) => format!("'{name}'"),
-        None => "That image".to_string(),
+        Some(name) => knotq_l10n::t_with("editor.media.subject_named", &[("name", name)]),
+        None => knotq_l10n::t("editor.media.subject_generic").to_string(),
     };
     match error {
-        MediaError::TooLarge { bytes } => format!(
-            "{subject} is {} - images must be under {} to be added.",
-            megabytes(*bytes),
-            megabytes(MAX_IMAGE_ASSET_BYTES)
+        MediaError::TooLarge { bytes } => knotq_l10n::t_with(
+            "editor.media.too_large",
+            &[
+                ("subject", &subject),
+                ("size", &megabytes(*bytes)),
+                ("limit", &megabytes(MAX_IMAGE_ASSET_BYTES)),
+            ],
         ),
-        MediaError::UnsupportedFormat => format!("{subject} isn't a supported image format."),
-        MediaError::IoFailed => format!("{subject} couldn't be saved."),
+        MediaError::UnsupportedFormat => {
+            knotq_l10n::t_with("editor.media.unsupported_format", &[("subject", &subject)])
+        }
+        MediaError::IoFailed => knotq_l10n::t_with("editor.media.io_failed", &[("subject", &subject)]),
     }
 }
 
 fn short_media_reason(error: &MediaError) -> String {
     match error {
-        MediaError::TooLarge { bytes } => {
-            format!("{} (limit {})", megabytes(*bytes), megabytes(MAX_IMAGE_ASSET_BYTES))
-        }
-        MediaError::UnsupportedFormat => "unsupported format".to_string(),
-        MediaError::IoFailed => "couldn't be saved".to_string(),
+        MediaError::TooLarge { bytes } => knotq_l10n::t_with(
+            "editor.media.reason_too_large",
+            &[
+                ("size", &megabytes(*bytes)),
+                ("limit", &megabytes(MAX_IMAGE_ASSET_BYTES)),
+            ],
+        ),
+        MediaError::UnsupportedFormat => knotq_l10n::t("editor.media.reason_unsupported").to_string(),
+        MediaError::IoFailed => knotq_l10n::t("editor.media.reason_io_failed").to_string(),
     }
 }
 

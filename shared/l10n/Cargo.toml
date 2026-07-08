@@ -1,0 +1,17 @@
+[package]
+name = "knotq-l10n"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+serde_json.workspace = true
+
+[features]
+default = []
+# Detect the OS UI language (used by the desktop app; mobile shells pass the
+# locale in through FFI instead).
+system-locale = ["dep:sys-locale"]
+
+[dependencies.sys-locale]
+version = "0.3"
+optional = true

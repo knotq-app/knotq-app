@@ -63,6 +63,20 @@ impl KnotQApp {
         cx.notify();
     }
 
+    /// `None` follows the OS language. Menus are rebuilt so their titles pick
+    /// up the new locale; views re-render via `refresh`.
+    pub fn set_language(&mut self, language: Option<String>, cx: &mut Context<Self>) {
+        if self.settings.language == language {
+            return;
+        }
+        self.settings.language = language;
+        apply_language_setting(self.settings.language.as_deref());
+        self.save_app_settings();
+        crate::set_app_menus(cx);
+        cx.refresh_windows();
+        cx.notify();
+    }
+
     pub fn set_time_format(&mut self, format: TimeFormat, cx: &mut Context<Self>) {
         if self.time_format == format {
             return;
@@ -127,6 +141,7 @@ impl KnotQApp {
             window_position: self.window_position,
             google_accounts: self.settings.google_accounts.clone(),
             sync_account: self.settings.sync_account.clone(),
+            language: self.settings.language.clone(),
             onboarding_completed: self.settings.onboarding_completed,
             last_view: self.settings.last_view,
             last_scheme_id: self.settings.last_scheme_id,
@@ -135,6 +150,15 @@ impl KnotQApp {
             eprintln!("settings save failed: {err:#}");
         }
     }
+}
+
+/// Activates the persisted UI language, or the OS language when unset.
+/// Unresolvable tags leave English active.
+pub fn apply_language_setting(language: Option<&str>) {
+    match language {
+        Some(tag) => knotq_l10n::set_locale(tag),
+        None => knotq_l10n::set_locale(&knotq_l10n::system_locale_tag().unwrap_or_default()),
+    };
 }
 
 pub fn initial_window_size(settings: &AppSettings) -> SavedWindowSize {

@@ -1,4 +1,15 @@
 use super::*;
+use chrono::Weekday;
+
+const DATE_POPOVER_WEEKDAY_ORDER: [Weekday; 7] = [
+    Weekday::Sun,
+    Weekday::Mon,
+    Weekday::Tue,
+    Weekday::Wed,
+    Weekday::Thu,
+    Weekday::Fri,
+    Weekday::Sat,
+];
 
 impl KnotQApp {
     pub fn render_date_popover(
@@ -30,9 +41,9 @@ impl KnotQApp {
         };
         let header_gap = if uses_meridiem { 4.0 } else { 8.0 };
         let label = match target.kind {
-            DateKind::Start => "Start",
-            DateKind::End => "End",
-            DateKind::Available => "Avail",
+            DateKind::Start => knotq_l10n::t("event.field.start"),
+            DateKind::End => knotq_l10n::t("event.field.end"),
+            DateKind::Available => knotq_l10n::t("event.field.available"),
         };
 
         let current_utc = self
@@ -43,7 +54,7 @@ impl KnotQApp {
         let month_start = NaiveDate::from_ymd_opt(month.year(), month.month(), 1).unwrap_or(month);
         let first_weekday = month_start.weekday().num_days_from_sunday() as usize;
         let days_in_month = days_in_month(month.year(), month.month());
-        let day_headers: Vec<gpui::AnyElement> = ["S", "M", "T", "W", "T", "F", "S"]
+        let day_headers: Vec<gpui::AnyElement> = DATE_POPOVER_WEEKDAY_ORDER
             .iter()
             .map(|d| {
                 div()
@@ -54,7 +65,7 @@ impl KnotQApp {
                     .text_size(px(FONT_SIZE_CAPTION2))
                     .font_family(FONT_UI)
                     .text_color(token_hsla(t.text_dim))
-                    .child(*d)
+                    .child(knotq_date_util::weekday_name_initial(*d))
                     .into_any_element()
             })
             .collect();
@@ -204,7 +215,7 @@ impl KnotQApp {
                             .flex_shrink_0()
                             .text_size(px(FONT_SIZE_BODY))
                             .text_color(token_hsla(t.text_muted))
-                            .child("at"),
+                            .child(knotq_l10n::t("event.date_popover.at")),
                     )
                     .child(if uses_meridiem {
                         date_time_with_meridiem_group(

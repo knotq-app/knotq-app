@@ -6,6 +6,7 @@ use gpui::prelude::*;
 use gpui::{deferred, div, px, ClickEvent, Context, FontWeight, IntoElement, Window};
 use gpui_component::tooltip::Tooltip;
 use gpui_component::{Icon, IconName, Sizable};
+use knotq_l10n::t as tr;
 
 use crate::app::{
     EmailVerificationResend, KnotQApp, SettingsDropdown, SyncAccountAction, SyncAuthStatus,
@@ -129,10 +130,9 @@ impl KnotQApp {
 
         let (title, message, confirm_label) = match action {
             SyncAccountAction::CancelSubscription => (
-                "Cancel subscription?",
-                "Sync stays available until the current billing period ends, and your \
-                 workspace stays on this device.",
-                "Cancel subscription",
+                tr("account.confirm.cancel_subscription_title"),
+                tr("account.confirm.cancel_subscription_message"),
+                tr("account.confirm.cancel_subscription_confirm"),
             ),
         };
 
@@ -195,11 +195,11 @@ fn email_verification_notice(
 ) -> gpui::AnyElement {
     let amber = if t.is_dark { 0xf8d38dff } else { 0x9a4b00ff };
     let (label, disabled): (&str, bool) = if resend_sent {
-        ("Verification email sent", true)
+        (tr("account.verify.email_sent"), true)
     } else if resend_in_progress {
-        ("Sending\u{2026}", true)
+        (tr("account.verify.sending"), true)
     } else {
-        ("Resend verification email", false)
+        (tr("account.verify.resend"), false)
     };
 
     div()
@@ -212,7 +212,7 @@ fn email_verification_notice(
                 .text_size(px(11.0))
                 .line_height(px(15.0))
                 .text_color(token_hsla(amber))
-                .child("Your email isn't verified. Verify it to subscribe — check your inbox for the link."),
+                .child(tr("account.verify.notice")),
         )
         .child(
             div()
@@ -264,7 +264,7 @@ fn signed_out_entry(_t: Theme, cx: &mut Context<KnotQApp>) -> gpui::AnyElement {
                 .with_size(px(13.0))
                 .text_color(token_hsla(0xffffffff)),
         )
-        .child("Sign in")
+        .child(tr("sync.sign_in"))
         .into_any_element()
 }
 
@@ -275,11 +275,11 @@ fn resync_button(syncing: bool, t: Theme, cx: &mut Context<KnotQApp>) -> gpui::A
     account_icon_button(
         "sync-resync",
         Some(if syncing {
-            "Resyncing\u{2026}"
+            tr("sync.action.resyncing")
         } else {
-            "Resync"
+            tr("sync.action.resync")
         }),
-        "Sync now",
+        tr("sync.action.sync_now"),
         IconName::Redo2,
         false,
         false,
@@ -355,11 +355,11 @@ fn subscribe_button(
 ) -> gpui::AnyElement {
     account_icon_button(
         "sync-subscribe",
-        Some("Subscribe"),
+        Some(tr("account.subscribe.label")),
         if known_unverified {
-            "Verify your email before subscribing"
+            tr("account.subscribe.tooltip_verify_first")
         } else {
-            "Subscribe to KnotQ Sync"
+            tr("account.subscribe.tooltip")
         },
         IconName::ExternalLink,
         true,
@@ -380,8 +380,8 @@ fn subscribe_button(
 fn reenable_button(in_progress: bool, t: Theme, cx: &mut Context<KnotQApp>) -> gpui::AnyElement {
     account_icon_button(
         "sync-reenable",
-        Some("Re-enable"),
-        "Re-enable your subscription so it renews",
+        Some(tr("account.reenable.label")),
+        tr("account.reenable.tooltip"),
         IconName::Redo2,
         true,
         false,
@@ -402,8 +402,8 @@ fn manage_account_button(
 ) -> gpui::AnyElement {
     account_icon_button(
         "sync-manage-account",
-        Some("Manage"),
-        "Manage sync account",
+        Some(tr("account.manage.label")),
+        tr("account.manage.tooltip"),
         if manage_open {
             IconName::ChevronUp
         } else {
@@ -444,9 +444,9 @@ fn manage_account_menu(
         rows.push(manage_menu_row(
             ("sync-manage-subscribe", 0),
             if known_unverified {
-                "Verify email to subscribe"
+                tr("account.menu.verify_to_subscribe")
             } else {
-                "Subscribe"
+                tr("account.subscribe.label")
             },
             IconName::ExternalLink,
             false,
@@ -463,9 +463,9 @@ fn manage_account_menu(
     rows.push(manage_menu_row(
         ("sync-manage-check-status", 0),
         if supports_sync {
-            "Check status"
+            tr("account.menu.check_status")
         } else {
-            "I've subscribed"
+            tr("account.menu.ive_subscribed")
         },
         IconName::Redo2,
         false,
@@ -479,7 +479,7 @@ fn manage_account_menu(
 
     rows.push(manage_menu_row(
         ("sync-manage-account-page", 0),
-        "Manage account on website",
+        tr("account.menu.manage_on_website"),
         IconName::ExternalLink,
         false,
         false,
@@ -492,7 +492,7 @@ fn manage_account_menu(
 
     rows.push(manage_menu_row(
         ("sync-manage-sign-out", 0),
-        "Sign out",
+        tr("account.menu.sign_out"),
         IconName::User,
         false,
         in_progress,
@@ -509,7 +509,7 @@ fn manage_account_menu(
             // rather than cancel again.
             rows.push(manage_menu_row(
                 ("sync-manage-reenable", 0),
-                "Re-enable subscription",
+                tr("account.menu.reenable_subscription"),
                 IconName::Redo2,
                 false,
                 in_progress,
@@ -526,7 +526,7 @@ fn manage_account_menu(
                 // directly instead of attempting a call that always fails.
                 SubscriptionProvider::Apple => rows.push(manage_menu_row(
                     ("sync-manage-cancel-store", 0),
-                    "Cancel in App Store",
+                    tr("account.menu.cancel_app_store"),
                     IconName::ExternalLink,
                     true,
                     in_progress,
@@ -538,7 +538,7 @@ fn manage_account_menu(
                 )),
                 SubscriptionProvider::Google => rows.push(manage_menu_row(
                     ("sync-manage-cancel-store", 0),
-                    "Cancel in Google Play",
+                    tr("account.menu.cancel_google_play"),
                     IconName::ExternalLink,
                     true,
                     in_progress,
@@ -550,7 +550,7 @@ fn manage_account_menu(
                 )),
                 SubscriptionProvider::Web => rows.push(manage_menu_row(
                     ("sync-manage-cancel-sync", 0),
-                    "Cancel sync",
+                    tr("account.menu.cancel_sync"),
                     IconName::CircleX,
                     true,
                     in_progress,
@@ -764,7 +764,7 @@ fn account_confirm_actions(
                 .on_click(cx.listener(|this, _: &ClickEvent, _window, cx| {
                     this.dismiss_sync_account_action(cx);
                 }))
-                .child("Keep subscription"),
+                .child(tr("account.confirm.keep_subscription")),
         )
         .child(
             div()
@@ -785,7 +785,7 @@ fn account_confirm_actions(
                 })
                 .when(in_progress, |s| s.opacity(0.65))
                 .child(if in_progress {
-                    "Working…"
+                    tr("account.confirm.working")
                 } else {
                     confirm_label
                 }),

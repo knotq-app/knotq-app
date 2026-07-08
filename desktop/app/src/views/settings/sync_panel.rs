@@ -1,6 +1,7 @@
 use chrono::Local;
 use gpui::prelude::*;
 use gpui::{div, px, Context};
+use knotq_l10n::{t as tr, t_with as tr_with};
 
 use crate::app::KnotQApp;
 use crate::theme_gpui::{token_hsla, token_rgba, Theme as UiTheme};
@@ -23,13 +24,14 @@ impl KnotQApp {
         let cancel_notice =
             cancelled.then(
                 || match status.and_then(|status| status.current_period_end) {
-                    Some(end) => format!(
-                        "Cancelled — sync stays active until {}, then stops renewing.",
-                        end.with_timezone(&Local).format("%b %-d, %Y")
+                    Some(end) => tr_with(
+                        "settings.sync.cancelled_until",
+                        &[(
+                            "date",
+                            &end.with_timezone(&Local).format("%b %-d, %Y").to_string(),
+                        )],
                     ),
-                    None => {
-                        "Cancelled — sync stays active until your billing period ends.".to_string()
-                    }
+                    None => tr("settings.sync.cancelled_indefinite").to_string(),
                 },
             );
 
@@ -57,7 +59,7 @@ impl KnotQApp {
                             .line_height(px(18.0))
                             .font_weight(gpui::FontWeight::SEMIBOLD)
                             .text_color(token_hsla(t.text_primary))
-                            .child("KnotQ Sync"),
+                            .child(tr("settings.sync.title")),
                     )
                     .child(
                         div()
@@ -139,8 +141,8 @@ fn settings_sync_panel_state(
     // amber "won't renew" treatment rather than the green active one.
     if sync_enabled && cancelled {
         return (
-            "Cancelled",
-            "Subscription cancelled — sync active until your billing period ends.".to_string(),
+            tr("settings.sync.badge_cancelled"),
+            tr("settings.sync.detail_cancelled").to_string(),
             if t.is_dark { 0xf59e0b28 } else { 0xd977061a },
             if t.is_dark { 0xf8d38dff } else { 0x9a4b00ff },
         );
@@ -148,8 +150,8 @@ fn settings_sync_panel_state(
 
     if sync_enabled {
         return (
-            "Subscribed",
-            "Workspace sync is active for this account.".to_string(),
+            tr("settings.sync.badge_subscribed"),
+            tr("settings.sync.detail_subscribed").to_string(),
             if t.is_dark { 0x30d15826 } else { 0x1f8f4d18 },
             if t.is_dark { 0x9af0b6ff } else { 0x176b38ff },
         );
@@ -157,16 +159,16 @@ fn settings_sync_panel_state(
 
     if signed_in {
         return (
-            "Not Subscribed",
-            "Subscribe to keep this workspace available across devices.".to_string(),
+            tr("settings.sync.badge_not_subscribed"),
+            tr("settings.sync.detail_not_subscribed").to_string(),
             if t.is_dark { 0xf59e0b28 } else { 0xd977061a },
             if t.is_dark { 0xf8d38dff } else { 0x9a4b00ff },
         );
     }
 
     (
-        "Available",
-        "Sign in to keep this workspace available across devices.".to_string(),
+        tr("settings.sync.badge_available"),
+        tr("settings.sync.detail_available").to_string(),
         if t.is_dark { 0x3b82f628 } else { 0x2f67cf18 },
         if t.is_dark { 0x9bc2ffff } else { 0x235ebeff },
     )

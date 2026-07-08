@@ -4,7 +4,7 @@ use std::collections::HashSet;
 pub(super) fn calendar_item_title(text: &str) -> String {
     let text = text.trim();
     if text.is_empty() {
-        "(untitled)".to_string()
+        knotq_l10n::t("calendar.task.untitled").to_string()
     } else {
         text.to_string()
     }

@@ -28,7 +28,7 @@ pub(super) fn repeat_type_menu(
         .on_click(|_: &ClickEvent, _window, cx| cx.stop_propagation())
         .child(repeat_type_row(
             "repeat-type-none",
-            "None",
+            knotq_l10n::t("event.value.none"),
             active_mode.is_none() && !complex_repeat,
             None,
             scheme_id,
@@ -115,7 +115,7 @@ pub(super) fn repeat_details_inline_editor(
                     .text_size(px(11.0))
                     .font_family(FONT_UI)
                     .text_color(token_hsla(t.text_dim))
-                    .child("Custom calendar rule"),
+                    .child(knotq_l10n::t("event.repeat.custom_rule")),
             )
         })
         .when(active_mode == Some(EventRepeatMode::Weekly), |section| {
@@ -213,8 +213,15 @@ fn repeat_end_inline_editor(
         _ => None,
     };
     let value_label = until_date
-        .map(|d| d.format("%b %-d, %Y").to_string())
-        .unwrap_or_else(|| "Never".to_string());
+        .map(|d| {
+            format!(
+                "{} {}, {}",
+                knotq_date_util::month_short_name(d.month()),
+                d.day(),
+                d.year()
+            )
+        })
+        .unwrap_or_else(|| knotq_l10n::t("event.repeat.never").to_string());
     let default_until = until_date.unwrap_or_else(|| {
         event_datetime
             .map(|dt| dt.with_timezone(&Local).date_naive())
@@ -268,7 +275,7 @@ fn repeat_end_inline_editor(
                 .w(px(EVENT_POPUP_DETAIL_LABEL_W))
                 .flex_shrink_0()
                 .text_color(token_hsla(t.text_dim))
-                .child("Repeat End"),
+                .child(knotq_l10n::t("event.repeat.end_label")),
         )
         .child(div().flex().items_center().min_w_0().child(value_button))
         .into_any_element()

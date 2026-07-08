@@ -53,11 +53,11 @@ impl KnotQApp {
             None
         };
         let repeat_type_value = if complex_repeat {
-            "Custom".to_string()
+            knotq_l10n::t("repeat.type.custom").to_string()
         } else if has_simple_repeat {
             state.mode.label().to_string()
         } else {
-            "None".to_string()
+            knotq_l10n::t("repeat.type.none").to_string()
         };
 
         let t = self.theme();
@@ -146,7 +146,7 @@ impl KnotQApp {
             .when(is_recurring && occurrence_index.is_some(), |card| {
                 card.child(rp_row(
                     "rp-scope-this",
-                    "This event only",
+                    knotq_l10n::t("repeat.scope.this_event_only"),
                     scope == RepeatScope::ThisEvent,
                     t,
                     cx.listener(move |this, _: &ClickEvent, _w, cx| {
@@ -159,7 +159,7 @@ impl KnotQApp {
                 ))
                 .child(rp_row(
                     "rp-scope-future",
-                    "This and future events",
+                    knotq_l10n::t("repeat.scope.this_and_future"),
                     scope == RepeatScope::AllFuture,
                     t,
                     cx.listener(move |this, _: &ClickEvent, _w, cx| {
@@ -173,7 +173,7 @@ impl KnotQApp {
             })
             .child(rp_selector_row(
                 "rp-type-select",
-                "Repeat",
+                knotq_l10n::t("repeat.field.repeat"),
                 repeat_type_value,
                 type_menu_open,
                 t,

@@ -45,7 +45,8 @@ impl KnotQApp {
         if let Some(input) = self.search_input.clone() {
             return input;
         }
-        let input = cx.new(|cx| InputState::new(window, cx).placeholder("Search KnotQ"));
+        let input =
+            cx.new(|cx| InputState::new(window, cx).placeholder(knotq_l10n::t("search.placeholder")));
         let sub = cx.subscribe_in(&input, window, Self::on_search_input_event);
         self.search_input = Some(input.clone());
         self._search_subscription = Some(sub);
@@ -314,7 +315,7 @@ impl KnotQApp {
                                         .py(px(18.0))
                                         .text_size(px(12.0))
                                         .text_color(token_hsla(t.text_soft))
-                                        .child("No results"),
+                                        .child(knotq_l10n::t("search.no_results")),
                                 )
                             })
                             .when(!result_rows.is_empty(), |s| s.children(result_rows)),

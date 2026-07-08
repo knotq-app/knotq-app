@@ -89,8 +89,10 @@ impl KnotQApp {
                 self.sync_auth_status = SyncAuthStatus::Idle;
             }
             Err(err) => {
-                self.sync_auth_status =
-                    SyncAuthStatus::Error(format!("Could not open account management: {err}"));
+                self.sync_auth_status = SyncAuthStatus::Error(knotq_l10n::t_with(
+                    "sync.error.open_account_management_failed",
+                    &[("error", &err.to_string())],
+                ));
             }
         }
         cx.notify();
@@ -282,8 +284,10 @@ impl KnotQApp {
                 self.sync_auth_status = SyncAuthStatus::Idle;
             }
             Err(err) => {
-                self.sync_auth_status =
-                    SyncAuthStatus::Error(format!("Could not open subscription management: {err}"));
+                self.sync_auth_status = SyncAuthStatus::Error(knotq_l10n::t_with(
+                    "sync.error.open_subscription_management_failed",
+                    &[("error", &err.to_string())],
+                ));
             }
         }
         cx.notify();
@@ -360,8 +364,9 @@ impl KnotQApp {
                         self.start_subscription_status_poll(cx);
                     }
                     Err(err) => {
-                        self.sync_auth_status = SyncAuthStatus::Error(format!(
-                            "Could not open the checkout page: {err}"
+                        self.sync_auth_status = SyncAuthStatus::Error(knotq_l10n::t_with(
+                            "sync.error.open_checkout_failed",
+                            &[("error", &err.to_string())],
                         ));
                     }
                 }
@@ -631,8 +636,7 @@ impl KnotQApp {
                     }
                 } else {
                     self.sync_auth_status = SyncAuthStatus::Error(
-                        "No active subscription found yet. If you just paid, wait a moment and try again."
-                            .to_string(),
+                        knotq_l10n::t("sync.error.no_active_subscription_yet").to_string(),
                     );
                 }
             }
@@ -675,7 +679,12 @@ fn account_action_request(
                 fallback_code
             ))));
         }
-        Err(error) => return Err(anyhow!("Could not reach the sync API: {error}")),
+        Err(error) => {
+            return Err(anyhow!(knotq_l10n::t_with(
+                "sync.error.api_unreachable",
+                &[("error", &error.to_string())],
+            )))
+        }
     };
     let session: LoginResponse = response.into_json().context(parse_context)?;
     sync_account_settings_from_session(base, session)
@@ -719,13 +728,18 @@ fn create_subscription_checkout_backend(account: &SyncAccountSettings) -> Result
                 "checkout_failed"
             ))));
         }
-        Err(error) => return Err(anyhow!("Could not reach the sync API: {error}")),
+        Err(error) => {
+            return Err(anyhow!(knotq_l10n::t_with(
+                "sync.error.api_unreachable",
+                &[("error", &error.to_string())],
+            )))
+        }
     };
     let checkout: CheckoutResponse = response
         .into_json()
         .context("parse sync subscription checkout response")?;
     if checkout.checkout_url.trim().is_empty() {
-        return Err(anyhow!("The sync API did not return a checkout URL."));
+        return Err(anyhow!(knotq_l10n::t("sync.error.checkout_url_missing")));
     }
     Ok(checkout.checkout_url)
 }
@@ -739,13 +753,16 @@ fn resend_email_verification_backend(account: &SyncAccountSettings) -> Result<()
         .call()
     {
         Ok(_) => Ok(()),
-        Err(ureq::Error::Status(429, _)) => Err(anyhow!(
-            "You've requested this recently — wait a minute, then try again."
-        )),
+        Err(ureq::Error::Status(429, _)) => Err(anyhow!(knotq_l10n::t(
+            "sync.error.resend_rate_limited"
+        ))),
         Err(ureq::Error::Status(_, response)) => Err(anyhow!(account_action_error_message(
             &login_error_code(response, "resend_failed")
         ))),
-        Err(error) => Err(anyhow!("Could not reach the sync API: {error}")),
+        Err(error) => Err(anyhow!(knotq_l10n::t_with(
+            "sync.error.api_unreachable",
+            &[("error", &error.to_string())],
+        ))),
     }
 }
 
@@ -760,12 +777,16 @@ fn refresh_account_status_backend(mut account: SyncAccountSettings) -> Result<Sy
     }
 
     let Some(refresh_token) = account.refresh_token.clone() else {
-        return Err(anyhow!("Your sync session expired. Please sign in again."));
+        return Err(anyhow!(knotq_l10n::t(
+            "sync.error.session_expired_reauth"
+        )));
     };
     let tokens = match refresh_sync_backend(&account.api_base, &refresh_token) {
         Ok(tokens) => tokens,
         Err(RefreshError::Unauthorized) => {
-            return Err(anyhow!("Your sync session expired. Please sign in again."));
+            return Err(anyhow!(knotq_l10n::t(
+                "sync.error.session_expired_reauth"
+            )));
         }
         Err(RefreshError::Transient(error)) => return Err(error),
     };
@@ -779,7 +800,7 @@ fn refresh_account_status_backend(mut account: SyncAccountSettings) -> Result<Sy
 
     let status = fetch_account_status_backend(&account).map_err(|err| match err {
         AccountStatusError::Unauthorized => {
-            anyhow!("Your sync session expired. Please sign in again.")
+            anyhow!(knotq_l10n::t("sync.error.session_expired_reauth"))
         }
         AccountStatusError::Transient(error) => error,
     })?;
@@ -800,9 +821,9 @@ fn fetch_account_status_backend(
         Ok(response) => response,
         Err(ureq::Error::Status(401, _)) => return Err(AccountStatusError::Unauthorized),
         Err(ureq::Error::Status(404, _)) => {
-            return Err(AccountStatusError::Transient(anyhow!(
-                "The sync API does not support account status yet."
-            )));
+            return Err(AccountStatusError::Transient(anyhow!(knotq_l10n::t(
+                "sync.error.account_status_unsupported"
+            ))));
         }
         Err(ureq::Error::Status(_, response)) => {
             let code = response
@@ -814,9 +835,10 @@ fn fetch_account_status_backend(
             )));
         }
         Err(error) => {
-            return Err(AccountStatusError::Transient(anyhow!(
-                "Could not reach the sync API: {error}"
-            )));
+            return Err(AccountStatusError::Transient(anyhow!(knotq_l10n::t_with(
+                "sync.error.api_unreachable",
+                &[("error", &error.to_string())],
+            ))));
         }
     };
     response
@@ -867,37 +889,27 @@ fn sync_account_status_from_response(status: AccountStatusResponse) -> SyncAccou
 
 fn account_status_error_message(code: &str) -> &'static str {
     match code {
-        "unauthorized" => "Your sync session expired. Sign in again, then retry.",
-        "billing_api_not_configured" => "Subscription cancellation is not configured yet.",
-        "cancel_in_app_store" => {
-            "Manage this App Store subscription from your Apple account subscriptions."
-        }
-        _ => "The request to the sync API failed.",
+        "unauthorized" => knotq_l10n::t("sync.error.session_expired_retry"),
+        "billing_api_not_configured" => knotq_l10n::t("sync.error.cancel_not_configured"),
+        "cancel_in_app_store" => knotq_l10n::t("sync.error.manage_in_app_store"),
+        _ => knotq_l10n::t("sync.error.request_failed"),
     }
 }
 
 fn account_action_error_message(code: &str) -> &'static str {
     match code {
-        "unauthorized" => "Your sync session expired. Sign in again, then retry.",
-        "delete_confirmation_mismatch" => "Could not confirm the account. Please try again.",
+        "unauthorized" => knotq_l10n::t("sync.error.session_expired_retry"),
+        "delete_confirmation_mismatch" => knotq_l10n::t("sync.error.confirm_account_failed"),
         "billing_api_not_configured" | "billing_checkout_not_configured" => {
-            "Subscription checkout is not configured yet."
+            knotq_l10n::t("sync.error.checkout_not_configured")
         }
-        "billing_provider_error" => "Subscription checkout is temporarily unavailable.",
-        "email_not_verified" => {
-            "Verify your email before subscribing — check your inbox for the link."
-        }
-        "email_mismatch" | "forbidden" => "This checkout does not match the signed-in account.",
-        "cancel_in_app_store" => {
-            "Manage this App Store subscription from your Apple account subscriptions."
-        }
-        "resume_in_app_store" => {
-            "Re-enable this App Store subscription from your Apple account subscriptions."
-        }
-        "resume_in_play_store" => {
-            "Re-enable this subscription from your Google Play subscriptions."
-        }
-        "no_active_subscription" => "There is no active web subscription to change.",
-        _ => "The request to the sync API failed.",
+        "billing_provider_error" => knotq_l10n::t("sync.error.checkout_unavailable"),
+        "email_not_verified" => knotq_l10n::t("sync.error.email_not_verified"),
+        "email_mismatch" | "forbidden" => knotq_l10n::t("sync.error.checkout_account_mismatch"),
+        "cancel_in_app_store" => knotq_l10n::t("sync.error.manage_in_app_store"),
+        "resume_in_app_store" => knotq_l10n::t("sync.error.reenable_in_app_store"),
+        "resume_in_play_store" => knotq_l10n::t("sync.error.reenable_in_play_store"),
+        "no_active_subscription" => knotq_l10n::t("sync.error.no_active_web_subscription"),
+        _ => knotq_l10n::t("sync.error.request_failed"),
     }
 }

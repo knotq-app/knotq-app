@@ -195,7 +195,10 @@ impl KnotQApp {
                 }
                 Err(err) => {
                     self.auto_update_status = AutoUpdateUiStatus::Errored {
-                        message: format!("Could not install update: {err:#}"),
+                        message: knotq_l10n::t_with(
+                            "update.error.install_failed",
+                            &[("error", &format!("{err:#}"))],
+                        ),
                         checked_at: Utc::now(),
                         update: None,
                     };
@@ -209,7 +212,10 @@ impl KnotQApp {
                 }
                 Err(err) => {
                     self.auto_update_status = AutoUpdateUiStatus::Errored {
-                        message: format!("Could not launch installer: {err:#}"),
+                        message: knotq_l10n::t_with(
+                            "update.error.launch_installer_failed",
+                            &[("error", &format!("{err:#}"))],
+                        ),
                         checked_at: Utc::now(),
                         update: None,
                     };
@@ -245,7 +251,12 @@ async fn run_update_check(
     let current_version = match current_version(env!("CARGO_PKG_VERSION")) {
         Ok(version) => version,
         Err(err) => {
-            set_check_error(weak, cx, kind, format!("Invalid app version: {err:#}"));
+            set_check_error(
+                weak,
+                cx,
+                kind,
+                knotq_l10n::t_with("update.error.invalid_version", &[("error", &format!("{err:#}"))]),
+            );
             return;
         }
     };
@@ -285,7 +296,7 @@ async fn run_update_check(
                 weak,
                 cx,
                 kind,
-                format!("Could not check for updates: {err:#}"),
+                knotq_l10n::t_with("update.error.check_failed", &[("error", &format!("{err:#}"))]),
             );
         }
     }
@@ -313,7 +324,10 @@ async fn prepare_available_update(
                 weak,
                 cx,
                 kind,
-                format!("Could not locate the running app: {err:#}"),
+                knotq_l10n::t_with(
+                    "update.error.locate_app_failed",
+                    &[("error", &format!("{err:#}"))],
+                ),
             );
             return;
         }
@@ -321,7 +335,12 @@ async fn prepare_available_update(
     let current_version = match current_version(env!("CARGO_PKG_VERSION")) {
         Ok(version) => version,
         Err(err) => {
-            set_check_error(weak, cx, kind, format!("Invalid app version: {err:#}"));
+            set_check_error(
+                weak,
+                cx,
+                kind,
+                knotq_l10n::t_with("update.error.invalid_version", &[("error", &format!("{err:#}"))]),
+            );
             return;
         }
     };
@@ -356,7 +375,7 @@ async fn prepare_available_update(
                 cx,
                 kind,
                 update,
-                format!("Could not prepare update: {err:#}"),
+                knotq_l10n::t_with("update.error.prepare_failed", &[("error", &format!("{err:#}"))]),
             );
         }
     }

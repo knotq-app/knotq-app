@@ -33,19 +33,19 @@ pub(super) fn scope_dialog(
                         .line_height(px(18.0))
                         .font_weight(FontWeight::SEMIBOLD)
                         .text_color(token_hsla(t.text_primary))
-                        .child("Recurring Event"),
+                        .child(knotq_l10n::t("event.scope_dialog.title")),
                 )
                 .child(
                     div()
                         .text_size(px(11.0))
                         .line_height(px(15.0))
                         .text_color(token_hsla(t.text_dim))
-                        .child("Which events should this apply to?"),
+                        .child(knotq_l10n::t("event.scope_dialog.subtitle")),
                 ),
         )
         .child(scope_dialog_row(
             "scope-this-event",
-            "This event",
+            knotq_l10n::t("event.scope_dialog.this_event"),
             can_apply_this,
             RepeatScope::ThisEvent,
             t,
@@ -53,7 +53,7 @@ pub(super) fn scope_dialog(
         ))
         .child(scope_dialog_row(
             "scope-future-events",
-            "This and future events",
+            knotq_l10n::t("event.scope_dialog.this_and_future"),
             can_apply_future,
             RepeatScope::AllFuture,
             t,
@@ -61,7 +61,7 @@ pub(super) fn scope_dialog(
         ))
         .child(scope_dialog_row(
             "scope-all-events",
-            "All events",
+            knotq_l10n::t("event.scope_dialog.all_events"),
             can_apply_all,
             RepeatScope::AllEvents,
             t,
@@ -149,6 +149,6 @@ fn cancel_scope_button(t: Theme, cx: &mut Context<KnotQApp>) -> gpui::AnyElement
             this.cancel_event_scope_dialog(cx);
             cx.stop_propagation();
         }))
-        .child("Cancel")
+        .child(knotq_l10n::t("common.cancel"))
         .into_any_element()
 }

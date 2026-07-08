@@ -368,6 +368,46 @@ fn sync_component_theme(t: Theme, cx: &mut App) {
     theme.colors.input = token_hsla(t.border_soft);
 }
 
+/// (Re)installs the OS menu bar. Called at startup and again whenever the UI
+/// language changes, so menu titles re-resolve against the active locale.
+pub(crate) fn set_app_menus(cx: &mut App) {
+    cx.set_menus(vec![
+        Menu {
+            name: "KnotQ".into(),
+            items: vec![
+                MenuItem::action(knotq_l10n::t("menu.settings"), OpenSettingsView),
+                MenuItem::separator(),
+                MenuItem::action(knotq_l10n::t("menu.quit"), QuitApp),
+            ],
+        },
+        Menu {
+            name: knotq_l10n::t("menu.file").into(),
+            items: vec![
+                MenuItem::action(knotq_l10n::t("menu.new_item"), NewItem),
+                MenuItem::action(knotq_l10n::t("menu.new_folder"), NewFolder),
+            ],
+        },
+        Menu {
+            name: knotq_l10n::t("menu.edit").into(),
+            items: vec![
+                MenuItem::os_action(knotq_l10n::t("menu.undo"), AppUndo, OsAction::Undo),
+                MenuItem::os_action(knotq_l10n::t("menu.redo"), AppRedo, OsAction::Redo),
+            ],
+        },
+        Menu {
+            name: knotq_l10n::t("menu.view").into(),
+            items: vec![
+                MenuItem::action(knotq_l10n::t("menu.calendar"), OpenCalendarView),
+                MenuItem::action(knotq_l10n::t("menu.daily"), OpenDailyQueueView),
+                MenuItem::action(knotq_l10n::t("menu.settings"), OpenSettingsView),
+                MenuItem::separator(),
+                MenuItem::action(knotq_l10n::t("menu.previous_week"), NavWeekPrev),
+                MenuItem::action(knotq_l10n::t("menu.next_week"), NavWeekNext),
+            ],
+        },
+    ]);
+}
+
 fn main() {
     #[cfg(target_os = "linux")]
     if knotq_notifications::run_linux_notification_helper_from_env() {
@@ -422,43 +462,13 @@ fn main() {
 
             cx.on_action(|_: &QuitApp, cx| cx.quit());
             cx.activate(true);
-            cx.set_menus(vec![
-                Menu {
-                    name: "KnotQ".into(),
-                    items: vec![
-                        MenuItem::action("Settings", OpenSettingsView),
-                        MenuItem::separator(),
-                        MenuItem::action("Quit KnotQ", QuitApp),
-                    ],
-                },
-                Menu {
-                    name: "File".into(),
-                    items: vec![
-                        MenuItem::action("New Item", NewItem),
-                        MenuItem::action("New Folder", NewFolder),
-                    ],
-                },
-                Menu {
-                    name: "Edit".into(),
-                    items: vec![
-                        MenuItem::os_action("Undo", AppUndo, OsAction::Undo),
-                        MenuItem::os_action("Redo", AppRedo, OsAction::Redo),
-                    ],
-                },
-                Menu {
-                    name: "View".into(),
-                    items: vec![
-                        MenuItem::action("Calendar", OpenCalendarView),
-                        MenuItem::action("Daily", OpenDailyQueueView),
-                        MenuItem::action("Settings", OpenSettingsView),
-                        MenuItem::separator(),
-                        MenuItem::action("Previous Week", NavWeekPrev),
-                        MenuItem::action("Next Week", NavWeekNext),
-                    ],
-                },
-            ]);
 
             let settings = load_or_default_settings();
+            // Locale must be active before the menus (and any view) render
+            // their first strings.
+            crate::app::apply_language_setting(settings.language.as_deref());
+            set_app_menus(cx);
+
             let initial_bounds = initial_window_bounds(&settings, cx);
             let opts = WindowOptions {
                 titlebar: Some(titlebar_options()),

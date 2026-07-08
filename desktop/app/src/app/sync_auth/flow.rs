@@ -156,7 +156,11 @@ impl KnotQApp {
                 Err(mpsc::TryRecvError::Disconnected) => {
                     let finish = finish.clone();
                     let _ = weak.update(cx, move |app, cx| {
-                        finish(app, Err("Sync sign-in worker stopped".to_string()), cx);
+                        finish(
+                            app,
+                            Err(knotq_l10n::t("sync.error.worker_stopped").to_string()),
+                            cx,
+                        );
                     });
                     break;
                 }
@@ -225,8 +229,8 @@ fn run_browser_sign_in(
         &listener,
         &state,
         StdDuration::from_secs(300),
-        "You're signed in to KnotQ. You can close this tab and return to the app.",
-        "Sign-in did not complete. You can close this tab and return to KnotQ.",
+        knotq_l10n::t("sync.oauth.callback.success_body"),
+        knotq_l10n::t("sync.oauth.callback.failure_body"),
         Some(cancel_token),
     )?;
     exchange_authorize_code(&base, &code, &code_verifier)
@@ -281,7 +285,12 @@ fn exchange_authorize_code(
                 .unwrap_or_else(|_| "unauthorized".to_string());
             return Err(anyhow!(authorize_error_message(&code)));
         }
-        Err(error) => return Err(anyhow!("Could not reach the sync API: {error}")),
+        Err(error) => {
+            return Err(anyhow!(knotq_l10n::t_with(
+                "sync.error.api_unreachable",
+                &[("error", &error.to_string())],
+            )))
+        }
     };
     let session: LoginResponse = response
         .into_json()
@@ -294,7 +303,9 @@ pub(super) fn sync_account_settings_from_session(
     session: LoginResponse,
 ) -> Result<SyncAccountSettings> {
     if session.refresh_token.is_empty() {
-        return Err(anyhow!("sync response missing refresh token"));
+        return Err(anyhow!(knotq_l10n::t(
+            "sync.error.missing_refresh_token"
+        )));
     }
     Ok(SyncAccountSettings {
         api_base,
@@ -316,8 +327,8 @@ pub(super) fn sync_account_settings_from_session(
 fn authorize_error_message(code: &str) -> &'static str {
     match code {
         "invalid_authorization_code" | "authorization_code_expired" | "invalid_code_challenge" => {
-            "Sign-in could not be completed. Please try signing in again."
+            knotq_l10n::t("sync.error.authorize_retry")
         }
-        _ => "Sign in failed.",
+        _ => knotq_l10n::t("sync.error.sign_in_failed"),
     }
 }

@@ -126,7 +126,7 @@ pub(super) fn rp_repeat_type_menu(
         .on_click(|_: &ClickEvent, _window, cx| cx.stop_propagation())
         .child(rp_row(
             "rp-none",
-            "None",
+            knotq_l10n::t("repeat.type.none"),
             !repeat_exists,
             t,
             cx.listener(move |this, _: &ClickEvent, _w, cx| {
@@ -177,7 +177,7 @@ pub(super) fn rp_repeat_type_menu(
         .when(complex_repeat, |menu| {
             menu.child(rp_row(
                 "rp-custom",
-                "Custom",
+                knotq_l10n::t("repeat.type.custom"),
                 true,
                 t,
                 cx.listener(|_this, _: &ClickEvent, _w, cx| cx.stop_propagation()),
@@ -211,8 +211,15 @@ pub(super) fn rp_repeat_end_row(
         _ => None,
     };
     let value_label = until_date
-        .map(|date| date.format("%b %-d, %Y").to_string())
-        .unwrap_or_else(|| "Never".to_string());
+        .map(|date| {
+            format!(
+                "{} {}, {}",
+                knotq_date_util::month_short_name(date.month()),
+                date.day(),
+                date.year()
+            )
+        })
+        .unwrap_or_else(|| knotq_l10n::t("repeat.value.never").to_string());
     let default_until = until_date.unwrap_or_else(|| {
         event_datetime
             .map(|dt| dt.with_timezone(&Local).date_naive())
@@ -266,7 +273,7 @@ pub(super) fn rp_repeat_end_row(
                 .flex_shrink_0()
                 .text_color(token_hsla(t.text_dim))
                 .whitespace_nowrap()
-                .child("Repeat End"),
+                .child(knotq_l10n::t("repeat.field.end")),
         )
         .child(div().flex().items_center().min_w_0().child(value_button))
         .into_any_element()

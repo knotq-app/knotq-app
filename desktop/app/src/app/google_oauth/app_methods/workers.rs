@@ -127,10 +127,16 @@ pub(super) fn run_google_calendar_scheme_reconnect(
             "reconnect.oauth account_mismatch signed_in={signed_in} expected={}",
             google_calendar_source_target_label(&source)
         ));
-        bail!(
-            "signed in as {signed_in}, but this calendar belongs to {}",
-            google_calendar_source_target_label(&source)
-        );
+        bail!(knotq_l10n::t_with(
+            "google.calendar.account_mismatch",
+            &[
+                ("signed_in", signed_in.as_str()),
+                (
+                    "expected",
+                    google_calendar_source_target_label(&source).as_str(),
+                ),
+            ],
+        ));
     }
     run_google_calendar_sync(
         config,

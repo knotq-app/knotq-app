@@ -30,7 +30,9 @@ enum OnboardingTarget {
 }
 
 struct SpotlightStep {
+    /// l10n key for the title.
     title: &'static str,
+    /// l10n key for the body.
     body: &'static str,
     target: OnboardingTarget,
 }
@@ -39,28 +41,28 @@ struct SpotlightStep {
 // step uses desktop-specific gesture wording (click / shift-click / drag).
 const STEPS: &[SpotlightStep] = &[
     SpotlightStep {
-        title: "Welcome to KnotQ",
-        body: "KnotQ is a single app for calendar events, reminders, assignments, and general notes. It aims to be simple yet functional.",
+        title: "onboarding.step.welcome.title",
+        body: "onboarding.step.welcome.body",
         target: OnboardingTarget::Welcome,
     },
     SpotlightStep {
-        title: "Calendar",
-        body: "Your calendar holds events, assignments, and reminders. Click to add a reminder, shift-click for an assignment, or drag to block out an event.",
+        title: "onboarding.step.calendar.title",
+        body: "onboarding.step.calendar.body",
         target: OnboardingTarget::Calendar,
     },
     SpotlightStep {
-        title: "Schemes",
-        body: "Schemes are editable outlines for projects, notes, and plans. Add start and end times to any line to turn it into a calendar item.",
+        title: "onboarding.step.schemes.title",
+        body: "onboarding.step.schemes.body",
         target: OnboardingTarget::Scheme,
     },
     SpotlightStep {
-        title: "Daily",
-        body: "Daily is a special, default scheme. Write an optimistic task list each day and check off the ones you complete.",
+        title: "onboarding.step.daily.title",
+        body: "onboarding.step.daily.body",
         target: OnboardingTarget::Daily,
     },
     SpotlightStep {
-        title: "Upcoming",
-        body: "Upcoming gathers nearby events, assignments, and reminders. You can mark tasks complete right from here.",
+        title: "onboarding.step.upcoming.title",
+        body: "onboarding.step.upcoming.body",
         target: OnboardingTarget::Upcoming,
     },
 ];
@@ -323,7 +325,7 @@ impl KnotQApp {
                                                 this.cancel_delete_confirmation(cx);
                                             },
                                         ))
-                                        .child("Cancel"),
+                                        .child(knotq_l10n::t("common.cancel")),
                                 )
                                 .child(
                                     div()
@@ -434,9 +436,10 @@ impl KnotQApp {
             // (there is no longer an in-app sign-in modal to host them).
             let status: Option<(String, bool)> = match &self.sync_auth_status {
                 SyncAuthStatus::Idle => None,
-                SyncAuthStatus::InProgress => {
-                    Some(("Opening your browser to sign in…".to_string(), false))
-                }
+                SyncAuthStatus::InProgress => Some((
+                    knotq_l10n::t("onboarding.sync_prompt.opening_browser").to_string(),
+                    false,
+                )),
                 SyncAuthStatus::Error(message) => Some((message.clone(), true)),
             };
             return Some(
@@ -466,14 +469,14 @@ impl KnotQApp {
                                     .text_size(px(18.0))
                                     .font_weight(FontWeight::SEMIBOLD)
                                     .text_color(token_hsla(t.text_primary))
-                                    .child("Enable Sync?"),
+                                    .child(knotq_l10n::t("onboarding.sync_prompt.title")),
                             )
                             .child(
                                 div()
                                     .text_size(px(12.0))
                                     .line_height(px(18.0))
                                     .text_color(token_hsla(t.text_soft))
-                                    .child("Sync is $3.99 a month and lets you share your workspace across devices. Local-only is fully free."),
+                                    .child(knotq_l10n::t("onboarding.sync_prompt.body")),
                             )
                             // Settings → Sync-styled panel: a bordered card holding
                             // the primary/secondary account actions.
@@ -493,12 +496,12 @@ impl KnotQApp {
                                                 .text_size(px(13.0))
                                                 .font_weight(FontWeight::SEMIBOLD)
                                                 .text_color(token_hsla(t.text_primary))
-                                                .child("KnotQ Sync"),
+                                                .child(knotq_l10n::t("onboarding.sync_prompt.panel_title")),
                                         ),
                                     )
                                     .child(onboarding_account_choice(
                                         "onboarding-account-create",
-                                        "Sign up",
+                                        knotq_l10n::t("onboarding.sync_prompt.sign_up"),
                                         Some(SyncAuthMode::CreateAccount),
                                         AccountChoiceVariant::Primary,
                                         t,
@@ -506,7 +509,7 @@ impl KnotQApp {
                                     ))
                                     .child(onboarding_account_choice(
                                         "onboarding-account-sign-in",
-                                        "Sign in",
+                                        knotq_l10n::t("onboarding.sync_prompt.sign_in"),
                                         Some(SyncAuthMode::SignIn),
                                         AccountChoiceVariant::Secondary,
                                         t,
@@ -515,7 +518,7 @@ impl KnotQApp {
                             )
                             .child(onboarding_account_choice(
                                 "onboarding-account-local",
-                                "Continue local for now",
+                                knotq_l10n::t("onboarding.sync_prompt.continue_local"),
                                 None,
                                 AccountChoiceVariant::Ghost,
                                 t,
@@ -600,8 +603,13 @@ impl KnotQApp {
             ),
         };
 
-        let step_label: SharedString =
-            SharedString::from(format!("{} / {}", step_index + 1, STEPS.len()));
+        let step_label: SharedString = SharedString::from(knotq_l10n::t_with(
+            "onboarding.tour.step_label",
+            &[
+                ("current", &(step_index + 1).to_string()),
+                ("total", &STEPS.len().to_string()),
+            ],
+        ));
 
         let mut buttons = div().flex().items_center().justify_between();
 
@@ -633,15 +641,15 @@ impl KnotQApp {
                             this.set_onboarding_page(this.onboarding_page.saturating_sub(1), cx);
                             cx.notify();
                         }))
-                        .child("Back"),
+                        .child(knotq_l10n::t("common.back")),
                 );
             }
             let next_label: SharedString = if !is_last {
-                "Next".into()
+                knotq_l10n::t("onboarding.tour.next").into()
             } else if self.settings.sync_account.is_some() {
-                "Done".into()
+                knotq_l10n::t("common.done").into()
             } else {
-                "Continue".into()
+                knotq_l10n::t("onboarding.tour.continue").into()
             };
             row.child(
                 div()
@@ -690,14 +698,14 @@ impl KnotQApp {
                     .text_size(px(14.0))
                     .font_weight(FontWeight::SEMIBOLD)
                     .text_color(token_hsla(t.text_primary))
-                    .child(SharedString::from(step.title)),
+                    .child(SharedString::from(knotq_l10n::t(step.title))),
             )
             .child(
                 div()
                     .text_size(px(12.0))
                     .line_height(px(18.0))
                     .text_color(token_hsla(t.text_primary))
-                    .child(SharedString::from(step.body)),
+                    .child(SharedString::from(knotq_l10n::t(step.body))),
             )
             .child(buttons);
 
@@ -721,7 +729,7 @@ impl KnotQApp {
                 this.advance_past_tutorial();
                 cx.notify();
             }))
-            .child("Skip");
+            .child(knotq_l10n::t("onboarding.tour.skip"));
 
         Some(
             div()

@@ -1,5 +1,6 @@
 use gpui::prelude::*;
 use gpui::{div, px, ClickEvent, Context};
+use knotq_l10n::{t as tr, t_count as tr_count, t_with as tr_with};
 use knotq_model::{CalendarProvider, SchemeId, SchemeSource};
 
 use crate::app::KnotQApp;
@@ -29,15 +30,18 @@ impl KnotQApp {
         if self.settings.google_accounts.is_empty() {
             rows.push(settings_message(
                 if calendar_rows.is_empty() {
-                    "No Google accounts connected locally.".to_string()
+                    tr("settings.google_calendar.no_accounts").to_string()
                 } else {
-                    "No local Google account credentials. Calendars below will stay offline until you reconnect.".to_string()
+                    tr("settings.google_calendar.accounts_offline_notice").to_string()
                 },
                 false,
                 t,
             ));
         } else {
-            rows.push(settings_subheading("Accounts", t));
+            rows.push(settings_subheading(
+                tr("settings.google_calendar.accounts_heading"),
+                t,
+            ));
             rows.extend(
                 self.settings
                     .google_accounts
@@ -52,20 +56,20 @@ impl KnotQApp {
                             .filter(|email| !email.trim().is_empty())
                             .unwrap_or_else(|| account.account_id.clone());
                         let count = self.google_calendar_scheme_count_for_account(&account);
-                        let detail = match count {
-                            0 => "0 calendars".to_string(),
-                            1 => "1 calendar".to_string(),
-                            count => format!("{count} calendars"),
-                        };
+                        let detail =
+                            tr_count("settings.google_calendar.calendar_count", count as i64);
                         google_account_row(idx, account_id, title, detail, t, cx)
                     }),
             );
         }
 
-        rows.push(settings_subheading("Calendars", t));
+        rows.push(settings_subheading(
+            tr("settings.google_calendar.calendars_heading"),
+            t,
+        ));
         if calendar_rows.is_empty() {
             rows.push(settings_message(
-                "No Google calendars imported.".to_string(),
+                tr("settings.google_calendar.no_calendars").to_string(),
                 false,
                 t,
             ));
@@ -102,18 +106,25 @@ impl KnotQApp {
                     .imported_calendar_account_label(scheme)
                     .unwrap_or_else(|| source.account_id.clone());
                 let status = if connected {
-                    "On"
+                    tr("settings.google_calendar.status_on")
                 } else {
-                    "Not connected on this device"
+                    tr("settings.google_calendar.status_not_connected")
                 };
                 let synced = source
                     .last_synced_at
                     .map(google_calendar_last_synced_label)
-                    .unwrap_or_else(|| "Not synced yet".to_string());
+                    .unwrap_or_else(|| tr("settings.google_calendar.not_synced_yet").to_string());
                 Some(GoogleCalendarSettingsRow {
                     scheme_id: scheme.id,
                     title: self.scheme_display_name(scheme),
-                    detail: format!("{status} - {account_label} - {synced}"),
+                    detail: tr_with(
+                        "settings.google_calendar.row_detail",
+                        &[
+                            ("status", status),
+                            ("account_label", &account_label),
+                            ("synced", &synced),
+                        ],
+                    ),
                     connected,
                 })
             })
@@ -137,7 +148,11 @@ fn google_calendar_row(
     } else {
         "google-calendar-link"
     };
-    let button_label = if connected { "Unlink" } else { "Link" };
+    let button_label = if connected {
+        tr("settings.google_calendar.unlink_button")
+    } else {
+        tr("settings.google_calendar.link_button")
+    };
 
     div()
         .id(("google-calendar-setting", idx))
@@ -244,7 +259,7 @@ fn google_account_row(
                         cx,
                     );
                 }))
-                .child("Unlink"),
+                .child(tr("settings.google_calendar.unlink_button")),
         )
         .into_any_element()
 }

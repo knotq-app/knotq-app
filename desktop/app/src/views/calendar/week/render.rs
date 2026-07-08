@@ -57,18 +57,10 @@ impl KnotQApp {
         for i in 0..visible_days {
             let date = visible_start + Duration::days(i as i64);
             let is_today = date == today;
-            let weekday = match date.weekday() {
-                Weekday::Mon => "Mon",
-                Weekday::Tue => "Tue",
-                Weekday::Wed => "Wed",
-                Weekday::Thu => "Thu",
-                Weekday::Fri => "Fri",
-                Weekday::Sat => "Sat",
-                Weekday::Sun => "Sun",
-            };
+            let weekday = knotq_date_util::weekday_short_name(date.weekday());
             let month_label = i == 0 || date.day() == 1;
             let lead = if month_label {
-                date.format("%B").to_string()
+                knotq_date_util::month_name(date.month()).to_string()
             } else {
                 weekday.to_string()
             };

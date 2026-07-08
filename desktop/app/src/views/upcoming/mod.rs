@@ -1,4 +1,4 @@
-use chrono::{Duration, Local, TimeZone, Utc};
+use chrono::{Datelike, Duration, Local, TimeZone, Utc};
 use gpui::prelude::*;
 use gpui::{div, px, ClickEvent, Context, Hsla, IntoElement, MouseButton, MouseDownEvent};
 use gpui_component::scroll::ScrollableElement as _;

@@ -84,8 +84,22 @@ pub(super) fn date_time_with_meridiem_group(
     if hour_is_pm.is_some() {
         children.push(div().w(px(1.0)).into_any_element());
         let hour_is_pm = hour_is_pm.unwrap_or(false);
-        children.push(meridiem_button("date-am", "AM", !hour_is_pm, false, t, cx));
-        children.push(meridiem_button("date-pm", "PM", hour_is_pm, true, t, cx));
+        children.push(meridiem_button(
+            "date-am",
+            knotq_l10n::t("event.date_popover.am"),
+            !hour_is_pm,
+            false,
+            t,
+            cx,
+        ));
+        children.push(meridiem_button(
+            "date-pm",
+            knotq_l10n::t("event.date_popover.pm"),
+            hour_is_pm,
+            true,
+            t,
+            cx,
+        ));
     }
 
     div()

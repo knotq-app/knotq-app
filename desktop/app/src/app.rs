@@ -34,7 +34,7 @@ mod workspace_ops;
 
 // Re-export public initialization helpers used by main.rs.
 pub use bootstrap::load_or_default_settings;
-pub use settings::initial_window_bounds;
+pub use settings::{apply_language_setting, initial_window_bounds};
 
 use std::collections::HashMap;
 use std::ops::{Deref, DerefMut};
@@ -274,6 +274,7 @@ pub enum SyncAccountAction {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum SettingsDropdown {
     Theme,
+    Language,
     CalendarView,
     CalendarRange,
     TimeFormat,

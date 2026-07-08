@@ -35,7 +35,7 @@ impl KnotQApp {
                 &mut items,
                 DateMenuItem {
                     id_prefix: "start",
-                    label: "Start",
+                    label: "editor.context.date_start",
                     kind: DateKind::Start,
                     exists: item.start.is_some(),
                 },
@@ -47,7 +47,7 @@ impl KnotQApp {
                 &mut items,
                 DateMenuItem {
                     id_prefix: "end",
-                    label: "End",
+                    label: "editor.context.date_end",
                     kind: DateKind::End,
                     exists: item.end.is_some(),
                 },
@@ -134,7 +134,7 @@ fn push_table_items(
         push_table_action(
             items,
             "row-before",
-            "Insert Row Before",
+            "editor.context.insert_row_before",
             table.table_item_id,
             TableStructureAction::InsertRowBefore(row),
             menu,
@@ -144,7 +144,7 @@ fn push_table_items(
         push_table_action(
             items,
             "row-after",
-            "Insert Row After",
+            "editor.context.insert_row_after",
             table.table_item_id,
             TableStructureAction::InsertRowAfter(row),
             menu,
@@ -155,7 +155,7 @@ fn push_table_items(
             push_table_action(
                 items,
                 "row-delete",
-                "Delete Row",
+                "editor.context.delete_row",
                 table.table_item_id,
                 TableStructureAction::DeleteRow(row),
                 menu,
@@ -174,7 +174,7 @@ fn push_table_items(
         push_table_action(
             items,
             "column-before",
-            "Insert Column Before",
+            "editor.context.insert_column_before",
             table.table_item_id,
             TableStructureAction::InsertColumnBefore(column),
             menu,
@@ -184,7 +184,7 @@ fn push_table_items(
         push_table_action(
             items,
             "column-after",
-            "Insert Column After",
+            "editor.context.insert_column_after",
             table.table_item_id,
             TableStructureAction::InsertColumnAfter(column),
             menu,
@@ -195,7 +195,7 @@ fn push_table_items(
             push_table_action(
                 items,
                 "column-delete",
-                "Delete Column",
+                "editor.context.delete_column",
                 table.table_item_id,
                 TableStructureAction::DeleteColumn(column),
                 menu,
@@ -220,7 +220,7 @@ fn push_table_action(
     let scheme_id = menu.scheme_id;
     items.push(editor_context_item(
         SharedString::from(format!("editor-menu-table-{id_suffix}")),
-        label.to_string(),
+        knotq_l10n::t(label).to_string(),
         t,
         cx.listener(move |this, _: &ClickEvent, window, cx| {
             this.editor_context_menu = None;
@@ -249,6 +249,7 @@ fn push_table_action(
 #[derive(Clone, Copy)]
 struct DateMenuItem {
     id_prefix: &'static str,
+    /// l10n key for the date kind's display name (e.g. "Start"/"End").
     label: &'static str,
     kind: DateKind,
     exists: bool,
@@ -270,10 +271,11 @@ fn push_date_items(
     let scheme_id = menu.scheme_id;
     let item_id = menu.item_id;
     let anchor = menu.date_anchor;
+    let label_text = knotq_l10n::t(label);
     let action_label = if exists {
-        format!("Edit {label}")
+        knotq_l10n::t_with("editor.context.edit_label", &[("label", label_text)])
     } else {
-        format!("Add {label}")
+        knotq_l10n::t_with("editor.context.add_label", &[("label", label_text)])
     };
     items.push(editor_context_item(
         SharedString::from(format!("editor-menu-{id_prefix}-edit")),
@@ -290,7 +292,7 @@ fn push_date_items(
     if exists {
         items.push(editor_context_item(
             SharedString::from(format!("editor-menu-{id_prefix}-remove")),
-            format!("Remove {label}"),
+            knotq_l10n::t_with("editor.context.remove_label", &[("label", label_text)]),
             t,
             cx.listener(move |this, _: &ClickEvent, _window, cx| {
                 this.editor_context_menu = None;

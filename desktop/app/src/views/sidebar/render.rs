@@ -46,7 +46,7 @@ impl KnotQApp {
                     .gap(px(1.0))
                     .mb(px(6.0))
                     .child(special_row(
-                        "Calendar",
+                        knotq_l10n::t("sidebar.calendar_label"),
                         if t.is_dark {
                             0xffffffff
                         } else {
@@ -103,7 +103,7 @@ impl KnotQApp {
             .flex()
             .child(footer_button(
                 "sidebar-new-menu",
-                "New",
+                knotq_l10n::t("sidebar.footer.new"),
                 Icon::empty()
                     .path("icons/plus.svg")
                     .with_size(px(11.0))

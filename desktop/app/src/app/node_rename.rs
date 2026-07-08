@@ -1,6 +1,7 @@
 use gpui::prelude::*;
 use gpui::{Context, Window};
 use knotq_commands::Command;
+use knotq_l10n::{t, t_with};
 use knotq_model::{FolderId, Item, NodeRef, Scheme};
 
 use super::{KnotQApp, NewNodeKind, RenameNodeState};
@@ -118,7 +119,9 @@ impl KnotQApp {
         let Some(original_name) = self.navigator_node_name(target) else {
             return;
         };
-        let input = cx.new(|cx| SingleLineEditor::new("Name", original_name.clone(), window, cx));
+        let input = cx.new(|cx| {
+            SingleLineEditor::new(t("sidebar.rename.placeholder"), original_name.clone(), window, cx)
+        });
         let sub = cx.subscribe_in(&input, window, Self::on_rename_node_input_event);
         input.update(cx, |input, cx| input.focus_and_select_all(window, cx));
         self.rename_node = Some(RenameNodeState {
@@ -162,7 +165,11 @@ impl KnotQApp {
             match self.apply_result(command, cx) {
                 Ok(_) => {}
                 Err(err) => {
-                    self.keep_rename_error(rename, format!("Could not rename: {err}"), cx);
+                    self.keep_rename_error(
+                        rename,
+                        t_with("sidebar.rename.error", &[("error", &err.to_string())]),
+                        cx,
+                    );
                     return false;
                 }
             }
@@ -225,8 +232,8 @@ impl KnotQApp {
     fn unique_new_node_name(&self, parent: FolderId, kind: NewNodeKind) -> String {
         let _ = parent;
         match kind {
-            NewNodeKind::Folder => "Untitled Folder",
-            NewNodeKind::Scheme => "Untitled",
+            NewNodeKind::Folder => t("sidebar.new_folder_default_name"),
+            NewNodeKind::Scheme => t("sidebar.new_item_default_name"),
         }
         .to_string()
     }

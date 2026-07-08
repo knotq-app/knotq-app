@@ -81,7 +81,12 @@ pub(super) fn empty_folder_placeholder(
         .rounded(px(5.0))
         .text_size(px(12.0))
         .text_color(token_hsla(t.text_muted))
-        .child(div().flex_1().min_w_0().child("No items"))
+        .child(
+            div()
+                .flex_1()
+                .min_w_0()
+                .child(knotq_l10n::t("sidebar.empty_items")),
+        )
         .into_any_element()
 }
 

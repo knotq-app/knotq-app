@@ -4,6 +4,7 @@ use gpui::{
     deferred, div, px, ClickEvent, Context, FontWeight, IntoElement, MouseButton, SharedString,
     Window,
 };
+use knotq_l10n::{t as tr, t_with as tr_with};
 use knotq_ui::{clamped_popover_left, popover_top_biased_below};
 
 use super::title_bar::{STATUS_ERROR, STATUS_OK, STATUS_PENDING, STATUS_SYNCING};
@@ -58,7 +59,7 @@ impl KnotQApp {
         if signed_in && supports_sync {
             actions = actions.child(popover_filled_button(
                 "sync-popover-sync-now",
-                "Sync now",
+                tr("sync.action.sync_now"),
                 SYNC_NOW_BG,
                 SYNC_NOW_HOVER_BG,
                 cx,
@@ -68,7 +69,7 @@ impl KnotQApp {
         if signed_in {
             actions = actions.child(popover_button(
                 "sync-popover-manage",
-                "Manage account",
+                tr("sync.popover.manage_account"),
                 false,
                 t,
                 cx,
@@ -82,7 +83,7 @@ impl KnotQApp {
         } else {
             actions = actions.child(popover_button(
                 "sync-popover-sign-in",
-                "Sign in",
+                tr("sync.sign_in"),
                 true,
                 t,
                 cx,
@@ -117,7 +118,7 @@ impl KnotQApp {
                     .text_size(px(11.0))
                     .font_weight(FontWeight::SEMIBOLD)
                     .text_color(token_hsla(t.text_soft))
-                    .child("KnotQ Sync"),
+                    .child(tr("sync.popover.title")),
             )
             .child(
                 div()
@@ -166,7 +167,7 @@ impl KnotQApp {
         if matches!(self.sync_auth_status, SyncAuthStatus::InProgress) {
             return SyncStatusView {
                 dot_color: STATUS_SYNCING,
-                headline: "Signing in…".into(),
+                headline: tr("sync.status.signing_in").into(),
                 detail: None,
             };
         }
@@ -174,27 +175,27 @@ impl KnotQApp {
         if account.is_none() {
             return SyncStatusView {
                 dot_color: t.text_muted,
-                headline: "Not signed in".into(),
-                detail: Some("Sign in to sync this workspace across devices.".into()),
+                headline: tr("sync.status.not_signed_in").into(),
+                detail: Some(tr("sync.popover.not_signed_in_detail").into()),
             };
         }
 
         if !account.is_some_and(|account| account.supports_sync) {
             return SyncStatusView {
                 dot_color: STATUS_ERROR,
-                headline: "Sync inactive".into(),
-                detail: Some("Subscribe to enable cross-device notes and notifications.".into()),
+                headline: tr("sync.status.sync_inactive").into(),
+                detail: Some(tr("sync.popover.sync_inactive_detail").into()),
             };
         }
 
         match &self.sync_run_status {
             SyncRunStatus::Running { pending } => SyncStatusView {
                 dot_color: STATUS_SYNCING,
-                headline: "Sync".into(),
+                headline: tr("sync.status.sync").into(),
                 detail: Some(if *pending > 0 {
-                    "Uploading changes.".into()
+                    tr("sync.popover.uploading").into()
                 } else {
-                    "Looking for changes.".into()
+                    tr("sync.popover.looking_for_changes").into()
                 }),
             },
             // Being offline isn't an error: edits keep landing locally and the
@@ -202,32 +203,35 @@ impl KnotQApp {
             // it as a waiting state instead of surfacing the transport error.
             SyncRunStatus::Error { .. } if self.sync_offline => SyncStatusView {
                 dot_color: STATUS_PENDING,
-                headline: "Offline".into(),
-                detail: Some(
-                    "Changes are saved on this device and will sync automatically when you're back online."
-                        .into(),
-                ),
+                headline: tr("sync.status.offline").into(),
+                detail: Some(tr("sync.popover.offline_detail").into()),
             },
             SyncRunStatus::Error { message, .. } => SyncStatusView {
                 dot_color: STATUS_ERROR,
-                headline: "Sync error".into(),
+                headline: tr("sync.status.sync_error").into(),
                 detail: Some(SharedString::from(if pending > 0 {
-                    format!("Changes are waiting. {}", short_error(message))
+                    tr_with(
+                        "sync.popover.changes_waiting",
+                        &[("error", &short_error(message))],
+                    )
                 } else {
                     short_error(message)
                 })),
             },
             _ if pending > 0 => SyncStatusView {
                 dot_color: STATUS_PENDING,
-                headline: "Sync".into(),
-                detail: Some("Waiting for the next automatic run.".into()),
+                headline: tr("sync.status.sync").into(),
+                detail: Some(tr("sync.popover.waiting_next_run").into()),
             },
             _ => SyncStatusView {
                 dot_color: STATUS_OK,
-                headline: "Up to date".into(),
-                detail: self
-                    .last_synced_at
-                    .map(|at| SharedString::from(format!("Last synced {}.", relative_time(at)))),
+                headline: tr("sync.status.up_to_date").into(),
+                detail: self.last_synced_at.map(|at| {
+                    SharedString::from(tr_with(
+                        "sync.popover.last_synced",
+                        &[("when", &relative_time(at))],
+                    ))
+                }),
             },
         }
     }
@@ -307,11 +311,13 @@ fn short_error(message: &str) -> String {
 fn relative_time(then: DateTime<Utc>) -> String {
     let secs = (Utc::now() - then).num_seconds().max(0);
     if secs < 45 {
-        "just now".to_string()
+        tr("sync.relative_time.just_now").to_string()
     } else if secs < 3600 {
-        format!("{}m ago", (secs / 60).max(1))
+        let mins = (secs / 60).max(1).to_string();
+        tr_with("sync.relative_time.minutes_ago", &[("mins", &mins)])
     } else if secs < 86_400 {
-        format!("{}h ago", secs / 3600)
+        let hours = (secs / 3600).to_string();
+        tr_with("sync.relative_time.hours_ago", &[("hours", &hours)])
     } else {
         then.with_timezone(&Local).format("%b %d").to_string()
     }

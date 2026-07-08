@@ -13,7 +13,7 @@ impl SchemeEditor {
             files: true,
             directories: false,
             multiple: true,
-            prompt: Some("Insert image".into()),
+            prompt: Some(knotq_l10n::t("editor.media.insert_image_prompt").into()),
         });
         cx.spawn(
             async move |editor: gpui::WeakEntity<SchemeEditor>, cx: &mut gpui::AsyncApp| {
@@ -46,7 +46,7 @@ impl SchemeEditor {
             return;
         }
         cx.emit(EditorEvent::Notice {
-            title: "Image not added".to_string(),
+            title: knotq_l10n::t("editor.media.notice_title").to_string(),
             message: media_rejection_message(rejections),
         });
     }

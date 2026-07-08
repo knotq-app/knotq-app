@@ -333,16 +333,20 @@ fn format_event_time_range(
         };
     }
     match time_format {
-        TimeFormat::TwelveHour => {
-            format!("{} to {}", start.format("%-I:%M"), end.format("%-I:%M %p"))
-        }
-        TimeFormat::TwentyFourHour => {
-            format!(
-                "{} to {}",
-                format_time(time_format, start),
-                format_time(time_format, end)
-            )
-        }
+        TimeFormat::TwelveHour => knotq_l10n::t_with(
+            "calendar.event.time_range",
+            &[
+                ("start", &start.format("%-I:%M").to_string()),
+                ("end", &end.format("%-I:%M %p").to_string()),
+            ],
+        ),
+        TimeFormat::TwentyFourHour => knotq_l10n::t_with(
+            "calendar.event.time_range",
+            &[
+                ("start", &format_time(time_format, start)),
+                ("end", &format_time(time_format, end)),
+            ],
+        ),
     }
 }
 
@@ -525,9 +529,15 @@ pub(super) fn render_pill_chunk<'a>(
         if !hide_time {
             let g_head = group[0];
             let time_str = if is_reminder {
-                format!("At {}", format_time(time_format, g_head.start.unwrap()))
+                knotq_l10n::t_with(
+                    "calendar.pill.at_time",
+                    &[("time", &format_time(time_format, g_head.start.unwrap()))],
+                )
             } else {
-                format!("Due {}", format_time(time_format, g_head.end.unwrap()))
+                knotq_l10n::t_with(
+                    "calendar.pill.due_time",
+                    &[("time", &format_time(time_format, g_head.end.unwrap()))],
+                )
             };
             let trigger = if is_reminder {
                 g_head.start.unwrap()

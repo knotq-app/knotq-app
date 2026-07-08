@@ -98,7 +98,7 @@ impl SchemeEditor {
             }
             TableStructureAction::AppendColumn => {
                 let n = table.column_count();
-                table.insert_column(n, format!("Column {}", n + 1));
+                table.insert_column(n, knotq_l10n::t_with("editor.table.default_column_name", &[("n", &(n + 1).to_string())]));
             }
             TableStructureAction::InsertRowBefore(row) => {
                 table.insert_row(row);
@@ -109,11 +109,11 @@ impl SchemeEditor {
             TableStructureAction::DeleteRow(row) => table.remove_row(row),
             TableStructureAction::InsertColumnBefore(col) => {
                 let n = table.column_count();
-                table.insert_column(col, format!("Column {}", n + 1));
+                table.insert_column(col, knotq_l10n::t_with("editor.table.default_column_name", &[("n", &(n + 1).to_string())]));
             }
             TableStructureAction::InsertColumnAfter(col) => {
                 let n = table.column_count();
-                table.insert_column(col.saturating_add(1), format!("Column {}", n + 1));
+                table.insert_column(col.saturating_add(1), knotq_l10n::t_with("editor.table.default_column_name", &[("n", &(n + 1).to_string())]));
             }
             TableStructureAction::DeleteColumn(col) => table.remove_column(col),
         }

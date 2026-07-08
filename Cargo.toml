@@ -15,8 +15,10 @@ members = [
     "desktop/storage-json",
     "desktop/theme",
     "desktop/ui",
+    "shared/l10n",
     "shared/model",
     "shared/sync",
+    "tools/l10n",
 ]
 resolver = "2"
 
@@ -45,6 +47,7 @@ knotq-editor = { path = "desktop/editor" }
 knotq-history = { path = "desktop/history" }
 knotq-import = { path = "desktop/import" }
 knotq-index = { path = "desktop/index" }
+knotq-l10n = { path = "shared/l10n" }
 knotq-model = { path = "shared/model" }
 knotq-notifications = { path = "desktop/notifications" }
 knotq-rrule = { path = "desktop/rrule" }

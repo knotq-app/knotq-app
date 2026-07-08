@@ -55,14 +55,20 @@ pub(super) fn annotation_parts(
         ]),
         (Some(start), None) => Some(vec![(
             DateKind::Start,
-            format!(
-                "at {}",
-                format_annotation_datetime(start, None, time_format)
+            knotq_l10n::t_with(
+                "editor.annotation.at",
+                &[(
+                    "date",
+                    &format_annotation_datetime(start, None, time_format),
+                )],
             ),
         )]),
         (None, Some(end)) => Some(vec![(
             DateKind::End,
-            format!("due {}", format_annotation_datetime(end, None, time_format)),
+            knotq_l10n::t_with(
+                "editor.annotation.due",
+                &[("date", &format_annotation_datetime(end, None, time_format))],
+            ),
         )]),
         (None, None) => None,
     }
@@ -79,7 +85,7 @@ pub(super) fn format_repeat_annotation_for_year(
     let mut text = if let Some(simple) = editable_simple_recurrence(repeat) {
         format_simple_repeat_annotation(&simple, reference_year)
     } else {
-        "repeat complex calendar rule".to_string()
+        knotq_l10n::t("editor.repeat.complex").to_string()
     };
     text.push_str(&repeat_exception_suffix(repeat, reference_year));
     text
@@ -164,9 +170,12 @@ fn format_simple_repeat_annotation(repeat: &SimpleRecurrence, reference_year: i3
     match repeat {
         SimpleRecurrence::Daily { interval, .. } => {
             if *interval <= 1 {
-                format!("repeat daily{suffix}")
+                format!("{}{suffix}", knotq_l10n::t("editor.repeat.daily"))
             } else {
-                format!("repeat every {interval} days{suffix}")
+                format!(
+                    "{}{suffix}",
+                    knotq_l10n::t_with("editor.repeat.every_days", &[("count", &interval.to_string())])
+                )
             }
         }
         SimpleRecurrence::Weekly {
@@ -174,23 +183,32 @@ fn format_simple_repeat_annotation(repeat: &SimpleRecurrence, reference_year: i3
         } => {
             let days = format_weekdays(weekdays);
             if *interval <= 1 {
-                format!("repeat weekly{days}{suffix}")
+                format!("{}{days}{suffix}", knotq_l10n::t("editor.repeat.weekly"))
             } else {
-                format!("repeat every {interval} weeks{days}{suffix}")
+                format!(
+                    "{}{days}{suffix}",
+                    knotq_l10n::t_with("editor.repeat.every_weeks", &[("count", &interval.to_string())])
+                )
             }
         }
         SimpleRecurrence::Monthly { interval, .. } => {
             if *interval <= 1 {
-                format!("repeat monthly{suffix}")
+                format!("{}{suffix}", knotq_l10n::t("editor.repeat.monthly"))
             } else {
-                format!("repeat every {interval} months{suffix}")
+                format!(
+                    "{}{suffix}",
+                    knotq_l10n::t_with("editor.repeat.every_months", &[("count", &interval.to_string())])
+                )
             }
         }
         SimpleRecurrence::Yearly { interval, .. } => {
             if *interval <= 1 {
-                format!("repeat yearly{suffix}")
+                format!("{}{suffix}", knotq_l10n::t("editor.repeat.yearly"))
             } else {
-                format!("repeat every {interval} years{suffix}")
+                format!(
+                    "{}{suffix}",
+                    knotq_l10n::t_with("editor.repeat.every_years", &[("count", &interval.to_string())])
+                )
             }
         }
     }
@@ -199,10 +217,15 @@ fn format_simple_repeat_annotation(repeat: &SimpleRecurrence, reference_year: i3
 fn repeat_end_suffix(end: &RepeatEnd, reference_year: i32) -> String {
     match end {
         RepeatEnd::Never => String::new(),
-        RepeatEnd::Count(count) => format!(" {count} times"),
+        RepeatEnd::Count(count) => {
+            knotq_l10n::t_with("editor.repeat.times_suffix", &[("count", &count.to_string())])
+        }
         RepeatEnd::Until(until) => {
             let date = until.with_timezone(&Local).date_naive();
-            format!(" until {}", format_contextual_date(date, reference_year))
+            knotq_l10n::t_with(
+                "editor.repeat.until_suffix",
+                &[("date", &format_contextual_date(date, reference_year))],
+            )
         }
     }
 }
@@ -213,22 +236,22 @@ fn repeat_exception_suffix(repeat: &Recurrence, reference_year: i32) -> String {
     let mut parts = Vec::new();
 
     if !skip_dates.is_empty() {
-        parts.push(format!(
-            "{} skip",
-            format_contextual_dates(skip_dates, reference_year)
+        parts.push(knotq_l10n::t_with(
+            "editor.repeat.skip_suffix",
+            &[("dates", &format_contextual_dates(skip_dates, reference_year))],
         ));
     }
     if !special_dates.is_empty() {
-        parts.push(format!(
-            "{} special",
-            format_contextual_dates(special_dates, reference_year)
+        parts.push(knotq_l10n::t_with(
+            "editor.repeat.special_suffix",
+            &[("dates", &format_contextual_dates(special_dates, reference_year))],
         ));
     }
 
     if parts.is_empty() {
         String::new()
     } else {
-        format!("; {}", parts.join("; "))
+        knotq_l10n::t_with("editor.repeat.parts_suffix", &[("parts", &parts.join("; "))])
     }
 }
 
@@ -302,17 +325,17 @@ fn format_weekdays(weekdays: &[RepeatWeekday]) -> String {
     let days = weekdays
         .iter()
         .map(|weekday| match weekday {
-            RepeatWeekday::Mon => "Mon",
-            RepeatWeekday::Tue => "Tue",
-            RepeatWeekday::Wed => "Wed",
-            RepeatWeekday::Thu => "Thu",
-            RepeatWeekday::Fri => "Fri",
-            RepeatWeekday::Sat => "Sat",
-            RepeatWeekday::Sun => "Sun",
+            RepeatWeekday::Mon => knotq_l10n::t("editor.weekday.mon"),
+            RepeatWeekday::Tue => knotq_l10n::t("editor.weekday.tue"),
+            RepeatWeekday::Wed => knotq_l10n::t("editor.weekday.wed"),
+            RepeatWeekday::Thu => knotq_l10n::t("editor.weekday.thu"),
+            RepeatWeekday::Fri => knotq_l10n::t("editor.weekday.fri"),
+            RepeatWeekday::Sat => knotq_l10n::t("editor.weekday.sat"),
+            RepeatWeekday::Sun => knotq_l10n::t("editor.weekday.sun"),
         })
         .collect::<Vec<_>>()
         .join(",");
-    format!(" on {days}")
+    knotq_l10n::t_with("editor.repeat.weekdays_suffix", &[("days", &days)])
 }
 
 fn format_annotation_datetime(

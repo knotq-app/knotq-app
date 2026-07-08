@@ -36,6 +36,7 @@ knotq-commands = { workspace = true }
 knotq-date-util = { workspace = true }
 knotq-editor = { workspace = true }
 knotq-index = { workspace = true }
+knotq-l10n = { workspace = true, features = ["system-locale"] }
 knotq-model = { workspace = true }
 knotq-rrule = { workspace = true }
 knotq-state = { workspace = true }

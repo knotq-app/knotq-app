@@ -134,9 +134,27 @@ impl KnotQApp {
             .flex_col()
             .pt(px(8.0))
             .px(px(4.0))
-            .child(self.render_section("Assignments", &assignments, "None", "asgn", cx))
-            .child(self.render_section("Reminders", &reminders, "None", "rem", cx))
-            .child(self.render_section("Upcoming", &upcoming, "None today", "up", cx));
+            .child(self.render_section(
+                knotq_l10n::t("upcoming.section.assignments"),
+                &assignments,
+                knotq_l10n::t("upcoming.empty.none"),
+                "asgn",
+                cx,
+            ))
+            .child(self.render_section(
+                knotq_l10n::t("upcoming.section.reminders"),
+                &reminders,
+                knotq_l10n::t("upcoming.empty.none"),
+                "rem",
+                cx,
+            ))
+            .child(self.render_section(
+                knotq_l10n::t("upcoming.section.upcoming"),
+                &upcoming,
+                knotq_l10n::t("upcoming.empty.none_today"),
+                "up",
+                cx,
+            ));
         let scroll_content = scroll_content.overflow_y_scrollbar().into_any_element();
 
         div()

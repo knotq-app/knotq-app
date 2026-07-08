@@ -39,9 +39,10 @@ pub(crate) fn refresh_sync_backend(
         Ok(response) => response,
         Err(ureq::Error::Status(401, _)) => return Err(RefreshError::Unauthorized),
         Err(error) => {
-            return Err(RefreshError::Transient(anyhow!(
-                "could not refresh sync session: {error}"
-            )))
+            return Err(RefreshError::Transient(anyhow!(knotq_l10n::t_with(
+                "sync.error.refresh_failed",
+                &[("error", &error.to_string())],
+            ))))
         }
     };
     let session: LoginResponse = response
@@ -49,9 +50,9 @@ pub(crate) fn refresh_sync_backend(
         .context("parse sync refresh response")
         .map_err(RefreshError::Transient)?;
     if session.refresh_token.is_empty() {
-        return Err(RefreshError::Transient(anyhow!(
-            "sync refresh response missing refresh token"
-        )));
+        return Err(RefreshError::Transient(anyhow!(knotq_l10n::t(
+            "sync.error.refresh_missing_token"
+        ))));
     }
     Ok(RefreshedTokens {
         bearer_token: session.bearer_token,

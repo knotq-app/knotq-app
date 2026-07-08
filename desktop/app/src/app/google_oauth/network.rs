@@ -27,8 +27,8 @@ pub(crate) fn run_google_oauth(
         &listener,
         &state,
         StdDuration::from_secs(120),
-        "Google Calendar is connected. You can close this tab and return to KnotQ.",
-        "Google Calendar connection failed. You can close this tab and return to KnotQ.",
+        knotq_l10n::t("google.oauth.callback.success_body"),
+        knotq_l10n::t("google.oauth.callback.failure_body"),
         Some(cancel_token),
     ) {
         Ok(code) => {
@@ -54,7 +54,7 @@ pub(crate) fn run_google_oauth(
     let refresh_token = token
         .refresh_token
         .clone()
-        .ok_or_else(|| anyhow!("Google did not return a refresh token"))?;
+        .ok_or_else(|| anyhow!(knotq_l10n::t("google.oauth.error.no_refresh_token")))?;
     let claims = token.id_token.as_deref().and_then(decode_id_token_claims);
     let account_id = claims
         .as_ref()
@@ -123,7 +123,7 @@ pub(crate) fn wait_for_oauth_code(
     let started = Instant::now();
     while started.elapsed() < timeout {
         if cancel_token.is_some_and(|cancel_token| cancel_token.load(Ordering::SeqCst)) {
-            bail!(GOOGLE_OAUTH_CALLBACK_CANCELLED);
+            bail!(google_oauth_error_cancelled());
         }
         match listener.accept() {
             Ok((mut stream, _)) => {
@@ -142,7 +142,7 @@ pub(crate) fn wait_for_oauth_code(
             Err(err) => return Err(err).context("accept OAuth callback"),
         }
     }
-    bail!(GOOGLE_OAUTH_CALLBACK_TIMEOUT)
+    bail!(google_oauth_error_timeout())
 }
 
 pub(crate) fn read_oauth_callback(stream: &mut TcpStream, expected_state: &str) -> Result<String> {
@@ -156,15 +156,18 @@ pub(crate) fn read_oauth_callback(stream: &mut TcpStream, expected_state: &str) 
         .ok_or_else(|| anyhow!("invalid OAuth callback request"))?;
     let params = query_params(request_target)?;
     if params.get("state").map(String::as_str) != Some(expected_state) {
-        bail!("Google OAuth returned an unexpected state");
+        bail!(knotq_l10n::t("google.oauth.error.unexpected_state"));
     }
     if let Some(error) = params.get("error") {
-        bail!("Google OAuth error: {error}");
+        bail!(knotq_l10n::t_with(
+            "google.oauth.error.provider_error",
+            &[("error", error)]
+        ));
     }
     params
         .get("code")
         .cloned()
-        .ok_or_else(|| anyhow!("Google OAuth callback did not include a code"))
+        .ok_or_else(|| anyhow!(knotq_l10n::t("google.oauth.error.missing_code")))
 }
 
 pub(crate) fn query_params(request_target: &str) -> Result<HashMap<String, String>> {

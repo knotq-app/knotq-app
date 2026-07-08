@@ -112,12 +112,27 @@ pub(super) fn notification_menu(
     cx: &mut Context<KnotQApp>,
 ) -> gpui::AnyElement {
     let options = vec![
-        ("At time".to_string(), Some(0)),
-        ("5 minutes before".to_string(), Some(5 * 60)),
-        ("10 minutes before".to_string(), Some(10 * 60)),
-        ("30 minutes before".to_string(), Some(30 * 60)),
-        ("1 hour before".to_string(), Some(60 * 60)),
-        ("1 day before".to_string(), Some(24 * 60 * 60)),
+        (knotq_l10n::t("event.notification.at_time").to_string(), Some(0)),
+        (
+            knotq_l10n::t("event.notification.option.5_min_before").to_string(),
+            Some(5 * 60),
+        ),
+        (
+            knotq_l10n::t("event.notification.option.10_min_before").to_string(),
+            Some(10 * 60),
+        ),
+        (
+            knotq_l10n::t("event.notification.option.30_min_before").to_string(),
+            Some(30 * 60),
+        ),
+        (
+            knotq_l10n::t("event.notification.option.1_hour_before").to_string(),
+            Some(60 * 60),
+        ),
+        (
+            knotq_l10n::t("event.notification.option.1_day_before").to_string(),
+            Some(24 * 60 * 60),
+        ),
     ];
 
     div()
@@ -192,7 +207,7 @@ pub(super) fn clamped_popup_top(
 pub(super) fn item_title(text: &str) -> String {
     let title = text.lines().next().unwrap_or("").trim();
     if title.is_empty() {
-        "(untitled)".to_string()
+        knotq_l10n::t("event.item_title.untitled").to_string()
     } else {
         title.to_string()
     }

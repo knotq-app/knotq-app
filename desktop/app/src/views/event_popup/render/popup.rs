@@ -259,7 +259,7 @@ impl KnotQApp {
                     .gap(px(5.0))
                     .child(editable_detail_row(
                         "popup-notification-row",
-                        "Notification",
+                        knotq_l10n::t("event.field.notification"),
                         format_lead_time(
                             self.time_format,
                             notification_offset,
@@ -280,7 +280,7 @@ impl KnotQApp {
                     ))
                     .child(editable_detail_row(
                         "popup-start-row",
-                        "Start",
+                        knotq_l10n::t("event.field.start"),
                         format_optional_datetime(self.time_format, start, true),
                         t,
                         editable,
@@ -303,7 +303,7 @@ impl KnotQApp {
                     ))
                     .child(editable_detail_row(
                         "popup-end-row",
-                        "End",
+                        knotq_l10n::t("event.field.end"),
                         format_optional_datetime(self.time_format, end, true),
                         t,
                         editable,
@@ -326,7 +326,7 @@ impl KnotQApp {
                     ))
                     .child(editable_detail_row(
                         "popup-repeat-row",
-                        "Repeat",
+                        knotq_l10n::t("event.field.repeat"),
                         repeats_summary,
                         t,
                         editable,
@@ -537,6 +537,6 @@ fn read_only_event_badge(t: Theme) -> gpui::AnyElement {
         .line_height(px(12.0))
         .font_weight(gpui::FontWeight::SEMIBOLD)
         .text_color(token_hsla(t.text_soft))
-        .child("Read only")
+        .child(knotq_l10n::t("event.badge.read_only"))
         .into_any_element()
 }

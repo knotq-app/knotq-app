@@ -115,7 +115,10 @@ impl KnotQApp {
                             let _ = weak.update(cx, |app, cx| {
                                 app.finish_google_calendar_picker_load(
                                     parent,
-                                    Err("Google Calendar selector worker stopped".to_string()),
+                                    Err(knotq_l10n::t(
+                                        "google.calendar.error.selector_worker_stopped",
+                                    )
+                                    .to_string()),
                                     cx,
                                 );
                             });
@@ -201,7 +204,10 @@ impl KnotQApp {
             Err(err) => {
                 eprintln!("Google Calendar import failed: {err:#}");
                 google_oauth_log(format!("import.disabled: {err:#}"));
-                self.show_google_calendar_error("Google Calendar import", format!("{err:#}"));
+                self.show_google_calendar_error(
+                    knotq_l10n::t("google.calendar.import_title"),
+                    format!("{err:#}"),
+                );
                 self.google_oauth_status = GoogleOAuthStatus::Error;
                 cx.notify();
                 return;
@@ -252,7 +258,8 @@ impl KnotQApp {
                             let _ = weak.update(cx, |app, cx| {
                                 app.finish_google_calendar_import(
                                     parent,
-                                    Err("Google OAuth worker stopped".to_string()),
+                                    Err(knotq_l10n::t("google.oauth.error.worker_stopped")
+                                        .to_string()),
                                     Some(finish_cancel_token.clone()),
                                     cx,
                                 );
@@ -286,8 +293,8 @@ impl KnotQApp {
             .cloned()
         else {
             self.show_google_calendar_error(
-                "Google Calendar import",
-                "That Google account is not connected locally anymore.".to_string(),
+                knotq_l10n::t("google.calendar.import_title"),
+                knotq_l10n::t("google.calendar.account_not_connected"),
             );
             self.google_oauth_status = GoogleOAuthStatus::Error;
             cx.notify();
@@ -316,7 +323,10 @@ impl KnotQApp {
             Err(err) => {
                 eprintln!("Google Calendar import failed: {err:#}");
                 google_oauth_log(format!("import_calendar.disabled: {err:#}"));
-                self.show_google_calendar_error("Google Calendar import", format!("{err:#}"));
+                self.show_google_calendar_error(
+                    knotq_l10n::t("google.calendar.import_title"),
+                    format!("{err:#}"),
+                );
                 self.google_oauth_status = GoogleOAuthStatus::Error;
                 cx.notify();
                 return;
@@ -362,7 +372,10 @@ impl KnotQApp {
                             let _ = weak.update(cx, |app, cx| {
                                 app.finish_google_calendar_import(
                                     parent,
-                                    Err("Google Calendar import worker stopped".to_string()),
+                                    Err(knotq_l10n::t(
+                                        "google.calendar.error.import_worker_stopped",
+                                    )
+                                    .to_string()),
                                     None,
                                     cx,
                                 );
@@ -459,7 +472,10 @@ impl KnotQApp {
                         Err(mpsc::TryRecvError::Disconnected) => {
                             let _ = weak.update(cx, |app, cx| {
                                 app.finish_google_calendar_scheme_refresh(
-                                    Err("Google Calendar refresh worker stopped".to_string()),
+                                    Err(knotq_l10n::t(
+                                        "google.calendar.error.refresh_worker_stopped",
+                                    )
+                                    .to_string()),
                                     None,
                                     cx,
                                 );
@@ -499,7 +515,10 @@ impl KnotQApp {
             Err(err) => {
                 eprintln!("Google Calendar reconnect failed: {err:#}");
                 google_oauth_log(format!("reconnect.disabled: {err:#}"));
-                self.show_google_calendar_error("Google Calendar reconnect", format!("{err:#}"));
+                self.show_google_calendar_error(
+                    knotq_l10n::t("google.calendar.reconnect_title"),
+                    format!("{err:#}"),
+                );
                 self.google_oauth_status = GoogleOAuthStatus::Error;
                 cx.notify();
                 return;
@@ -546,7 +565,10 @@ impl KnotQApp {
                         Err(mpsc::TryRecvError::Disconnected) => {
                             let _ = weak.update(cx, |app, cx| {
                                 app.finish_google_calendar_scheme_refresh(
-                                    Err("Google Calendar reconnect worker stopped".to_string()),
+                                    Err(knotq_l10n::t(
+                                        "google.calendar.error.reconnect_worker_stopped",
+                                    )
+                                    .to_string()),
                                     Some(finish_cancel_token.clone()),
                                     cx,
                                 );

@@ -44,9 +44,6 @@ const GOOGLE_OAUTH_SCOPES: &[&str] = &[
 const GOOGLE_OAUTH_LOG_FILE: &str = "knotq-google.log";
 const IMPORTED_GOOGLE_CALENDAR_SCHEME_NAME: &str = "Google Calendar";
 const GOOGLE_CALENDAR_BACKGROUND_SYNC_INTERVAL_SECS: u64 = 10 * 60;
-const GOOGLE_OAUTH_CALLBACK_TIMEOUT: &str = "Google OAuth timed out waiting for browser callback";
-const GOOGLE_OAUTH_CALLBACK_CANCELLED: &str = "Google OAuth browser callback cancelled";
-const GOOGLE_OAUTH_ACCESS_DENIED: &str = "Google OAuth error: access_denied";
 const GOOGLE_OAUTH_CLIENT_ID_ENV: &str = "KNOTQ_GOOGLE_OAUTH_CLIENT_ID";
 const GOOGLE_OAUTH_CLIENT_SECRET_ENV: &str = "KNOTQ_GOOGLE_OAUTH_CLIENT_SECRET";
 const COMPILED_GOOGLE_OAUTH_CLIENT_ID: Option<&str> = option_env!("KNOTQ_GOOGLE_OAUTH_CLIENT_ID");
@@ -120,10 +117,26 @@ fn google_oauth_log(message: impl AsRef<str>) {
     }
 }
 
+/// The "cancelled"/"timeout" sentinel messages, and the specific `access_denied`
+/// instance of the provider-error message. Produced from the same localized
+/// templates used at the `bail!` sites so the substring match below stays
+/// correct under any active locale.
+fn google_oauth_error_cancelled() -> &'static str {
+    knotq_l10n::t("google.oauth.error.cancelled")
+}
+
+fn google_oauth_error_timeout() -> &'static str {
+    knotq_l10n::t("google.oauth.error.timeout")
+}
+
+fn google_oauth_error_access_denied() -> String {
+    knotq_l10n::t_with("google.oauth.error.provider_error", &[("error", "access_denied")])
+}
+
 fn is_google_oauth_browser_cancel_or_timeout(err: &str) -> bool {
-    err.contains(GOOGLE_OAUTH_CALLBACK_CANCELLED)
-        || err.contains(GOOGLE_OAUTH_CALLBACK_TIMEOUT)
-        || err.contains(GOOGLE_OAUTH_ACCESS_DENIED)
+    err.contains(google_oauth_error_cancelled())
+        || err.contains(google_oauth_error_timeout())
+        || err.contains(google_oauth_error_access_denied().as_str())
 }
 
 fn google_account_label(account: &GoogleOAuthAccount) -> &str {

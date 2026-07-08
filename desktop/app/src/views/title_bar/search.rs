@@ -1,5 +1,6 @@
 use gpui::prelude::*;
 use gpui::{div, px, ClickEvent, Context, IntoElement, Window};
+use knotq_l10n::t as tr;
 
 use crate::app::KnotQApp;
 use crate::theme_gpui::{token_hsla, token_rgba, Theme};
@@ -86,7 +87,7 @@ impl KnotQApp {
                         .text_size(px(12.0))
                         .font_weight(gpui::FontWeight::NORMAL)
                         .text_color(token_hsla(t.text_dim))
-                        .child("search"),
+                        .child(tr("titlebar.search.placeholder")),
                 )
                 .child(
                     div()

@@ -478,7 +478,7 @@ async fn ensure_fresh_token(
         let _ = weak.update(cx, |app, cx| {
             app.settings.sync_account = None;
             app.sync_auth_status = SyncAuthStatus::Error(
-                "Your sync session expired. Please sign in again.".to_string(),
+                knotq_l10n::t("sync.error.session_expired_reauth").to_string(),
             );
             app.sync_run_status = SyncRunStatus::Idle;
             app.save_app_settings();
