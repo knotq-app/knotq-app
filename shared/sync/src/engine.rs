@@ -45,6 +45,11 @@ pub struct SkippedDocument {
 pub const PUSH_MAX_DOCUMENTS_PER_REQUEST: usize = 64;
 /// Per-document update cap; matches the server's `MAX_CRDT_UPDATES_PER_PUSH`.
 pub const PUSH_MAX_UPDATES_PER_DOCUMENT: usize = 50;
+/// Soft cap on raw CRDT update bytes in one push request. The wire body base64
+/// expands these bytes, so this stays below the backend JSON body cap; if one
+/// individual update exceeds the cap we still send it alone and let the backend's
+/// per-update limit decide.
+pub const PUSH_MAX_RAW_UPDATE_BYTES_PER_REQUEST: usize = 6 * 1024 * 1024;
 
 /// The transport a platform implements to carry batched sync requests. Calls are
 /// synchronous and may block (the drivers run them off the UI thread). Tests supply
@@ -380,14 +385,30 @@ fn build_push_request(
     let mut documents = Vec::new();
     let mut acks = Vec::new();
     let mut max_through = 0;
-    for (document, kind) in distinct_pending_documents(local_state)
-        .into_iter()
-        .take(PUSH_MAX_DOCUMENTS_PER_REQUEST)
-    {
-        let edits = local_state.pending_for_document(document, PUSH_MAX_UPDATES_PER_DOCUMENT);
+    let mut raw_update_bytes = 0usize;
+    for (document, kind) in distinct_pending_documents(local_state) {
+        if documents.len() >= PUSH_MAX_DOCUMENTS_PER_REQUEST {
+            break;
+        }
+        let candidates = local_state.pending_for_document(document, PUSH_MAX_UPDATES_PER_DOCUMENT);
+        let candidate_count = candidates.len();
+        let mut edits = Vec::new();
+        for edit in candidates {
+            let edit_len = edit.update_v1.len();
+            let would_exceed =
+                raw_update_bytes.saturating_add(edit_len) > PUSH_MAX_RAW_UPDATE_BYTES_PER_REQUEST;
+            if would_exceed && !(documents.is_empty() && edits.is_empty()) {
+                break;
+            }
+            raw_update_bytes = raw_update_bytes.saturating_add(edit_len);
+            edits.push(edit);
+            if edit_len > PUSH_MAX_RAW_UPDATE_BYTES_PER_REQUEST {
+                break;
+            }
+        }
         let through = edits.iter().map(|edit| edit.local_sequence).max();
         let Some(through) = through else {
-            continue;
+            break;
         };
         max_through = max_through.max(through);
         let sent_edits: Vec<(OperationId, u64)> = edits
@@ -404,6 +425,13 @@ fn build_push_request(
             through_local_sequence: through,
             sent_edits,
         });
+        if acks
+            .last()
+            .is_some_and(|ack| ack.sent_edits.len() < candidate_count)
+            || raw_update_bytes >= PUSH_MAX_RAW_UPDATE_BYTES_PER_REQUEST
+        {
+            break;
+        }
     }
     if documents.is_empty() {
         return None;
@@ -448,5 +476,125 @@ fn pulled_document_as_update(
         sequence: document.seq,
         received_at: Utc::now(),
         update_v1: document.state_v1.clone(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn schedule() -> NotificationScheduleSnapshot {
+        let now = Utc::now();
+        NotificationScheduleSnapshot {
+            sequence: 0,
+            hash: "test-schedule".to_string(),
+            window_start: now,
+            window_end: now,
+            occurrence_count: 0,
+        }
+    }
+
+    fn pending(
+        workspace_id: WorkspaceId,
+        replica_id: ReplicaId,
+        document: DocumentId,
+        sequence: u64,
+        byte_len: usize,
+    ) -> PendingCrdtEdit {
+        PendingCrdtEdit {
+            operation_id: OperationId::new(),
+            workspace_id,
+            replica_id,
+            local_sequence: sequence,
+            created_at: Utc::now(),
+            document,
+            kind: SyncDocumentKind::Scheme,
+            update_v1: vec![sequence as u8; byte_len],
+        }
+    }
+
+    fn raw_request_bytes(request: &BatchPushRequest) -> usize {
+        request
+            .documents
+            .iter()
+            .flat_map(|doc| doc.updates.iter())
+            .map(Vec::len)
+            .sum()
+    }
+
+    #[test]
+    fn build_push_request_splits_hot_document_by_raw_bytes() {
+        let workspace_id = WorkspaceId::new();
+        let replica_id = ReplicaId::new();
+        let document = DocumentId::new();
+        let update_len = PUSH_MAX_RAW_UPDATE_BYTES_PER_REQUEST / 2 + 1;
+        let mut state = LocalSyncState {
+            workspace_id: Some(workspace_id),
+            replica_id: Some(replica_id),
+            ..LocalSyncState::default()
+        };
+        state.push_pending(pending(workspace_id, replica_id, document, 1, update_len));
+        state.push_pending(pending(workspace_id, replica_id, document, 2, update_len));
+
+        let (request, acks) = build_push_request(&state, replica_id, &schedule()).unwrap();
+
+        assert_eq!(request.documents.len(), 1);
+        assert_eq!(request.documents[0].document, document);
+        assert_eq!(request.documents[0].updates.len(), 1);
+        assert!(raw_request_bytes(&request) <= PUSH_MAX_RAW_UPDATE_BYTES_PER_REQUEST);
+        assert_eq!(acks[0].sent_edits.len(), 1);
+        assert_eq!(acks[0].through_local_sequence, 1);
+    }
+
+    #[test]
+    fn build_push_request_sends_single_oversized_update_alone() {
+        let workspace_id = WorkspaceId::new();
+        let replica_id = ReplicaId::new();
+        let huge_document = DocumentId::new();
+        let small_document = DocumentId::new();
+        let mut state = LocalSyncState {
+            workspace_id: Some(workspace_id),
+            replica_id: Some(replica_id),
+            ..LocalSyncState::default()
+        };
+        state.push_pending(pending(
+            workspace_id,
+            replica_id,
+            huge_document,
+            1,
+            PUSH_MAX_RAW_UPDATE_BYTES_PER_REQUEST + 1,
+        ));
+        state.push_pending(pending(workspace_id, replica_id, small_document, 2, 8));
+
+        let (request, acks) = build_push_request(&state, replica_id, &schedule()).unwrap();
+
+        assert_eq!(request.documents.len(), 1);
+        assert_eq!(request.documents[0].document, huge_document);
+        assert_eq!(request.documents[0].updates.len(), 1);
+        assert!(raw_request_bytes(&request) > PUSH_MAX_RAW_UPDATE_BYTES_PER_REQUEST);
+        assert_eq!(acks[0].sent_edits.len(), 1);
+    }
+
+    #[test]
+    fn build_push_request_stops_before_next_document_would_exceed_raw_bytes() {
+        let workspace_id = WorkspaceId::new();
+        let replica_id = ReplicaId::new();
+        let first = DocumentId::new();
+        let second = DocumentId::new();
+        let update_len = PUSH_MAX_RAW_UPDATE_BYTES_PER_REQUEST / 2 + 1;
+        let mut state = LocalSyncState {
+            workspace_id: Some(workspace_id),
+            replica_id: Some(replica_id),
+            ..LocalSyncState::default()
+        };
+        state.push_pending(pending(workspace_id, replica_id, first, 1, update_len));
+        state.push_pending(pending(workspace_id, replica_id, second, 2, update_len));
+
+        let (request, acks) = build_push_request(&state, replica_id, &schedule()).unwrap();
+
+        assert_eq!(request.documents.len(), 1);
+        assert_eq!(request.documents[0].document, first);
+        assert!(raw_request_bytes(&request) <= PUSH_MAX_RAW_UPDATE_BYTES_PER_REQUEST);
+        assert_eq!(acks[0].through_local_sequence, 1);
     }
 }

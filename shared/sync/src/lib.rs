@@ -20,11 +20,12 @@ pub use crdt::{
     WorkspaceCrdtApplyOutcome, WorkspaceCrdtChangeSet, WorkspaceCrdtDocuments,
     WorkspaceCrdtSyncOutcome, YrsSchemeDocument,
 };
+pub use documents::{scheme_documents, sync_documents};
 pub use engine::{
     batch_pull_and_apply, batch_push_pending, PullOutcome, PushedDocument, SkippedDocument,
-    SyncPushRejected, SyncTransport, PUSH_MAX_DOCUMENTS_PER_REQUEST, PUSH_MAX_UPDATES_PER_DOCUMENT,
+    SyncPushRejected, SyncTransport, PUSH_MAX_DOCUMENTS_PER_REQUEST,
+    PUSH_MAX_RAW_UPDATE_BYTES_PER_REQUEST, PUSH_MAX_UPDATES_PER_DOCUMENT,
 };
-pub use documents::{scheme_documents, sync_documents};
 pub use local_state::{
     queue_account_switch_reseed, queue_workspace_bootstrap_updates, DocumentSyncCursor,
     LocalSyncState, MediaSyncCursor, PendingCrdtEdit,
