@@ -1345,6 +1345,7 @@
   "web.home.pitch.title": "Planificación sin dividir el plan",
   "web.home.sync.body": "KnotQ es gratuito y funciona completamente sin conexión — sin cuenta necesaria. Agrega KnotQ Sync para mantener tu espacio de trabajo y notificaciones sincronizados en desktop y móvil.",
   "web.home.sync.create_account": "Crear cuenta",
+  "web.home.sync.currency_note": "Precios en USD",
   "web.home.sync.eyebrow": "Sincronización opcional",
   "web.home.sync.plan_note": "o $35.99 / año — ahorra 25%",
   "web.home.sync.plan_period": "/mes",

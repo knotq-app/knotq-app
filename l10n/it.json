@@ -1345,6 +1345,7 @@
   "web.home.pitch.title": "Pianificazione senza dividere il piano",
   "web.home.sync.body": "KnotQ è gratuito e funziona completamente offline — non è necessario alcun account. Aggiungi KnotQ Sync per mantenere il tuo workspace e le notifiche in step su desktop e mobile.",
   "web.home.sync.create_account": "Crea account",
+  "web.home.sync.currency_note": "Prezzi in USD",
   "web.home.sync.eyebrow": "Sincronizzazione facoltativa",
   "web.home.sync.plan_note": "o $35,99 / anno — risparmia il 25%",
   "web.home.sync.plan_period": "/mese",

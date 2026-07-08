@@ -1345,6 +1345,7 @@
   "web.home.pitch.title": "Planlægning uden at splitte planen fra hinanden",
   "web.home.sync.body": "KnotQ er gratis og fungerer helt offline — ingen konto nødvendig. Tilføj KnotQ Sync for at holde dit arbejdsområde og meddelelser i takt på hele skrivebord og mobil.",
   "web.home.sync.create_account": "Opret konto",
+  "web.home.sync.currency_note": "Priser vises i USD",
   "web.home.sync.eyebrow": "Valgfri synkronisering",
   "web.home.sync.plan_note": "eller $35,99 / år — spar 25%",
   "web.home.sync.plan_period": "/måned",
