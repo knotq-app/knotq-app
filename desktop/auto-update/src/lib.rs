@@ -154,6 +154,25 @@ pub fn check_latest_release(config: &AutoUpdateConfig) -> Result<LatestRelease> 
     }))
 }
 
+pub fn check_update_newer_than(
+    config: &AutoUpdateConfig,
+    version: &Version,
+) -> Result<Option<AvailableUpdate>> {
+    match check_latest_release(config)? {
+        LatestRelease::Available(update) if version_is_newer(version, &update.version) => {
+            Ok(Some(update))
+        }
+        _ => Ok(None),
+    }
+}
+
+pub fn refresh_available_update(
+    config: &AutoUpdateConfig,
+    selected: &AvailableUpdate,
+) -> Result<AvailableUpdate> {
+    Ok(check_update_newer_than(config, &selected.version)?.unwrap_or_else(|| selected.clone()))
+}
+
 pub fn prepare_update(
     config: &AutoUpdateConfig,
     update: &AvailableUpdate,
@@ -294,6 +313,16 @@ mod tests {
         };
 
         assert!(matching_asset_for(&manifest, "macos", "aarch64").is_some());
+    }
+
+    #[test]
+    fn update_newer_than_uses_normalized_semver_ordering() {
+        let current = Version::parse("1.2.3+build.1").unwrap();
+        let same = Version::parse("1.2.3").unwrap();
+        let newer = Version::parse("1.2.4-beta.1").unwrap();
+
+        assert!(!version_is_newer(&current, &same));
+        assert!(version_is_newer(&current, &newer));
     }
 
     #[test]

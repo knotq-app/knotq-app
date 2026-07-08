@@ -5,8 +5,9 @@ use chrono::{DateTime, Utc};
 use futures::{pin_mut, select, FutureExt};
 use gpui::{Context, Task};
 use knotq_auto_update::{
-    check_latest_release, current_version, install_staged_update, prepare_update, AutoUpdateConfig,
-    AvailableUpdate, InstallStrategy, LatestRelease, StagedUpdate,
+    check_latest_release, check_update_newer_than, current_version, install_staged_update,
+    prepare_update, refresh_available_update, AutoUpdateConfig, AvailableUpdate, InstallStrategy,
+    LatestRelease, StagedUpdate,
 };
 use knotq_storage_json::data_dir;
 
@@ -80,6 +81,9 @@ pub(crate) enum AutoUpdateSignal {
         update: AvailableUpdate,
         install_when_ready: bool,
     },
+    Install {
+        update: StagedUpdate,
+    },
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -129,6 +133,9 @@ pub(crate) fn spawn_auto_update_task(
                             install_when_ready,
                         )
                         .await;
+                    }
+                    AutoUpdateSignal::Install { update } => {
+                        install_or_refresh_ready_update(&weak, cx, update).await;
                     }
                 }
                 delay = AUTO_UPDATE_POLL_INTERVAL;
@@ -184,6 +191,14 @@ impl KnotQApp {
             return;
         };
 
+        self.auto_update_status = AutoUpdateUiStatus::Checking;
+        let _ = self
+            .auto_update_tx
+            .try_send(AutoUpdateSignal::Install { update });
+        cx.notify();
+    }
+
+    fn install_staged_update_now(&mut self, update: StagedUpdate, cx: &mut Context<Self>) {
         match update.install_strategy {
             InstallStrategy::InstalledOnRestart => match install_staged_update(&update) {
                 Ok(restart_path) => {
@@ -255,7 +270,10 @@ async fn run_update_check(
                 weak,
                 cx,
                 kind,
-                knotq_l10n::t_with("update.error.invalid_version", &[("error", &format!("{err:#}"))]),
+                knotq_l10n::t_with(
+                    "update.error.invalid_version",
+                    &[("error", &format!("{err:#}"))],
+                ),
             );
             return;
         }
@@ -296,7 +314,10 @@ async fn run_update_check(
                 weak,
                 cx,
                 kind,
-                knotq_l10n::t_with("update.error.check_failed", &[("error", &format!("{err:#}"))]),
+                knotq_l10n::t_with(
+                    "update.error.check_failed",
+                    &[("error", &format!("{err:#}"))],
+                ),
             );
         }
     }
@@ -339,12 +360,48 @@ async fn prepare_available_update(
                 weak,
                 cx,
                 kind,
-                knotq_l10n::t_with("update.error.invalid_version", &[("error", &format!("{err:#}"))]),
+                knotq_l10n::t_with(
+                    "update.error.invalid_version",
+                    &[("error", &format!("{err:#}"))],
+                ),
             );
             return;
         }
     };
     let config = AutoUpdateConfig::github(current_version);
+    let selected_update = update.clone();
+    let refreshed = cx
+        .background_executor()
+        .spawn({
+            let config = config.clone();
+            async move { refresh_available_update(&config, &selected_update) }
+        })
+        .await;
+    let update = match refreshed {
+        Ok(update) => {
+            set_update_status(
+                weak,
+                cx,
+                AutoUpdateUiStatus::Downloading {
+                    version: update.version.to_string(),
+                },
+            );
+            update
+        }
+        Err(err) => {
+            set_prepare_error(
+                weak,
+                cx,
+                kind,
+                update,
+                knotq_l10n::t_with(
+                    "update.error.check_failed",
+                    &[("error", &format!("{err:#}"))],
+                ),
+            );
+            return;
+        }
+    };
     let updates_dir = data_dir().join("updates");
     let prepared = cx
         .background_executor()
@@ -375,8 +432,59 @@ async fn prepare_available_update(
                 cx,
                 kind,
                 update,
-                knotq_l10n::t_with("update.error.prepare_failed", &[("error", &format!("{err:#}"))]),
+                knotq_l10n::t_with(
+                    "update.error.prepare_failed",
+                    &[("error", &format!("{err:#}"))],
+                ),
             );
+        }
+    }
+}
+
+async fn install_or_refresh_ready_update(
+    weak: &gpui::WeakEntity<KnotQApp>,
+    cx: &mut gpui::AsyncApp,
+    staged: StagedUpdate,
+) {
+    let current_version = match current_version(env!("CARGO_PKG_VERSION")) {
+        Ok(version) => version,
+        Err(err) => {
+            set_update_status(
+                weak,
+                cx,
+                AutoUpdateUiStatus::Errored {
+                    message: knotq_l10n::t_with(
+                        "update.error.invalid_version",
+                        &[("error", &format!("{err:#}"))],
+                    ),
+                    checked_at: Utc::now(),
+                    update: None,
+                },
+            );
+            return;
+        }
+    };
+    let config = AutoUpdateConfig::github(current_version);
+    let newer = cx
+        .background_executor()
+        .spawn({
+            let config = config.clone();
+            let version = staged.version.clone();
+            async move { check_update_newer_than(&config, &version) }
+        })
+        .await;
+
+    match newer {
+        Ok(Some(update)) => {
+            prepare_available_update(weak, cx, update, AutoUpdateCheckKind::Manual, true).await;
+        }
+        Ok(None) | Err(_) => {
+            let _ = weak.update(cx, |app, cx| {
+                app.auto_update_status = AutoUpdateUiStatus::Ready {
+                    update: staged.clone(),
+                };
+                app.install_staged_update_now(staged, cx);
+            });
         }
     }
 }
