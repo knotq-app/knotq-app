@@ -407,7 +407,6 @@ fn atomic_batch_rejection_and_server_gate() {
         }],
         notification_schedule_changed: false,
         notification_schedule: Some(schedule.clone()),
-        supports_document_epochs: true,
     };
     let rejection = client.push(&garbage_request);
     assert!(
@@ -429,7 +428,6 @@ fn atomic_batch_rejection_and_server_gate() {
         .pull(&BatchPullRequest {
             replica_id: ReplicaId::new(),
             cursors: HashMap::new(),
-            supports_document_epochs: true,
         })
         .expect("pull after rejection");
     let persisted = pull.documents.iter().any(|d| d.document == doc_id);

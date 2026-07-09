@@ -34,8 +34,8 @@ impl SyncTransport for SyncHttpClient {
 
 impl SyncHttpClient {
     /// `POST /v1/sync/squash` — propose a history squash. Every rejection
-    /// (conflict, too-soon, devices without epoch support, content mismatch) is
-    /// an expected, benign outcome the caller merely logs.
+    /// (conflict, too-soon, content mismatch) is an expected, benign outcome
+    /// the caller merely logs.
     pub(super) fn squash(&self, request: &SquashDocumentRequest) -> Result<SquashDocumentResponse> {
         let url = format!("{}/v1/sync/squash", self.api_base);
         self.post_json(&url, request)

@@ -212,6 +212,5 @@ pub fn orphan_push_request(
             window_end: Utc::now() + chrono::Duration::hours(1),
             occurrence_count: 0,
         }),
-        supports_document_epochs: true,
     }
 }

@@ -21,9 +21,6 @@ pub struct PendingCrdtEdit {
     #[serde(with = "crate::base64_bytes")]
     pub update_v1: Vec<u8>,
     /// Item ids this edit touched (see [`CrdtDocumentUpdate::touched_items`]).
-    /// Defaults empty for edits persisted by pre-epoch builds; the adoption
-    /// rescue treats such edits conservatively (every local item counts as
-    /// touched, so nothing local is dropped).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub touched_items: Vec<String>,
 }
@@ -325,18 +322,13 @@ impl LocalSyncState {
     }
 
     /// The union of item ids touched by the pending edits for `document`, for
-    /// the adoption rescue. `None` when any pending edit predates touched-item
-    /// tracking (persisted by an older build) — the caller must then treat
-    /// every local item as touched rather than silently dropping local edits.
-    pub fn pending_touched_items(&self, document: DocumentId) -> Option<HashSet<String>> {
-        let mut touched = HashSet::new();
-        for edit in self.pending.iter().filter(|e| e.document == document) {
-            if edit.touched_items.is_empty() {
-                return None;
-            }
-            touched.extend(edit.touched_items.iter().cloned());
-        }
-        Some(touched)
+    /// the adoption rescue.
+    pub fn pending_touched_items(&self, document: DocumentId) -> HashSet<String> {
+        self.pending
+            .iter()
+            .filter(|edit| edit.document == document)
+            .flat_map(|edit| edit.touched_items.iter().cloned())
+            .collect()
     }
 
     pub fn has_pending_for_document(&self, document: DocumentId) -> bool {

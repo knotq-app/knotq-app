@@ -263,10 +263,6 @@ pub struct RegisterDeviceRequest {
     pub notification_permission: NotificationPermissionState,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub local_scheduler_supported: Option<bool>,
-    /// Whether this client understands document epochs (history squash). Also
-    /// advertised on every pull/push; registration carries it for completeness.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub supports_document_epochs: Option<bool>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -458,10 +454,6 @@ pub struct BatchPullRequest {
     pub replica_id: ReplicaId,
     #[serde(default)]
     pub cursors: HashMap<DocumentId, u64>,
-    /// Declared on every pull so the server can gate squashes on all
-    /// recently-active devices understanding document epochs.
-    #[serde(default)]
-    pub supports_document_epochs: bool,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -522,9 +514,6 @@ pub struct BatchPushRequest {
     pub notification_schedule_changed: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub notification_schedule: Option<NotificationScheduleSnapshot>,
-    /// See [`BatchPullRequest::supports_document_epochs`].
-    #[serde(default)]
-    pub supports_document_epochs: bool,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -796,7 +785,6 @@ mod tests {
         let pull = BatchPullRequest {
             replica_id,
             cursors: HashMap::from([(document, 7)]),
-            supports_document_epochs: true,
         };
         let push = BatchPushRequest {
             replica_id,
@@ -806,7 +794,6 @@ mod tests {
                 epoch: 0,
                 updates: vec![vec![1, 2, 3]],
             }],
-            supports_document_epochs: true,
             notification_schedule_changed: true,
             notification_schedule: Some(NotificationScheduleSnapshot {
                 sequence: 3,

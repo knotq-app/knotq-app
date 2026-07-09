@@ -673,7 +673,6 @@ impl TestDevice {
             }],
             notification_schedule_changed: true,
             notification_schedule: Some(schedule),
-            supports_document_epochs: true,
         };
         let response = transport
             .push(&request)

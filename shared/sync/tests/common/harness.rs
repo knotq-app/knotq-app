@@ -518,7 +518,6 @@ impl Harness {
                 documents,
                 notification_schedule_changed: false,
                 notification_schedule: Some(test_notification_schedule()),
-                supports_document_epochs: true,
             })
             .expect("push remote workspace snapshot");
     }

@@ -256,9 +256,9 @@ pub(super) fn sync_snapshot(snapshot: SyncSnapshot) -> Result<SyncRunResult> {
     // Post-run maintenance: propose at most one history squash when the run left
     // this device fully synced. The proposal replaces a bloated scheme document's
     // server state with a history-free rebuild of identical content (epoch bump);
-    // every server rejection — head moved, squashed too recently, a device
-    // without epoch support — is an expected, benign skip. The squash rides HTTP
-    // even when the WebSocket is up (it is rare and not latency-sensitive).
+    // every server rejection — head moved, squashed too recently — is an
+    // expected, benign skip. The squash rides HTTP even when the WebSocket is up
+    // (it is rare and not latency-sensitive).
     let mut remote_updates_applied = remote_updates_applied;
     let mut merged_crdt_states = merged_crdt_states;
     let mut squash_attempted = false;

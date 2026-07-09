@@ -16,7 +16,7 @@ use std::collections::{HashMap, HashSet};
 use anyhow::{anyhow, Result};
 use chrono::Utc;
 use knotq_model::{
-    DocumentId, Item, OperationId, ReplicaId, SyncDocumentKind, Workspace, WorkspaceId,
+    DocumentId, OperationId, ReplicaId, SyncDocumentKind, Workspace, WorkspaceId,
 };
 
 use crate::{
@@ -145,7 +145,6 @@ pub fn batch_pull_and_apply(
                 .values()
                 .map(|cursor| (cursor.document, cursor.last_pulled_sequence))
                 .collect(),
-            supports_document_epochs: true,
         };
         let response = transport.pull(&request)?;
         if let Some(known_documents) = &response.known_documents {
@@ -202,23 +201,9 @@ pub fn batch_pull_and_apply(
         // index update arriving in the same response has already registered the
         // scheme (the adoption resolves the scheme through the workspace index).
         for doc in adoptions {
-            let has_pending = local_state.has_pending_for_document(doc.document);
-            // `None` from pending_touched_items means some pending edit predates
-            // touched tracking; treat every local item as touched so nothing
-            // local is dropped (bias toward keeping content).
-            let touched = if has_pending {
-                Some(
-                    local_state
-                        .pending_touched_items(doc.document)
-                        .unwrap_or_else(|| {
-                            scheme_items_for_document(&workspace, doc.document)
-                                .map(|items| items.iter().map(|item| item.id.to_string()).collect())
-                                .unwrap_or_default()
-                        }),
-                )
-            } else {
-                None
-            };
+            let touched = local_state
+                .has_pending_for_document(doc.document)
+                .then(|| local_state.pending_touched_items(doc.document));
             match crdt_docs.adopt_squashed_document(
                 &workspace,
                 doc.document,
@@ -644,7 +629,6 @@ fn build_push_request(
             documents,
             notification_schedule_changed: false,
             notification_schedule: Some(schedule),
-            supports_document_epochs: true,
         },
         acks,
     ))
@@ -660,15 +644,6 @@ fn distinct_pending_documents(local_state: &LocalSyncState) -> Vec<(DocumentId, 
         }
     }
     documents
-}
-
-// The scheme (by content-document id) in the workspace index, if any.
-fn scheme_items_for_document(workspace: &Workspace, document: DocumentId) -> Option<&Vec<Item>> {
-    let (scheme_id, _) = workspace
-        .scheme_sync
-        .iter()
-        .find(|(_, meta)| meta.id == document)?;
-    workspace.schemes.get(scheme_id).map(|scheme| &scheme.items)
 }
 
 fn scheme_document_known(workspace: &Workspace, document: DocumentId) -> bool {

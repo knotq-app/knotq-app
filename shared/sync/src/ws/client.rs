@@ -555,7 +555,6 @@ mod tests {
             let req = crate::BatchPullRequest {
                 replica_id: crate::ReplicaId::new(),
                 cursors: Default::default(),
-                supports_document_epochs: false,
             };
             client.request_pull(&req)
         });
@@ -641,7 +640,6 @@ mod tests {
                 documents: Vec::new(),
                 notification_schedule_changed: false,
                 notification_schedule: None,
-                supports_document_epochs: false,
             };
             client.request_push(&req)
         });
@@ -695,7 +693,6 @@ mod tests {
             let req = crate::BatchPullRequest {
                 replica_id: crate::ReplicaId::new(),
                 cursors: Default::default(),
-                supports_document_epochs: false,
             };
             req_client.request_pull(&req)
         });
