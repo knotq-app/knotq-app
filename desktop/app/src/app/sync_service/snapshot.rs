@@ -97,6 +97,7 @@ pub(super) fn sync_snapshot(snapshot: SyncSnapshot) -> Result<SyncRunResult> {
                     document: workspace.sync.id,
                     kind: SyncDocumentKind::PersonalWorkspace,
                     update_v1: state,
+                    touched_items: Vec::new(),
                 }
             })
     } else {
@@ -118,7 +119,12 @@ pub(super) fn sync_snapshot(snapshot: SyncSnapshot) -> Result<SyncRunResult> {
         // account already holds from another origin would otherwise never receive this
         // device's content (the cross-account content gap). Full snapshots union
         // idempotently; deterministic item creation dedupes items.
-        queue_account_switch_reseed(&mut local_state, &crdt_docs, &workspace, snapshot.replica_id);
+        queue_account_switch_reseed(
+            &mut local_state,
+            &crdt_docs,
+            &workspace,
+            snapshot.replica_id,
+        );
     }
 
     let mut pushed = Vec::new();
@@ -247,6 +253,57 @@ pub(super) fn sync_snapshot(snapshot: SyncSnapshot) -> Result<SyncRunResult> {
     save_local_sync_state(&path, &local_state)?;
     media_downloaded |= download_missing_media_assets(&client, &workspace)?;
 
+    // Post-run maintenance: propose at most one history squash when the run left
+    // this device fully synced. The proposal replaces a bloated scheme document's
+    // server state with a history-free rebuild of identical content (epoch bump);
+    // every server rejection — head moved, squashed too recently, a device
+    // without epoch support — is an expected, benign skip. The squash rides HTTP
+    // even when the WebSocket is up (it is rare and not latency-sensitive).
+    let mut remote_updates_applied = remote_updates_applied;
+    let mut merged_crdt_states = merged_crdt_states;
+    let mut squash_attempted = false;
+    if snapshot.allow_squash && local_state.pending.is_empty() {
+        if let Some(proposal) = knotq_sync::build_squash_proposal(&crdt_docs, &local_state) {
+            squash_attempted = true;
+            match client.squash(&proposal.as_request(replica_id)) {
+                Ok(response) => {
+                    eprintln!(
+                        "sync: squashed document {} history: {} -> {} bytes (epoch {})",
+                        response.document,
+                        proposal.bytes_before,
+                        proposal.state_v1.len(),
+                        response.epoch,
+                    );
+                    // Adopt the squashed state now (the server's changed-broadcast
+                    // excludes this replica, so no nudge is coming): one more pull
+                    // replaces the local document — with no pending edits it is
+                    // exact. A failure here is harmless: the next regular sync
+                    // adopts instead.
+                    match batch_pull_and_apply(
+                        &transport,
+                        &mut crdt_docs,
+                        &mut local_state,
+                        workspace.clone(),
+                        replica_id,
+                    ) {
+                        Ok(adoption) => {
+                            workspace = adoption.workspace;
+                            remote_updates_applied += adoption.remote_updates_applied;
+                            merged_crdt_states = crdt_docs.document_states();
+                            save_workspace(&path, &workspace)?;
+                            save_crdt_state(&path, &merged_crdt_states)?;
+                            save_local_sync_state(&path, &local_state)?;
+                        }
+                        Err(err) => {
+                            eprintln!("sync: post-squash adoption pull failed (next sync adopts): {err:#}");
+                        }
+                    }
+                }
+                Err(err) => eprintln!("sync: squash proposal declined: {err:#}"),
+            }
+        }
+    }
+
     Ok(SyncRunResult {
         workspace,
         crdt_states: merged_crdt_states,
@@ -256,6 +313,7 @@ pub(super) fn sync_snapshot(snapshot: SyncSnapshot) -> Result<SyncRunResult> {
         local_workspace_changed: local_workspace_changed || repaired_workspace_changed,
         media_downloaded,
         notification_schedule,
+        squash_attempted,
     })
 }
 
@@ -288,6 +346,7 @@ fn queue_reidentified_workspace_update(
         document: update.document,
         kind: update.kind,
         update_v1: update.update_v1,
+        touched_items: update.touched_items,
     });
 }
 
@@ -326,12 +385,16 @@ fn queue_repair_crdt_updates(
             document: update.document,
             kind: update.kind,
             update_v1: update.update_v1,
+            touched_items: update.touched_items,
         });
     }
     Ok(())
 }
 
-pub(super) fn workspace_for_background_sync(path: &std::path::Path, current: Workspace) -> Workspace {
+pub(super) fn workspace_for_background_sync(
+    path: &std::path::Path,
+    current: Workspace,
+) -> Workspace {
     let Ok(Some(mut full)) = load_workspace_with_options(path, WorkspaceLoadOptions::all()) else {
         return current;
     };
@@ -377,9 +440,7 @@ fn configure_local_state(
     // bootstrap push a bare delta the new server has no base for (crdt_schema_invalid).
     // Reset them so the next sync re-pulls from zero and re-seeds full snapshots.
     if local_state.reset_for_account_change(server_workspace_id, &account.api_base) {
-        eprintln!(
-            "sync: account/server changed since last sync — reset cursors for full re-pull"
-        );
+        eprintln!("sync: account/server changed since last sync — reset cursors for full re-pull");
     }
     local_state.workspace_id = Some(server_workspace_id);
     local_state.replica_id = Some(replica_id);
@@ -410,9 +471,7 @@ fn merge_pending(local_state: &mut LocalSyncState, pending: Vec<PendingCrdtEdit>
 mod configure_local_state_tests {
     use super::configure_local_state;
     use chrono::Utc;
-    use knotq_model::{
-        DocumentId, ReplicaId, SyncAccountSettings, SyncDocumentKind, WorkspaceId,
-    };
+    use knotq_model::{DocumentId, ReplicaId, SyncAccountSettings, SyncDocumentKind, WorkspaceId};
     use knotq_sync::LocalSyncState;
 
     fn account(api_base: &str) -> SyncAccountSettings {
@@ -440,7 +499,7 @@ mod configure_local_state_tests {
             server_url: Some(server_url.to_string()),
             ..LocalSyncState::default()
         };
-        state.mark_pulled(DocumentId::new(), SyncDocumentKind::Scheme, 5);
+        state.mark_pulled(DocumentId::new(), SyncDocumentKind::Scheme, 5, 0);
         state
     }
 

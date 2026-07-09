@@ -65,7 +65,12 @@ impl EncodeCache {
         // Clear dirty up front: a change racing in during `encode` re-sets it, so the
         // next call recomputes rather than serving a stale cache.
         if !self.dirty.swap(false, std::sync::atomic::Ordering::AcqRel) {
-            if let Some(bytes) = self.bytes.lock().unwrap_or_else(|e| e.into_inner()).as_ref() {
+            if let Some(bytes) = self
+                .bytes
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .as_ref()
+            {
                 return bytes.clone();
             }
         }
@@ -85,8 +90,8 @@ pub use scheme_content::YrsSchemeDocument;
 pub use validation::validate_crdt_update_sequence;
 
 pub(crate) use encoding::{
-    decode_inline_embed_str, encode_inline_embed, serde_json_string_value,
-    random_document_client_id, stable_item_seed_client_id, update_v1_is_empty, yrs_doc_options,
+    decode_inline_embed_str, encode_inline_embed, random_document_client_id,
+    serde_json_string_value, stable_item_seed_client_id, update_v1_is_empty, yrs_doc_options,
 };
 pub(crate) use scheme_content::item_text_ref;
 #[cfg(test)]
@@ -376,12 +381,22 @@ impl WorkspaceCrdtDocuments {
             document: self.workspace.id,
             kind: self.workspace.kind,
             update_v1: self.workspace.encode_state_v1(),
+            touched_items: Vec::new(),
         });
         for doc in self.schemes.values() {
+            // A full snapshot re-asserts every live item, so for the epoch
+            // adoption rescue all of them count as locally touched (a queued
+            // snapshot exists precisely to re-establish this device's content).
+            let mut touched_items: Vec<String> = doc
+                .scheme_items()
+                .map(|items| items.iter().map(|item| item.id.to_string()).collect())
+                .unwrap_or_default();
+            touched_items.sort();
             outcome.updates.push(CrdtDocumentUpdate {
                 document: doc.id,
                 kind: SyncDocumentKind::Scheme,
                 update_v1: doc.encode_state_v1(),
+                touched_items,
             });
         }
         outcome
@@ -423,6 +438,7 @@ impl WorkspaceCrdtDocuments {
             document: new_id,
             kind,
             update_v1: self.workspace.encode_state_v1(),
+            touched_items: Vec::new(),
         }))
     }
 
@@ -471,11 +487,108 @@ impl WorkspaceCrdtDocuments {
                 continue;
             };
             match doc.replace_scheme(scheme) {
-                Ok(()) => healed.push(doc.id),
+                Ok(_) => healed.push(doc.id),
                 Err(err) => eprintln!("heal scheme CRDT document {scheme_id} failed: {err:#}"),
             }
         }
         healed
+    }
+
+    /// Adopt a squashed (epoch-bumped) scheme document: REPLACE the local CRDT
+    /// document with `state` instead of merging (the squashed document shares no
+    /// Yjs history with its predecessor, so a merge would double content), then
+    /// re-express any un-pushed local edits against it.
+    ///
+    /// `pending_touched` communicates the local pending edits for this document:
+    /// `None` means there are none (the common case — the document is replaced
+    /// wholesale and the result is exact). `Some(touched)` triggers an
+    /// item-granular three-way rescue between the local materialized scheme
+    /// (which includes the pending edits) and the adopted remote content: items
+    /// in `touched` keep their local version (including local deletions), all
+    /// other items take the remote version (including remote deletions and
+    /// post-squash remote edits). The rescue is returned as a fresh update
+    /// authored against the adopted document, for the caller to queue as
+    /// new-epoch pending.
+    ///
+    /// Returns the re-materialized workspace alongside the optional rescue.
+    pub fn adopt_squashed_document(
+        &mut self,
+        current: &Workspace,
+        document: DocumentId,
+        state: &[u8],
+        pending_touched: Option<&HashSet<String>>,
+    ) -> anyhow::Result<(Workspace, Option<CrdtDocumentUpdate>)> {
+        let scheme_id = scheme_documents_by_id(current)
+            .get(&document)
+            .copied()
+            .ok_or_else(|| anyhow!("unknown scheme document {document}"))?;
+        let adopted = YrsSchemeDocument::for_replica(document, None);
+        adopted
+            .apply_update_v1(state)
+            .context("adopt squashed scheme state")?;
+        adopted
+            .validate()
+            .context("validate squashed scheme state")?;
+
+        let rescue = match (pending_touched, current.schemes.get(&scheme_id)) {
+            (Some(touched), Some(local_scheme)) => {
+                let remote_items = adopted.scheme_items()?;
+                let merged = merge_items_for_adoption(&local_scheme.items, remote_items, touched);
+                let mut scheme = local_scheme.clone();
+                scheme.items = merged;
+                // Only a rescue that actually changes the adopted document is
+                // queued; identical content diffs to an empty update -> None.
+                adopted.sync_scheme(&scheme)?
+            }
+            _ => None,
+        };
+
+        self.schemes.insert(scheme_id, adopted);
+        let workspace = self
+            .materialize_workspace(current, &HashSet::from([scheme_id]))
+            .context("materialize after epoch adoption")?;
+        Ok((workspace, rescue))
+    }
+
+    /// Scheme documents large enough to be worth squashing, as
+    /// `(document, state_v1_len)`, largest first. The caller applies its own
+    /// eligibility rules (fully synced, no pending) before calling
+    /// [`rebuild_scheme_state`](Self::rebuild_scheme_state) on a candidate.
+    pub fn squash_candidates(&self, min_state_bytes: usize) -> Vec<(DocumentId, usize)> {
+        let mut candidates: Vec<(DocumentId, usize)> = self
+            .schemes
+            .values()
+            .map(|doc| (doc.id, doc.encode_state_v1().len()))
+            .filter(|(_, len)| *len >= min_state_bytes)
+            .collect();
+        candidates.sort_by(|left, right| right.1.cmp(&left.1));
+        candidates
+    }
+
+    /// Rebuild `document`'s content as a fresh CRDT with no edit history — the
+    /// state a squash proposes as the replacement. Built from the LIVE local
+    /// document's materialized items (not the possibly-stale `workspace`
+    /// snapshot) so the rebuild is exactly content-equivalent to what the
+    /// server holds when this replica is fully synced.
+    pub fn rebuild_scheme_state(&self, document: DocumentId) -> anyhow::Result<Vec<u8>> {
+        let (scheme_id, doc) = self
+            .schemes
+            .iter()
+            .find(|(_, doc)| doc.id == document)
+            .ok_or_else(|| anyhow!("unknown scheme document {document}"))?;
+        let items = doc.scheme_items()?;
+        let scheme = Scheme {
+            id: *scheme_id,
+            // Only `id` and `items` land in the content document; the remaining
+            // fields live in the workspace index.
+            name: String::new(),
+            color_index: 0,
+            gsync: false,
+            source: SchemeSource::default(),
+            items,
+        };
+        let rebuilt = YrsSchemeDocument::from_scheme(document, &scheme)?;
+        Ok(rebuilt.encode_state_v1())
     }
 
     pub fn replace_all(&mut self, workspace: &Workspace) -> anyhow::Result<()> {
@@ -830,6 +943,59 @@ impl WorkspaceCrdtDocuments {
         workspace.ensure_sync_metadata();
         Ok(workspace)
     }
+}
+
+/// Item-granular three-way merge for epoch adoption, with the local pending
+/// edits' `touched` set standing in for the missing common base:
+///   - an item the local pending edits touched keeps its LOCAL fate — the local
+///     version if present, dropped if locally deleted;
+///   - every other item takes its REMOTE fate — the remote version if present
+///     (covering post-squash remote edits), dropped if absent remotely (a
+///     remote deletion, or an item this replica never pushed... which cannot
+///     exist untouched, since unpushed local additions are always touched).
+/// Ordering follows the remote list; rescued local-only items are inserted
+/// after their nearest preceding local neighbour that survived the merge.
+pub(crate) fn merge_items_for_adoption(
+    local: &[Item],
+    remote: Vec<Item>,
+    touched: &HashSet<String>,
+) -> Vec<Item> {
+    let local_by_id: HashMap<String, &Item> = local
+        .iter()
+        .map(|item| (item.id.to_string(), item))
+        .collect();
+    let remote_ids: HashSet<String> = remote.iter().map(|item| item.id.to_string()).collect();
+
+    let mut merged: Vec<Item> = Vec::with_capacity(remote.len());
+    for item in remote {
+        let id = item.id.to_string();
+        if touched.contains(&id) {
+            if let Some(local_item) = local_by_id.get(&id) {
+                merged.push((*local_item).clone());
+            }
+            // Touched but locally absent: a local deletion — honor it.
+        } else {
+            merged.push(item);
+        }
+    }
+
+    // Rescue touched local items the remote does not have (local additions, or
+    // local edits racing a remote deletion — conflict resolved toward keeping
+    // content). Walk the local order so each lands after its local predecessor.
+    for (index, item) in local.iter().enumerate() {
+        let id = item.id.to_string();
+        if remote_ids.contains(&id) || !touched.contains(&id) {
+            continue;
+        }
+        let anchor = local[..index].iter().rev().find_map(|previous| {
+            let previous_id = previous.id;
+            merged.iter().position(|entry| entry.id == previous_id)
+        });
+        let at = anchor.map(|position| position + 1).unwrap_or(0);
+        merged.insert(at, item.clone());
+    }
+
+    merged
 }
 
 fn documents_missing(docs: &WorkspaceCrdtDocuments, workspace: &Workspace) -> bool {

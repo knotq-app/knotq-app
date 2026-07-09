@@ -156,6 +156,7 @@ impl WorkspaceStore {
                         document: update.document,
                         kind: update.kind,
                         update_v1: update.update_v1,
+                        touched_items: update.touched_items,
                     })
             })
             .collect()

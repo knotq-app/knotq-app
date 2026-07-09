@@ -12,9 +12,7 @@ use std::net::TcpStream;
 use std::sync::Arc;
 use std::time::Duration;
 
-use knotq_sync::ws::{
-    RawSocket, RawSocketFactory, WsCallbacks, WsClient, WsConfig,
-};
+use knotq_sync::ws::{RawSocket, RawSocketFactory, WsCallbacks, WsClient, WsConfig};
 use tungstenite::stream::MaybeTlsStream;
 use tungstenite::{ClientRequestBuilder, Message, WebSocket};
 
@@ -33,9 +31,10 @@ impl RawSocket for TungsteniteSocket {
         set_read_timeout(self.socket.get_mut(), Some(timeout))?;
         match self.socket.read() {
             Ok(Message::Text(text)) => Ok(Some(text)),
-            Ok(Message::Close(_)) => {
-                Err(io::Error::new(ErrorKind::ConnectionAborted, "ws closed by server"))
-            }
+            Ok(Message::Close(_)) => Err(io::Error::new(
+                ErrorKind::ConnectionAborted,
+                "ws closed by server",
+            )),
             // Ping/Pong are answered by tungstenite internally; ignore other frames.
             Ok(_) => Ok(None),
             Err(tungstenite::Error::Io(err))
@@ -179,6 +178,7 @@ mod tests {
         let request = knotq_sync::BatchPullRequest {
             replica_id: knotq_model::ReplicaId::new(),
             cursors: Default::default(),
+            supports_document_epochs: true,
         };
         let response = client.request_pull(&request);
         assert!(

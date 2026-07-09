@@ -32,6 +32,7 @@ struct ServerCounters {
 struct ServerDocument {
     kind: SyncDocumentKind,
     seq: u64,
+    epoch: u64,
     state_v1: Vec<u8>,
 }
 
@@ -143,10 +144,31 @@ impl TestServer {
             ServerDocument {
                 kind: knotq_model::SyncDocumentKind::Scheme,
                 seq: 1,
+                epoch: 0,
                 state_v1: scheme_update.update_v1,
             },
         );
         doc_id
+    }
+
+    /// Server-side effect of an accepted `POST /v1/sync/squash`: replace the
+    /// stored state with the history-free rebuild, bumping seq AND epoch, so a
+    /// pulling replica sees the epoch change and adopts by replacement.
+    pub fn squash_document(&self, document: DocumentId, state_v1: Vec<u8>) -> (u64, u64) {
+        let mut documents = self.documents.borrow_mut();
+        let doc = documents.get_mut(&document).expect("squash target exists");
+        doc.state_v1 = state_v1;
+        doc.seq += 1;
+        doc.epoch += 1;
+        (doc.seq, doc.epoch)
+    }
+
+    /// Current (seq, epoch) head of a stored document.
+    pub fn document_head(&self, document: DocumentId) -> Option<(u64, u64)> {
+        self.documents
+            .borrow()
+            .get(&document)
+            .map(|doc| (doc.seq, doc.epoch))
     }
 
     /// Corrupt the personal workspace document on the server by replacing its
@@ -173,6 +195,7 @@ impl SyncTransport for TestServer {
                 document: *id,
                 kind: doc.kind,
                 seq: doc.seq,
+                epoch: doc.epoch,
                 state_v1: doc.state_v1.clone(),
             })
             .collect();
@@ -215,6 +238,7 @@ impl SyncTransport for TestServer {
             kind: SyncDocumentKind,
             new_state: Vec<u8>,
             new_seq: u64,
+            epoch: u64,
             accepted: usize,
         }
         let mut scratch: Vec<ScratchEntry> = Vec::with_capacity(request.documents.len());
@@ -222,6 +246,13 @@ impl SyncTransport for TestServer {
         for doc in &request.documents {
             let existing = documents.get(&doc.document);
             if let Some(entry) = existing {
+                // Mirrors the backend's stale-epoch rejection: updates authored
+                // against a squashed-away history are refused, not merged.
+                if entry.epoch != doc.epoch {
+                    return Err(anyhow::Error::new(SyncPushRejected {
+                        code: "document_epoch_stale".to_string(),
+                    }));
+                }
                 if entry.kind != doc.kind {
                     // Mirrors the document_kind_mismatch 409 — propagate as error.
                     return Err(anyhow!(
@@ -254,11 +285,14 @@ impl SyncTransport for TestServer {
             }
             let new_state = merge_state(base, &doc.updates);
             let new_seq = existing.map(|e| e.seq).unwrap_or(0) + 1;
+            // A brand-new document adopts the client's epoch (server re-seed).
+            let epoch = existing.map(|e| e.epoch).unwrap_or(doc.epoch);
             scratch.push(ScratchEntry {
                 document: doc.document,
                 kind: doc.kind,
                 new_state,
                 new_seq,
+                epoch,
                 accepted: doc.updates.len(),
             });
         }
@@ -271,6 +305,7 @@ impl SyncTransport for TestServer {
                 ServerDocument {
                     kind: entry.kind,
                     seq: entry.new_seq,
+                    epoch: entry.epoch,
                     state_v1: entry.new_state,
                 },
             );

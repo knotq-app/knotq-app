@@ -139,6 +139,10 @@ struct SyncSnapshot {
     /// The live WebSocket sync client, if connected. The run prefers it over HTTP
     /// (see `ws_transport::FallbackTransport`); `None` falls back to HTTP only.
     ws_sync: Option<std::sync::Arc<knotq_sync::ws::WsClient>>,
+    /// Whether this run may propose a history squash after finishing fully
+    /// synced. Throttled by the scheduler so a server-declined proposal (e.g.
+    /// `squash_too_soon`) is not rebuilt and re-sent on every poll.
+    allow_squash: bool,
 }
 
 struct SyncRunResult {
@@ -155,6 +159,9 @@ struct SyncRunResult {
     /// The schedule used by this run (reused or freshly computed), handed back so the
     /// caller can cache it for the next run's reuse check.
     notification_schedule: NotificationScheduleSnapshot,
+    /// True when this run built and sent a squash proposal (accepted or not),
+    /// so the scheduler can arm its attempt throttle.
+    squash_attempted: bool,
 }
 
 /// A notification schedule cached on `KnotQApp` between sync runs, with the inputs
@@ -254,6 +261,7 @@ mod tests {
                 kind: SyncDocumentKind::Scheme,
                 last_pulled_sequence: 1,
                 last_pushed_sequence: 1,
+                epoch: 0,
             },
         );
 
@@ -322,6 +330,7 @@ mod tests {
                 kind: SyncDocumentKind::Scheme,
                 last_pulled_sequence: 0,
                 last_pushed_sequence: 12,
+                epoch: 0,
             },
         );
         state.push_pending(PendingCrdtEdit {
@@ -333,6 +342,7 @@ mod tests {
             document,
             kind: SyncDocumentKind::Scheme,
             update_v1: stale_delta.clone(),
+            touched_items: Vec::new(),
         });
 
         queue_workspace_bootstrap_updates(
@@ -386,6 +396,7 @@ mod tests {
             document,
             kind: SyncDocumentKind::Scheme,
             update_v1: valid_base.clone(),
+            touched_items: Vec::new(),
         });
 
         queue_workspace_bootstrap_updates(
@@ -429,6 +440,7 @@ mod tests {
             document: orphan_document,
             kind: SyncDocumentKind::Scheme,
             update_v1: vec![9, 9, 9],
+            touched_items: Vec::new(),
         });
 
         // No remote_latest entry for the orphan document → server has no base.
@@ -470,6 +482,7 @@ mod tests {
                 kind: SyncDocumentKind::Scheme,
                 last_pulled_sequence: 12,
                 last_pushed_sequence: 12,
+                epoch: 0,
             },
         );
 
@@ -505,6 +518,7 @@ mod tests {
             kind: SyncDocumentKind::Scheme,
             last_pulled_sequence: 9,
             last_pushed_sequence: 4,
+            epoch: 0,
         };
         let mut state = LocalSyncState::default();
         state.document_cursors.insert(document, cursor.clone());
@@ -517,6 +531,7 @@ mod tests {
             document: workspace_document,
             kind: SyncDocumentKind::PersonalWorkspace,
             update_v1: vec![1],
+            touched_items: Vec::new(),
         });
         state.push_pending(PendingCrdtEdit {
             operation_id: OperationId::new(),
@@ -527,6 +542,7 @@ mod tests {
             document,
             kind: SyncDocumentKind::Scheme,
             update_v1: vec![2],
+            touched_items: Vec::new(),
         });
         state.mark_media_uploaded("asset.png".to_string(), document, 4, "hash".to_string());
 
@@ -571,6 +587,7 @@ mod tests {
             document,
             kind: SyncDocumentKind::Scheme,
             update_v1: vec![4, 5, 6],
+            touched_items: Vec::new(),
         });
 
         let mut remote_latest = std::collections::HashMap::new();

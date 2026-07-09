@@ -20,6 +20,12 @@ pub struct PendingCrdtEdit {
     pub kind: SyncDocumentKind,
     #[serde(with = "crate::base64_bytes")]
     pub update_v1: Vec<u8>,
+    /// Item ids this edit touched (see [`CrdtDocumentUpdate::touched_items`]).
+    /// Defaults empty for edits persisted by pre-epoch builds; the adoption
+    /// rescue treats such edits conservatively (every local item counts as
+    /// touched, so nothing local is dropped).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub touched_items: Vec<String>,
 }
 
 impl PendingCrdtEdit {
@@ -28,6 +34,7 @@ impl PendingCrdtEdit {
             document: self.document,
             kind: self.kind,
             update_v1: self.update_v1.clone(),
+            touched_items: self.touched_items.clone(),
         }
     }
 }
@@ -40,6 +47,12 @@ pub struct DocumentSyncCursor {
     pub last_pulled_sequence: u64,
     #[serde(default)]
     pub last_pushed_sequence: u64,
+    /// The document epoch the last pulled state carried (0 until a squash ever
+    /// happens). A pulled epoch differing from this triggers adoption-by-replace
+    /// instead of a CRDT merge, and pushes carry it so the server can reject
+    /// stale-epoch updates.
+    #[serde(default)]
+    pub epoch: u64,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -239,6 +252,7 @@ impl LocalSyncState {
                     kind,
                     last_pulled_sequence: 0,
                     last_pushed_sequence: 0,
+                    epoch: 0,
                 });
             cursor.last_pushed_sequence = cursor.last_pushed_sequence.max(through_local_sequence);
         }
@@ -274,6 +288,7 @@ impl LocalSyncState {
                     kind,
                     last_pulled_sequence: 0,
                     last_pushed_sequence: 0,
+                    epoch: 0,
                 });
             cursor.last_pushed_sequence = cursor.last_pushed_sequence.max(max_seq);
         }
@@ -284,6 +299,7 @@ impl LocalSyncState {
         document: DocumentId,
         kind: SyncDocumentKind,
         latest_sequence: u64,
+        epoch: u64,
     ) {
         let cursor = self
             .document_cursors
@@ -293,9 +309,38 @@ impl LocalSyncState {
                 kind,
                 last_pulled_sequence: 0,
                 last_pushed_sequence: 0,
+                epoch: 0,
             });
         cursor.kind = kind;
         cursor.last_pulled_sequence = cursor.last_pulled_sequence.max(latest_sequence);
+        cursor.epoch = epoch;
+    }
+
+    /// The epoch this replica last recorded for `document` (0 when unknown).
+    pub fn document_epoch(&self, document: DocumentId) -> u64 {
+        self.document_cursors
+            .get(&document)
+            .map(|cursor| cursor.epoch)
+            .unwrap_or(0)
+    }
+
+    /// The union of item ids touched by the pending edits for `document`, for
+    /// the adoption rescue. `None` when any pending edit predates touched-item
+    /// tracking (persisted by an older build) — the caller must then treat
+    /// every local item as touched rather than silently dropping local edits.
+    pub fn pending_touched_items(&self, document: DocumentId) -> Option<HashSet<String>> {
+        let mut touched = HashSet::new();
+        for edit in self.pending.iter().filter(|e| e.document == document) {
+            if edit.touched_items.is_empty() {
+                return None;
+            }
+            touched.extend(edit.touched_items.iter().cloned());
+        }
+        Some(touched)
+    }
+
+    pub fn has_pending_for_document(&self, document: DocumentId) -> bool {
+        self.pending.iter().any(|edit| edit.document == document)
     }
 
     pub fn media_upload_is_current(
@@ -423,6 +468,7 @@ pub fn queue_workspace_bootstrap_updates(
             document: update.document,
             kind: update.kind,
             update_v1: update.update_v1,
+            touched_items: update.touched_items,
         });
         next_sequence += 1;
     }
@@ -476,6 +522,7 @@ pub fn queue_account_switch_reseed(
             document: update.document,
             kind: update.kind,
             update_v1: update.update_v1,
+            touched_items: update.touched_items,
         });
         next_sequence += 1;
     }
@@ -504,6 +551,7 @@ mod account_change_tests {
             document,
             kind,
             update_v1: vec![1, 2, 3],
+            touched_items: Vec::new(),
         }
     }
 
@@ -525,6 +573,7 @@ mod account_change_tests {
                 kind: SyncDocumentKind::Scheme,
                 last_pulled_sequence: 4,
                 last_pushed_sequence: 4,
+                epoch: 0,
             },
         );
         state.media_cursors.insert(
@@ -554,7 +603,10 @@ mod account_change_tests {
 
         assert!(state.reset_for_account_change(account_b, SERVER_A));
 
-        assert!(state.document_cursors.is_empty(), "pull/push cursors cleared");
+        assert!(
+            state.document_cursors.is_empty(),
+            "pull/push cursors cleared"
+        );
         assert!(state.media_cursors.is_empty(), "media cursors cleared");
         // Scheme content pending is kept; workspace-index pending is dropped.
         assert_eq!(state.pending.len(), 1);
@@ -599,6 +651,7 @@ mod account_change_tests {
                 kind: SyncDocumentKind::Scheme,
                 last_pulled_sequence: 0,
                 last_pushed_sequence: 0,
+                epoch: 0,
             },
         );
         assert!(!state.reset_for_account_change(WorkspaceId::new(), SERVER_A));

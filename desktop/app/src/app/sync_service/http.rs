@@ -4,7 +4,8 @@ use std::time::Duration as StdDuration;
 use anyhow::{anyhow, Context as AnyhowContext, Result};
 use knotq_sync::{
     BatchPullRequest, BatchPullResponse, BatchPushRequest, BatchPushResponse, ErrorResponse,
-    SyncTransport, MAX_SYNC_MEDIA_BYTES,
+    SquashDocumentRequest, SquashDocumentResponse, SyncPushRejected, SyncTransport,
+    MAX_SYNC_MEDIA_BYTES,
 };
 
 use super::media::media_content_type;
@@ -18,11 +19,28 @@ impl SyncTransport for SyncHttpClient {
 
     fn push(&self, request: &BatchPushRequest) -> Result<BatchPushResponse> {
         let url = format!("{}/v1/sync/push", self.api_base);
-        self.post_json(&url, request)
+        // Push-specific error mapping: a deterministic 4xx rejection must carry
+        // the typed `SyncPushRejected` so the engine's self-heal (reseed) and the
+        // scheduler's epoch-stale re-pull can react — mirroring the WebSocket
+        // transport's `map_push_error`. The plain string this used to return
+        // silently disabled both on the HTTP fallback path.
+        self.authorized(ureq::post(&url))
+            .send_json(serde_json::to_value(request)?)
+            .map_err(sync_push_http_error)?
+            .into_json()
+            .with_context(|| format!("parse sync response from {url}"))
     }
 }
 
 impl SyncHttpClient {
+    /// `POST /v1/sync/squash` — propose a history squash. Every rejection
+    /// (conflict, too-soon, devices without epoch support, content mismatch) is
+    /// an expected, benign outcome the caller merely logs.
+    pub(super) fn squash(&self, request: &SquashDocumentRequest) -> Result<SquashDocumentResponse> {
+        let url = format!("{}/v1/sync/squash", self.api_base);
+        self.post_json(&url, request)
+    }
+
     pub(super) fn upload_media_asset(&self, media: SyncMediaAsset, bytes: &[u8]) -> Result<()> {
         let url = self.media_url(media);
         self.authorized(ureq::put(&url))
@@ -93,6 +111,32 @@ impl SyncHttpClient {
         request
             .timeout(HTTP_TIMEOUT)
             .set("authorization", &format!("Bearer {}", self.bearer_token))
+    }
+}
+
+// Push-path variant of `sync_http_error`: auth and transport failures map the
+// same way, but any other 4xx becomes the typed `SyncPushRejected` (its Display
+// already reads "sync backend rejected request: <code>", so no extra context —
+// that would print the message twice, like the WS path's doubled form). A 5xx
+// stays an untyped transient error so the engine does NOT reseed on it.
+fn sync_push_http_error(error: ureq::Error) -> anyhow::Error {
+    match error {
+        ureq::Error::Status(status, response) => {
+            let code = response
+                .into_json::<ErrorResponse>()
+                .map(|error| error.code)
+                .unwrap_or_else(|_| status.to_string());
+            if status == 401 || code == "unauthorized" {
+                return anyhow::Error::new(SyncUnauthorized)
+                    .context(format!("sync backend rejected request: {code}"));
+            }
+            if (400..500).contains(&status) {
+                return anyhow::Error::new(SyncPushRejected { code });
+            }
+            anyhow!("sync backend rejected request: {code}")
+        }
+        error => anyhow::Error::new(SyncNetworkUnreachable)
+            .context(format!("sync backend request failed: {error}")),
     }
 }
 
@@ -185,6 +229,34 @@ mod tests {
     fn unauthorized_code_maps_to_sync_unauthorized_regardless_of_status() {
         let err = sync_http_error(status_error(403, &error_body("unauthorized")));
         assert!(err.downcast_ref::<SyncUnauthorized>().is_some());
+    }
+
+    #[test]
+    fn push_4xx_rejection_is_typed_sync_push_rejected() {
+        // The engine's reseed self-heal and the epoch-stale retry both downcast
+        // for SyncPushRejected; an untyped string silently disables them.
+        let err = sync_push_http_error(status_error(409, &error_body("document_epoch_stale")));
+        let rejected = err
+            .downcast_ref::<SyncPushRejected>()
+            .expect("push 4xx must be SyncPushRejected");
+        assert_eq!(rejected.code, "document_epoch_stale");
+        assert!(format!("{err:#}").contains("document_epoch_stale"));
+    }
+
+    #[test]
+    fn push_401_is_unauthorized_not_rejected() {
+        let err = sync_push_http_error(status_error(401, &error_body("unauthorized")));
+        assert!(err.downcast_ref::<SyncUnauthorized>().is_some());
+        assert!(err.downcast_ref::<SyncPushRejected>().is_none());
+    }
+
+    #[test]
+    fn push_5xx_stays_untyped_transient() {
+        // A server-side failure must NOT trigger the engine's reseed (it would
+        // re-queue full snapshots on every outage).
+        let err = sync_push_http_error(status_error(500, &error_body("internal_error")));
+        assert!(err.downcast_ref::<SyncPushRejected>().is_none());
+        assert!(err.downcast_ref::<SyncUnauthorized>().is_none());
     }
 
     #[test]

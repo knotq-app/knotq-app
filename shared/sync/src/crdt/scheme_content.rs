@@ -72,15 +72,18 @@ impl YrsSchemeDocument {
 
     pub fn sync_scheme(&self, scheme: &Scheme) -> anyhow::Result<Option<CrdtDocumentUpdate>> {
         let before = self.state_vector_v1();
-        self.replace_scheme(scheme)?;
+        let touched = self.replace_scheme(scheme)?;
         let update_v1 = self.encode_update_v1(&before)?;
         if update_v1_is_empty(&update_v1) {
             return Ok(None);
         }
+        let mut touched_items: Vec<String> = touched.into_iter().collect();
+        touched_items.sort();
         Ok(Some(CrdtDocumentUpdate {
             document: self.id,
             kind: SyncDocumentKind::Scheme,
             update_v1,
+            touched_items,
         }))
     }
 
@@ -110,7 +113,11 @@ impl YrsSchemeDocument {
         Ok(())
     }
 
-    pub fn replace_scheme(&self, scheme: &Scheme) -> anyhow::Result<()> {
+    /// Make the document match `scheme` exactly, returning the ids of the items
+    /// the call actually wrote (created, content-spliced, metadata-rewritten, or
+    /// tombstoned) — i.e. the items the resulting update touches.
+    pub fn replace_scheme(&self, scheme: &Scheme) -> anyhow::Result<HashSet<String>> {
+        let mut touched: HashSet<String> = HashSet::new();
         // Deterministically create the skeleton for any new item BEFORE the main edit
         // transaction, so two devices that independently create the same item dedupe
         // into one container instead of clobbering one. The content/metadata writes
@@ -204,6 +211,7 @@ impl YrsSchemeDocument {
             let Some(item_map) = item_map_ref(&items_by_id, &txn, &key) else {
                 continue;
             };
+            touched.insert(key.clone());
             let has_schema = item_map
                 .get_as::<_, Option<String>>(&txn, "schema")
                 .ok()
@@ -237,6 +245,7 @@ impl YrsSchemeDocument {
             let prev = stored.get(&item_id);
             match item_map_ref(&items_by_id, &txn, &item_id) {
                 None => {
+                    touched.insert(item_id.clone());
                     let item_map = items_by_id.insert(&mut txn, item_id, MapPrelim::default());
                     write_new_item(&item_map, &mut txn, item, position, &next_snapshot)?;
                 }
@@ -249,11 +258,13 @@ impl YrsSchemeDocument {
                             };
                             let new_content = normalize_inline_content(&item.content.to_inlines());
                             if current != new_content {
-                                                apply_content_diff(&text_ref, &mut txn, &current, &new_content)?;
+                                touched.insert(item_id.clone());
+                                apply_content_diff(&text_ref, &mut txn, &current, &new_content)?;
                             }
                             if prev.is_none_or(|stored| {
                                 stored.content_shadow.as_deref() != Some(new_content.as_slice())
                             }) {
+                                touched.insert(item_id.clone());
                                 write_item_content_shadow(&item_map, &mut txn, &new_content)?;
                             }
                         }
@@ -265,10 +276,9 @@ impl YrsSchemeDocument {
                         // is a materialized item, so its immutable schema/id already
                         // exist; only the Text needs rebuilding.
                         None => {
-                            let new_content =
-                                normalize_inline_content(&item.content.to_inlines());
-                            let text_ref =
-                                item_map.insert(&mut txn, "text", TextPrelim::new(""));
+                            touched.insert(item_id.clone());
+                            let new_content = normalize_inline_content(&item.content.to_inlines());
+                            let text_ref = item_map.insert(&mut txn, "text", TextPrelim::new(""));
                             insert_inline_content(&text_ref, &mut txn, &new_content)?;
                             write_item_content_shadow(&item_map, &mut txn, &new_content)?;
                         }
@@ -284,12 +294,13 @@ impl YrsSchemeDocument {
                             || stored.deleted
                     });
                     if metadata_changed {
+                        touched.insert(item_id.clone());
                         write_item_metadata(&item_map, &mut txn, item, position, &next_snapshot)?;
                     }
                 }
             }
         }
-        Ok(())
+        Ok(touched)
     }
 
     pub fn state_vector_v1(&self) -> Vec<u8> {
@@ -643,7 +654,10 @@ pub(crate) fn units_len(units: &[ContentUnit]) -> u32 {
     units.iter().map(unit_len).sum()
 }
 
-pub(crate) fn reconcile_content_shadow(content: Vec<Inline>, shadow: Option<&[Inline]>) -> Vec<Inline> {
+pub(crate) fn reconcile_content_shadow(
+    content: Vec<Inline>,
+    shadow: Option<&[Inline]>,
+) -> Vec<Inline> {
     let Some(shadow) = shadow else {
         return content;
     };

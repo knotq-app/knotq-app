@@ -140,6 +140,7 @@ impl KnotQApp {
             sync_status_popover: None,
             last_synced_at: None,
             last_sync_poll_at: None,
+            last_squash_attempt_at: None,
             window_is_active: false,
             sync_offline: false,
             sync_server_rejecting: false,

@@ -15,7 +15,9 @@ use std::collections::{HashMap, HashSet};
 
 use anyhow::{anyhow, Result};
 use chrono::Utc;
-use knotq_model::{DocumentId, OperationId, ReplicaId, SyncDocumentKind, Workspace, WorkspaceId};
+use knotq_model::{
+    DocumentId, Item, OperationId, ReplicaId, SyncDocumentKind, Workspace, WorkspaceId,
+};
 
 use crate::{
     BatchPullRequest, BatchPushRequest, LocalSyncState, NotificationScheduleSnapshot,
@@ -75,6 +77,29 @@ impl std::fmt::Display for SyncPushRejected {
 
 impl std::error::Error for SyncPushRejected {}
 
+/// The server rejection code for updates authored against a stale document epoch.
+pub const SYNC_PUSH_EPOCH_STALE_CODE: &str = "document_epoch_stale";
+
+/// Typed error surfaced when a push is rejected as `document_epoch_stale`: some
+/// document was squashed since this replica last pulled. This is NOT healed by
+/// the reseed below (a reseeded snapshot still carries the stale epoch) — the
+/// driver must run one more pull-then-push cycle: the pull adopts the squashed
+/// state and re-expresses the pending edits against it, after which the push
+/// succeeds. Bounded like the driver's unauthorized retry: once per sync run.
+#[derive(Debug)]
+pub struct SyncPushEpochStale;
+
+impl std::fmt::Display for SyncPushEpochStale {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "sync push rejected: document epoch stale (re-pull required)"
+        )
+    }
+}
+
+impl std::error::Error for SyncPushEpochStale {}
+
 /// Result of [`batch_pull_and_apply`]: the workspace after merging remote state and
 /// how many remote document states were applied.
 pub struct PullOutcome {
@@ -120,6 +145,7 @@ pub fn batch_pull_and_apply(
                 .values()
                 .map(|cursor| (cursor.document, cursor.last_pulled_sequence))
                 .collect(),
+            supports_document_epochs: true,
         };
         let response = transport.pull(&request)?;
         if let Some(known_documents) = &response.known_documents {
@@ -129,8 +155,26 @@ pub fn batch_pull_and_apply(
             break;
         }
         let workspace_id = workspace.id;
-        let updates: Vec<StoredCrdtUpdate> = response
+
+        // Partition out epoch adoptions: a scheme document whose epoch differs
+        // from the one this replica last recorded was squashed (its state shares
+        // no Yjs history with the local document), so it must be REPLACED, not
+        // merged — a merge would double every item's text. Only documents with
+        // an existing cursor qualify; a first-ever pull merges into an empty
+        // local document, which is already an exact copy.
+        let needs_adoption = |doc: &PulledCrdtDocument| {
+            doc.kind == SyncDocumentKind::Scheme
+                && local_state
+                    .document_cursors
+                    .get(&doc.document)
+                    .is_some_and(|cursor| cursor.epoch != doc.epoch)
+        };
+        let (adoptions, merges): (Vec<&PulledCrdtDocument>, Vec<&PulledCrdtDocument>) = response
             .documents
+            .iter()
+            .partition(|doc| needs_adoption(doc));
+
+        let updates: Vec<StoredCrdtUpdate> = merges
             .iter()
             .map(|doc| pulled_document_as_update(workspace_id, doc))
             .collect();
@@ -154,6 +198,78 @@ pub fn batch_pull_and_apply(
         remote_updates_applied += outcome.applied;
         workspace = outcome.workspace;
 
+        // Apply the epoch adoptions AFTER the merged updates, so a workspace-
+        // index update arriving in the same response has already registered the
+        // scheme (the adoption resolves the scheme through the workspace index).
+        for doc in adoptions {
+            let has_pending = local_state.has_pending_for_document(doc.document);
+            // `None` from pending_touched_items means some pending edit predates
+            // touched tracking; treat every local item as touched so nothing
+            // local is dropped (bias toward keeping content).
+            let touched = if has_pending {
+                Some(
+                    local_state
+                        .pending_touched_items(doc.document)
+                        .unwrap_or_else(|| {
+                            scheme_items_for_document(&workspace, doc.document)
+                                .map(|items| items.iter().map(|item| item.id.to_string()).collect())
+                                .unwrap_or_default()
+                        }),
+                )
+            } else {
+                None
+            };
+            match crdt_docs.adopt_squashed_document(
+                &workspace,
+                doc.document,
+                &doc.state_v1,
+                touched.as_ref(),
+            ) {
+                Ok((adopted_workspace, rescue)) => {
+                    workspace = adopted_workspace;
+                    remote_updates_applied += 1;
+                    // The old pending deltas are unusable against the adopted
+                    // document (stale epoch); the rescue re-expresses them.
+                    local_state
+                        .pending
+                        .retain(|edit| edit.document != doc.document);
+                    if let Some(rescue) = rescue {
+                        let next_sequence = local_state
+                            .pending
+                            .iter()
+                            .map(|edit| edit.local_sequence)
+                            .max()
+                            .unwrap_or(0)
+                            + 1;
+                        local_state.push_pending(PendingCrdtEdit {
+                            operation_id: OperationId::new(),
+                            workspace_id,
+                            replica_id,
+                            local_sequence: next_sequence,
+                            created_at: Utc::now(),
+                            document: rescue.document,
+                            kind: rescue.kind,
+                            update_v1: rescue.update_v1,
+                            touched_items: rescue.touched_items,
+                        });
+                    }
+                }
+                Err(err) => {
+                    // Mirrors the merge path's skip semantics: advance the
+                    // cursor (below) — the server re-delivers full state on the
+                    // next bump — and surface the document for diagnostics. An
+                    // unknown scheme (deleted on another device) is benign.
+                    let unknown = !scheme_document_known(&workspace, doc.document);
+                    all_skipped.push(SkippedDocument {
+                        document: doc.document,
+                        kind: doc.kind,
+                        unknown_scheme_document: unknown,
+                        reason: format!("epoch adoption: {err:#}"),
+                    });
+                }
+            }
+        }
+
         // Build a set of document ids that had per-document errors so we can
         // still advance their cursors (the server will re-deliver full merged
         // state on the next bump; we do not want to re-pull indefinitely).
@@ -170,7 +286,7 @@ pub fn batch_pull_and_apply(
             // sequence advances, so we lose nothing permanently. We only skip
             // our local application; the content is still on the server and
             // will be re-pulled the next time that document is touched.
-            local_state.mark_pulled(doc.document, doc.kind, doc.seq);
+            local_state.mark_pulled(doc.document, doc.kind, doc.seq, doc.epoch);
 
             if let Some(err) = errored_document_ids.get(&doc.document) {
                 all_skipped.push(SkippedDocument {
@@ -289,8 +405,16 @@ pub fn batch_push_pending(
                 // `update_payload_invalid`) aborted the sync permanently; reseeding
                 // for any rejection lets the merged snapshot recover cases a single
                 // bad delta could not.
-                if err.downcast_ref::<SyncPushRejected>().is_none() {
+                let Some(rejection) = err.downcast_ref::<SyncPushRejected>() else {
                     return Err(err);
+                };
+                // A stale document epoch is NOT healable by reseeding — the
+                // reseeded snapshot still carries the old epoch and would be
+                // rejected identically, wedging the run. Surface the typed
+                // error so the driver runs one more pull (which adopts the
+                // squashed state and re-expresses pending edits) and retries.
+                if rejection.code == SYNC_PUSH_EPOCH_STALE_CODE {
+                    return Err(err.context(SyncPushEpochStale));
                 }
 
                 // Identify which documents were in the rejected batch and haven't been
@@ -351,6 +475,7 @@ pub fn batch_push_pending(
                             document: update.document,
                             kind: update.kind,
                             update_v1: update.update_v1,
+                            touched_items: update.touched_items,
                         });
                         seq += 1;
                     }
@@ -363,6 +488,80 @@ pub fn batch_push_pending(
             }
         }
     }
+}
+
+/// A scheme document's state must exceed this before a squash is proposed —
+/// below it, the history overhead simply doesn't matter.
+pub const SQUASH_MIN_STATE_BYTES: usize = 256 * 1024;
+/// ... and the history-free rebuild must be at least this many times smaller,
+/// so a large document that is genuinely mostly content is left alone.
+pub const SQUASH_MIN_RATIO: usize = 4;
+
+/// A candidate history squash: the rebuilt state plus the compare-and-set base
+/// the server verifies. Built only from a fully-synced document; the driver
+/// POSTs it to `/v1/sync/squash` and treats every rejection as a benign skip.
+#[derive(Clone, Debug)]
+pub struct SquashProposal {
+    pub document: DocumentId,
+    pub kind: SyncDocumentKind,
+    pub base_epoch: u64,
+    pub base_seq: u64,
+    pub state_v1: Vec<u8>,
+    pub bytes_before: usize,
+}
+
+impl SquashProposal {
+    pub fn as_request(&self, replica_id: ReplicaId) -> crate::SquashDocumentRequest {
+        crate::SquashDocumentRequest {
+            replica_id,
+            document: self.document,
+            kind: self.kind,
+            base_epoch: self.base_epoch,
+            base_seq: self.base_seq,
+            state_v1: self.state_v1.clone(),
+        }
+    }
+}
+
+/// Propose at most ONE history squash, choosing the largest eligible scheme
+/// document. Eligibility is strictly conservative — the document must be fully
+/// synced from this replica's point of view:
+///   - no pending local edits for it (its content equals what was pushed), and
+///   - a non-zero pull cursor (the base_seq compare-and-set value); if another
+///     device pushed since, the server head moved and the squash is rejected
+///     as a harmless `squash_conflict`.
+/// Size gates keep this from ever firing on healthy documents. Returns `None`
+/// when nothing qualifies — the common case.
+pub fn build_squash_proposal(
+    crdt_docs: &WorkspaceCrdtDocuments,
+    local_state: &LocalSyncState,
+) -> Option<SquashProposal> {
+    for (document, state_len) in crdt_docs.squash_candidates(SQUASH_MIN_STATE_BYTES) {
+        if local_state.has_pending_for_document(document) {
+            continue;
+        }
+        let Some(cursor) = local_state.document_cursors.get(&document) else {
+            continue;
+        };
+        if cursor.last_pulled_sequence == 0 || cursor.kind != SyncDocumentKind::Scheme {
+            continue;
+        }
+        let Ok(state_v1) = crdt_docs.rebuild_scheme_state(document) else {
+            continue;
+        };
+        if state_v1.len().saturating_mul(SQUASH_MIN_RATIO) > state_len {
+            continue;
+        }
+        return Some(SquashProposal {
+            document,
+            kind: SyncDocumentKind::Scheme,
+            base_epoch: cursor.epoch,
+            base_seq: cursor.last_pulled_sequence,
+            state_v1,
+            bytes_before: state_len,
+        });
+    }
+    None
 }
 
 // Per-document ack that includes the exact (operation_id, local_sequence) pairs
@@ -418,6 +617,7 @@ fn build_push_request(
         documents.push(PushDocumentUpdates {
             document,
             kind,
+            epoch: local_state.document_epoch(document),
             updates: edits.into_iter().map(|edit| edit.update_v1).collect(),
         });
         acks.push(DocumentAck {
@@ -444,6 +644,7 @@ fn build_push_request(
             documents,
             notification_schedule_changed: false,
             notification_schedule: Some(schedule),
+            supports_document_epochs: true,
         },
         acks,
     ))
@@ -459,6 +660,22 @@ fn distinct_pending_documents(local_state: &LocalSyncState) -> Vec<(DocumentId, 
         }
     }
     documents
+}
+
+// The scheme (by content-document id) in the workspace index, if any.
+fn scheme_items_for_document(workspace: &Workspace, document: DocumentId) -> Option<&Vec<Item>> {
+    let (scheme_id, _) = workspace
+        .scheme_sync
+        .iter()
+        .find(|(_, meta)| meta.id == document)?;
+    workspace.schemes.get(scheme_id).map(|scheme| &scheme.items)
+}
+
+fn scheme_document_known(workspace: &Workspace, document: DocumentId) -> bool {
+    workspace
+        .scheme_sync
+        .values()
+        .any(|meta| meta.id == document)
 }
 
 // Adapt a pulled merged-state document into the `StoredCrdtUpdate` shape
@@ -510,6 +727,7 @@ mod tests {
             document,
             kind: SyncDocumentKind::Scheme,
             update_v1: vec![sequence as u8; byte_len],
+            touched_items: Vec::new(),
         }
     }
 

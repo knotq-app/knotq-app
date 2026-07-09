@@ -401,11 +401,13 @@ fn atomic_batch_rejection_and_server_gate() {
         documents: vec![PushDocumentUpdates {
             document: doc_id,
             kind: SyncDocumentKind::Scheme,
+            epoch: 0,
             // Not a valid Yjs v1 update — just random bytes.
             updates: vec![vec![1u8, 2, 3, 4, 5, 6, 7, 8]],
         }],
         notification_schedule_changed: false,
         notification_schedule: Some(schedule.clone()),
+        supports_document_epochs: true,
     };
     let rejection = client.push(&garbage_request);
     assert!(
@@ -427,6 +429,7 @@ fn atomic_batch_rejection_and_server_gate() {
         .pull(&BatchPullRequest {
             replica_id: ReplicaId::new(),
             cursors: HashMap::new(),
+            supports_document_epochs: true,
         })
         .expect("pull after rejection");
     let persisted = pull.documents.iter().any(|d| d.document == doc_id);

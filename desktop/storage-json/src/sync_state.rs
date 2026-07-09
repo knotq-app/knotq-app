@@ -77,6 +77,7 @@ mod tests {
             document,
             kind: SyncDocumentKind::Scheme,
             update_v1: vec![1, 2, 3],
+            touched_items: Vec::new(),
         }];
 
         save_pending_crdt_edits(&workspace_path, &pending).unwrap();

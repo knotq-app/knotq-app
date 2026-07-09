@@ -206,6 +206,7 @@ fn mark_pushed_clears_only_sent_edits() {
         document: doc,
         kind,
         update_v1: dummy_update.clone(),
+        touched_items: Vec::new(),
     };
 
     let mut state = LocalSyncState {
@@ -338,6 +339,7 @@ fn schema_invalid_rejection_must_self_heal() {
             document: scheme_doc_id,
             kind: SyncDocumentKind::Scheme,
             update_v1: dummy,
+            touched_items: Vec::new(),
         });
     }
 

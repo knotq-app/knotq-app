@@ -72,7 +72,11 @@ impl YrsJsonDocument {
         }
     }
 
-    pub(crate) fn new_with_client_id(id: DocumentId, kind: SyncDocumentKind, client_id: u64) -> Self {
+    pub(crate) fn new_with_client_id(
+        id: DocumentId,
+        kind: SyncDocumentKind,
+        client_id: u64,
+    ) -> Self {
         let doc = Doc::with_options(yrs_doc_options(id, client_id, OffsetKind::Bytes));
         WorkspaceMaps::get(&doc);
         let encode_cache = EncodeCache::new(&doc);
@@ -86,7 +90,11 @@ impl YrsJsonDocument {
 
     /// Build a workspace-index document whose clientID is either deterministic for
     /// `replica_id` (stable across reconstructions) or random when `None`.
-    pub(crate) fn for_replica(id: DocumentId, kind: SyncDocumentKind, replica_id: Option<ReplicaId>) -> Self {
+    pub(crate) fn for_replica(
+        id: DocumentId,
+        kind: SyncDocumentKind,
+        replica_id: Option<ReplicaId>,
+    ) -> Self {
         match replica_id {
             Some(replica) => Self::new_with_client_id(id, kind, stable_client_id(replica, id)),
             None => Self::new(id, kind),
@@ -138,10 +146,16 @@ impl YrsJsonDocument {
             document: self.id,
             kind: self.kind,
             update_v1,
+            // Touched-item tracking is a scheme-content concept; the workspace
+            // index is never squashed, so its updates carry none.
+            touched_items: Vec::new(),
         }))
     }
 
-    pub(crate) fn replace_snapshot(&self, snapshot: &WorkspaceDocumentSnapshot) -> anyhow::Result<bool> {
+    pub(crate) fn replace_snapshot(
+        &self,
+        snapshot: &WorkspaceDocumentSnapshot,
+    ) -> anyhow::Result<bool> {
         let WorkspaceMaps {
             meta,
             nodes,
@@ -695,7 +709,11 @@ pub(crate) fn string_map_entries(map: &MapRef, txn: &impl ReadTxn) -> Vec<(Strin
 /// Reconcile a string→string map to `desired`: remove keys no longer present and
 /// (re)insert only entries whose value changed, so a single edit yields a single
 /// map-entry delta. Returns whether anything changed.
-pub(crate) fn sync_string_map(map: &MapRef, txn: &mut TransactionMut, desired: &[(String, String)]) -> bool {
+pub(crate) fn sync_string_map(
+    map: &MapRef,
+    txn: &mut TransactionMut,
+    desired: &[(String, String)],
+) -> bool {
     let mut changed = false;
     let desired_keys: HashSet<&str> = desired.iter().map(|(key, _)| key.as_str()).collect();
     let stale = map
@@ -868,14 +886,19 @@ pub(crate) fn preserve_local_calendar_sync_token(
     remote_source
 }
 
-pub(crate) fn scheme_meta(workspace: &Workspace, id: SchemeId) -> anyhow::Result<&SyncDocumentMeta> {
+pub(crate) fn scheme_meta(
+    workspace: &Workspace,
+    id: SchemeId,
+) -> anyhow::Result<&SyncDocumentMeta> {
     workspace
         .scheme_sync
         .get(&id)
         .ok_or_else(|| anyhow!("workspace missing scheme sync metadata for {id}"))
 }
 
-pub(crate) fn scheme_documents_by_id(workspace: &Workspace) -> HashMap<knotq_model::DocumentId, SchemeId> {
+pub(crate) fn scheme_documents_by_id(
+    workspace: &Workspace,
+) -> HashMap<knotq_model::DocumentId, SchemeId> {
     workspace
         .scheme_sync
         .iter()

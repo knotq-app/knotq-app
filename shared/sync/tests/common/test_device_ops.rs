@@ -491,6 +491,7 @@ impl TestDevice {
             document,
             kind,
             update_v1,
+            touched_items: Vec::new(),
         });
     }
 
@@ -667,10 +668,12 @@ impl TestDevice {
             documents: vec![PushDocumentUpdates {
                 document: workspace_doc_update.document,
                 kind: workspace_doc_update.kind,
+                epoch: 0,
                 updates: vec![workspace_doc_update.update_v1],
             }],
             notification_schedule_changed: true,
             notification_schedule: Some(schedule),
+            supports_document_epochs: true,
         };
         let response = transport
             .push(&request)
@@ -776,5 +779,46 @@ impl TestDevice {
     /// a gsync re-import that removes or changes items without going through helpers).
     pub fn scheme_mut_pub(&mut self, scheme_id: SchemeId) -> &mut Scheme {
         self.scheme_mut(scheme_id)
+    }
+
+    // --- epoch squash helpers ---
+
+    /// The history-free rebuild of a scheme's content document — the payload an
+    /// accepted squash replaces the server state with.
+    pub fn rebuild_scheme_state(&self, scheme_id: SchemeId) -> Vec<u8> {
+        let document = self.scheme_document_id(scheme_id);
+        self.store_crdt
+            .rebuild_scheme_state(document)
+            .expect("rebuild scheme state")
+    }
+
+    /// The epoch this device last recorded for a scheme's content document.
+    pub fn scheme_document_epoch(&self, scheme_id: SchemeId) -> u64 {
+        self.local_state
+            .document_epoch(self.scheme_document_id(scheme_id))
+    }
+
+    /// Push WITHOUT a preceding pull — the race window where another device's
+    /// squash lands between this device's pull and push. Exercises the
+    /// `document_epoch_stale` rejection path the full sync loop never hits
+    /// (its pull adopts the new epoch before pushing).
+    pub fn try_push_only(&mut self, server: &TestServer) -> anyhow::Result<()> {
+        let mut apply_crdt = WorkspaceCrdtDocuments::from_states(
+            &self.workspace,
+            self.replica_id,
+            &self.crdt_states,
+        )
+        .expect("restore apply crdt");
+        let schedule = test_notification_schedule();
+        let mut pushed = Vec::new();
+        batch_push_pending(
+            server,
+            &mut self.local_state,
+            self.replica_id,
+            &schedule,
+            &mut pushed,
+            &mut apply_crdt,
+            &self.workspace,
+        )
     }
 }

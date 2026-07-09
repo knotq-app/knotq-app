@@ -586,6 +586,9 @@ pub struct KnotQApp {
     pub last_synced_at: Option<DateTime<Utc>>,
     /// Last attempt to run the sync loop.
     pub last_sync_poll_at: Option<DateTime<Utc>>,
+    /// When a sync run last sent a history-squash proposal (accepted or not).
+    /// Throttles proposals so a declined one is not rebuilt on every poll.
+    pub last_squash_attempt_at: Option<DateTime<Utc>>,
     /// Whether the application window is active (receiving input / key focus).
     pub window_is_active: bool,
     /// Whether the last sync run failed at the transport level (offline).

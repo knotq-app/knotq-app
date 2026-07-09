@@ -388,7 +388,9 @@ fn handle_incoming(shared: &Arc<Shared>, text: &str) {
             error,
             code,
         } => {
-            let code = error.or(code).unwrap_or_else(|| "unknown_error".to_string());
+            let code = error
+                .or(code)
+                .unwrap_or_else(|| "unknown_error".to_string());
             complete(shared, id, Err(WsRequestError::Server { status, code }));
         }
         ServerFrame::Error { id: None, .. } => {
@@ -435,8 +437,8 @@ fn sleep_interruptible(shared: &Arc<Shared>, total: Duration) {
 mod tests {
     use super::*;
     use std::sync::atomic::AtomicUsize;
-    use std::sync::mpsc::{Receiver, RecvTimeoutError};
     use std::sync::mpsc::Receiver as StdReceiver;
+    use std::sync::mpsc::{Receiver, RecvTimeoutError};
 
     /// One end the test acts as the server on, paired with a `FakeSocket`.
     struct ServerHandle {
@@ -553,6 +555,7 @@ mod tests {
             let req = crate::BatchPullRequest {
                 replica_id: crate::ReplicaId::new(),
                 cursors: Default::default(),
+                supports_document_epochs: false,
             };
             client.request_pull(&req)
         });
@@ -638,6 +641,7 @@ mod tests {
                 documents: Vec::new(),
                 notification_schedule_changed: false,
                 notification_schedule: None,
+                supports_document_epochs: false,
             };
             client.request_push(&req)
         });
@@ -691,6 +695,7 @@ mod tests {
             let req = crate::BatchPullRequest {
                 replica_id: crate::ReplicaId::new(),
                 cursors: Default::default(),
+                supports_document_epochs: false,
             };
             req_client.request_pull(&req)
         });
@@ -712,7 +717,12 @@ mod tests {
                     "res": { "documents": [], "notification_schedule_revision": 0, "has_more": false }
                 })
                 .to_string();
-                lock(&servers).last().unwrap().to_client.send(reply).unwrap();
+                lock(&servers)
+                    .last()
+                    .unwrap()
+                    .to_client
+                    .send(reply)
+                    .unwrap();
                 served = true;
             }
         }

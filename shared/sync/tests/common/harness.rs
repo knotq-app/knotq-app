@@ -121,6 +121,16 @@ impl Harness {
         self.device_mut(key).insert_line(scheme, index, text);
     }
 
+    /// Push-only cycle for `key` (no preceding pull) — see
+    /// `TestDevice::try_push_only`. In-memory harness only.
+    pub fn device_push_only(&mut self, key: DeviceKey) -> anyhow::Result<()> {
+        let device = self.devices.get_mut(&key).expect("device");
+        match &self.backend {
+            HarnessBackend::InMemory(server) => device.try_push_only(server),
+            HarnessBackend::Http(_) => panic!("push-only is in-memory only"),
+        }
+    }
+
     pub fn remove_line(&mut self, key: DeviceKey, scheme: SchemeId, index: usize) {
         self.device_mut(key).remove_line(scheme, index);
     }
@@ -389,6 +399,22 @@ impl Harness {
     }
 
     /// In-memory only.
+    /// Server-side effect of an accepted `POST /v1/sync/squash` built by `key`:
+    /// replace the scheme's stored content document with that device's
+    /// history-free rebuild, bumping seq AND epoch. Returns (seq, epoch).
+    pub fn squash_scheme_on_server(&self, key: DeviceKey, scheme: SchemeId) -> (u64, u64) {
+        let device = self.device(key);
+        let document = device.scheme_document_id(scheme);
+        let rebuilt = device.rebuild_scheme_state(scheme);
+        self.require_in_memory_server()
+            .squash_document(document, rebuilt)
+    }
+
+    /// The epoch `key` last recorded for a scheme's content document.
+    pub fn scheme_epoch(&self, key: DeviceKey, scheme: SchemeId) -> u64 {
+        self.device(key).scheme_document_epoch(scheme)
+    }
+
     pub fn server_pull_calls(&self) -> usize {
         self.require_in_memory_server().pull_calls()
     }
@@ -482,6 +508,7 @@ impl Harness {
             .map(|update| PushDocumentUpdates {
                 document: update.document,
                 kind: update.kind,
+                epoch: 0,
                 updates: vec![update.update_v1],
             })
             .collect::<Vec<_>>();
@@ -491,6 +518,7 @@ impl Harness {
                 documents,
                 notification_schedule_changed: false,
                 notification_schedule: Some(test_notification_schedule()),
+                supports_document_epochs: true,
             })
             .expect("push remote workspace snapshot");
     }

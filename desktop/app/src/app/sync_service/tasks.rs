@@ -1,7 +1,7 @@
 use std::time::Duration as StdDuration;
 
 use async_channel::Receiver;
-use chrono::Utc;
+use chrono::{Duration, Utc};
 use futures::{pin_mut, select, FutureExt};
 use gpui::{Context, Task};
 use knotq_model::SyncAccountStatus;
@@ -217,23 +217,35 @@ async fn run_sync_once(weak: &gpui::WeakEntity<KnotQApp>, cx: &mut gpui::AsyncAp
     // instead of surfacing "sync failed: unauthorized" to a signed-in user. Mirrors
     // the mobile shells' bounded refresh-retry.
     let mut tried_auth_refresh = false;
+    let mut tried_epoch_repull = false;
     loop {
-        // With the retry spent, an unauthorized failure surfaces as a normal sync
-        // error inside the attempt, which then reports `Done`.
-        if run_sync_attempt(weak, cx, !tried_auth_refresh).await == AttemptOutcome::Done {
-            return;
+        // With the retries spent, the corresponding failure surfaces as a normal
+        // sync error inside the attempt, which then reports `Done`.
+        match run_sync_attempt(weak, cx, !tried_auth_refresh, !tried_epoch_repull).await {
+            AttemptOutcome::Done => return,
+            AttemptOutcome::Unauthorized => {
+                tried_auth_refresh = true;
+                eprintln!("sync rejected as unauthorized; force-refreshing token and retrying");
+                if ensure_fresh_token(weak, cx, true).await.is_err() {
+                    return;
+                }
+                // Tear down the WebSocket client: its session was authenticated with the
+                // rejected token. The retry's `ensure_ws_sync` rebuilds it immediately, so
+                // the new handshake presents the fresh token instead of waiting out the
+                // supervisor's backoff on the dead credential (which would leave the app
+                // parked on HTTP polling).
+                let _ = weak.update(cx, |app, _cx| app.teardown_ws_sync());
+            }
+            AttemptOutcome::EpochStale => {
+                // A document was squashed between this run's pull and push. One
+                // more full attempt resolves it: the retry's pull adopts the
+                // squashed state and re-expresses the pending edits against it,
+                // after which the push carries the new epoch. No token or socket
+                // work is needed.
+                tried_epoch_repull = true;
+                eprintln!("sync push hit a stale document epoch; re-pulling to adopt and retrying");
+            }
         }
-        tried_auth_refresh = true;
-        eprintln!("sync rejected as unauthorized; force-refreshing token and retrying");
-        if ensure_fresh_token(weak, cx, true).await.is_err() {
-            return;
-        }
-        // Tear down the WebSocket client: its session was authenticated with the
-        // rejected token. The retry's `ensure_ws_sync` rebuilds it immediately, so
-        // the new handshake presents the fresh token instead of waiting out the
-        // supervisor's backoff on the dead credential (which would leave the app
-        // parked on HTTP polling).
-        let _ = weak.update(cx, |app, _cx| app.teardown_ws_sync());
     }
 }
 
@@ -245,12 +257,18 @@ enum AttemptOutcome {
     /// state was written (the run status stays `Running`) so the caller's forced
     /// refresh + retry can resolve it invisibly.
     Unauthorized,
+    /// The push hit `document_epoch_stale` and `allow_epoch_retry` was set: a
+    /// document was squashed since this run's pull. The caller re-runs the whole
+    /// attempt once — its pull adopts the squashed state and rescues the pending
+    /// edits, so the retried push succeeds.
+    EpochStale,
 }
 
 async fn run_sync_attempt(
     weak: &gpui::WeakEntity<KnotQApp>,
     cx: &mut gpui::AsyncApp,
     allow_auth_retry: bool,
+    allow_epoch_retry: bool,
 ) -> AttemptOutcome {
     let snapshot = weak
         .update(cx, |app, _cx| {
@@ -293,6 +311,14 @@ async fn run_sync_attempt(
                         && cache.snapshot.window_start.date_naive() == today
                 })
                 .map(|cache| cache.snapshot.clone());
+            // History-squash proposals are throttled: once a run sends one
+            // (accepted or declined), no run proposes again for six hours, so a
+            // server-declined proposal is not rebuilt on every poll. Six hours
+            // against the server's 42-day per-document interval just bounds the
+            // retry chatter after a decline.
+            let allow_squash = app
+                .last_squash_attempt_at
+                .is_none_or(|at| Utc::now() - at >= Duration::hours(6));
             let snapshot = SyncSnapshot {
                 workspace: app.workspace.clone(),
                 account,
@@ -302,6 +328,7 @@ async fn run_sync_attempt(
                 notification_defaults,
                 reuse_schedule,
                 ws_sync: app.ws_sync.clone(),
+                allow_squash,
             };
             // Captured after sync_store_from_workspace above, so it only moves
             // again if the user edits while the run is in flight.
@@ -335,7 +362,11 @@ async fn run_sync_attempt(
             let local_workspace_changed = result.local_workspace_changed;
             let media_downloaded = result.media_downloaded;
             let notification_schedule = result.notification_schedule.clone();
+            let squash_attempted = result.squash_attempted;
             let _ = weak.update(cx, |app, cx| {
+                if squash_attempted {
+                    app.last_squash_attempt_at = Some(Utc::now());
+                }
                 for pushed in pushed {
                     app.state
                         .clear_pushed_crdt_edits(pushed.document, pushed.through_local_sequence);
@@ -420,6 +451,15 @@ async fn run_sync_attempt(
                 // force-refreshes the token and retries, so flashing an error at
                 // the user here would be noise for a self-healing condition.
                 return AttemptOutcome::Unauthorized;
+            }
+            if allow_epoch_retry
+                && err
+                    .downcast_ref::<knotq_sync::SyncPushEpochStale>()
+                    .is_some()
+            {
+                // Same reasoning: the caller immediately re-runs the attempt and
+                // its pull resolves the staleness, so no error state is written.
+                return AttemptOutcome::EpochStale;
             }
             eprintln!("sync failed: {err:#}");
             let is_offline = err.downcast_ref::<SyncNetworkUnreachable>().is_some();

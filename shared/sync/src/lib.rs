@@ -22,9 +22,11 @@ pub use crdt::{
 };
 pub use documents::{scheme_documents, sync_documents};
 pub use engine::{
-    batch_pull_and_apply, batch_push_pending, PullOutcome, PushedDocument, SkippedDocument,
-    SyncPushRejected, SyncTransport, PUSH_MAX_DOCUMENTS_PER_REQUEST,
-    PUSH_MAX_RAW_UPDATE_BYTES_PER_REQUEST, PUSH_MAX_UPDATES_PER_DOCUMENT,
+    batch_pull_and_apply, batch_push_pending, build_squash_proposal, PullOutcome, PushedDocument,
+    SkippedDocument, SquashProposal, SyncPushEpochStale, SyncPushRejected, SyncTransport,
+    PUSH_MAX_DOCUMENTS_PER_REQUEST, PUSH_MAX_RAW_UPDATE_BYTES_PER_REQUEST,
+    PUSH_MAX_UPDATES_PER_DOCUMENT, SQUASH_MIN_RATIO, SQUASH_MIN_STATE_BYTES,
+    SYNC_PUSH_EPOCH_STALE_CODE,
 };
 pub use local_state::{
     queue_account_switch_reseed, queue_workspace_bootstrap_updates, DocumentSyncCursor,
@@ -261,6 +263,10 @@ pub struct RegisterDeviceRequest {
     pub notification_permission: NotificationPermissionState,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub local_scheduler_supported: Option<bool>,
+    /// Whether this client understands document epochs (history squash). Also
+    /// advertised on every pull/push; registration carries it for completeness.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub supports_document_epochs: Option<bool>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -356,6 +362,14 @@ pub struct CrdtDocumentUpdate {
     pub kind: SyncDocumentKind,
     #[serde(with = "base64_bytes")]
     pub update_v1: Vec<u8>,
+    /// Item ids (as strings) this update touched, recorded when the update was
+    /// authored. Used by the epoch-adoption rescue to re-express pending edits
+    /// against a squashed document at item granularity: touched items keep the
+    /// local version, untouched items adopt the remote one. Full-snapshot
+    /// updates list every live item (the snapshot re-asserts all of them);
+    /// workspace-index updates leave it empty (that document is never squashed).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub touched_items: Vec<String>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -444,6 +458,10 @@ pub struct BatchPullRequest {
     pub replica_id: ReplicaId,
     #[serde(default)]
     pub cursors: HashMap<DocumentId, u64>,
+    /// Declared on every pull so the server can gate squashes on all
+    /// recently-active devices understanding document epochs.
+    #[serde(default)]
+    pub supports_document_epochs: bool,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -451,6 +469,13 @@ pub struct PulledCrdtDocument {
     pub document: DocumentId,
     pub kind: SyncDocumentKind,
     pub seq: u64,
+    /// Bumped only by a history squash. When it differs from the epoch this
+    /// replica last recorded for the document, the local document must be
+    /// REPLACED with `state_v1` (the squashed document shares no Yjs history
+    /// with its predecessor, so merging would double content). Absent from
+    /// pre-epoch servers, which is epoch 0.
+    #[serde(default)]
+    pub epoch: u64,
     #[serde(with = "base64_bytes")]
     pub state_v1: Vec<u8>,
 }
@@ -477,6 +502,12 @@ pub struct BatchPullResponse {
 pub struct PushDocumentUpdates {
     pub document: DocumentId,
     pub kind: SyncDocumentKind,
+    /// The document epoch these updates were authored against. The server
+    /// rejects a mismatch as `document_epoch_stale` — the updates reference
+    /// Yjs structs a squash discarded, so merging them would silently lose
+    /// the edit.
+    #[serde(default)]
+    pub epoch: u64,
     #[serde(with = "base64_bytes_vec")]
     pub updates: Vec<Vec<u8>>,
 }
@@ -491,6 +522,9 @@ pub struct BatchPushRequest {
     pub notification_schedule_changed: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub notification_schedule: Option<NotificationScheduleSnapshot>,
+    /// See [`BatchPullRequest::supports_document_epochs`].
+    #[serde(default)]
+    pub supports_document_epochs: bool,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -498,6 +532,33 @@ pub struct PushedCrdtDocument {
     pub document: DocumentId,
     pub seq: u64,
     pub accepted: usize,
+}
+
+/// `POST /v1/sync/squash`. Replaces one scheme document's merged state with a
+/// freshly rebuilt CRDT of identical logical content but no edit history,
+/// bumping the document's epoch. The base fields are a compare-and-set guard:
+/// they must match the server head exactly, so a squash never clobbers a
+/// concurrent push.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct SquashDocumentRequest {
+    pub replica_id: ReplicaId,
+    pub document: DocumentId,
+    pub kind: SyncDocumentKind,
+    pub base_epoch: u64,
+    pub base_seq: u64,
+    #[serde(with = "base64_bytes")]
+    pub state_v1: Vec<u8>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct SquashDocumentResponse {
+    pub document: DocumentId,
+    pub epoch: u64,
+    pub seq: u64,
+    #[serde(default)]
+    pub bytes_before: u64,
+    #[serde(default)]
+    pub bytes_after: u64,
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
@@ -703,6 +764,7 @@ mod tests {
             document,
             kind: SyncDocumentKind::Scheme,
             update_v1: vec![1, 2, 3],
+            touched_items: Vec::new(),
         });
 
         let request = state.next_push_request(document, 10).unwrap();
@@ -718,6 +780,7 @@ mod tests {
             document: DocumentId::new(),
             kind: SyncDocumentKind::Scheme,
             update_v1: vec![0, 1, 2, 255],
+            touched_items: Vec::new(),
         };
         let json = serde_json::to_value(&update).unwrap();
         // base64 of [0,1,2,255] is "AAEC/w==" — a string, not a JSON array.
@@ -733,14 +796,17 @@ mod tests {
         let pull = BatchPullRequest {
             replica_id,
             cursors: HashMap::from([(document, 7)]),
+            supports_document_epochs: true,
         };
         let push = BatchPushRequest {
             replica_id,
             documents: vec![PushDocumentUpdates {
                 document,
                 kind: SyncDocumentKind::Scheme,
+                epoch: 0,
                 updates: vec![vec![1, 2, 3]],
             }],
+            supports_document_epochs: true,
             notification_schedule_changed: true,
             notification_schedule: Some(NotificationScheduleSnapshot {
                 sequence: 3,
@@ -796,6 +862,7 @@ mod tests {
                 document,
                 kind: SyncDocumentKind::Scheme,
                 update_v1: vec![sequence as u8],
+                touched_items: Vec::new(),
             });
         }
 
