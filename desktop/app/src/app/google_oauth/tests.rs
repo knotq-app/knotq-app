@@ -47,6 +47,7 @@
             full_sync: true,
             items: Vec::new(),
             deleted: Vec::new(),
+            recurrence_exdates: Vec::new(),
         }
     }
 
@@ -280,6 +281,7 @@
             updated: Some(dt("2026-05-18T12:00:00Z")),
             recurrence: Some(vec!["RRULE:FREQ=WEEKLY;BYDAY=MO".to_string()]),
             recurring_event_id: None,
+            original_start_time: None,
         };
 
         let item = google_event_to_item(&account(), "cal", &event).unwrap();
@@ -299,6 +301,130 @@
     }
 
     #[test]
+    fn google_recurring_exceptions_exclude_original_parent_occurrences() {
+        let master = GoogleEvent {
+            id: "series-1".to_string(),
+            status: Some("confirmed".to_string()),
+            summary: Some("Standup".to_string()),
+            start: Some(GoogleEventDateTime {
+                date: None,
+                date_time: Some(dt("2026-05-08T20:00:00Z")),
+            }),
+            end: Some(GoogleEventDateTime {
+                date: None,
+                date_time: Some(dt("2026-05-08T21:00:00Z")),
+            }),
+            updated: Some(dt("2026-05-18T12:00:00Z")),
+            recurrence: Some(vec!["RRULE:FREQ=WEEKLY;BYDAY=FR".to_string()]),
+            recurring_event_id: None,
+            original_start_time: None,
+        };
+        let moved = GoogleEvent {
+            id: "series-1_20260529T200000Z".to_string(),
+            status: Some("confirmed".to_string()),
+            summary: Some("Standup".to_string()),
+            start: Some(GoogleEventDateTime {
+                date: None,
+                date_time: Some(dt("2026-05-29T22:00:00Z")),
+            }),
+            end: Some(GoogleEventDateTime {
+                date: None,
+                date_time: Some(dt("2026-05-29T23:00:00Z")),
+            }),
+            updated: Some(dt("2026-05-29T12:00:00Z")),
+            recurrence: None,
+            recurring_event_id: Some("series-1".to_string()),
+            original_start_time: Some(GoogleEventDateTime {
+                date: None,
+                date_time: Some(dt("2026-05-29T20:00:00Z")),
+            }),
+        };
+        let cancelled = GoogleEvent {
+            id: "series-1_20260619T200000Z".to_string(),
+            status: Some("cancelled".to_string()),
+            summary: None,
+            start: None,
+            end: None,
+            updated: Some(dt("2026-06-19T12:00:00Z")),
+            recurrence: None,
+            recurring_event_id: Some("series-1".to_string()),
+            original_start_time: Some(GoogleEventDateTime {
+                date: None,
+                date_time: Some(dt("2026-06-19T20:00:00Z")),
+            }),
+        };
+        let events = vec![master, moved, cancelled];
+        let recurrence_exdates = google_recurring_exception_exdates(&events);
+
+        let items = google_events_to_items(&account(), "cal", &events, &recurrence_exdates);
+
+        assert_eq!(items.len(), 2);
+        let parent = items
+            .iter()
+            .find(|item| {
+                item.external
+                    .as_ref()
+                    .is_some_and(|external| external.instance_id.is_none())
+            })
+            .expect("parent recurring item");
+        assert_eq!(
+            parent.repeats.as_ref().unwrap().exdates,
+            vec![
+                CalendarDateTime::utc(dt("2026-05-29T20:00:00Z")),
+                CalendarDateTime::utc(dt("2026-06-19T20:00:00Z")),
+            ]
+        );
+        let exception = items
+            .iter()
+            .find(|item| {
+                item.external
+                    .as_ref()
+                    .is_some_and(|external| external.instance_id.is_some())
+            })
+            .expect("moved exception item");
+        assert_eq!(exception.start, Some(dt("2026-05-29T22:00:00Z")));
+    }
+
+    #[test]
+    fn incremental_sync_adds_exception_exdates_to_existing_recurring_parent() {
+        let mut scheme = Scheme::new("Work", 0);
+        let mut existing = Item::new("Standup")
+            .with_start(dt("2026-05-08T20:00:00Z"))
+            .with_end(dt("2026-05-08T21:00:00Z"))
+            .with_repeats(knotq_model::CalendarRecurrence {
+                rrules: vec!["FREQ=WEEKLY;BYDAY=FR".to_string()],
+                ..Default::default()
+            });
+        existing.external = Some(external("series-1"));
+        scheme.items = vec![existing];
+
+        let changed = apply_google_calendar_items(
+            &mut scheme,
+            &ImportedGoogleCalendar {
+                account_id: "acct".to_string(),
+                account_email: Some("user@example.com".to_string()),
+                calendar_id: "cal".to_string(),
+                name: "Work".to_string(),
+                color_index: 0,
+                sync_token: Some("next".to_string()),
+                full_sync: false,
+                items: Vec::new(),
+                deleted: Vec::new(),
+                recurrence_exdates: vec![GoogleRecurrenceExdate {
+                    event_id: "series-1".to_string(),
+                    original_start: CalendarDateTime::utc(dt("2026-06-19T20:00:00Z")),
+                }],
+            },
+        );
+
+        assert!(changed);
+        assert_eq!(
+            scheme.items[0].repeats.as_ref().unwrap().exdates,
+            vec![CalendarDateTime::utc(dt("2026-06-19T20:00:00Z"))]
+        );
+    }
+
+    #[test]
     fn google_calendar_metadata_preserves_existing_local_color() {
         let mut scheme = Scheme::new("Local name", 4);
         let changed = apply_google_calendar_metadata(
@@ -313,6 +439,7 @@
                 full_sync: false,
                 items: Vec::new(),
                 deleted: Vec::new(),
+                recurrence_exdates: Vec::new(),
             },
             false,
         );
@@ -407,6 +534,41 @@
     }
 
     #[test]
+    fn google_calendar_sources_force_full_sync_for_old_recurring_imports() {
+        let mut workspace = Workspace::new();
+        let root = workspace.root;
+        let mut scheme = imported_google_scheme("Calendar");
+        let scheme_id = scheme.id;
+        if let SchemeSource::ImportedCalendar(source) = &mut scheme.source {
+            source.sync_token = Some("saved-token".to_string());
+        }
+        let mut item = Item::new("Standup")
+            .with_start(dt("2026-05-08T20:00:00Z"))
+            .with_repeats(knotq_model::CalendarRecurrence {
+                rrules: vec!["FREQ=WEEKLY;BYDAY=FR".to_string()],
+                raw_import: Some(knotq_model::RawCalendarPayload {
+                    content_type: "application/vnd.google.calendar.event+json".to_string(),
+                    data: r#"{"id":"series-1","recurringEventId":null}"#.to_string(),
+                }),
+                ..Default::default()
+            });
+        item.external = Some(external("series-1"));
+        scheme.items.push(item);
+        workspace.schemes.insert(scheme_id, scheme);
+        workspace
+            .folders
+            .get_mut(&root)
+            .unwrap()
+            .children
+            .push(NodeRef::Scheme(scheme_id));
+
+        let sources = active_google_calendar_sources(&workspace);
+
+        assert_eq!(sources.len(), 1);
+        assert_eq!(sources[0].sync_token, None);
+    }
+
+    #[test]
     fn incremental_sync_updates_and_removes_matching_external_items() {
         let mut scheme = Scheme::new("Work", 0);
         let mut existing = Item::new("Old");
@@ -434,6 +596,7 @@
                     event_id: "gone".to_string(),
                     instance_id: None,
                 }],
+                recurrence_exdates: Vec::new(),
             },
         );
 
@@ -467,6 +630,7 @@
                 full_sync: false,
                 items: vec![imported],
                 deleted: Vec::new(),
+                recurrence_exdates: Vec::new(),
             },
         );
 
@@ -500,6 +664,7 @@
                 full_sync: false,
                 items: vec![imported],
                 deleted: Vec::new(),
+                recurrence_exdates: Vec::new(),
             },
         );
 
@@ -531,6 +696,7 @@
                 full_sync: true,
                 items: vec![imported],
                 deleted: Vec::new(),
+                recurrence_exdates: Vec::new(),
             },
         );
 
@@ -565,6 +731,7 @@
                 full_sync: false,
                 items: vec![imported],
                 deleted: Vec::new(),
+                recurrence_exdates: Vec::new(),
             },
         );
 

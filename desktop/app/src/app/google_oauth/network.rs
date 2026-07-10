@@ -385,11 +385,9 @@ pub(crate) fn import_google_account_calendars(
             }
         };
 
-        let mut items = events
-            .events
-            .iter()
-            .filter_map(|event| google_event_to_item(account, &calendar.id, event))
-            .collect::<Vec<_>>();
+        let recurrence_exdates = google_recurring_exception_exdates(&events.events);
+        let mut items =
+            google_events_to_items(account, &calendar.id, &events.events, &recurrence_exdates);
         sort_imported_items(&mut items);
 
         let deleted = events
@@ -412,6 +410,7 @@ pub(crate) fn import_google_account_calendars(
             full_sync: events.full_sync,
             items,
             deleted,
+            recurrence_exdates,
         });
     }
 
@@ -502,7 +501,7 @@ pub(crate) fn list_google_events_once(
             params.push(("syncToken", token.clone()));
             params.push(("showDeleted", "true".to_string()));
         } else {
-            params.push(("showDeleted", "false".to_string()));
+            params.push(("showDeleted", "true".to_string()));
         }
         if let Some(token) = &page_token {
             params.push(("pageToken", token.clone()));

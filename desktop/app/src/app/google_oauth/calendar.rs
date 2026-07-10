@@ -31,10 +31,36 @@ pub(crate) fn google_calendar_sources_matching(
                 account_id: source.account_id.clone(),
                 account_email: source.account_email.clone(),
                 calendar_id: source.calendar_id.clone(),
-                sync_token: source.sync_token.clone(),
+                sync_token: if google_calendar_scheme_needs_exception_repair(scheme) {
+                    None
+                } else {
+                    source.sync_token.clone()
+                },
             })
         })
         .collect()
+}
+
+fn google_calendar_scheme_needs_exception_repair(scheme: &Scheme) -> bool {
+    scheme.items.iter().any(|item| {
+        let Some(external) = item.external.as_ref() else {
+            return false;
+        };
+        if external.provider != CalendarProvider::Google || external.instance_id.is_some() {
+            return false;
+        }
+        let Some(recurrence) = item.repeats.as_ref() else {
+            return false;
+        };
+        if recurrence.rrules.is_empty() {
+            return false;
+        }
+        let Some(raw_import) = recurrence.raw_import.as_ref() else {
+            return true;
+        };
+        raw_import.content_type == "application/vnd.google.calendar.event+json"
+            && !raw_import.data.contains("\"originalStartTime\"")
+    })
 }
 
 /// Match a Google account identity against a calendar source identity: equal account
@@ -268,6 +294,9 @@ pub(crate) fn apply_google_calendar_items(scheme: &mut Scheme, calendar: &Import
     }
 
     let mut changed = false;
+    if apply_google_recurrence_exdates(&mut scheme.items, calendar) {
+        changed = true;
+    }
     scheme.items.retain(|item| {
         let Some(external) = &item.external else {
             return true;
@@ -415,6 +444,27 @@ pub(crate) fn google_event_to_item(
     Some(item)
 }
 
+pub(crate) fn google_events_to_items(
+    account: &GoogleOAuthAccount,
+    calendar_id: &str,
+    events: &[GoogleEvent],
+    recurrence_exdates: &[GoogleRecurrenceExdate],
+) -> Vec<Item> {
+    events
+        .iter()
+        .filter_map(|event| {
+            let mut item = google_event_to_item(account, calendar_id, event)?;
+            apply_google_recurrence_exdates_to_item(
+                &mut item,
+                account.account_id.as_str(),
+                calendar_id,
+                recurrence_exdates,
+            );
+            Some(item)
+        })
+        .collect()
+}
+
 pub(crate) fn google_event_key(event: &GoogleEvent) -> GoogleExternalEventKey {
     GoogleExternalEventKey {
         event_id: event
@@ -423,6 +473,32 @@ pub(crate) fn google_event_key(event: &GoogleEvent) -> GoogleExternalEventKey {
             .unwrap_or_else(|| event.id.clone()),
         instance_id: event.recurring_event_id.as_ref().map(|_| event.id.clone()),
     }
+}
+
+pub(crate) fn google_recurring_exception_exdates(
+    events: &[GoogleEvent],
+) -> Vec<GoogleRecurrenceExdate> {
+    events
+        .iter()
+        .filter_map(google_recurring_exception_exdate)
+        .collect()
+}
+
+pub(crate) fn google_recurring_exception_exdate(
+    event: &GoogleEvent,
+) -> Option<GoogleRecurrenceExdate> {
+    Some(GoogleRecurrenceExdate {
+        event_id: event.recurring_event_id.clone()?,
+        original_start: google_event_original_start(event)?,
+    })
+}
+
+fn google_event_original_start(event: &GoogleEvent) -> Option<CalendarDateTime> {
+    event
+        .original_start_time
+        .as_ref()
+        .and_then(google_event_datetime_to_utc)
+        .map(CalendarDateTime::utc)
 }
 
 pub(crate) fn google_event_datetime_to_utc(datetime: &GoogleEventDateTime) -> Option<DateTime<Utc>> {
@@ -473,6 +549,68 @@ pub(crate) fn google_event_recurrence(event: &GoogleEvent) -> Option<knotq_model
                 });
         Some(recurrence)
     }
+}
+
+fn apply_google_recurrence_exdates(
+    items: &mut [Item],
+    calendar: &ImportedGoogleCalendar,
+) -> bool {
+    let mut changed = false;
+    for item in items {
+        if apply_google_recurrence_exdates_to_item(
+            item,
+            calendar.account_id.as_str(),
+            calendar.calendar_id.as_str(),
+            &calendar.recurrence_exdates,
+        ) {
+            changed = true;
+        }
+    }
+    changed
+}
+
+fn apply_google_recurrence_exdates_to_item(
+    item: &mut Item,
+    account_id: &str,
+    calendar_id: &str,
+    exdates: &[GoogleRecurrenceExdate],
+) -> bool {
+    let Some(external) = item.external.as_ref() else {
+        return false;
+    };
+    if external.provider != CalendarProvider::Google
+        || external.account_id != account_id
+        || external.calendar_id != calendar_id
+        || external.instance_id.is_some()
+    {
+        return false;
+    }
+    let Some(recurrence) = item.repeats.as_mut() else {
+        return false;
+    };
+
+    let mut changed = false;
+    for exdate in exdates
+        .iter()
+        .filter(|exdate| exdate.event_id == external.event_id)
+    {
+        if !recurrence_exdates_contain(recurrence, &exdate.original_start) {
+            recurrence.exdates.push(exdate.original_start.clone());
+            changed = true;
+        }
+    }
+    changed
+}
+
+fn recurrence_exdates_contain(
+    recurrence: &knotq_model::CalendarRecurrence,
+    candidate: &CalendarDateTime,
+) -> bool {
+    let candidate_utc = candidate.as_utc_lossy();
+    recurrence
+        .exdates
+        .iter()
+        .any(|existing| existing.as_utc_lossy() == candidate_utc)
 }
 
 pub(crate) fn parse_google_calendar_date_times(raw: &str) -> Vec<CalendarDateTime> {
