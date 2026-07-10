@@ -104,7 +104,9 @@ fn switch_carries_daily_queue() {
 
     let mut h = Harness::new(1);
     h.login_all();
-    let dq = h.device_mut_for_surgery(D0).set_daily_queue(date, &["plan the day"]);
+    let dq = h
+        .device_mut_for_surgery(D0)
+        .set_daily_queue(date, &["plan the day"]);
     h.sync(D0);
 
     {
@@ -136,14 +138,16 @@ fn switch_carries_media_to_new_account() {
     let (_asset, image_name) = dev.attach_image(scheme, 0, bytes.clone());
     dev.try_sync(&server_a).expect("crdt sync to A");
     let remote_a = dev.remote_latest_after_sync();
-    dev.upload_media_to(&server_a, &remote_a).expect("upload media to A");
+    dev.upload_media_to(&server_a, &remote_a)
+        .expect("upload media to A");
     assert_eq!(server_a.media_asset_count(), 1);
 
     dev.switch_account(account_b, "memory://account-b");
     assert_eq!(dev.media_cursor_count(), 0, "switch clears media cursors");
     dev.try_sync(&server_b).expect("crdt sync to B");
     let remote_b = dev.remote_latest_after_sync();
-    dev.upload_media_to(&server_b, &remote_b).expect("upload media to B");
+    dev.upload_media_to(&server_b, &remote_b)
+        .expect("upload media to B");
     assert_eq!(
         server_b.media_asset_count(),
         1,
@@ -170,7 +174,8 @@ fn switch_resets_media_cursors() {
     dev.attach_image(scheme, 0, vec![1, 2, 3, 4]);
     dev.try_sync(&server_a).expect("crdt sync to A");
     let remote_a = dev.remote_latest_after_sync();
-    dev.upload_media_to(&server_a, &remote_a).expect("upload to A");
+    dev.upload_media_to(&server_a, &remote_a)
+        .expect("upload to A");
     assert_eq!(dev.media_cursor_count(), 1);
 
     dev.switch_account(account_b, "memory://account-b");
@@ -411,7 +416,10 @@ fn switch_then_double_sync_is_idempotent() {
 
     let docs_after_first = server_b.document_count();
     dev.try_sync(&server_b).expect("second sync to B");
-    assert!(dev.is_fully_pushed(), "no new pending after a redundant sync");
+    assert!(
+        dev.is_fully_pushed(),
+        "no new pending after a redundant sync"
+    );
     assert_eq!(
         server_b.document_count(),
         docs_after_first,

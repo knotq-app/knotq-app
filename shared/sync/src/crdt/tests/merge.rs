@@ -305,7 +305,11 @@ fn deterministic_skeleton_dedupes_yet_merges_concurrent_content() {
 
     let items = merged.get_or_insert_map("items_by_id");
     let txn = merged.transact();
-    assert_eq!(items.len(&txn), 1, "concurrent creates deduped to ONE container");
+    assert_eq!(
+        items.len(&txn),
+        1,
+        "concurrent creates deduped to ONE container"
+    );
     let Some(Out::YMap(item_map)) = items.get(&txn, item_id) else {
         panic!("item missing after merge");
     };

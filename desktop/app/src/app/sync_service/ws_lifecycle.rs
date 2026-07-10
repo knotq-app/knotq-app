@@ -56,7 +56,8 @@ impl KnotQApp {
                     // removed, the socket lifecycle is the only sync trigger besides
                     // local edits, so this is what re-converges after a transient drop.
                     on_connect: Box::new(move || {
-                        let _ = connect_tx.try_send(crate::app::sync_service::SyncSignal::Immediate);
+                        let _ =
+                            connect_tx.try_send(crate::app::sync_service::SyncSignal::Immediate);
                     }),
                 };
                 let client = super::ws_socket::connect_workspace_ws(

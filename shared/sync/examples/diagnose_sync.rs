@@ -38,7 +38,10 @@ fn main() {
 
     // doc id -> kind, from cursors then pending.
     let mut kinds: HashMap<String, SyncDocumentKind> = HashMap::new();
-    if let Some(cur) = sync_state.get("document_cursors").and_then(|v| v.as_object()) {
+    if let Some(cur) = sync_state
+        .get("document_cursors")
+        .and_then(|v| v.as_object())
+    {
         for (doc, c) in cur {
             if let Some(k) = c.get("kind").and_then(|v| v.as_str()).and_then(kind_of) {
                 kinds.insert(doc.clone(), k);
@@ -81,7 +84,10 @@ fn main() {
     };
 
     // 1) Validate every LIVE local doc standalone (is the on-disk CRDT itself valid?).
-    println!("=== standalone validation of {} local CRDT docs ===", base.len());
+    println!(
+        "=== standalone validation of {} local CRDT docs ===",
+        base.len()
+    );
     let mut bad_base = 0;
     for (id, bytes) in &base {
         let kind = kind_for(id);

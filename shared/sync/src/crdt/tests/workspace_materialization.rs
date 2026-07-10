@@ -98,8 +98,10 @@ fn reidentified_workspace_merges_local_and_server_schemes_without_mismatch() {
     // Applying the server's workspace update as-is fails with a document-id
     // mismatch (the bug): the local CRDT workspace doc still carries id A.
     let mut before = WorkspaceCrdtDocuments::try_new(&local).unwrap();
-    let before_outcome = before
-        .apply_remote_updates(&local, &stored_updates(server.id, server_workspace_update.clone()));
+    let before_outcome = before.apply_remote_updates(
+        &local,
+        &stored_updates(server.id, server_workspace_update.clone()),
+    );
     assert!(
         !before_outcome.workspace_is_ok(),
         "expected a document-id mismatch before re-identify"
@@ -110,7 +112,10 @@ fn reidentified_workspace_merges_local_and_server_schemes_without_mismatch() {
     // workspace, then the same update applies cleanly and unions both schemes.
     let mut docs = WorkspaceCrdtDocuments::try_new(&local).unwrap();
     let snapshot = docs.reidentify_workspace_document(server_doc_id).unwrap();
-    assert!(snapshot.is_some(), "re-identify should report the relabeled doc");
+    assert!(
+        snapshot.is_some(),
+        "re-identify should report the relabeled doc"
+    );
     local.canonicalize_personal_sync_identity(server.id);
     let outcome =
         docs.apply_remote_updates(&local, &stored_updates(server.id, server_workspace_update));

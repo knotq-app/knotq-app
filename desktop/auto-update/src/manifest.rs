@@ -1,9 +1,7 @@
 use anyhow::{bail, Context, Result};
 use semver::{BuildMetadata, Prerelease, Version};
 
-use crate::{
-    AutoUpdateConfig, ManifestAsset, TargetKind, UpdateManifest, DEFAULT_MANIFEST_URL,
-};
+use crate::{AutoUpdateConfig, ManifestAsset, TargetKind, UpdateManifest, DEFAULT_MANIFEST_URL};
 
 pub(crate) fn fetch_manifest(config: &AutoUpdateConfig) -> Result<UpdateManifest> {
     let response = ureq::get(&config.update_manifest_url)

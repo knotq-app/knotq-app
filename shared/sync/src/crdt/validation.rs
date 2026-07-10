@@ -116,7 +116,11 @@ pub(crate) fn validate_scheme_document(doc: &Doc) -> anyhow::Result<()> {
     // `snapshot_json`, never this validated `schema` struct), so every replica
     // converges on identical content. `validate_scheme_item` stays available for
     // callers that want a strict, per-item check.
-    for item_id in items_by_id.keys(&txn).map(str::to_string).collect::<Vec<_>>() {
+    for item_id in items_by_id
+        .keys(&txn)
+        .map(str::to_string)
+        .collect::<Vec<_>>()
+    {
         let Ok(parsed_item_id) = item_id.parse::<ItemId>() else {
             continue;
         };

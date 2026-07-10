@@ -47,7 +47,12 @@ fn fingerprint(dev: &TestDevice) -> Vec<String> {
         ));
     }
     for folder in dev.workspace.folders.values() {
-        out.push(format!("folder {} {:?} children={}", folder.id, folder.name, folder.children.len()));
+        out.push(format!(
+            "folder {} {:?} children={}",
+            folder.id,
+            folder.name,
+            folder.children.len()
+        ));
     }
     out.sort();
     out
@@ -171,11 +176,21 @@ impl World {
     fn edit_op(&mut self, i: usize) {
         // Sort the keys: HashMap iteration order is per-process random, so without this
         // the choice (and thus the whole run) would not be reproducible from the seed.
-        let mut scheme_ids: Vec<SchemeId> =
-            self.devices[i].dev.workspace.schemes.keys().copied().collect();
+        let mut scheme_ids: Vec<SchemeId> = self.devices[i]
+            .dev
+            .workspace
+            .schemes
+            .keys()
+            .copied()
+            .collect();
         scheme_ids.sort();
-        let mut folder_ids: Vec<FolderId> =
-            self.devices[i].dev.workspace.folders.keys().copied().collect();
+        let mut folder_ids: Vec<FolderId> = self.devices[i]
+            .dev
+            .workspace
+            .folders
+            .keys()
+            .copied()
+            .collect();
         folder_ids.sort();
         let root = self.devices[i].dev.workspace.root;
 
@@ -333,7 +348,11 @@ impl World {
             if redo { "REDO" } else { "UNDO" }
         ));
         let slot = &mut self.devices[i];
-        let popped = if redo { slot.redo.pop() } else { slot.undo.pop() };
+        let popped = if redo {
+            slot.redo.pop()
+        } else {
+            slot.undo.pop()
+        };
         let Some((scheme_id, prior_items)) = popped else {
             return;
         };
@@ -360,7 +379,10 @@ impl World {
         } else if roll < 34 {
             let from = self.devices[i].account;
             self.switch_account(i);
-            self.log(&format!("dev{i} SWITCH acct{from} -> acct{}", self.devices[i].account));
+            self.log(&format!(
+                "dev{i} SWITCH acct{from} -> acct{}",
+                self.devices[i].account
+            ));
         } else if self.enable_undo && roll < 50 {
             // Only the undo fuzz reaches this band; other tests fall straight to
             // `edit_op` with the identical RNG sequence they always had.
@@ -463,7 +485,11 @@ impl World {
             for _ in 0..3 {
                 puller
                     .try_sync(&self.accounts[account].server)
-                    .unwrap_or_else(|e| panic!("seed {seed}: fresh puller on account {account} failed to sync: {e:#}"));
+                    .unwrap_or_else(|e| {
+                        panic!(
+                            "seed {seed}: fresh puller on account {account} failed to sync: {e:#}"
+                        )
+                    });
             }
             if !puller.converges_with(&self.devices[first].dev) {
                 let fa = fingerprint(&self.devices[first].dev);

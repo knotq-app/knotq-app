@@ -128,7 +128,10 @@ pub(super) fn upload_local_media_assets(
     Ok(())
 }
 
-pub(super) fn download_missing_media_assets(client: &SyncHttpClient, workspace: &Workspace) -> Result<bool> {
+pub(super) fn download_missing_media_assets(
+    client: &SyncHttpClient,
+    workspace: &Workspace,
+) -> Result<bool> {
     let mut downloaded = false;
     for media in workspace_media_assets(workspace) {
         let path = image_asset_path(media.asset, media.format.extension());

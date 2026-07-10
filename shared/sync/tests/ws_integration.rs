@@ -35,11 +35,11 @@ use knotq_model::{Workspace, WorkspaceId};
 use knotq_sync::ws::{
     PresenceEvent, RawSocket, RawSocketFactory, WsCallbacks, WsClient, WsConfig, WsRequestError,
 };
-use std::sync::Mutex;
 use knotq_sync::{
     BatchPullRequest, BatchPullResponse, BatchPushRequest, BatchPushResponse, SyncPushRejected,
     SyncTransport,
 };
+use std::sync::Mutex;
 use tungstenite::stream::MaybeTlsStream;
 use tungstenite::{ClientRequestBuilder, Message, WebSocket};
 
@@ -104,8 +104,8 @@ impl RawSocketFactory for TgFactory {
             .ws_url
             .parse::<tungstenite::http::Uri>()
             .map_err(|e| io::Error::new(ErrorKind::InvalidInput, e.to_string()))?;
-        let request =
-            ClientRequestBuilder::new(uri).with_header("Authorization", format!("Bearer {}", self.token));
+        let request = ClientRequestBuilder::new(uri)
+            .with_header("Authorization", format!("Bearer {}", self.token));
         let (socket, _resp) = tungstenite::connect(request)
             .map_err(|e| io::Error::new(ErrorKind::Other, e.to_string()))?;
         Ok(Box::new(TgSocket { socket }))
@@ -316,9 +316,14 @@ fn ws_presence_relays_between_sockets_over_real_backend() {
         std::thread::sleep(Duration::from_millis(25));
     }
     let events = received.lock().unwrap();
-    assert_eq!(events.len(), 1, "B should receive exactly one presence frame");
     assert_eq!(
-        events[0].data.as_ref().unwrap()["caret"], 12,
+        events.len(),
+        1,
+        "B should receive exactly one presence frame"
+    );
+    assert_eq!(
+        events[0].data.as_ref().unwrap()["caret"],
+        12,
         "presence payload must round-trip"
     );
 }

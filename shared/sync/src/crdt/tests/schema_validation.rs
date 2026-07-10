@@ -2,9 +2,7 @@
 use super::super::*;
 
 use super::helpers::{encode_full_update, valid_single_item_scheme_doc};
-use knotq_model::{
-    CalendarProvider, ImportedCalendarSource, Item, SchemeSource,
-};
+use knotq_model::{CalendarProvider, ImportedCalendarSource, Item, SchemeSource};
 
 #[test]
 fn crdt_schema_validation_accepts_workspace_snapshots() {
@@ -22,8 +20,7 @@ fn crdt_schema_validation_accepts_workspace_snapshots() {
         .filter(|update| update.kind == SyncDocumentKind::PersonalWorkspace)
         .map(|update| update.update_v1.as_slice());
 
-    validate_crdt_update_sequence(SyncDocumentKind::PersonalWorkspace, workspace_updates)
-        .unwrap();
+    validate_crdt_update_sequence(SyncDocumentKind::PersonalWorkspace, workspace_updates).unwrap();
 }
 
 #[test]
@@ -124,9 +121,7 @@ fn crdt_schema_validation_rejects_delta_without_base_document() {
     scheme.items[0].set_text("Changed");
     let delta = doc.sync_scheme(&scheme).unwrap().unwrap().update_v1;
 
-    assert!(
-        validate_crdt_update_sequence(SyncDocumentKind::Scheme, [delta.as_slice()]).is_err()
-    );
+    assert!(validate_crdt_update_sequence(SyncDocumentKind::Scheme, [delta.as_slice()]).is_err());
 }
 
 #[test]
@@ -215,8 +210,7 @@ fn crdt_schema_validation_tolerates_item_id_key_mismatch() {
     metadata.insert(&mut txn, "schema", SCHEME_SCHEMA_V1);
     metadata.insert(&mut txn, "id", SchemeId::new().to_string());
     // Store the item under a different (still valid) key than its own id.
-    let item_map =
-        items_by_id.insert(&mut txn, ItemId::new().to_string(), MapPrelim::default());
+    let item_map = items_by_id.insert(&mut txn, ItemId::new().to_string(), MapPrelim::default());
     let snapshot_json = item_snapshot_json(&item).unwrap();
     write_new_item(&item_map, &mut txn, &item, "V", &snapshot_json).unwrap();
     drop(txn);
@@ -247,10 +241,15 @@ fn crdt_schema_validation_tolerates_schema_missing_partial_item() {
     metadata.insert(&mut txn, "schema", SCHEME_SCHEMA_V1);
     metadata.insert(&mut txn, "id", SchemeId::new().to_string());
     let kept_map = items_by_id.insert(&mut txn, kept.id.to_string(), MapPrelim::default());
-    write_new_item(&kept_map, &mut txn, &kept, "V", &item_snapshot_json(&kept).unwrap())
-        .unwrap();
-    let partial_map =
-        items_by_id.insert(&mut txn, partial.id.to_string(), MapPrelim::default());
+    write_new_item(
+        &kept_map,
+        &mut txn,
+        &kept,
+        "V",
+        &item_snapshot_json(&kept).unwrap(),
+    )
+    .unwrap();
+    let partial_map = items_by_id.insert(&mut txn, partial.id.to_string(), MapPrelim::default());
     write_new_item(
         &partial_map,
         &mut txn,

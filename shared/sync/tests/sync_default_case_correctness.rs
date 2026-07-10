@@ -38,10 +38,23 @@ fn concurrent_inserts_at_same_position_keep_both() {
     h.assert_all_converged();
 
     let texts = line_texts(&h, D0, "Doc");
-    assert!(texts.contains(&"AAA".to_string()), "D0's insert lost: {texts:?}");
-    assert!(texts.contains(&"BBB".to_string()), "D1's insert lost: {texts:?}");
-    assert!(texts.contains(&"start".to_string()), "seed line lost: {texts:?}");
-    assert_eq!(texts.len(), 3, "expected exactly start+AAA+BBB, got {texts:?}");
+    assert!(
+        texts.contains(&"AAA".to_string()),
+        "D0's insert lost: {texts:?}"
+    );
+    assert!(
+        texts.contains(&"BBB".to_string()),
+        "D1's insert lost: {texts:?}"
+    );
+    assert!(
+        texts.contains(&"start".to_string()),
+        "seed line lost: {texts:?}"
+    );
+    assert_eq!(
+        texts.len(),
+        3,
+        "expected exactly start+AAA+BBB, got {texts:?}"
+    );
 }
 
 /// Three devices each append a distinct line concurrently — all three must survive.
@@ -63,7 +76,10 @@ fn concurrent_appends_from_three_devices_all_survive() {
 
     let texts = line_texts(&h, D0, "Doc");
     for expected in ["seed", "from-D0", "from-D1", "from-D2"] {
-        assert!(texts.contains(&expected.to_string()), "{expected} lost: {texts:?}");
+        assert!(
+            texts.contains(&expected.to_string()),
+            "{expected} lost: {texts:?}"
+        );
     }
     assert_eq!(texts.len(), 4, "no extra/duplicated lines: {texts:?}");
 }
@@ -84,7 +100,10 @@ fn concurrent_independent_daily_queue_creation_converges() {
     h.assert_all_converged();
     let texts = line_texts(&h, D0, "Daily");
     for expected in ["d0", "d1", "d2"] {
-        assert!(texts.contains(&expected.to_string()), "{expected} lost: {texts:?}");
+        assert!(
+            texts.contains(&expected.to_string()),
+            "{expected} lost: {texts:?}"
+        );
     }
 }
 
