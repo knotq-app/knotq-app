@@ -30,7 +30,7 @@ impl KnotQApp {
 
         let (service_bus, service_receivers) = AppServiceBus::new();
         let (auto_update_tx, auto_update_rx) = async_channel::bounded(4);
-        let save_task = spawn_save_task(service_receivers.save_rx, cx);
+        let save_task = spawn_save_task(service_bus.clone(), service_receivers.save_rx, cx);
         let notification_task =
             spawn_notification_task(service_bus.clone(), service_receivers.notification_rx, cx);
         let state_task = spawn_timeline_task(service_receivers.timeline_rx, cx);
@@ -154,6 +154,7 @@ impl KnotQApp {
             scheme_sessions: HashMap::new(),
             service_bus,
             workspace_save_blocked_reason,
+            workspace_save_error: None,
             notification_error: None,
             auto_update_status: AutoUpdateUiStatus::initial(),
             auto_update_tx,

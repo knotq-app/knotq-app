@@ -623,6 +623,13 @@ pub struct KnotQApp {
     pub(crate) scheme_sessions: HashMap<SchemeId, SchemeSessionState>,
     pub(crate) service_bus: AppServiceBus,
     pub(crate) workspace_save_blocked_reason: Option<String>,
+    /// Set when the background save task's most recent write attempt failed
+    /// (disk full, permission denied, external drive gone, AV lock). The
+    /// failed schemes are re-marked dirty and retried automatically after a
+    /// backoff (see `SAVE_RETRY_BACKOFF`); this clears on the next successful
+    /// save. Distinct from `workspace_save_blocked_reason`, which is permanent
+    /// for the session (the initial load itself failed).
+    pub workspace_save_error: Option<String>,
     pub notification_error: Option<String>,
     pub auto_update_status: AutoUpdateUiStatus,
     pub(crate) auto_update_tx: async_channel::Sender<AutoUpdateSignal>,

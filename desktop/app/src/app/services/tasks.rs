@@ -13,10 +13,14 @@ use super::{
     save_workspace, save_workspace_incremental, workspace_path, AppServiceBus, KnotQApp,
     NotificationBatch, NotificationItemRefresh, NotificationOccurrenceClear, NotificationSignal,
     DEADLINE_LOOKAHEAD_DAYS, DEADLINE_LOOKBACK_DAYS, NOTIFICATION_DEBOUNCE, SAVE_DEBOUNCE,
-    TIMELINE_POLL_INTERVAL,
+    SAVE_RETRY_BACKOFF, TIMELINE_POLL_INTERVAL,
 };
 
-pub(crate) fn spawn_save_task(save_rx: Receiver<()>, cx: &mut Context<KnotQApp>) -> Task<()> {
+pub(crate) fn spawn_save_task(
+    bus: AppServiceBus,
+    save_rx: Receiver<()>,
+    cx: &mut Context<KnotQApp>,
+) -> Task<()> {
     cx.spawn(
         async move |weak: gpui::WeakEntity<KnotQApp>, cx: &mut gpui::AsyncApp| {
             while save_rx.recv().await.is_ok() {
@@ -47,6 +51,7 @@ pub(crate) fn spawn_save_task(save_rx: Receiver<()>, cx: &mut Context<KnotQApp>)
 
                 if let Some((ws, dirty_ids, pending_crdt_edits, crdt_states)) = snapshot {
                     let path = workspace_path();
+                    let retry_ids = dirty_ids.clone();
                     let result = cx
                         .background_executor()
                         .spawn(async move {
@@ -65,6 +70,31 @@ pub(crate) fn spawn_save_task(save_rx: Receiver<()>, cx: &mut Context<KnotQApp>)
                         .await;
                     if let Err(err) = result {
                         eprintln!("save failed: {err:#}");
+                        let message = format!("{err:#}");
+                        let _ = weak.update(cx, |app, cx| {
+                            // Re-mark the schemes this attempt dropped as dirty
+                            // (unioned with anything a concurrent edit already
+                            // re-added) so the retry below picks them back up
+                            // instead of leaving them stale on disk until the
+                            // user happens to edit them again.
+                            app.state.dirty_schemes.extend(retry_ids);
+                            app.state.index_dirty = true;
+                            app.workspace_save_error = Some(message);
+                            cx.notify();
+                        });
+                        // Don't hammer a persistently broken disk (full,
+                        // permission denied, external drive gone, AV lock); back
+                        // off, then self-signal so the loop retries without
+                        // requiring another edit to wake it.
+                        cx.background_executor().timer(SAVE_RETRY_BACKOFF).await;
+                        bus.signal_save();
+                    } else {
+                        let _ = weak.update(cx, |app, cx| {
+                            if app.workspace_save_error.is_some() {
+                                app.workspace_save_error = None;
+                                cx.notify();
+                            }
+                        });
                     }
                 }
             }

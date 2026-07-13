@@ -15,6 +15,12 @@ mod tasks;
 pub(crate) use tasks::{spawn_notification_task, spawn_save_task, spawn_timeline_task};
 
 pub(super) const SAVE_DEBOUNCE: StdDuration = StdDuration::from_secs(2);
+/// Backoff before re-signalling a save after a failed write (disk full,
+/// permission denied, external drive gone, AV lock). Avoids hammering a
+/// persistently broken disk while still recovering automatically once it
+/// clears, rather than leaving the failed edits stale until the user happens
+/// to make another edit.
+pub(super) const SAVE_RETRY_BACKOFF: StdDuration = StdDuration::from_secs(10);
 pub(super) const NOTIFICATION_DEBOUNCE: StdDuration = StdDuration::from_secs(4);
 pub(super) const TIMELINE_POLL_INTERVAL: StdDuration = StdDuration::from_secs(5 * 60);
 pub(super) const DEADLINE_LOOKBACK_DAYS: i64 = 7;
