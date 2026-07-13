@@ -145,6 +145,7 @@ pub fn batch_pull_and_apply(
                 .values()
                 .map(|cursor| (cursor.document, cursor.last_pulled_sequence))
                 .collect(),
+            client_protocol_version: crate::CLIENT_SYNC_PROTOCOL_VERSION,
         };
         let response = transport.pull(&request)?;
         if let Some(known_documents) = &response.known_documents {
@@ -504,6 +505,7 @@ impl SquashProposal {
             base_epoch: self.base_epoch,
             base_seq: self.base_seq,
             state_v1: self.state_v1.clone(),
+            client_protocol_version: crate::CLIENT_SYNC_PROTOCOL_VERSION,
         }
     }
 }
@@ -629,6 +631,7 @@ fn build_push_request(
             documents,
             notification_schedule_changed: false,
             notification_schedule: Some(schedule),
+            client_protocol_version: crate::CLIENT_SYNC_PROTOCOL_VERSION,
         },
         acks,
     ))

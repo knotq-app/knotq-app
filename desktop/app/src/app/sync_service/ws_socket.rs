@@ -178,6 +178,7 @@ mod tests {
         let request = knotq_sync::BatchPullRequest {
             replica_id: knotq_model::ReplicaId::new(),
             cursors: Default::default(),
+            client_protocol_version: knotq_sync::CLIENT_SYNC_PROTOCOL_VERSION,
         };
         let response = client.request_pull(&request);
         assert!(

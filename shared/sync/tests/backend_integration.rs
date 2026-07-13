@@ -407,6 +407,7 @@ fn atomic_batch_rejection_and_server_gate() {
         }],
         notification_schedule_changed: false,
         notification_schedule: Some(schedule.clone()),
+        client_protocol_version: knotq_sync::CLIENT_SYNC_PROTOCOL_VERSION,
     };
     let rejection = client.push(&garbage_request);
     assert!(
@@ -428,6 +429,7 @@ fn atomic_batch_rejection_and_server_gate() {
         .pull(&BatchPullRequest {
             replica_id: ReplicaId::new(),
             cursors: HashMap::new(),
+            client_protocol_version: knotq_sync::CLIENT_SYNC_PROTOCOL_VERSION,
         })
         .expect("pull after rejection");
     let persisted = pull.documents.iter().any(|d| d.document == doc_id);

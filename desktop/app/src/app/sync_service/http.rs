@@ -9,7 +9,9 @@ use knotq_sync::{
 };
 
 use super::media::media_content_type;
-use super::{SyncHttpClient, SyncMediaAsset, SyncNetworkUnreachable, SyncUnauthorized};
+use super::{
+    SyncHttpClient, SyncMediaAsset, SyncNetworkUnreachable, SyncProtocolOutdated, SyncUnauthorized,
+};
 
 impl SyncTransport for SyncHttpClient {
     fn pull(&self, request: &BatchPullRequest) -> Result<BatchPullResponse> {
@@ -126,6 +128,9 @@ fn sync_push_http_error(error: ureq::Error) -> anyhow::Error {
                 .into_json::<ErrorResponse>()
                 .map(|error| error.code)
                 .unwrap_or_else(|_| status.to_string());
+            if is_protocol_outdated(status, &code) {
+                return protocol_outdated(&code);
+            }
             if status == 401 || code == "unauthorized" {
                 return anyhow::Error::new(SyncUnauthorized)
                     .context(format!("sync backend rejected request: {code}"));
@@ -147,6 +152,9 @@ fn sync_http_error(error: ureq::Error) -> anyhow::Error {
                 .into_json::<ErrorResponse>()
                 .map(|error| error.code)
                 .unwrap_or_else(|_| status.to_string());
+            if is_protocol_outdated(status, &code) {
+                return protocol_outdated(&code);
+            }
             // Attach SyncUnauthorized so the scheduler can force-refresh the
             // token and retry instead of surfacing an opaque failure.
             if status == 401 || code == "unauthorized" {
@@ -160,6 +168,18 @@ fn sync_http_error(error: ureq::Error) -> anyhow::Error {
         error => anyhow::Error::new(SyncNetworkUnreachable)
             .context(format!("sync backend request failed: {error}")),
     }
+}
+
+/// 426 (Upgrade Required) is the backend's dedicated status for a client below
+/// its protocol floor — distinct from the 400-499 range `sync_push_http_error`
+/// otherwise treats as a self-healing content rejection (reseed-and-retry would
+/// just be rejected again until the app updates).
+fn is_protocol_outdated(status: u16, code: &str) -> bool {
+    status == 426 || code == "client_protocol_outdated"
+}
+
+fn protocol_outdated(code: &str) -> anyhow::Error {
+    anyhow::Error::new(SyncProtocolOutdated).context(format!("sync backend rejected request: {code}"))
 }
 
 pub(super) fn normalize_api_base(raw: &str) -> Result<String> {
@@ -267,5 +287,22 @@ mod tests {
         assert!(err.downcast_ref::<SyncUnauthorized>().is_none());
         assert!(err.downcast_ref::<SyncNetworkUnreachable>().is_none());
         assert!(format!("{err:#}").contains("crdt_schema_invalid"));
+    }
+
+    #[test]
+    fn status_426_maps_to_sync_protocol_outdated() {
+        let err = sync_http_error(status_error(426, &error_body("client_protocol_outdated")));
+        assert!(err.downcast_ref::<SyncProtocolOutdated>().is_some());
+        assert!(err.downcast_ref::<SyncUnauthorized>().is_none());
+    }
+
+    #[test]
+    fn push_426_is_protocol_outdated_not_push_rejected() {
+        // Must NOT become SyncPushRejected: reseeding and re-pushing would just
+        // be rejected the same way until the app is updated.
+        let err = sync_push_http_error(status_error(426, &error_body("client_protocol_outdated")));
+        assert!(err.downcast_ref::<SyncProtocolOutdated>().is_some());
+        assert!(err.downcast_ref::<SyncPushRejected>().is_none());
+        assert!(err.downcast_ref::<SyncUnauthorized>().is_none());
     }
 }

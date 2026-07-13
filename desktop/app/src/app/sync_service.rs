@@ -118,6 +118,25 @@ impl fmt::Display for SyncUnauthorized {
 
 impl std::error::Error for SyncUnauthorized {}
 
+/// Marker error attached when the backend rejects a sync request because this
+/// build's wire protocol is below the server's configured floor (HTTP 426 /
+/// `client_protocol_outdated`). Unlike `SyncPushRejected`, this must NOT trigger
+/// the engine's reseed self-heal — reseeding and re-pushing would just be
+/// rejected the same way until the app is updated. There is currently no
+/// automatic recovery: the scheduler leaves this as a plain error so the
+/// existing sync-error banner surfaces it, and it clears on the next successful
+/// sync after the user updates.
+#[derive(Debug)]
+struct SyncProtocolOutdated;
+
+impl fmt::Display for SyncProtocolOutdated {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("this version of KnotQ is too old to sync — please update the app")
+    }
+}
+
+impl std::error::Error for SyncProtocolOutdated {}
+
 #[derive(Clone)]
 struct SyncSnapshot {
     workspace: Workspace,

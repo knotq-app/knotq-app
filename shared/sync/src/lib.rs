@@ -83,6 +83,16 @@ pub(crate) mod base64_bytes_vec {
 }
 
 pub const SYNC_API_VERSION: &str = "2026-06-08-crdt-sync-batched";
+/// Sync wire-protocol version this build implements. Sent on every
+/// pull/push/squash request (see [`BatchPullRequest`], [`BatchPushRequest`],
+/// [`SquashDocumentRequest`]); the backend rejects requests below its
+/// configured floor (`MIN_SUPPORTED_CLIENT_SYNC_PROTOCOL_VERSION` in
+/// `cloudflare/src/shared/constants.ts`) with `client_protocol_outdated`
+/// rather than risk merging wire-incompatible state. Bump this alongside a
+/// backend change that raises the floor whenever a protocol change requires
+/// it — e.g. the kind of change the removed `supports_document_epochs` gate
+/// (see git history) briefly protected with a narrower, one-off mechanism.
+pub const CLIENT_SYNC_PROTOCOL_VERSION: u32 = 1;
 pub const LOCAL_SYNC_STATE_FILE: &str = "sync-state.json";
 /// On-disk file holding each CRDT document's persisted `state_v1`. The CRDT
 /// documents are long-lived: drivers restore them from this file (with a stable,
@@ -454,6 +464,10 @@ pub struct BatchPullRequest {
     pub replica_id: ReplicaId,
     #[serde(default)]
     pub cursors: HashMap<DocumentId, u64>,
+    /// See [`CLIENT_SYNC_PROTOCOL_VERSION`]. `#[serde(default)]` so an older
+    /// build of this same crate (pre-gate) still deserializes as version 0.
+    #[serde(default)]
+    pub client_protocol_version: u32,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -514,6 +528,9 @@ pub struct BatchPushRequest {
     pub notification_schedule_changed: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub notification_schedule: Option<NotificationScheduleSnapshot>,
+    /// See [`BatchPullRequest::client_protocol_version`].
+    #[serde(default)]
+    pub client_protocol_version: u32,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -537,6 +554,9 @@ pub struct SquashDocumentRequest {
     pub base_seq: u64,
     #[serde(with = "base64_bytes")]
     pub state_v1: Vec<u8>,
+    /// See [`BatchPullRequest::client_protocol_version`].
+    #[serde(default)]
+    pub client_protocol_version: u32,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -785,6 +805,7 @@ mod tests {
         let pull = BatchPullRequest {
             replica_id,
             cursors: HashMap::from([(document, 7)]),
+            client_protocol_version: CLIENT_SYNC_PROTOCOL_VERSION,
         };
         let push = BatchPushRequest {
             replica_id,
@@ -795,6 +816,7 @@ mod tests {
                 updates: vec![vec![1, 2, 3]],
             }],
             notification_schedule_changed: true,
+            client_protocol_version: CLIENT_SYNC_PROTOCOL_VERSION,
             notification_schedule: Some(NotificationScheduleSnapshot {
                 sequence: 3,
                 hash: "schedule-hash".to_string(),

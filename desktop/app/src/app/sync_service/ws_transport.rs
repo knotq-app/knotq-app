@@ -22,7 +22,7 @@ use knotq_sync::{
     SyncTransport,
 };
 
-use super::{SyncHttpClient, SyncNetworkUnreachable, SyncUnauthorized};
+use super::{SyncHttpClient, SyncNetworkUnreachable, SyncProtocolOutdated, SyncUnauthorized};
 
 /// The live transport: prefer the WebSocket when it is connected, fall back to
 /// HTTP otherwise. A WS *transport hiccup* (not connected / dropped / timed out)
@@ -99,6 +99,9 @@ fn map_pull_error(error: WsRequestError) -> anyhow::Error {
             unreachable_network(error)
         }
         WsRequestError::Server { status, code } => {
+            if is_protocol_outdated(status, &code) {
+                return protocol_outdated(&code);
+            }
             if is_unauthorized(status, &code) {
                 return unauthorized(&code);
             }
@@ -116,9 +119,14 @@ fn map_push_error(error: WsRequestError) -> anyhow::Error {
             unreachable_network(error)
         }
         WsRequestError::Server { status, code } => {
-            // An auth rejection must NOT become SyncPushRejected: the engine's
-            // reseed self-heal is for content rejections (crdt_schema_invalid),
-            // not a stale token. The scheduler force-refreshes and retries.
+            // A protocol-outdated or auth rejection must NOT become
+            // SyncPushRejected: the engine's reseed self-heal is for content
+            // rejections (crdt_schema_invalid), and reseeding would just be
+            // rejected the same way again. The scheduler either surfaces the
+            // plain error (outdated) or force-refreshes and retries (auth).
+            if is_protocol_outdated(status, &code) {
+                return protocol_outdated(&code);
+            }
             if is_unauthorized(status, &code) {
                 return unauthorized(&code);
             }
@@ -133,8 +141,19 @@ fn is_unauthorized(status: Option<u16>, code: &str) -> bool {
     status == Some(401) || code == "unauthorized"
 }
 
+/// See `http::is_protocol_outdated` — the WS backend maps the same 426 /
+/// `client_protocol_outdated` rejection into an error frame, so the mapping
+/// here must recognize it identically.
+fn is_protocol_outdated(status: Option<u16>, code: &str) -> bool {
+    status == Some(426) || code == "client_protocol_outdated"
+}
+
 fn unauthorized(code: &str) -> anyhow::Error {
     anyhow::Error::new(SyncUnauthorized).context(format!("sync backend rejected request: {code}"))
+}
+
+fn protocol_outdated(code: &str) -> anyhow::Error {
+    anyhow::Error::new(SyncProtocolOutdated).context(format!("sync backend rejected request: {code}"))
 }
 
 fn unreachable_network(error: WsRequestError) -> anyhow::Error {
@@ -220,5 +239,22 @@ mod tests {
             assert!(push.downcast_ref::<SyncPushRejected>().is_none());
             assert!(push.downcast_ref::<SyncNetworkUnreachable>().is_none());
         }
+    }
+
+    #[test]
+    fn protocol_outdated_rejection_maps_on_pull_and_push_not_push_rejected() {
+        let error = WsRequestError::Server {
+            status: Some(426),
+            code: "client_protocol_outdated".to_string(),
+        };
+        let pull = map_pull_error(error.clone());
+        assert!(pull.downcast_ref::<SyncProtocolOutdated>().is_some());
+
+        let push = map_push_error(error);
+        assert!(push.downcast_ref::<SyncProtocolOutdated>().is_some());
+        // Must NOT trigger the reseed self-heal — reseeding would just be
+        // rejected the same way until the app is updated.
+        assert!(push.downcast_ref::<SyncPushRejected>().is_none());
+        assert!(push.downcast_ref::<SyncUnauthorized>().is_none());
     }
 }

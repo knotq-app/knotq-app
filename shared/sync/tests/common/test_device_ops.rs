@@ -673,6 +673,7 @@ impl TestDevice {
             }],
             notification_schedule_changed: true,
             notification_schedule: Some(schedule),
+            client_protocol_version: knotq_sync::CLIENT_SYNC_PROTOCOL_VERSION,
         };
         let response = transport
             .push(&request)

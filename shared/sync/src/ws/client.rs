@@ -555,6 +555,7 @@ mod tests {
             let req = crate::BatchPullRequest {
                 replica_id: crate::ReplicaId::new(),
                 cursors: Default::default(),
+                client_protocol_version: crate::CLIENT_SYNC_PROTOCOL_VERSION,
             };
             client.request_pull(&req)
         });
@@ -640,6 +641,7 @@ mod tests {
                 documents: Vec::new(),
                 notification_schedule_changed: false,
                 notification_schedule: None,
+                client_protocol_version: crate::CLIENT_SYNC_PROTOCOL_VERSION,
             };
             client.request_push(&req)
         });
@@ -693,6 +695,7 @@ mod tests {
             let req = crate::BatchPullRequest {
                 replica_id: crate::ReplicaId::new(),
                 cursors: Default::default(),
+                client_protocol_version: crate::CLIENT_SYNC_PROTOCOL_VERSION,
             };
             req_client.request_pull(&req)
         });
