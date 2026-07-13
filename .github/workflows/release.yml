@@ -156,6 +156,35 @@ jobs:
           APPLE_NOTARY_TEAM_ID: ${{ secrets.APPLE_NOTARY_TEAM_ID }}
           MACOS_PROVISIONING_PROFILE: ${{ secrets.MACOS_PROVISIONING_PROFILE }}
 
+      - name: Verify macOS signature and notarization
+        run: |
+          APP="target/package-macos/${{ matrix.arch }}/KnotQ.app"
+          DMG="dist/macos/KnotQ-${{ steps.version.outputs.version }}-macos-${{ matrix.arch }}.dmg"
+
+          test -d "$APP" || { echo "::error::app bundle not found: $APP"; exit 1; }
+          test -f "$DMG" || { echo "::error::dmg not found: $DMG"; exit 1; }
+
+          # A missing/misconfigured MACOS_CERTIFICATE_P12 / MACOS_CERTIFICATE_
+          # PASSWORD / CODESIGN_IDENTITY secret makes post-bundle.sh silently
+          # fall back to an ad-hoc signature with no notarization (it still
+          # exits 0) — Gatekeeper blocks that on every user's first launch.
+          # Fail the release build here instead of shipping it quietly.
+          if ! codesign -dv --verbose=2 "$APP" 2>&1 | grep -q "Authority=Developer ID Application"; then
+            echo "::error::$APP is not signed with a Developer ID Application identity (ad-hoc/unsigned fallback — check MACOS_CERTIFICATE_P12, MACOS_CERTIFICATE_PASSWORD, and CODESIGN_IDENTITY secrets)"
+            codesign -dv --verbose=4 "$APP" || true
+            exit 1
+          fi
+
+          if ! spctl --assess --type execute --verbose "$APP"; then
+            echo "::error::$APP failed Gatekeeper assessment"
+            exit 1
+          fi
+
+          if ! xcrun stapler validate "$DMG"; then
+            echo "::error::$DMG is not notarized/stapled (check APPLE_NOTARY_KEYCHAIN_PROFILE or APPLE_NOTARY_APPLE_ID/APPLE_NOTARY_PASSWORD/APPLE_NOTARY_TEAM_ID secrets)"
+            exit 1
+          fi
+
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
