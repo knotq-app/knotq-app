@@ -33,7 +33,7 @@ fn block_inlines_for_item(item: &Item, table: Option<Table>) -> Vec<Inline> {
         .to_inlines()
         .into_iter()
         .filter_map(|inline| match inline {
-            Inline::Image(image) => Some(Inline::Image(image.clone())),
+            Inline::Image(image) => Some(Inline::Image(image)),
             Inline::Table(existing) => {
                 let table = if !used_table_override {
                     used_table_override = true;

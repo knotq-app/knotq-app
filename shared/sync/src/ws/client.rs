@@ -359,9 +359,8 @@ fn run_session(shared: &Arc<Shared>, mut socket: Box<dyn RawSocket>) {
                 last_keepalive = Instant::now();
             }
             // Wait briefly for an inbound frame.
-            match socket.poll(shared.config.poll_interval)? {
-                Some(text) => handle_incoming(shared, &text),
-                None => {}
+            if let Some(text) = socket.poll(shared.config.poll_interval)? {
+                handle_incoming(shared, &text);
             }
         }
     })();

@@ -175,7 +175,7 @@ impl SchemeEditor {
         top_indices.retain(|index| {
             old_top
                 .get(*index)
-                .is_some_and(|item| item_has_block_object(item))
+                .is_some_and(item_has_block_object)
         });
         if top_indices.is_empty() {
             return false;

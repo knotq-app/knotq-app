@@ -81,9 +81,7 @@ impl KnotQApp {
     ) -> Option<CommandReceipt> {
         self.editor_undo_group = None;
         self.recurrence_undo_group = None;
-        let Some(cmd) = filter_recurring_occurrence_toggles(cmd, &self.workspace) else {
-            return None;
-        };
+        let cmd = filter_recurring_occurrence_toggles(cmd, &self.workspace)?;
         let toggled = calendar_toggle_keys(&cmd);
         let service_signals = service_signals_for_command(&cmd, &self.workspace);
         self.clear_deleted_item_notifications(&cmd);

@@ -35,10 +35,10 @@ impl KnotQApp {
         result: std::result::Result<GoogleCalendarPickerLoadResult, String>,
         cx: &mut Context<Self>,
     ) {
-        if !self
+        if self
             .google_calendar_picker
             .as_ref()
-            .is_some_and(|picker| picker.parent == parent)
+            .is_none_or(|picker| picker.parent != parent)
         {
             return;
         }

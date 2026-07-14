@@ -517,6 +517,7 @@ impl SquashProposal {
 ///   - a non-zero pull cursor (the base_seq compare-and-set value); if another
 ///     device pushed since, the server head moved and the squash is rejected
 ///     as a harmless `squash_conflict`.
+///
 /// Size gates keep this from ever firing on healthy documents. Returns `None`
 /// when nothing qualifies — the common case.
 pub fn build_squash_proposal(

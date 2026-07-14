@@ -584,10 +584,10 @@ fn daily_queue_multiorigin_stress() {
         }
         // Concurrent appends with interleaved partial syncs.
         for round in 0..5u64 {
-            for i in 0..n {
-                devs[i].append_line(sid, &format!("r{round}d{i}"));
-                if (seed + round + i as u64) % 2 == 0 {
-                    let _ = devs[i].try_sync(&server);
+            for (i, dev) in devs.iter_mut().enumerate() {
+                dev.append_line(sid, &format!("r{round}d{i}"));
+                if (seed + round + i as u64).is_multiple_of(2) {
+                    let _ = dev.try_sync(&server);
                 }
             }
         }

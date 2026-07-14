@@ -44,9 +44,9 @@ pub(super) fn rebuild_tabled_rows_after_text_change(
         });
     }
 
-    for i in change.old_suffix..old_rows.len() {
-        let mut row = old_rows[i].clone();
-        let new_index = change.new_suffix + (i - change.old_suffix);
+    for (offset, old_row) in old_rows[change.old_suffix..].iter().enumerate() {
+        let mut row = old_row.clone();
+        let new_index = change.new_suffix + offset;
         if let Some(line) = new_lines.get(new_index) {
             set_row_text_from_buffer_line(&mut row, line);
         }

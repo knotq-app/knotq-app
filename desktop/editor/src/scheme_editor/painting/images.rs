@@ -52,10 +52,9 @@ impl SchemeEditor {
         let line = self
             .line_range(loc.row)
             .and_then(|range| self.text.get(range))?;
-        let mut block_index = 0;
         let mut image_index = 0;
         let inlines = editor_row.item.content.to_inlines();
-        for object in block_object_ranges(line) {
+        for (block_index, object) in block_object_ranges(line).into_iter().enumerate() {
             let inline = inlines
                 .iter()
                 .filter(|inline| !inline.is_text())
@@ -67,7 +66,6 @@ impl SchemeEditor {
                 Inline::Table(_) => {}
                 Inline::Text { .. } => unreachable!(),
             }
-            block_index += 1;
         }
         None
     }

@@ -953,6 +953,7 @@ impl WorkspaceCrdtDocuments {
 ///     (covering post-squash remote edits), dropped if absent remotely (a
 ///     remote deletion, or an item this replica never pushed... which cannot
 ///     exist untouched, since unpushed local additions are always touched).
+///
 /// Ordering follows the remote list; rescued local-only items are inserted
 /// after their nearest preceding local neighbour that survived the merge.
 pub(crate) fn merge_items_for_adoption(

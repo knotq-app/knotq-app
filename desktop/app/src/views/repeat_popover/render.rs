@@ -6,9 +6,7 @@ impl KnotQApp {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Option<gpui::AnyElement> {
-        let Some(popup) = self.repeat_popover.as_ref() else {
-            return None;
-        };
+        let popup = self.repeat_popover.as_ref()?;
 
         let target = RepeatTarget {
             scheme_id: popup.scheme_id,

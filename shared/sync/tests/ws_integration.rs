@@ -80,13 +80,13 @@ impl RawSocket for TgSocket {
             {
                 Ok(None)
             }
-            Err(err) => Err(io::Error::new(ErrorKind::Other, err.to_string())),
+            Err(err) => Err(io::Error::other(err.to_string())),
         }
     }
     fn send(&mut self, text: &str) -> io::Result<()> {
         self.socket
             .send(Message::Text(text.to_string()))
-            .map_err(|err| io::Error::new(ErrorKind::Other, err.to_string()))
+            .map_err(|err| io::Error::other(err.to_string()))
     }
     fn close(&mut self) {
         let _ = self.socket.close(None);
@@ -107,7 +107,7 @@ impl RawSocketFactory for TgFactory {
         let request = ClientRequestBuilder::new(uri)
             .with_header("Authorization", format!("Bearer {}", self.token));
         let (socket, _resp) = tungstenite::connect(request)
-            .map_err(|e| io::Error::new(ErrorKind::Other, e.to_string()))?;
+            .map_err(|e| io::Error::other(e.to_string()))?;
         Ok(Box::new(TgSocket { socket }))
     }
 }

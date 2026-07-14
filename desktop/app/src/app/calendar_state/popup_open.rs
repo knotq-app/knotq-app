@@ -137,6 +137,7 @@ impl KnotQApp {
     /// - Click → reminder (start date = clicked time)
     /// - Shift+click → assignment (end date = clicked time)
     /// - Drag → event (start + end from drag range)
+    ///
     /// The item is added to today's daily queue scheme by default, then the
     /// event popup is opened so the user can customize it.
     /// `start_hour`/`end_hour` are hour fractions (0.0–24.0).

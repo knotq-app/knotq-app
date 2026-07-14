@@ -575,16 +575,13 @@ pub(crate) fn write_item_fields(
 pub(crate) fn read_text_content(text: &TextRef, txn: &impl ReadTxn) -> Vec<Inline> {
     let mut content = Vec::new();
     for diff in text.diff(txn, |_| ()) {
-        match diff.insert {
-            Out::Any(Any::String(text)) => {
-                let text = text.as_ref();
-                if let Some(inline) = decode_inline_embed_str(text) {
-                    content.push(inline);
-                } else {
-                    push_text_inline(&mut content, text);
-                }
+        if let Out::Any(Any::String(text)) = diff.insert {
+            let text = text.as_ref();
+            if let Some(inline) = decode_inline_embed_str(text) {
+                content.push(inline);
+            } else {
+                push_text_inline(&mut content, text);
             }
-            _ => {}
         }
     }
     normalize_inline_content(&content)
