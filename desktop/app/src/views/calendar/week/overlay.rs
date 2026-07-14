@@ -1,5 +1,6 @@
 use super::super::*;
 use super::geometry::{move_day_for_x, window_y_to_hour};
+use crate::app::CreateCalendarItemFromDragArgs;
 
 impl KnotQApp {
     /// Build the full-grid capture overlay used while a move/resize/create
@@ -89,11 +90,13 @@ impl KnotQApp {
                     }
                     if let Some(drag) = this.cal_drag.take() {
                         this.create_calendar_item_from_drag(
-                            drag.date,
-                            drag.start_hour,
-                            drag.current_hour,
-                            drag.shift,
-                            pos,
+                            CreateCalendarItemFromDragArgs {
+                                date: drag.date,
+                                start_hour: drag.start_hour,
+                                end_hour: drag.current_hour,
+                                shift: drag.shift,
+                                anchor: pos,
+                            },
                             window,
                             cx,
                         );

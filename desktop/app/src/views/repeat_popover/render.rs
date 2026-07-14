@@ -227,13 +227,15 @@ impl KnotQApp {
             .child(card)
             .when(type_menu_open, |layer| {
                 layer.child(rp_repeat_type_menu(
-                    existing.is_some(),
-                    complex_repeat,
-                    active_mode,
-                    target,
-                    left,
-                    type_menu_top,
-                    t,
+                    RpRepeatTypeMenuOptions {
+                        repeat_exists: existing.is_some(),
+                        complex_repeat,
+                        active_mode,
+                        target,
+                        left,
+                        top: type_menu_top,
+                        t,
+                    },
                     cx,
                 ))
             })

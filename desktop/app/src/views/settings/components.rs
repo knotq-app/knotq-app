@@ -89,15 +89,21 @@ pub(super) fn settings_section(
         .into_any_element()
 }
 
+/// Bundled plain-data parameters for [`settings_dropdown_group`]. `T` is the
+/// value type of each dropdown option (generic per-caller, e.g. `ThemeMode`).
+pub(super) struct SettingsDropdownGroupArgs<T> {
+    pub id: &'static str,
+    pub label: &'static str,
+    pub dropdown: SettingsDropdown,
+    pub selected_label: &'static str,
+    pub options: Vec<(&'static str, T)>,
+    pub current: T,
+    pub is_open: bool,
+    pub t: UiTheme,
+}
+
 pub(super) fn settings_dropdown_group<T, F>(
-    id: &'static str,
-    label: &'static str,
-    dropdown: SettingsDropdown,
-    selected_label: &'static str,
-    options: Vec<(&'static str, T)>,
-    current: T,
-    is_open: bool,
-    t: UiTheme,
+    args: SettingsDropdownGroupArgs<T>,
     cx: &mut Context<KnotQApp>,
     on_select: F,
 ) -> gpui::AnyElement
@@ -105,6 +111,16 @@ where
     T: Copy + PartialEq + 'static,
     F: Fn(&mut KnotQApp, T, &mut Context<KnotQApp>) + Copy + 'static,
 {
+    let SettingsDropdownGroupArgs {
+        id,
+        label,
+        dropdown,
+        selected_label,
+        options,
+        current,
+        is_open,
+        t,
+    } = args;
     let option_rows = options
         .into_iter()
         .enumerate()
@@ -307,26 +323,30 @@ pub(super) fn update_status_row(
 ) -> gpui::AnyElement {
     match status {
         AutoUpdateUiStatus::Idle => settings_action_row(
-            "auto-update-check",
-            "Current version".to_string(),
-            format!("KnotQ {}", env!("CARGO_PKG_VERSION")),
-            "Check",
+            SettingsActionRowArgs {
+                id: "auto-update-check",
+                title: "Current version".to_string(),
+                detail: format!("KnotQ {}", env!("CARGO_PKG_VERSION")),
+                button_label: "Check",
+                primary: false,
+            },
             t,
             cx,
-            false,
             |this, cx| this.check_for_updates(cx),
         ),
         AutoUpdateUiStatus::Checking => {
             settings_message("Checking for updates...".to_string(), false, t)
         }
         AutoUpdateUiStatus::Available { update, .. } => settings_action_row(
-            "auto-update-download",
-            format!("KnotQ {} is available", update.version),
-            update.asset.name,
-            "Update",
+            SettingsActionRowArgs {
+                id: "auto-update-download",
+                title: format!("KnotQ {} is available", update.version),
+                detail: update.asset.name,
+                button_label: "Update",
+                primary: true,
+            },
             t,
             cx,
-            true,
             |this, cx| this.download_available_update(cx),
         ),
         AutoUpdateUiStatus::Downloading { version } => {
@@ -338,13 +358,15 @@ pub(super) fn update_status_row(
                 knotq_auto_update::InstallStrategy::RunInstallerAndQuit => "Install",
             };
             settings_action_row(
-                "auto-update-install",
-                format!("KnotQ {} is ready", update.version),
-                update.asset_name,
-                button,
+                SettingsActionRowArgs {
+                    id: "auto-update-install",
+                    title: format!("KnotQ {} is ready", update.version),
+                    detail: update.asset_name,
+                    button_label: button,
+                    primary: true,
+                },
                 t,
                 cx,
-                true,
                 |this, cx| this.install_ready_update(cx),
             )
         }
@@ -352,16 +374,18 @@ pub(super) fn update_status_row(
             version,
             checked_at,
         } => settings_action_row(
-            "auto-update-check",
-            "KnotQ is up to date".to_string(),
-            format!(
-                "Latest: {version} - checked {}",
-                checked_time_label(checked_at)
-            ),
-            "Check",
+            SettingsActionRowArgs {
+                id: "auto-update-check",
+                title: "KnotQ is up to date".to_string(),
+                detail: format!(
+                    "Latest: {version} - checked {}",
+                    checked_time_label(checked_at)
+                ),
+                button_label: "Check",
+                primary: false,
+            },
             t,
             cx,
-            false,
             |this, cx| this.check_for_updates(cx),
         ),
         AutoUpdateUiStatus::Errored {
@@ -369,17 +393,19 @@ pub(super) fn update_status_row(
         } => {
             let has_retry = update.is_some();
             settings_action_row(
-                "auto-update-check",
-                if has_retry {
-                    "Update failed".to_string()
-                } else {
-                    "Update check failed".to_string()
+                SettingsActionRowArgs {
+                    id: "auto-update-check",
+                    title: if has_retry {
+                        "Update failed".to_string()
+                    } else {
+                        "Update check failed".to_string()
+                    },
+                    detail: message,
+                    button_label: if has_retry { "Retry" } else { "Check" },
+                    primary: has_retry,
                 },
-                message,
-                if has_retry { "Retry" } else { "Check" },
                 t,
                 cx,
-                has_retry,
                 move |this, cx| {
                     if has_retry {
                         this.download_available_update(cx);
@@ -392,19 +418,31 @@ pub(super) fn update_status_row(
     }
 }
 
+/// Bundled plain-data parameters for [`settings_action_row`].
+pub(super) struct SettingsActionRowArgs {
+    pub id: &'static str,
+    pub title: String,
+    pub detail: String,
+    pub button_label: &'static str,
+    pub primary: bool,
+}
+
 pub(super) fn settings_action_row<F>(
-    id: &'static str,
-    title: String,
-    detail: String,
-    button_label: &'static str,
+    args: SettingsActionRowArgs,
     t: UiTheme,
     cx: &mut Context<KnotQApp>,
-    primary: bool,
     on_click: F,
 ) -> gpui::AnyElement
 where
     F: Fn(&mut KnotQApp, &mut Context<KnotQApp>) + 'static,
 {
+    let SettingsActionRowArgs {
+        id,
+        title,
+        detail,
+        button_label,
+        primary,
+    } = args;
     div()
         .id(id)
         .px(px(8.0))

@@ -241,15 +241,17 @@ impl KnotQApp {
                                     cx.listener(move |this, event: &MouseDownEvent, window, cx| {
                                         this.focus_app_root(window);
                                         this.open_event_popup(
-                                            scheme_id,
-                                            item_id,
-                                            occurrence_for_popup.clone(),
-                                            occurrence_index,
-                                            start,
-                                            end,
-                                            event.position,
-                                            false,
-                                            false,
+                                            OpenEventPopupArgs {
+                                                scheme_id,
+                                                item_id,
+                                                occurrence: occurrence_for_popup.clone(),
+                                                occurrence_index,
+                                                start,
+                                                end,
+                                                anchor: event.position,
+                                                select_title: false,
+                                                created_from_calendar: false,
+                                            },
                                             window,
                                             cx,
                                         );

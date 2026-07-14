@@ -1,5 +1,6 @@
 use super::super::*;
 use super::geometry::{move_day_for_x, move_preview_hour, snap_preview_hour, window_y_to_hour};
+use crate::app::CreateCalendarItemFromDragArgs;
 
 impl KnotQApp {
     pub(in crate::views::calendar) fn render_week_calendar(
@@ -320,12 +321,14 @@ impl KnotQApp {
             for (idx, chunk) in event_render_order {
                 els.push(render_event_chunk(
                     chunk,
-                    t,
-                    block_stroke,
-                    self.time_format,
-                    col,
-                    idx,
-                    day_col_w,
+                    EventChunkRender {
+                        t,
+                        block_stroke,
+                        time_format: self.time_format,
+                        col,
+                        idx,
+                        day_col_w,
+                    },
                     col_scroll_handle,
                     cx,
                 ));
@@ -568,11 +571,13 @@ impl KnotQApp {
                             }
                             if let Some(drag) = this.cal_drag.take() {
                                 this.create_calendar_item_from_drag(
-                                    drag.date,
-                                    drag.start_hour,
-                                    drag.current_hour,
-                                    drag.shift,
-                                    event.position,
+                                    CreateCalendarItemFromDragArgs {
+                                        date: drag.date,
+                                        start_hour: drag.start_hour,
+                                        end_hour: drag.current_hour,
+                                        shift: drag.shift,
+                                        anchor: event.position,
+                                    },
                                     window,
                                     cx,
                                 );

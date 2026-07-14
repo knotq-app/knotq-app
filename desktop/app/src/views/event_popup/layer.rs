@@ -107,19 +107,23 @@ pub(super) fn event_popup_layer(
             viewport_height,
         );
         this.child(until_mini_calendar_popup(
-            until_display_month,
-            popup
-                .draft_repeats
-                .as_ref()
-                .and_then(|r| match simple_repeat_end(r) {
-                    Some(RepeatEnd::Until(until)) => Some(until.with_timezone(&Local).date_naive()),
-                    _ => None,
-                }),
-            cal_left,
-            cal_top,
-            scheme_id,
-            item_id,
-            t,
+            UntilMiniCalendarPopupOptions {
+                display_month: until_display_month,
+                selected: popup
+                    .draft_repeats
+                    .as_ref()
+                    .and_then(|r| match simple_repeat_end(r) {
+                        Some(RepeatEnd::Until(until)) => {
+                            Some(until.with_timezone(&Local).date_naive())
+                        }
+                        _ => None,
+                    }),
+                left: cal_left,
+                top: cal_top,
+                scheme_id,
+                item_id,
+                t,
+            },
             cx,
         ))
     });

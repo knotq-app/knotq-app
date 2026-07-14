@@ -329,6 +329,10 @@ pub(crate) fn is_false(value: &bool) -> bool {
 mod tests {
     use super::*;
 
+    // clippy::redundant_iter_cloned false positive: the suggested fix drops
+    // `.cloned()` and moves `&Vec<u8>` borrows into `thread::spawn`, which
+    // needs `'static` and does not compile (verified).
+    #[allow(clippy::redundant_iter_cloned)]
     #[test]
     fn concurrent_write_atomic_always_publishes_one_complete_document() {
         let dir =

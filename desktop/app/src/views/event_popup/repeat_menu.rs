@@ -27,53 +27,63 @@ pub(super) fn repeat_type_menu(
         .overflow_hidden()
         .on_click(|_: &ClickEvent, _window, cx| cx.stop_propagation())
         .child(repeat_type_row(
-            "repeat-type-none",
-            knotq_l10n::t("event.value.none"),
-            active_mode.is_none() && !complex_repeat,
-            None,
-            scheme_id,
-            item_id,
-            t,
+            RepeatTypeRowOptions {
+                id: "repeat-type-none",
+                label: knotq_l10n::t("event.value.none"),
+                selected: active_mode.is_none() && !complex_repeat,
+                mode: None,
+                scheme_id,
+                item_id,
+                t,
+            },
             cx,
         ))
         .child(repeat_type_row(
-            "repeat-type-daily",
-            EventRepeatMode::Daily.label(),
-            active_mode == Some(EventRepeatMode::Daily),
-            Some(EventRepeatMode::Daily),
-            scheme_id,
-            item_id,
-            t,
+            RepeatTypeRowOptions {
+                id: "repeat-type-daily",
+                label: EventRepeatMode::Daily.label(),
+                selected: active_mode == Some(EventRepeatMode::Daily),
+                mode: Some(EventRepeatMode::Daily),
+                scheme_id,
+                item_id,
+                t,
+            },
             cx,
         ))
         .child(repeat_type_row(
-            "repeat-type-weekly",
-            EventRepeatMode::Weekly.label(),
-            active_mode == Some(EventRepeatMode::Weekly),
-            Some(EventRepeatMode::Weekly),
-            scheme_id,
-            item_id,
-            t,
+            RepeatTypeRowOptions {
+                id: "repeat-type-weekly",
+                label: EventRepeatMode::Weekly.label(),
+                selected: active_mode == Some(EventRepeatMode::Weekly),
+                mode: Some(EventRepeatMode::Weekly),
+                scheme_id,
+                item_id,
+                t,
+            },
             cx,
         ))
         .child(repeat_type_row(
-            "repeat-type-monthly",
-            EventRepeatMode::Monthly.label(),
-            active_mode == Some(EventRepeatMode::Monthly),
-            Some(EventRepeatMode::Monthly),
-            scheme_id,
-            item_id,
-            t,
+            RepeatTypeRowOptions {
+                id: "repeat-type-monthly",
+                label: EventRepeatMode::Monthly.label(),
+                selected: active_mode == Some(EventRepeatMode::Monthly),
+                mode: Some(EventRepeatMode::Monthly),
+                scheme_id,
+                item_id,
+                t,
+            },
             cx,
         ))
         .child(repeat_type_row(
-            "repeat-type-yearly",
-            EventRepeatMode::Yearly.label(),
-            active_mode == Some(EventRepeatMode::Yearly),
-            Some(EventRepeatMode::Yearly),
-            scheme_id,
-            item_id,
-            t,
+            RepeatTypeRowOptions {
+                id: "repeat-type-yearly",
+                label: EventRepeatMode::Yearly.label(),
+                selected: active_mode == Some(EventRepeatMode::Yearly),
+                mode: Some(EventRepeatMode::Yearly),
+                scheme_id,
+                item_id,
+                t,
+            },
             cx,
         ))
         .into_any_element()
@@ -157,7 +167,7 @@ pub(super) fn repeat_details_inline_editor(
         .into_any_element()
 }
 
-fn repeat_type_row(
+struct RepeatTypeRowOptions {
     id: &'static str,
     label: &'static str,
     selected: bool,
@@ -165,8 +175,18 @@ fn repeat_type_row(
     scheme_id: SchemeId,
     item_id: ItemId,
     t: Theme,
-    cx: &mut Context<KnotQApp>,
-) -> gpui::AnyElement {
+}
+
+fn repeat_type_row(options: RepeatTypeRowOptions, cx: &mut Context<KnotQApp>) -> gpui::AnyElement {
+    let RepeatTypeRowOptions {
+        id,
+        label,
+        selected,
+        mode,
+        scheme_id,
+        item_id,
+        t,
+    } = options;
     div()
         .id(id)
         .h(px(25.0))

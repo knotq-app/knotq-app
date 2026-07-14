@@ -15,7 +15,7 @@ use crate::theme_gpui::{token_hsla, Theme as UiTheme};
 
 use components::{
     active_marker, choice_row, settings_dropdown_group, settings_header, settings_section,
-    update_status_row,
+    update_status_row, SettingsDropdownGroupArgs,
 };
 use labels::{
     assignment_notification_offset_label, calendar_range_label, calendar_view_label,
@@ -27,108 +27,122 @@ impl KnotQApp {
     pub fn render_settings(&mut self, cx: &mut Context<Self>) -> gpui::AnyElement {
         let t = self.theme();
         let mut theme_rows = vec![settings_dropdown_group(
-            "theme-setting",
-            tr("settings.appearance.theme_label"),
-            SettingsDropdown::Theme,
-            theme_mode_label(self.theme_mode),
-            vec![
-                (tr("settings.appearance.theme_dark"), ThemeMode::Dark),
-                (tr("settings.appearance.theme_light"), ThemeMode::Light),
-                (tr("settings.appearance.theme_system"), ThemeMode::System),
-            ],
-            self.theme_mode,
-            self.settings_dropdown == Some(SettingsDropdown::Theme),
-            t,
+            SettingsDropdownGroupArgs {
+                id: "theme-setting",
+                label: tr("settings.appearance.theme_label"),
+                dropdown: SettingsDropdown::Theme,
+                selected_label: theme_mode_label(self.theme_mode),
+                options: vec![
+                    (tr("settings.appearance.theme_dark"), ThemeMode::Dark),
+                    (tr("settings.appearance.theme_light"), ThemeMode::Light),
+                    (tr("settings.appearance.theme_system"), ThemeMode::System),
+                ],
+                current: self.theme_mode,
+                is_open: self.settings_dropdown == Some(SettingsDropdown::Theme),
+                t,
+            },
             cx,
             |this, mode, cx| this.set_theme_mode(mode, cx),
         )];
         let current_language = current_language_value(self.settings.language.as_deref());
         theme_rows.push(settings_dropdown_group(
-            "language-setting",
-            tr("settings.language.label"),
-            SettingsDropdown::Language,
-            language_label(current_language),
-            language_options(),
-            current_language,
-            self.settings_dropdown == Some(SettingsDropdown::Language),
-            t,
+            SettingsDropdownGroupArgs {
+                id: "language-setting",
+                label: tr("settings.language.label"),
+                dropdown: SettingsDropdown::Language,
+                selected_label: language_label(current_language),
+                options: language_options(),
+                current: current_language,
+                is_open: self.settings_dropdown == Some(SettingsDropdown::Language),
+                t,
+            },
             cx,
             |this, code, cx| this.set_language(code.map(|c| c.to_string()), cx),
         ));
 
         let mut calendar_rows = vec![settings_dropdown_group(
-            "calendar-view-setting",
-            tr("settings.calendar.view_label"),
-            SettingsDropdown::CalendarView,
-            calendar_view_label(self.calendar_view),
-            vec![
-                (tr("settings.calendar.view_week"), CalendarViewMode::Week),
-                (tr("settings.calendar.view_month"), CalendarViewMode::Month),
-            ],
-            self.calendar_view,
-            self.settings_dropdown == Some(SettingsDropdown::CalendarView),
-            t,
+            SettingsDropdownGroupArgs {
+                id: "calendar-view-setting",
+                label: tr("settings.calendar.view_label"),
+                dropdown: SettingsDropdown::CalendarView,
+                selected_label: calendar_view_label(self.calendar_view),
+                options: vec![
+                    (tr("settings.calendar.view_week"), CalendarViewMode::Week),
+                    (tr("settings.calendar.view_month"), CalendarViewMode::Month),
+                ],
+                current: self.calendar_view,
+                is_open: self.settings_dropdown == Some(SettingsDropdown::CalendarView),
+                t,
+            },
             cx,
             |this, mode, cx| this.set_calendar_view(mode, cx),
         )];
         calendar_rows.push(settings_dropdown_group(
-            "calendar-range-setting",
-            tr("settings.calendar.range_label"),
-            SettingsDropdown::CalendarRange,
-            calendar_range_label(self.calendar_week_range),
-            vec![
-                (
-                    tr("settings.calendar.range_rolling_week"),
-                    CalendarWeekRange::NextSevenDays,
-                ),
-                (
-                    tr("settings.calendar.range_calendar_week"),
-                    CalendarWeekRange::CalendarWeek,
-                ),
-            ],
-            self.calendar_week_range,
-            self.settings_dropdown == Some(SettingsDropdown::CalendarRange),
-            t,
+            SettingsDropdownGroupArgs {
+                id: "calendar-range-setting",
+                label: tr("settings.calendar.range_label"),
+                dropdown: SettingsDropdown::CalendarRange,
+                selected_label: calendar_range_label(self.calendar_week_range),
+                options: vec![
+                    (
+                        tr("settings.calendar.range_rolling_week"),
+                        CalendarWeekRange::NextSevenDays,
+                    ),
+                    (
+                        tr("settings.calendar.range_calendar_week"),
+                        CalendarWeekRange::CalendarWeek,
+                    ),
+                ],
+                current: self.calendar_week_range,
+                is_open: self.settings_dropdown == Some(SettingsDropdown::CalendarRange),
+                t,
+            },
             cx,
             |this, range, cx| this.set_calendar_week_range(range, cx),
         ));
 
         let time_rows = vec![settings_dropdown_group(
-            "time-format-setting",
-            tr("settings.time.clock_label"),
-            SettingsDropdown::TimeFormat,
-            time_format_label(self.time_format),
-            vec![
-                (tr("settings.time.clock_12h"), TimeFormat::TwelveHour),
-                (tr("settings.time.clock_24h"), TimeFormat::TwentyFourHour),
-            ],
-            self.time_format,
-            self.settings_dropdown == Some(SettingsDropdown::TimeFormat),
-            t,
+            SettingsDropdownGroupArgs {
+                id: "time-format-setting",
+                label: tr("settings.time.clock_label"),
+                dropdown: SettingsDropdown::TimeFormat,
+                selected_label: time_format_label(self.time_format),
+                options: vec![
+                    (tr("settings.time.clock_12h"), TimeFormat::TwelveHour),
+                    (tr("settings.time.clock_24h"), TimeFormat::TwentyFourHour),
+                ],
+                current: self.time_format,
+                is_open: self.settings_dropdown == Some(SettingsDropdown::TimeFormat),
+                t,
+            },
             cx,
             |this, format, cx| this.set_time_format(format, cx),
         )];
 
         let mut notification_rows: Vec<gpui::AnyElement> = Vec::new();
         notification_rows.push(settings_dropdown_group(
-            "event-notification-setting",
-            tr("settings.notifications.events_label"),
-            SettingsDropdown::EventNotification,
-            notification_offset_label(self.notification_defaults.event_offset_secs),
-            vec![
-                (tr("settings.notifications.offset_at_start"), 0),
-                (tr("settings.notifications.offset_5_min"), 5 * 60),
-                (
-                    tr("settings.notifications.offset_10_min"),
-                    DEFAULT_EVENT_NOTIFICATION_OFFSET_SECS,
+            SettingsDropdownGroupArgs {
+                id: "event-notification-setting",
+                label: tr("settings.notifications.events_label"),
+                dropdown: SettingsDropdown::EventNotification,
+                selected_label: notification_offset_label(
+                    self.notification_defaults.event_offset_secs,
                 ),
-                (tr("settings.notifications.offset_15_min"), 15 * 60),
-                (tr("settings.notifications.offset_30_min"), 30 * 60),
-                (tr("settings.notifications.offset_1_hr"), 60 * 60),
-            ],
-            self.notification_defaults.event_offset_secs,
-            self.settings_dropdown == Some(SettingsDropdown::EventNotification),
-            t,
+                options: vec![
+                    (tr("settings.notifications.offset_at_start"), 0),
+                    (tr("settings.notifications.offset_5_min"), 5 * 60),
+                    (
+                        tr("settings.notifications.offset_10_min"),
+                        DEFAULT_EVENT_NOTIFICATION_OFFSET_SECS,
+                    ),
+                    (tr("settings.notifications.offset_15_min"), 15 * 60),
+                    (tr("settings.notifications.offset_30_min"), 30 * 60),
+                    (tr("settings.notifications.offset_1_hr"), 60 * 60),
+                ],
+                current: self.notification_defaults.event_offset_secs,
+                is_open: self.settings_dropdown == Some(SettingsDropdown::EventNotification),
+                t,
+            },
             cx,
             |this, offset_secs, cx| {
                 let mut defaults = this.notification_defaults;
@@ -137,24 +151,29 @@ impl KnotQApp {
             },
         ));
         notification_rows.push(settings_dropdown_group(
-            "assignment-notification-setting",
-            tr("settings.notifications.assignments_label"),
-            SettingsDropdown::AssignmentNotification,
-            assignment_notification_offset_label(self.notification_defaults.assignment_offset_secs),
-            vec![
-                (tr("settings.notifications.offset_at_due"), 0),
-                (tr("settings.notifications.offset_1_hr"), 60 * 60),
-                (tr("settings.notifications.offset_2_hr"), 2 * 60 * 60),
-                (tr("settings.notifications.offset_6_hr"), 6 * 60 * 60),
-                (tr("settings.notifications.offset_1_day"), 24 * 60 * 60),
-                (
-                    tr("settings.notifications.offset_2_days"),
-                    2 * 24 * 60 * 60,
+            SettingsDropdownGroupArgs {
+                id: "assignment-notification-setting",
+                label: tr("settings.notifications.assignments_label"),
+                dropdown: SettingsDropdown::AssignmentNotification,
+                selected_label: assignment_notification_offset_label(
+                    self.notification_defaults.assignment_offset_secs,
                 ),
-            ],
-            self.notification_defaults.assignment_offset_secs,
-            self.settings_dropdown == Some(SettingsDropdown::AssignmentNotification),
-            t,
+                options: vec![
+                    (tr("settings.notifications.offset_at_due"), 0),
+                    (tr("settings.notifications.offset_1_hr"), 60 * 60),
+                    (tr("settings.notifications.offset_2_hr"), 2 * 60 * 60),
+                    (tr("settings.notifications.offset_6_hr"), 6 * 60 * 60),
+                    (tr("settings.notifications.offset_1_day"), 24 * 60 * 60),
+                    (
+                        tr("settings.notifications.offset_2_days"),
+                        2 * 24 * 60 * 60,
+                    ),
+                ],
+                current: self.notification_defaults.assignment_offset_secs,
+                is_open: self.settings_dropdown
+                    == Some(SettingsDropdown::AssignmentNotification),
+                t,
+            },
             cx,
             |this, offset_secs, cx| {
                 let mut defaults = this.notification_defaults;

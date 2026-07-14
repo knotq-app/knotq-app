@@ -123,17 +123,18 @@ impl EventPopup {
         self.scheme_menu_open = false;
     }
 
-    pub fn new(
-        scheme_id: SchemeId,
-        item_id: ItemId,
-        item: &Item,
-        occurrence: OccurrenceId,
-        occurrence_state: &ItemState,
-        draft_start: Option<DateTime<Utc>>,
-        draft_end: Option<DateTime<Utc>>,
-        anchor: gpui::Point<gpui::Pixels>,
-        occurrence_index: usize,
-    ) -> Self {
+    pub fn new(init: EventPopupInit) -> Self {
+        let EventPopupInit {
+            scheme_id,
+            item_id,
+            item,
+            occurrence,
+            occurrence_state,
+            draft_start,
+            draft_end,
+            anchor,
+            occurrence_index,
+        } = init;
         Self {
             scheme_id,
             item_id,
@@ -164,6 +165,41 @@ impl EventPopup {
             occurrence_index,
         }
     }
+}
+
+/// Inputs for constructing a fresh [`EventPopup`] draft state.
+pub struct EventPopupInit<'a> {
+    pub scheme_id: SchemeId,
+    pub item_id: ItemId,
+    pub item: &'a Item,
+    pub occurrence: OccurrenceId,
+    pub occurrence_state: &'a ItemState,
+    pub draft_start: Option<DateTime<Utc>>,
+    pub draft_end: Option<DateTime<Utc>>,
+    pub anchor: gpui::Point<gpui::Pixels>,
+    pub occurrence_index: usize,
+}
+
+/// Bundled inputs for [`KnotQApp::create_calendar_item_from_drag`].
+pub struct CreateCalendarItemFromDragArgs {
+    pub date: NaiveDate,
+    pub start_hour: f32,
+    pub end_hour: f32,
+    pub shift: bool,
+    pub anchor: gpui::Point<gpui::Pixels>,
+}
+
+/// Bundled inputs for [`KnotQApp::open_event_popup`].
+pub struct OpenEventPopupArgs {
+    pub scheme_id: SchemeId,
+    pub item_id: ItemId,
+    pub occurrence: OccurrenceId,
+    pub occurrence_index: usize,
+    pub start: Option<DateTime<Utc>>,
+    pub end: Option<DateTime<Utc>>,
+    pub anchor: gpui::Point<gpui::Pixels>,
+    pub select_title: bool,
+    pub created_from_calendar: bool,
 }
 
 #[derive(Clone, Debug)]

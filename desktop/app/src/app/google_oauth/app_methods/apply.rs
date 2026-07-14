@@ -15,6 +15,14 @@ fn google_calendar_sync_failed_title(label: &str) -> String {
     knotq_l10n::t(key).to_string()
 }
 
+struct GoogleSyncResultOptions {
+    parent: FolderId,
+    create_missing: bool,
+    open_first_imported: bool,
+    always_notify: bool,
+    label: &'static str,
+}
+
 impl KnotQApp {
     pub(super) fn finish_google_calendar_import(
         &mut self,
@@ -26,7 +34,17 @@ impl KnotQApp {
         if !self.finish_google_oauth_task(cancel_token.as_ref()) {
             return;
         }
-        self.finish_google_sync_result(result, parent, true, true, true, "import", cx);
+        self.finish_google_sync_result(
+            result,
+            GoogleSyncResultOptions {
+                parent,
+                create_missing: true,
+                open_first_imported: true,
+                always_notify: true,
+                label: "import",
+            },
+            cx,
+        );
     }
 
     pub(super) fn finish_google_calendar_picker_load(
@@ -89,11 +107,13 @@ impl KnotQApp {
         }
         self.finish_google_sync_result(
             result,
-            self.workspace.root,
-            false,
-            false,
-            true,
-            "refresh",
+            GoogleSyncResultOptions {
+                parent: self.workspace.root,
+                create_missing: false,
+                open_first_imported: false,
+                always_notify: true,
+                label: "refresh",
+            },
             cx,
         );
     }
@@ -105,11 +125,13 @@ impl KnotQApp {
     ) {
         self.finish_google_sync_result(
             result,
-            self.workspace.root,
-            false,
-            false,
-            false,
-            "background sync",
+            GoogleSyncResultOptions {
+                parent: self.workspace.root,
+                create_missing: false,
+                open_first_imported: false,
+                always_notify: false,
+                label: "background sync",
+            },
             cx,
         );
     }
@@ -117,13 +139,16 @@ impl KnotQApp {
     fn finish_google_sync_result(
         &mut self,
         result: std::result::Result<GoogleCalendarImportResult, String>,
-        parent: FolderId,
-        create_missing: bool,
-        open_first_imported: bool,
-        always_notify: bool,
-        label: &str,
+        options: GoogleSyncResultOptions,
         cx: &mut Context<Self>,
     ) {
+        let GoogleSyncResultOptions {
+            parent,
+            create_missing,
+            open_first_imported,
+            always_notify,
+            label,
+        } = options;
         match result {
             Ok(result) => {
                 let imported_count = result.calendars.len();

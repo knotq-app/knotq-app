@@ -1,16 +1,28 @@
 use super::*;
 
+pub(super) struct FolderRowArgs {
+    pub fid: FolderId,
+    pub parent_folder_id: FolderId,
+    pub position: usize,
+    pub depth: usize,
+    pub t: Theme,
+    pub context_menu_open: bool,
+}
+
 impl KnotQApp {
     pub(super) fn render_folder_row(
         &mut self,
-        fid: FolderId,
-        parent_folder_id: FolderId,
-        position: usize,
-        depth: usize,
-        t: Theme,
-        context_menu_open: bool,
+        args: FolderRowArgs,
         cx: &mut Context<Self>,
     ) -> Option<(gpui::AnyElement, bool)> {
+        let FolderRowArgs {
+            fid,
+            parent_folder_id,
+            position,
+            depth,
+            t,
+            context_menu_open,
+        } = args;
         let folder = self.workspace.folder(fid)?.clone();
         if folder.id == self.workspace.root {
             return None;

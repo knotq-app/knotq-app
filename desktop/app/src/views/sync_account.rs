@@ -273,19 +273,21 @@ fn signed_out_entry(_t: Theme, cx: &mut Context<KnotQApp>) -> gpui::AnyElement {
 /// subscription, since there's nothing to sync without one.
 fn resync_button(syncing: bool, t: Theme, cx: &mut Context<KnotQApp>) -> gpui::AnyElement {
     account_icon_button(
-        "sync-resync",
-        Some(if syncing {
-            tr("sync.action.resyncing")
-        } else {
-            tr("sync.action.resync")
-        }),
-        tr("sync.action.sync_now"),
-        IconName::Redo2,
-        false,
-        false,
-        syncing,
-        false,
-        t,
+        AccountIconButtonArgs {
+            id: "sync-resync",
+            label: Some(if syncing {
+                tr("sync.action.resyncing")
+            } else {
+                tr("sync.action.resync")
+            }),
+            tooltip: tr("sync.action.sync_now"),
+            icon: IconName::Redo2,
+            primary: false,
+            destructive: false,
+            disabled: syncing,
+            full_width: false,
+            t,
+        },
         cx,
         |this, _window, cx| {
             this.sync_now(cx);
@@ -354,19 +356,21 @@ fn subscribe_button(
     cx: &mut Context<KnotQApp>,
 ) -> gpui::AnyElement {
     account_icon_button(
-        "sync-subscribe",
-        Some(tr("account.subscribe.label")),
-        if known_unverified {
-            tr("account.subscribe.tooltip_verify_first")
-        } else {
-            tr("account.subscribe.tooltip")
+        AccountIconButtonArgs {
+            id: "sync-subscribe",
+            label: Some(tr("account.subscribe.label")),
+            tooltip: if known_unverified {
+                tr("account.subscribe.tooltip_verify_first")
+            } else {
+                tr("account.subscribe.tooltip")
+            },
+            icon: IconName::ExternalLink,
+            primary: true,
+            destructive: false,
+            disabled: in_progress || known_unverified,
+            full_width: false,
+            t,
         },
-        IconName::ExternalLink,
-        true,
-        false,
-        in_progress || known_unverified,
-        false,
-        t,
         cx,
         |this, _window, cx| {
             this.open_subscription_checkout(cx);
@@ -379,15 +383,17 @@ fn subscribe_button(
 /// (Apple/Google) so it renews again.
 fn reenable_button(in_progress: bool, t: Theme, cx: &mut Context<KnotQApp>) -> gpui::AnyElement {
     account_icon_button(
-        "sync-reenable",
-        Some(tr("account.reenable.label")),
-        tr("account.reenable.tooltip"),
-        IconName::Redo2,
-        true,
-        false,
-        in_progress,
-        false,
-        t,
+        AccountIconButtonArgs {
+            id: "sync-reenable",
+            label: Some(tr("account.reenable.label")),
+            tooltip: tr("account.reenable.tooltip"),
+            icon: IconName::Redo2,
+            primary: true,
+            destructive: false,
+            disabled: in_progress,
+            full_width: false,
+            t,
+        },
         cx,
         |this, _window, cx| {
             this.reenable_sync_subscription(cx);
@@ -401,19 +407,21 @@ fn manage_account_button(
     cx: &mut Context<KnotQApp>,
 ) -> gpui::AnyElement {
     account_icon_button(
-        "sync-manage-account",
-        Some(tr("account.manage.label")),
-        tr("account.manage.tooltip"),
-        if manage_open {
-            IconName::ChevronUp
-        } else {
-            IconName::ChevronDown
+        AccountIconButtonArgs {
+            id: "sync-manage-account",
+            label: Some(tr("account.manage.label")),
+            tooltip: tr("account.manage.tooltip"),
+            icon: if manage_open {
+                IconName::ChevronUp
+            } else {
+                IconName::ChevronDown
+            },
+            primary: false,
+            destructive: false,
+            disabled: false,
+            full_width: false,
+            t,
         },
-        false,
-        false,
-        false,
-        false,
-        t,
         cx,
         |this, _window, cx| {
             this.settings_dropdown =
@@ -442,17 +450,19 @@ fn manage_account_menu(
 
     if !supports_sync {
         rows.push(manage_menu_row(
-            ("sync-manage-subscribe", 0),
-            if known_unverified {
-                tr("account.menu.verify_to_subscribe")
-            } else {
-                tr("account.subscribe.label")
+            ManageMenuRowArgs {
+                id: ("sync-manage-subscribe", 0),
+                label: if known_unverified {
+                    tr("account.menu.verify_to_subscribe")
+                } else {
+                    tr("account.subscribe.label")
+                },
+                icon: IconName::ExternalLink,
+                destructive: false,
+                // Gated on a confirmed email, matching the primary Subscribe CTA.
+                disabled: in_progress || known_unverified,
+                t,
             },
-            IconName::ExternalLink,
-            false,
-            // Gated on a confirmed email, matching the primary Subscribe CTA.
-            in_progress || known_unverified,
-            t,
             cx,
             |this, _window, cx| {
                 this.open_subscription_checkout(cx);
@@ -461,16 +471,18 @@ fn manage_account_menu(
     }
 
     rows.push(manage_menu_row(
-        ("sync-manage-check-status", 0),
-        if supports_sync {
-            tr("account.menu.check_status")
-        } else {
-            tr("account.menu.ive_subscribed")
+        ManageMenuRowArgs {
+            id: ("sync-manage-check-status", 0),
+            label: if supports_sync {
+                tr("account.menu.check_status")
+            } else {
+                tr("account.menu.ive_subscribed")
+            },
+            icon: IconName::Redo2,
+            destructive: false,
+            disabled: in_progress,
+            t,
         },
-        IconName::Redo2,
-        false,
-        in_progress,
-        t,
         cx,
         |this, _window, cx| {
             this.refresh_account_status(cx);
@@ -478,12 +490,14 @@ fn manage_account_menu(
     ));
 
     rows.push(manage_menu_row(
-        ("sync-manage-account-page", 0),
-        tr("account.menu.manage_on_website"),
-        IconName::ExternalLink,
-        false,
-        false,
-        t,
+        ManageMenuRowArgs {
+            id: ("sync-manage-account-page", 0),
+            label: tr("account.menu.manage_on_website"),
+            icon: IconName::ExternalLink,
+            destructive: false,
+            disabled: false,
+            t,
+        },
         cx,
         |this, _window, cx| {
             this.open_online_account_management(cx);
@@ -491,12 +505,14 @@ fn manage_account_menu(
     ));
 
     rows.push(manage_menu_row(
-        ("sync-manage-sign-out", 0),
-        tr("account.menu.sign_out"),
-        IconName::User,
-        false,
-        in_progress,
-        t,
+        ManageMenuRowArgs {
+            id: ("sync-manage-sign-out", 0),
+            label: tr("account.menu.sign_out"),
+            icon: IconName::User,
+            destructive: false,
+            disabled: in_progress,
+            t,
+        },
         cx,
         |this, _window, cx| {
             this.sign_out_sync_account(cx);
@@ -508,12 +524,14 @@ fn manage_account_menu(
             // Already cancelled (won't renew): offer to turn renewal back on
             // rather than cancel again.
             rows.push(manage_menu_row(
-                ("sync-manage-reenable", 0),
-                tr("account.menu.reenable_subscription"),
-                IconName::Redo2,
-                false,
-                in_progress,
-                t,
+                ManageMenuRowArgs {
+                    id: ("sync-manage-reenable", 0),
+                    label: tr("account.menu.reenable_subscription"),
+                    icon: IconName::Redo2,
+                    destructive: false,
+                    disabled: in_progress,
+                    t,
+                },
                 cx,
                 |this, _window, cx| {
                     this.reenable_sync_subscription(cx);
@@ -525,36 +543,42 @@ fn manage_account_menu(
                 // has no cancel API), so send the user to the store's manage page
                 // directly instead of attempting a call that always fails.
                 SubscriptionProvider::Apple => rows.push(manage_menu_row(
-                    ("sync-manage-cancel-store", 0),
-                    tr("account.menu.cancel_app_store"),
-                    IconName::ExternalLink,
-                    true,
-                    in_progress,
-                    t,
+                    ManageMenuRowArgs {
+                        id: ("sync-manage-cancel-store", 0),
+                        label: tr("account.menu.cancel_app_store"),
+                        icon: IconName::ExternalLink,
+                        destructive: true,
+                        disabled: in_progress,
+                        t,
+                    },
                     cx,
                     |this, _window, cx| {
                         this.cancel_store_subscription(cx);
                     },
                 )),
                 SubscriptionProvider::Google => rows.push(manage_menu_row(
-                    ("sync-manage-cancel-store", 0),
-                    tr("account.menu.cancel_google_play"),
-                    IconName::ExternalLink,
-                    true,
-                    in_progress,
-                    t,
+                    ManageMenuRowArgs {
+                        id: ("sync-manage-cancel-store", 0),
+                        label: tr("account.menu.cancel_google_play"),
+                        icon: IconName::ExternalLink,
+                        destructive: true,
+                        disabled: in_progress,
+                        t,
+                    },
                     cx,
                     |this, _window, cx| {
                         this.cancel_store_subscription(cx);
                     },
                 )),
                 SubscriptionProvider::Web => rows.push(manage_menu_row(
-                    ("sync-manage-cancel-sync", 0),
-                    tr("account.menu.cancel_sync"),
-                    IconName::CircleX,
-                    true,
-                    in_progress,
-                    t,
+                    ManageMenuRowArgs {
+                        id: ("sync-manage-cancel-sync", 0),
+                        label: tr("account.menu.cancel_sync"),
+                        icon: IconName::CircleX,
+                        destructive: true,
+                        disabled: in_progress,
+                        t,
+                    },
                     cx,
                     |this, _window, cx| {
                         this.prompt_sync_account_action(SyncAccountAction::CancelSubscription, cx);
@@ -590,19 +614,31 @@ pub(crate) fn sync_cta_hover_bg() -> u32 {
     0x1d4ed8ff
 }
 
-fn manage_menu_row<F>(
+struct ManageMenuRowArgs {
     id: (&'static str, usize),
     label: &'static str,
     icon: IconName,
     destructive: bool,
     disabled: bool,
     t: Theme,
+}
+
+fn manage_menu_row<F>(
+    args: ManageMenuRowArgs,
     cx: &mut Context<KnotQApp>,
     on_click: F,
 ) -> gpui::AnyElement
 where
     F: Fn(&mut KnotQApp, &mut Window, &mut Context<KnotQApp>) + 'static,
 {
+    let ManageMenuRowArgs {
+        id,
+        label,
+        icon,
+        destructive,
+        disabled,
+        t,
+    } = args;
     let fg = if destructive {
         0xff5a53ff
     } else {
@@ -648,7 +684,7 @@ where
         .into_any_element()
 }
 
-fn account_icon_button<F>(
+struct AccountIconButtonArgs {
     id: &'static str,
     label: Option<&'static str>,
     tooltip: &'static str,
@@ -658,12 +694,27 @@ fn account_icon_button<F>(
     disabled: bool,
     full_width: bool,
     t: Theme,
+}
+
+fn account_icon_button<F>(
+    args: AccountIconButtonArgs,
     cx: &mut Context<KnotQApp>,
     on_click: F,
 ) -> gpui::AnyElement
 where
     F: Fn(&mut KnotQApp, &mut Window, &mut Context<KnotQApp>) + 'static,
 {
+    let AccountIconButtonArgs {
+        id,
+        label,
+        tooltip,
+        icon,
+        primary,
+        destructive,
+        disabled,
+        full_width,
+        t,
+    } = args;
     let fg = if primary {
         0xffffffff
     } else if destructive {

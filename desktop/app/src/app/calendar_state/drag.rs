@@ -3,7 +3,7 @@ use gpui::{Context, Window};
 use knotq_commands::{reset_after_trigger_notification_to_default_command, Command};
 use knotq_date_util::snapped_calendar_datetime;
 
-use crate::app::{EventPopup, EventScopeAction, KnotQApp};
+use crate::app::{EventPopup, EventPopupInit, EventScopeAction, KnotQApp, OpenEventPopupArgs};
 
 impl KnotQApp {
     /// Resolve the end of a drag-to-move gesture. A negligible drag (no day
@@ -18,15 +18,17 @@ impl KnotQApp {
     ) {
         if mv.is_negligible() {
             self.open_event_popup(
-                mv.scheme_id,
-                mv.item_id,
-                mv.occurrence,
-                mv.occurrence_index,
-                mv.occurrence_start,
-                mv.occurrence_end,
-                mv.anchor,
-                false,
-                false,
+                OpenEventPopupArgs {
+                    scheme_id: mv.scheme_id,
+                    item_id: mv.item_id,
+                    occurrence: mv.occurrence,
+                    occurrence_index: mv.occurrence_index,
+                    start: mv.occurrence_start,
+                    end: mv.occurrence_end,
+                    anchor: mv.anchor,
+                    select_title: false,
+                    created_from_calendar: false,
+                },
                 window,
                 cx,
             );
@@ -71,17 +73,17 @@ impl KnotQApp {
             self.close_date_popover();
             self.close_repeat_popover();
             let occurrence_state = item.state_for_occurrence(&mv.occurrence);
-            let mut popup = EventPopup::new(
-                mv.scheme_id,
-                mv.item_id,
-                &item,
-                mv.occurrence.clone(),
-                &occurrence_state,
+            let mut popup = EventPopup::new(EventPopupInit {
+                scheme_id: mv.scheme_id,
+                item_id: mv.item_id,
+                item: &item,
+                occurrence: mv.occurrence.clone(),
+                occurrence_state: &occurrence_state,
                 draft_start,
                 draft_end,
-                mv.anchor,
-                mv.occurrence_index,
-            );
+                anchor: mv.anchor,
+                occurrence_index: mv.occurrence_index,
+            });
             popup.start_dirty = start_dirty;
             popup.end_dirty = end_dirty;
             if let Some(Command::SetOccurrenceNotificationOffset { offset_secs, .. }) =
@@ -175,17 +177,17 @@ impl KnotQApp {
             self.close_date_popover();
             self.close_repeat_popover();
             let occurrence_state = item.state_for_occurrence(&resize.occurrence);
-            let mut popup = EventPopup::new(
-                resize.scheme_id,
-                resize.item_id,
-                &item,
-                resize.occurrence,
-                &occurrence_state,
+            let mut popup = EventPopup::new(EventPopupInit {
+                scheme_id: resize.scheme_id,
+                item_id: resize.item_id,
+                item: &item,
+                occurrence: resize.occurrence,
+                occurrence_state: &occurrence_state,
                 draft_start,
                 draft_end,
-                resize.anchor,
-                resize.occurrence_index,
-            );
+                anchor: resize.anchor,
+                occurrence_index: resize.occurrence_index,
+            });
             popup.start_dirty = start_dirty;
             popup.end_dirty = end_dirty;
             popup.scope_action = Some(EventScopeAction::ApplyChanges);

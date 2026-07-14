@@ -34,17 +34,30 @@ fn preserve_effective_color(fg: gpui::Rgba, bg: gpui::Rgba, alpha: f32) -> gpui:
     }
 }
 
+#[derive(Clone, Copy)]
+pub(super) struct EventChunkRender {
+    pub(super) t: Theme,
+    pub(super) block_stroke: gpui::Rgba,
+    pub(super) time_format: TimeFormat,
+    pub(super) col: usize,
+    pub(super) idx: usize,
+    pub(super) day_col_w: f32,
+}
+
 pub(super) fn render_event_chunk<'a>(
     chunk: &ScheduleChunk<'a>,
-    t: Theme,
-    block_stroke: gpui::Rgba,
-    time_format: TimeFormat,
-    col: usize,
-    idx: usize,
-    day_col_w: f32,
+    render: EventChunkRender,
     scroll_handle: &gpui::ScrollHandle,
     cx: &mut Context<KnotQApp>,
 ) -> gpui::AnyElement {
+    let EventChunkRender {
+        t,
+        block_stroke,
+        time_format,
+        col,
+        idx,
+        day_col_w,
+    } = render;
     let head = chunk.equal_groups[0][0];
     let min_start = head.start.unwrap();
     let max_end = head.end.unwrap();
@@ -100,16 +113,16 @@ pub(super) fn render_event_chunk<'a>(
         }
         for task in group {
             let item_color = calendar_task_color(task, t.is_dark);
-            content.push(calendar_event_title_line(
-                calendar_item_title(&task.text),
+            content.push(calendar_event_title_line(EventTitleLineArgs {
+                title: calendar_item_title(&task.text),
                 item_color,
-                task.is_done,
-                content_y,
-                6.0,
+                is_done: task.is_done,
+                top: content_y,
+                pad_x: 6.0,
                 block_w,
-                event_title_h,
-                event_title_size,
-            ));
+                line_h: event_title_h,
+                text_size: event_title_size,
+            }));
             content_y += event_title_h;
         }
     }
@@ -183,15 +196,17 @@ pub(super) fn render_event_chunk<'a>(
         .on_click(cx.listener(move |this, event: &ClickEvent, window, cx| {
             this.focus_app_root(window);
             this.open_event_popup(
-                click_target.scheme_id,
-                click_target.item_id,
-                click_target.occurrence.clone(),
-                click_target.occurrence_index,
-                click_target.start,
-                click_target.end,
-                event.position(),
-                false,
-                false,
+                OpenEventPopupArgs {
+                    scheme_id: click_target.scheme_id,
+                    item_id: click_target.item_id,
+                    occurrence: click_target.occurrence.clone(),
+                    occurrence_index: click_target.occurrence_index,
+                    start: click_target.start,
+                    end: click_target.end,
+                    anchor: event.position(),
+                    select_title: false,
+                    created_from_calendar: false,
+                },
                 window,
                 cx,
             );
@@ -405,7 +420,7 @@ fn calendar_title_line(
         .into_any_element()
 }
 
-fn calendar_event_title_line(
+struct EventTitleLineArgs {
     title: String,
     item_color: gpui::Hsla,
     is_done: bool,
@@ -414,7 +429,19 @@ fn calendar_event_title_line(
     block_w: f32,
     line_h: f32,
     text_size: f32,
-) -> gpui::AnyElement {
+}
+
+fn calendar_event_title_line(args: EventTitleLineArgs) -> gpui::AnyElement {
+    let EventTitleLineArgs {
+        title,
+        item_color,
+        is_done,
+        top,
+        pad_x,
+        block_w,
+        line_h,
+        text_size,
+    } = args;
     let line_w = (block_w - pad_x * 2.0).max(1.0);
 
     div()
@@ -622,15 +649,17 @@ pub(super) fn render_pill_chunk<'a>(
         .on_click(cx.listener(move |this, event: &ClickEvent, window, cx| {
             this.focus_app_root(window);
             this.open_event_popup(
-                click_target.scheme_id,
-                click_target.item_id,
-                click_target.occurrence.clone(),
-                click_target.occurrence_index,
-                click_target.start,
-                click_target.end,
-                event.position(),
-                false,
-                false,
+                OpenEventPopupArgs {
+                    scheme_id: click_target.scheme_id,
+                    item_id: click_target.item_id,
+                    occurrence: click_target.occurrence.clone(),
+                    occurrence_index: click_target.occurrence_index,
+                    start: click_target.start,
+                    end: click_target.end,
+                    anchor: event.position(),
+                    select_title: false,
+                    created_from_calendar: false,
+                },
                 window,
                 cx,
             );

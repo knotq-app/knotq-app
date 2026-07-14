@@ -1,5 +1,13 @@
 use super::*;
 
+pub(super) struct NumberedMarkerPaint<'a> {
+    pub label: &'a str,
+    pub text_left: Pixels,
+    pub y: Pixels,
+    pub line_height: Pixels,
+    pub color: gpui::Hsla,
+}
+
 impl SchemeEditor {
     pub(super) fn paint_line_marker(
         &mut self,
@@ -39,11 +47,13 @@ impl SchemeEditor {
             ItemMarker::Numbered => {
                 if let Some(number) = numbered_marker_ordinal(&self.rows, row_ix) {
                     self.paint_numbered_marker(
-                        &format!("{number}."),
-                        text_left,
-                        line_origin.y,
-                        line_height,
-                        annotation_color,
+                        NumberedMarkerPaint {
+                            label: &format!("{number}."),
+                            text_left,
+                            y: line_origin.y,
+                            line_height,
+                            color: annotation_color,
+                        },
                         window,
                         cx,
                     );
@@ -177,14 +187,17 @@ impl SchemeEditor {
 
     pub(super) fn paint_numbered_marker(
         &self,
-        label: &str,
-        text_left: Pixels,
-        y: Pixels,
-        line_height: Pixels,
-        color: gpui::Hsla,
+        paint: NumberedMarkerPaint<'_>,
         window: &mut Window,
         cx: &mut App,
     ) {
+        let NumberedMarkerPaint {
+            label,
+            text_left,
+            y,
+            line_height,
+            color,
+        } = paint;
         let mut font = window.text_style().font();
         font.family = SharedString::new(FONT_UI);
         font.weight = gpui::FontWeight::MEDIUM;

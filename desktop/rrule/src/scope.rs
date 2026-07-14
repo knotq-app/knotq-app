@@ -10,29 +10,36 @@ pub enum RecurrenceEditScope {
     AllEvents,
 }
 
+pub struct ScopedDateEdit {
+    pub occurrence: OccurrenceId,
+    pub occurrence_index: usize,
+    pub start_dirty: bool,
+    pub draft_start: Option<DateTime<Utc>>,
+    pub end_dirty: bool,
+    pub draft_end: Option<DateTime<Utc>>,
+    pub scope: RecurrenceEditScope,
+}
+
 pub fn scoped_date_edit_recurrence(
     item: &Item,
     recurrence: &Recurrence,
-    occurrence: OccurrenceId,
-    occurrence_index: usize,
-    start_dirty: bool,
-    draft_start: Option<DateTime<Utc>>,
-    end_dirty: bool,
-    draft_end: Option<DateTime<Utc>>,
-    scope: RecurrenceEditScope,
+    edit: ScopedDateEdit,
 ) -> Option<Recurrence> {
-    match scope {
+    match edit.scope {
         RecurrenceEditScope::ThisEvent => Some(recurrence_with_date_override(
             recurrence,
-            occurrence,
-            start_dirty,
-            draft_start,
-            end_dirty,
-            draft_end,
+            edit.occurrence,
+            edit.start_dirty,
+            edit.draft_start,
+            edit.end_dirty,
+            edit.draft_end,
         )),
-        RecurrenceEditScope::AllFuture => {
-            recurrence_with_prior_overrides(item, recurrence, &occurrence, occurrence_index)
-        }
+        RecurrenceEditScope::AllFuture => recurrence_with_prior_overrides(
+            item,
+            recurrence,
+            &edit.occurrence,
+            edit.occurrence_index,
+        ),
         RecurrenceEditScope::AllEvents => None,
     }
 }

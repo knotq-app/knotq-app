@@ -1,27 +1,31 @@
-use chrono::{DateTime, NaiveDate, Utc};
-use gpui::{AppContext, Context, Pixels, Point, Window};
+use gpui::{AppContext, Context, Window};
 use knotq_commands::Command;
 use knotq_date_util::snapped_calendar_datetime;
-use knotq_model::{Item, ItemId, ItemMarker, OccurrenceId, SchemeId};
+use knotq_model::{Item, ItemMarker, OccurrenceId, SchemeId};
 use knotq_ui::single_line_editor::{SingleLineEditor, SingleLineEditorEvent};
 
-use crate::app::{EventPopup, KnotQApp};
+use crate::app::{
+    CreateCalendarItemFromDragArgs, EventPopup, EventPopupInit, KnotQApp, OpenEventPopupArgs,
+};
 
 impl KnotQApp {
     pub(crate) fn open_event_popup(
         &mut self,
-        scheme_id: SchemeId,
-        item_id: ItemId,
-        occurrence: OccurrenceId,
-        occurrence_index: usize,
-        start: Option<DateTime<Utc>>,
-        end: Option<DateTime<Utc>>,
-        anchor: Point<Pixels>,
-        select_title: bool,
-        created_from_calendar: bool,
+        args: OpenEventPopupArgs,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        let OpenEventPopupArgs {
+            scheme_id,
+            item_id,
+            occurrence,
+            occurrence_index,
+            start,
+            end,
+            anchor,
+            select_title,
+            created_from_calendar,
+        } = args;
         if self.event_popup.is_some() {
             self.close_event_popup(cx);
             if self.event_popup.is_some() {
@@ -62,17 +66,17 @@ impl KnotQApp {
         } else {
             end.or(item.end)
         };
-        let mut popup = EventPopup::new(
+        let mut popup = EventPopup::new(EventPopupInit {
             scheme_id,
             item_id,
-            &item,
+            item: &item,
             occurrence,
-            &occurrence_state,
+            occurrence_state: &occurrence_state,
             draft_start,
             draft_end,
             anchor,
             occurrence_index,
-        );
+        });
         popup.title_input = title_input;
         popup.created_from_calendar = created_from_calendar;
         self.event_popup = Some(popup);
@@ -143,14 +147,17 @@ impl KnotQApp {
     /// `start_hour`/`end_hour` are hour fractions (0.0–24.0).
     pub(crate) fn create_calendar_item_from_drag(
         &mut self,
-        date: NaiveDate,
-        start_hour: f32,
-        end_hour: f32,
-        shift: bool,
-        anchor: Point<Pixels>,
+        args: CreateCalendarItemFromDragArgs,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        let CreateCalendarItemFromDragArgs {
+            date,
+            start_hour,
+            end_hour,
+            shift,
+            anchor,
+        } = args;
         let is_drag = (end_hour - start_hour).abs() > 0.125; // ~7.5 minutes
 
         let hour_to_datetime = |hour: f32| snapped_calendar_datetime(date, hour);
@@ -193,21 +200,25 @@ impl KnotQApp {
         );
 
         self.open_event_popup(
-            scheme_id,
-            item_id,
-            OccurrenceId::Single,
-            0,
-            self.workspace
-                .scheme(scheme_id)
-                .and_then(|s| s.item(item_id))
-                .and_then(|i| i.start),
-            self.workspace
-                .scheme(scheme_id)
-                .and_then(|s| s.item(item_id))
-                .and_then(|i| i.end),
-            anchor,
-            true,
-            true,
+            OpenEventPopupArgs {
+                scheme_id,
+                item_id,
+                occurrence: OccurrenceId::Single,
+                occurrence_index: 0,
+                start: self
+                    .workspace
+                    .scheme(scheme_id)
+                    .and_then(|s| s.item(item_id))
+                    .and_then(|i| i.start),
+                end: self
+                    .workspace
+                    .scheme(scheme_id)
+                    .and_then(|s| s.item(item_id))
+                    .and_then(|i| i.end),
+                anchor,
+                select_title: true,
+                created_from_calendar: true,
+            },
             window,
             cx,
         );

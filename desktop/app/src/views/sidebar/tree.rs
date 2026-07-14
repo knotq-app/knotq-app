@@ -1,4 +1,5 @@
 use super::*;
+use super::rows::FolderRowArgs;
 
 impl KnotQApp {
     pub(super) fn render_node_children(
@@ -37,12 +38,14 @@ impl KnotQApp {
             match child {
                 NodeRef::Folder(fid) => {
                     if let Some((row, expanded)) = self.render_folder_row(
-                        fid,
-                        folder_id,
-                        position,
-                        depth,
-                        t,
-                        context_menu_open,
+                        FolderRowArgs {
+                            fid,
+                            parent_folder_id: folder_id,
+                            position,
+                            depth,
+                            t,
+                            context_menu_open,
+                        },
                         cx,
                     ) {
                         items.push(row);

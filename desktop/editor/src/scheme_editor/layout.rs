@@ -1,5 +1,51 @@
 use super::*;
 
+/// Read-only inputs for [`SchemeEditor::build_line_layout`]. Output
+/// accumulators (`shaped`, `runs`, `collapsed`) stay as separate `&mut`
+/// params on the callee so the borrow checker doesn't need to reason about
+/// aliasing between this struct and the accumulators.
+pub(super) struct LineLayoutInput<'a> {
+    pub font: &'a gpui::Font,
+    pub hidden_prefix: &'a str,
+    pub line: &'a str,
+    pub default_color: gpui::Hsla,
+    pub is_done: bool,
+    pub reveal: bool,
+    pub extra_collapsed: &'a [Range<usize>],
+}
+
+/// Read-only inputs for [`push_line_layout_segment`]. See [`LineLayoutInput`]
+/// for why the output accumulators are kept separate.
+struct LineSegmentInput<'a> {
+    editor: &'a SchemeEditor,
+    line: &'a str,
+    range: Range<usize>,
+    is_marker: bool,
+    reveal: bool,
+    style: MarkdownStyle,
+    font: &'a gpui::Font,
+    default_color: gpui::Hsla,
+    is_done: bool,
+    extra_collapsed: &'a [Range<usize>],
+    link_ranges: &'a [Range<usize>],
+}
+
+/// Read-only inputs for [`push_visible_line_layout_segment`]. Same shape as
+/// [`LineSegmentInput`] minus `extra_collapsed`, which is already consumed by
+/// the caller before recursing into the "visible" segment helper.
+struct VisibleLineSegmentInput<'a> {
+    editor: &'a SchemeEditor,
+    line: &'a str,
+    range: Range<usize>,
+    is_marker: bool,
+    reveal: bool,
+    style: MarkdownStyle,
+    font: &'a gpui::Font,
+    default_color: gpui::Hsla,
+    is_done: bool,
+    link_ranges: &'a [Range<usize>],
+}
+
 impl SchemeEditor {
     /// Rows whose markdown markers should be revealed (the cursor/selection
     /// lines). `None` means no line is active, so every line renders collapsed
@@ -133,15 +179,15 @@ impl SchemeEditor {
             } else {
                 &font
             };
-            let (shaped_text, runs, collapsed) = self.build_line_layout(
-                line_font,
+            let (shaped_text, runs, collapsed) = self.build_line_layout(LineLayoutInput {
+                font: line_font,
                 hidden_prefix,
-                &line,
-                color,
+                line: &line,
+                default_color: color,
                 is_done,
                 reveal,
-                &extra_collapsed,
-            );
+                extra_collapsed: &extra_collapsed,
+            });
             let mut shaped = window
                 .text_system()
                 .shape_text(
@@ -217,14 +263,17 @@ impl SchemeEditor {
     /// so the markers take no visual space while the cursor is elsewhere.
     pub(super) fn build_line_layout(
         &self,
-        font: &gpui::Font,
-        hidden_prefix: &str,
-        line: &str,
-        default_color: gpui::Hsla,
-        is_done: bool,
-        reveal: bool,
-        extra_collapsed: &[Range<usize>],
+        input: LineLayoutInput<'_>,
     ) -> (String, Vec<TextRun>, Vec<Range<usize>>) {
+        let LineLayoutInput {
+            font,
+            hidden_prefix,
+            line,
+            default_color,
+            is_done,
+            reveal,
+            extra_collapsed,
+        } = input;
         let mut shaped = String::with_capacity(hidden_prefix.len() + line.len());
         let mut runs = Vec::new();
         let mut collapsed = Vec::new();
@@ -252,39 +301,43 @@ impl SchemeEditor {
                 }
                 let object_start = pos + relative;
                 push_line_layout_segment(
-                    self,
-                    line,
-                    segment_start..object_start,
-                    is_marker,
-                    reveal,
-                    markdown_run.style,
-                    font,
-                    default_color,
-                    is_done,
+                    LineSegmentInput {
+                        editor: self,
+                        line,
+                        range: segment_start..object_start,
+                        is_marker,
+                        reveal,
+                        style: markdown_run.style,
+                        font,
+                        default_color,
+                        is_done,
+                        extra_collapsed,
+                        link_ranges: &link_ranges,
+                    },
                     &mut shaped,
                     &mut runs,
                     &mut collapsed,
-                    extra_collapsed,
-                    &link_ranges,
                 );
                 collapsed.push(object_start..object_start + TABLE_OBJECT_LEN);
                 segment_start = object_start + TABLE_OBJECT_LEN;
             }
             push_line_layout_segment(
-                self,
-                line,
-                segment_start..end,
-                is_marker,
-                reveal,
-                markdown_run.style,
-                font,
-                default_color,
-                is_done,
+                LineSegmentInput {
+                    editor: self,
+                    line,
+                    range: segment_start..end,
+                    is_marker,
+                    reveal,
+                    style: markdown_run.style,
+                    font,
+                    default_color,
+                    is_done,
+                    extra_collapsed,
+                    link_ranges: &link_ranges,
+                },
                 &mut shaped,
                 &mut runs,
                 &mut collapsed,
-                extra_collapsed,
-                &link_ranges,
             );
             pos = end;
         }
@@ -363,21 +416,24 @@ impl SchemeEditor {
 }
 
 fn push_line_layout_segment(
-    editor: &SchemeEditor,
-    line: &str,
-    range: Range<usize>,
-    is_marker: bool,
-    reveal: bool,
-    style: MarkdownStyle,
-    font: &gpui::Font,
-    default_color: gpui::Hsla,
-    is_done: bool,
+    input: LineSegmentInput<'_>,
     shaped: &mut String,
     runs: &mut Vec<TextRun>,
     collapsed: &mut Vec<Range<usize>>,
-    extra_collapsed: &[Range<usize>],
-    link_ranges: &[Range<usize>],
 ) {
+    let LineSegmentInput {
+        editor,
+        line,
+        range,
+        is_marker,
+        reveal,
+        style,
+        font,
+        default_color,
+        is_done,
+        extra_collapsed,
+        link_ranges,
+    } = input;
     if range.is_empty() {
         return;
     }
@@ -389,55 +445,62 @@ fn push_line_layout_segment(
             continue;
         }
         push_visible_line_layout_segment(
+            VisibleLineSegmentInput {
+                editor,
+                line,
+                range: start..hidden_start,
+                is_marker,
+                reveal,
+                style,
+                font,
+                default_color,
+                is_done,
+                link_ranges,
+            },
+            shaped,
+            runs,
+            collapsed,
+        );
+        collapsed.push(hidden_start..hidden_end);
+        start = hidden_end;
+    }
+    push_visible_line_layout_segment(
+        VisibleLineSegmentInput {
             editor,
             line,
-            start..hidden_start,
+            range: start..range.end,
             is_marker,
             reveal,
             style,
             font,
             default_color,
             is_done,
-            shaped,
-            runs,
-            collapsed,
             link_ranges,
-        );
-        collapsed.push(hidden_start..hidden_end);
-        start = hidden_end;
-    }
-    push_visible_line_layout_segment(
+        },
+        shaped,
+        runs,
+        collapsed,
+    );
+}
+
+fn push_visible_line_layout_segment(
+    input: VisibleLineSegmentInput<'_>,
+    shaped: &mut String,
+    runs: &mut Vec<TextRun>,
+    collapsed: &mut Vec<Range<usize>>,
+) {
+    let VisibleLineSegmentInput {
         editor,
         line,
-        start..range.end,
+        range,
         is_marker,
         reveal,
         style,
         font,
         default_color,
         is_done,
-        shaped,
-        runs,
-        collapsed,
         link_ranges,
-    );
-}
-
-fn push_visible_line_layout_segment(
-    editor: &SchemeEditor,
-    line: &str,
-    range: Range<usize>,
-    is_marker: bool,
-    reveal: bool,
-    style: MarkdownStyle,
-    font: &gpui::Font,
-    default_color: gpui::Hsla,
-    is_done: bool,
-    shaped: &mut String,
-    runs: &mut Vec<TextRun>,
-    collapsed: &mut Vec<Range<usize>>,
-    link_ranges: &[Range<usize>],
-) {
+    } = input;
     if range.is_empty() {
         return;
     }

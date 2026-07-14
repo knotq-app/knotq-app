@@ -1,5 +1,36 @@
 use super::*;
 
+pub(super) struct TrashFolderTreeArgs {
+    pub idx: usize,
+    pub folder_id: FolderId,
+    pub depth: usize,
+    pub top_level: bool,
+    pub t: Theme,
+    pub context_menu_open: bool,
+}
+
+struct TrashFolderRowArgs {
+    idx: usize,
+    folder_id: FolderId,
+    name: String,
+    expanded: bool,
+    depth: usize,
+    top_level: bool,
+    t: Theme,
+    context_menu_open: bool,
+}
+
+struct TrashSchemeRowArgs {
+    id: SharedString,
+    scheme_id: SchemeId,
+    name: String,
+    color_index: u8,
+    depth: usize,
+    standalone: bool,
+    t: Theme,
+    context_menu_open: bool,
+}
+
 impl KnotQApp {
     pub(super) fn render_trash_section(&mut self, cx: &mut Context<Self>) -> gpui::AnyElement {
         let t = self.theme();
@@ -37,26 +68,30 @@ impl KnotQApp {
             } else {
                 for (idx, folder_id) in deleted_folders.into_iter().enumerate() {
                     rows.extend(self.render_trash_folder_tree(
-                        idx,
-                        folder_id,
-                        1,
-                        true,
-                        t,
-                        context_menu_open,
+                        TrashFolderTreeArgs {
+                            idx,
+                            folder_id,
+                            depth: 1,
+                            top_level: true,
+                            t,
+                            context_menu_open,
+                        },
                         cx,
                     ));
                 }
                 for (idx, (scheme_id, name, color_index)) in deleted_schemes.into_iter().enumerate()
                 {
                     rows.push(trash_scheme_row(
-                        SharedString::from(format!("trash-scheme-{idx}-{scheme_id}")),
-                        scheme_id,
-                        name,
-                        color_index,
-                        1,
-                        true,
-                        t,
-                        context_menu_open,
+                        TrashSchemeRowArgs {
+                            id: SharedString::from(format!("trash-scheme-{idx}-{scheme_id}")),
+                            scheme_id,
+                            name,
+                            color_index,
+                            depth: 1,
+                            standalone: true,
+                            t,
+                            context_menu_open,
+                        },
                         cx,
                     ));
                 }
@@ -102,26 +137,31 @@ impl KnotQApp {
 
     fn render_trash_folder_tree(
         &mut self,
-        idx: usize,
-        folder_id: FolderId,
-        depth: usize,
-        top_level: bool,
-        t: Theme,
-        context_menu_open: bool,
+        args: TrashFolderTreeArgs,
         cx: &mut Context<Self>,
     ) -> Vec<gpui::AnyElement> {
-        let Some(folder) = self.workspace.folder(folder_id).cloned() else {
-            return Vec::new();
-        };
-        let mut rows = vec![trash_folder_row(
+        let TrashFolderTreeArgs {
             idx,
-            folder.id,
-            folder.name.clone(),
-            folder.expanded,
+            folder_id,
             depth,
             top_level,
             t,
             context_menu_open,
+        } = args;
+        let Some(folder) = self.workspace.folder(folder_id).cloned() else {
+            return Vec::new();
+        };
+        let mut rows = vec![trash_folder_row(
+            TrashFolderRowArgs {
+                idx,
+                folder_id: folder.id,
+                name: folder.name.clone(),
+                expanded: folder.expanded,
+                depth,
+                top_level,
+                t,
+                context_menu_open,
+            },
             cx,
         )];
         if !folder.expanded {
@@ -130,25 +170,31 @@ impl KnotQApp {
         for (child_idx, child) in folder.children.into_iter().enumerate() {
             match child {
                 NodeRef::Folder(id) => rows.extend(self.render_trash_folder_tree(
-                    child_idx,
-                    id,
-                    depth + 1,
-                    false,
-                    t,
-                    context_menu_open,
+                    TrashFolderTreeArgs {
+                        idx: child_idx,
+                        folder_id: id,
+                        depth: depth + 1,
+                        top_level: false,
+                        t,
+                        context_menu_open,
+                    },
                     cx,
                 )),
                 NodeRef::Scheme(id) => {
                     if let Some(scheme) = self.workspace.scheme(id) {
                         rows.push(trash_scheme_row(
-                            SharedString::from(format!("trash-subscheme-{child_idx}-{id}")),
-                            scheme.id,
-                            scheme.name.clone(),
-                            scheme.color_index,
-                            depth + 1,
-                            false,
-                            t,
-                            context_menu_open,
+                            TrashSchemeRowArgs {
+                                id: SharedString::from(format!(
+                                    "trash-subscheme-{child_idx}-{id}"
+                                )),
+                                scheme_id: scheme.id,
+                                name: scheme.name.clone(),
+                                color_index: scheme.color_index,
+                                depth: depth + 1,
+                                standalone: false,
+                                t,
+                                context_menu_open,
+                            },
                             cx,
                         ));
                     }
@@ -215,17 +261,17 @@ fn trash_header_row(
         .into_any_element()
 }
 
-fn trash_folder_row(
-    idx: usize,
-    folder_id: FolderId,
-    name: String,
-    expanded: bool,
-    depth: usize,
-    top_level: bool,
-    t: Theme,
-    context_menu_open: bool,
-    cx: &mut Context<KnotQApp>,
-) -> gpui::AnyElement {
+fn trash_folder_row(args: TrashFolderRowArgs, cx: &mut Context<KnotQApp>) -> gpui::AnyElement {
+    let TrashFolderRowArgs {
+        idx,
+        folder_id,
+        name,
+        expanded,
+        depth,
+        top_level,
+        t,
+        context_menu_open,
+    } = args;
     let pl = NAV_ROW_INDENT_BASE + depth as f32 * 9.0;
     let drag_info = NavigatorDragInfo {
         node: NodeRef::Folder(folder_id),
@@ -307,17 +353,17 @@ fn trash_folder_row(
         .into_any_element()
 }
 
-fn trash_scheme_row(
-    id: SharedString,
-    scheme_id: SchemeId,
-    name: String,
-    color_index: u8,
-    depth: usize,
-    standalone: bool,
-    t: Theme,
-    context_menu_open: bool,
-    cx: &mut Context<KnotQApp>,
-) -> gpui::AnyElement {
+fn trash_scheme_row(args: TrashSchemeRowArgs, cx: &mut Context<KnotQApp>) -> gpui::AnyElement {
+    let TrashSchemeRowArgs {
+        id,
+        scheme_id,
+        name,
+        color_index,
+        depth,
+        standalone,
+        t,
+        context_menu_open,
+    } = args;
     let square = scheme_square_color(color_index, t.is_dark);
     let drag_info = NavigatorDragInfo {
         node: NodeRef::Scheme(scheme_id),

@@ -14,16 +14,29 @@ const UNTIL_CALENDAR_WEEKDAY_ORDER: [Weekday; 7] = [
     Weekday::Sat,
 ];
 
+pub(super) struct UntilMiniCalendarPopupOptions {
+    pub(super) display_month: NaiveDate,
+    pub(super) selected: Option<NaiveDate>,
+    pub(super) left: gpui::Pixels,
+    pub(super) top: gpui::Pixels,
+    pub(super) scheme_id: SchemeId,
+    pub(super) item_id: ItemId,
+    pub(super) t: Theme,
+}
+
 pub(super) fn until_mini_calendar_popup(
-    display_month: NaiveDate,
-    selected: Option<NaiveDate>,
-    left: gpui::Pixels,
-    top: gpui::Pixels,
-    scheme_id: SchemeId,
-    item_id: ItemId,
-    t: Theme,
+    options: UntilMiniCalendarPopupOptions,
     cx: &mut Context<KnotQApp>,
 ) -> gpui::AnyElement {
+    let UntilMiniCalendarPopupOptions {
+        display_month,
+        selected,
+        left,
+        top,
+        scheme_id,
+        item_id,
+        t,
+    } = options;
     let month_start = NaiveDate::from_ymd_opt(display_month.year(), display_month.month(), 1)
         .unwrap_or(display_month);
     let first_weekday = month_start.weekday().num_days_from_sunday() as usize;

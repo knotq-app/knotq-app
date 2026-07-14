@@ -5,7 +5,7 @@ use knotq_model::{
     SchemeId, SimpleRecurrence,
 };
 use knotq_rrule::ical::{parse_rrule_until, parse_rrule_weekdays};
-use knotq_rrule::{scoped_date_edit_recurrence, RecurrenceEditScope};
+use knotq_rrule::{scoped_date_edit_recurrence, RecurrenceEditScope, ScopedDateEdit};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum DateEditScope {
@@ -72,13 +72,15 @@ pub fn event_popup_commit_commands(
             if let Some(repeats) = scoped_date_edit_recurrence(
                 item,
                 recurrence,
-                draft.occurrence.clone(),
-                draft.occurrence_index,
-                draft.start_dirty,
-                draft.draft_start,
-                draft.end_dirty,
-                draft.draft_end,
-                scope,
+                ScopedDateEdit {
+                    occurrence: draft.occurrence.clone(),
+                    occurrence_index: draft.occurrence_index,
+                    start_dirty: draft.start_dirty,
+                    draft_start: draft.draft_start,
+                    end_dirty: draft.end_dirty,
+                    draft_end: draft.draft_end,
+                    scope,
+                },
             ) {
                 commands.push(Command::SetItemRecurrence {
                     scheme,

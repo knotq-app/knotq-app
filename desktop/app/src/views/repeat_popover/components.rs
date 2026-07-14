@@ -100,16 +100,29 @@ pub(super) fn rp_selector_row(
         .into_any_element()
 }
 
+pub(super) struct RpRepeatTypeMenuOptions {
+    pub(super) repeat_exists: bool,
+    pub(super) complex_repeat: bool,
+    pub(super) active_mode: Option<RepeatMode>,
+    pub(super) target: RepeatTarget,
+    pub(super) left: gpui::Pixels,
+    pub(super) top: gpui::Pixels,
+    pub(super) t: Theme,
+}
+
 pub(super) fn rp_repeat_type_menu(
-    repeat_exists: bool,
-    complex_repeat: bool,
-    active_mode: Option<RepeatMode>,
-    target: RepeatTarget,
-    left: gpui::Pixels,
-    top: gpui::Pixels,
-    t: Theme,
+    options: RpRepeatTypeMenuOptions,
     cx: &mut Context<KnotQApp>,
 ) -> gpui::AnyElement {
+    let RpRepeatTypeMenuOptions {
+        repeat_exists,
+        complex_repeat,
+        active_mode,
+        target,
+        left,
+        top,
+        t,
+    } = options;
     div()
         .id("rp-type-menu")
         .absolute()
