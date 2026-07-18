@@ -3,7 +3,6 @@ use std::collections::HashMap;
 use chrono::Local;
 use gpui::{Context, ScrollHandle};
 use knotq_state::{daily_queue_default_window_start, AppState};
-#[cfg(feature = "accounts")]
 use knotq_storage_json::{load_crdt_state, load_local_sync_state, workspace_path};
 
 use super::auto_update::{spawn_auto_update_task, AutoUpdateUiStatus};
@@ -70,18 +69,13 @@ impl KnotQApp {
 
         // Restore the long-lived CRDT documents from disk so their stable Yjs
         // identity survives this restart instead of being rebuilt from plain data.
-        // The CRDT/sync-state seeding only matters for account sync, so it is
-        // compiled out (and defaulted) when the `accounts` feature is off.
-        #[cfg(feature = "accounts")]
+        // This stays active even when account sync is hidden/compiled out, so a
+        // future sync-capable build can reuse the local CRDT history.
         let crdt_states = load_crdt_state(&workspace_path()).unwrap_or_default();
-        #[cfg(not(feature = "accounts"))]
-        let crdt_states: std::collections::HashMap<knotq_model::DocumentId, Vec<u8>> =
-            std::collections::HashMap::new();
 
         // Seed next_sequence from persisted sync state so post-restart edits never
         // reuse sequence numbers still present in the pending queue (Bug 1 fix).
         // Mirrors mobile/core/src/lib.rs:820-841.
-        #[cfg(feature = "accounts")]
         let initial_sequence = {
             let sync_state = load_local_sync_state(&workspace_path()).unwrap_or_default();
             let max_pending = sync_state
@@ -98,8 +92,6 @@ impl KnotQApp {
                 .unwrap_or(0);
             max_pending.max(max_pushed) + 1
         };
-        #[cfg(not(feature = "accounts"))]
-        let initial_sequence: u64 = 1;
 
         let mut app = Self {
             state: AppState::new(

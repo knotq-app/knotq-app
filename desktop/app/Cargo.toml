@@ -50,12 +50,14 @@ knotq-ui = { workspace = true }
 tungstenite = { version = "0.23", features = ["rustls-tls-webpki-roots"], optional = true }
 
 [features]
-# `accounts` gates ALL sign-in / sync / billing / subscription functionality. It is
-# OFF by default so shipped release builds compile that code out entirely and show a
-# "Coming soon" placeholder in its place. Dev/sandbox builds turn it on with
-# `--features accounts` (see local/run-app.sh). Turning it on pulls in the persistent
-# WebSocket sync transport (`ws-sync`), which falls back to HTTP polling when the
-# socket is down.
+# `accounts` gates sign-in / network sync / billing / subscription functionality.
+# It is OFF by default so shipped release builds compile that product surface out
+# and show a "Coming soon" placeholder in its place. Local CRDT/sync metadata
+# persistence stays compiled in either way so future sync-capable builds can adopt
+# release users' existing workspace history. Dev/sandbox builds turn accounts on
+# with `--features accounts` (see local/run-app.sh). Turning it on pulls in the
+# persistent WebSocket sync transport (`ws-sync`), which falls back to HTTP polling
+# when the socket is down.
 default = []
 accounts = ["ws-sync"]
 ws-sync = ["dep:tungstenite"]

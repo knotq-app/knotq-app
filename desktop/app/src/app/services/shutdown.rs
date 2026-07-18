@@ -1,5 +1,5 @@
 use chrono::Utc;
-use knotq_storage_json::save_crdt_state;
+use knotq_storage_json::{save_crdt_state, save_pending_crdt_edits};
 
 use super::{save_workspace, workspace_path, KnotQApp};
 
@@ -33,9 +33,16 @@ impl KnotQApp {
                     self.dirty_schemes.clear();
                     self.index_dirty = false;
                     // Keep the persisted CRDT state in lockstep with the workspace.
-                    if let Err(err) =
-                        save_crdt_state(&workspace_path(), &self.state.crdt_document_states())
-                    {
+                    if let Err(err) = save_pending_crdt_edits(
+                        &workspace_path(),
+                        &self.state.pending_crdt_edits(),
+                    ) {
+                        eprintln!("shutdown CRDT pending queue flush failed: {err:#}");
+                    }
+                    if let Err(err) = save_crdt_state(
+                        &workspace_path(),
+                        &self.state.crdt_document_states(),
+                    ) {
                         eprintln!("shutdown CRDT state flush failed: {err:#}");
                     }
                     crate::notifications::notif_log("shutdown workspace flush completed");
