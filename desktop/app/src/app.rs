@@ -25,10 +25,15 @@ mod editor_mgr;
 mod google_oauth;
 mod nav;
 mod node_rename;
+#[cfg(feature = "accounts")]
 mod presence;
+#[cfg(not(feature = "accounts"))]
+mod presence_stub;
 mod services;
 mod settings;
+#[cfg(feature = "accounts")]
 mod sync_auth;
+#[cfg(feature = "accounts")]
 mod sync_service;
 mod workspace_ops;
 
@@ -273,6 +278,7 @@ pub enum GoogleOAuthStatus {
     Error,
 }
 
+#[cfg(feature = "accounts")]
 #[derive(Clone, Debug, Default)]
 pub enum SyncAuthStatus {
     #[default]
@@ -281,6 +287,7 @@ pub enum SyncAuthStatus {
     Error(String),
 }
 
+#[cfg(feature = "accounts")]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum SyncAuthMode {
     SignIn,
@@ -291,6 +298,7 @@ pub enum SyncAuthMode {
 /// a one-shot confirmation without re-arming on every render. Reset to `Idle` when
 /// the account status is refreshed (which is also how a now-verified account stops
 /// showing the prompt).
+#[cfg(feature = "accounts")]
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Default)]
 pub enum EmailVerificationResend {
     #[default]
@@ -301,6 +309,7 @@ pub enum EmailVerificationResend {
 
 /// An account action awaiting an explicit second confirmation in Settings, so a
 /// single misclick cannot change billing state.
+#[cfg(feature = "accounts")]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum SyncAccountAction {
     /// Turn off the sync entitlement for the account (keeps the account + data).
@@ -316,15 +325,18 @@ pub enum SettingsDropdown {
     TimeFormat,
     EventNotification,
     AssignmentNotification,
+    #[cfg(feature = "accounts")]
     SyncAccountManage,
 }
 
+#[cfg(feature = "accounts")]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum OnboardingPhase {
     AccountChoice,
     Guide,
 }
 
+#[cfg(feature = "accounts")]
 #[derive(Clone, Debug, Default)]
 pub enum SyncRunStatus {
     #[default]
@@ -594,66 +606,89 @@ pub struct KnotQApp {
     pub google_oauth_cancel_token: Option<Arc<AtomicBool>>,
     /// Sign-in now happens in the browser; this just remembers whether the
     /// in-flight browser sign-in should advance onboarding when it succeeds.
+    #[cfg(feature = "accounts")]
     pub sync_advance_onboarding_on_success: bool,
+    #[cfg(feature = "accounts")]
     pub sync_auth_status: SyncAuthStatus,
+    #[cfg(feature = "accounts")]
     pub sync_run_status: SyncRunStatus,
+    #[cfg(feature = "accounts")]
     pub sync_auth_task: Option<Task<()>>,
     /// Cancel signal for the in-flight browser sign-in, so re-clicking "Sign in"
     /// during the polling window can abort the old loopback wait and relaunch the
     /// browser (mirroring the Google Calendar OAuth flow).
+    #[cfg(feature = "accounts")]
     pub sync_auth_cancel_token: Option<Arc<AtomicBool>>,
     /// Bounded background poll that re-checks entitlement after the user opens the
     /// subscription checkout, so sync turns on without them clicking anything.
+    #[cfg(feature = "accounts")]
     pub sync_subscription_poll_task: Option<Task<()>>,
     /// One-shot background account-status refresh fired when Settings opens, so
     /// an entitlement change made outside the app shows up without any clicks.
+    #[cfg(feature = "accounts")]
     pub sync_status_quiet_task: Option<Task<()>>,
     /// State of a resend of the email-verification link (shown in the Sync card).
+    #[cfg(feature = "accounts")]
     pub email_verification_resend: EmailVerificationResend,
     /// In-flight resend task; kept alive so it isn't dropped mid-request.
+    #[cfg(feature = "accounts")]
     pub email_verification_resend_task: Option<Task<()>>,
     /// The currently expanded compact selector in Settings.
     pub settings_dropdown: Option<SettingsDropdown>,
     /// Pending confirmation for a destructive account action shown in Settings.
+    #[cfg(feature = "accounts")]
     pub sync_account_action: Option<SyncAccountAction>,
     /// Anchor for the title-bar sync status popover; `Some` while it is open.
+    #[cfg(feature = "accounts")]
     pub sync_status_popover: Option<Point<Pixels>>,
     /// When the last sync completed successfully, for the "Last synced …" line.
+    #[cfg(feature = "accounts")]
     pub last_synced_at: Option<DateTime<Utc>>,
     /// Last attempt to run the sync loop.
+    #[cfg(feature = "accounts")]
     pub last_sync_poll_at: Option<DateTime<Utc>>,
     /// When a sync run last sent a history-squash proposal (accepted or not).
     /// Throttles proposals so a declined one is not rebuilt on every poll.
+    #[cfg(feature = "accounts")]
     pub last_squash_attempt_at: Option<DateTime<Utc>>,
     /// Whether the application window is active (receiving input / key focus).
     pub window_is_active: bool,
     /// Whether the last sync run failed at the transport level (offline).
+    #[cfg(feature = "accounts")]
     pub sync_offline: bool,
     /// Whether the last sync run failed with a server rejection (non-transport error).
+    #[cfg(feature = "accounts")]
     pub sync_server_rejecting: bool,
     /// Remaining pending count from the last sync run result; persisted so the
     /// poll-interval logic can see pending edits even between runs.
+    #[cfg(feature = "accounts")]
     pub sync_pending_hint: usize,
     /// The notification schedule a previous sync run computed, reused by the next
     /// run when nothing that could change it has happened since. Lets a burst of
     /// edits that don't touch any dated item skip re-expanding recurrences and
     /// re-hashing every occurrence on the background sync thread.
+    #[cfg(feature = "accounts")]
     pub(crate) cached_notification_schedule: Option<sync_service::CachedNotificationSchedule>,
     /// Persistent WebSocket sync client (online, poll-free). `None` until a
     /// sync-enabled account is active, and only populated under the `ws-sync`
     /// feature. When connected, sync runs prefer it and the poll loop idles.
+    #[cfg(feature = "accounts")]
     pub(crate) ws_sync: Option<std::sync::Arc<knotq_sync::ws::WsClient>>,
     /// Latest bearer token for the ws client's reconnect handshakes; the ws
     /// supervisor thread re-reads it on every (re)connect so refreshes apply.
+    #[cfg(feature = "accounts")]
     pub(crate) ws_sync_token: std::sync::Arc<std::sync::Mutex<String>>,
     /// The api_base the current ws client was built for, so an account switch
     /// rebuilds it.
+    #[cfg(feature = "accounts")]
     pub(crate) ws_sync_api_base: Option<String>,
     /// Live peer carets (multiplayer presence) per scheme, keyed by replica.
     /// Populated from the ws `on_presence` callback; rendered as editor cursors.
+    #[cfg(feature = "accounts")]
     pub(crate) presence_cursors: HashMap<SchemeId, Vec<presence::PeerCursor>>,
     /// Funnels ws-thread presence frames to the GPUI thread (drained by
     /// `_presence_task`). Cloned into the ws `on_presence` callback (ws-sync only).
+    #[cfg(feature = "accounts")]
     #[cfg_attr(not(feature = "ws-sync"), allow(dead_code))]
     pub(crate) presence_tx: async_channel::Sender<knotq_sync::ws::PresenceEvent>,
     pub(crate) scheme_sessions: HashMap<SchemeId, SchemeSessionState>,
@@ -681,9 +716,11 @@ pub struct KnotQApp {
     pub _save_task: Task<()>,
     pub _notification_task: Task<()>,
     pub _state_task: Task<()>,
+    #[cfg(feature = "accounts")]
     pub _sync_task: Task<()>,
     pub _google_calendar_sync_task: Task<()>,
     pub _auto_update_task: Task<()>,
+    #[cfg(feature = "accounts")]
     pub _presence_task: Task<()>,
     pub _window_activation_subscription: Option<Subscription>,
     pub _editor_subscription: Option<Subscription>,
@@ -692,6 +729,7 @@ pub struct KnotQApp {
     pub _window_bounds_subscription: Option<Subscription>,
     pub _quit_subscription: Subscription,
     pub show_onboarding: bool,
+    #[cfg(feature = "accounts")]
     pub onboarding_phase: OnboardingPhase,
     pub onboarding_page: usize,
 }

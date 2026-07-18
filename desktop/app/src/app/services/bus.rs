@@ -5,6 +5,7 @@ use super::{
     AppServiceBus, AppServiceReceivers, NotificationBatch, NotificationItemRefresh,
     NotificationOccurrenceClear, NotificationSignal,
 };
+#[cfg(feature = "accounts")]
 use crate::app::sync_service::SyncSignal;
 
 impl AppServiceBus {
@@ -15,12 +16,14 @@ impl AppServiceBus {
         // Unbounded so Immediate is never dropped when the channel already holds a
         // LocalChange. Signals are drained before each run, so the queue stays tiny
         // in practice (at most a handful of entries between ticks).
+        #[cfg(feature = "accounts")]
         let (sync_tx, sync_rx) = async_channel::unbounded();
         (
             Self {
                 save_tx,
                 notification_tx,
                 timeline_tx,
+                #[cfg(feature = "accounts")]
                 sync_tx,
                 notification_recompute_pending: std::sync::Arc::new(
                     std::sync::atomic::AtomicBool::new(false),
@@ -33,6 +36,7 @@ impl AppServiceBus {
                 save_rx,
                 notification_rx,
                 timeline_rx,
+                #[cfg(feature = "accounts")]
                 sync_rx,
             },
         )
@@ -58,6 +62,7 @@ impl AppServiceBus {
     /// can affect the schedule is signalled; the sync run compares it against the
     /// generation its cached schedule was computed at to decide whether a recompute
     /// is needed.
+    #[cfg(feature = "accounts")]
     pub(crate) fn notification_schedule_generation(&self) -> u64 {
         self.notification_schedule_gen
             .load(std::sync::atomic::Ordering::Relaxed)
@@ -143,21 +148,34 @@ impl AppServiceBus {
         let _ = self.timeline_tx.try_send(());
     }
 
+    #[cfg(feature = "accounts")]
     pub(crate) fn signal_sync(&self) {
         let _ = self.sync_tx.try_send(SyncSignal::Immediate);
     }
 
+    /// No-op when account sync is compiled out, so ungated callers (window
+    /// activation, navigation, workspace edits) need no per-call gating.
+    #[cfg(not(feature = "accounts"))]
+    #[allow(dead_code)]
+    pub(crate) fn signal_sync(&self) {}
+
     /// A cloneable sender for the sync signal channel, so an off-thread callback
     /// (e.g. the WebSocket `changed` nudge) can request an immediate sync run.
     /// Only consumed by the `ws-sync` build today.
+    #[cfg(feature = "accounts")]
     #[cfg_attr(not(feature = "ws-sync"), allow(dead_code))]
     pub(crate) fn sync_signal_sender(&self) -> async_channel::Sender<SyncSignal> {
         self.sync_tx.clone()
     }
 
+    #[cfg(feature = "accounts")]
     pub(crate) fn signal_sync_local_change(&self) {
         let _ = self.sync_tx.try_send(SyncSignal::LocalChange);
     }
+
+    /// No-op when account sync is compiled out (see `signal_sync`).
+    #[cfg(not(feature = "accounts"))]
+    pub(crate) fn signal_sync_local_change(&self) {}
 
     pub(super) fn signal_notification_action(&self) -> bool {
         self.notification_tx

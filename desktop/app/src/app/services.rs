@@ -6,6 +6,7 @@ use knotq_model::{Item, ItemId, OccurrenceId, SchemeId};
 use knotq_storage_json::NotificationDefaults;
 
 pub(super) use super::{save_workspace, save_workspace_incremental, workspace_path, KnotQApp};
+#[cfg(feature = "accounts")]
 use crate::app::sync_service::SyncSignal;
 
 mod bus;
@@ -31,6 +32,7 @@ pub(crate) struct AppServiceBus {
     pub(super) save_tx: Sender<()>,
     pub(super) notification_tx: Sender<NotificationSignal>,
     pub(super) timeline_tx: Sender<()>,
+    #[cfg(feature = "accounts")]
     pub(super) sync_tx: Sender<SyncSignal>,
     pub(super) notification_recompute_pending: std::sync::Arc<std::sync::atomic::AtomicBool>,
     /// Bumped whenever a change that can affect the notification schedule is
@@ -46,6 +48,7 @@ pub(crate) struct AppServiceReceivers {
     pub(crate) save_rx: Receiver<()>,
     pub(crate) notification_rx: Receiver<NotificationSignal>,
     pub(crate) timeline_rx: Receiver<()>,
+    #[cfg(feature = "accounts")]
     pub(crate) sync_rx: Receiver<SyncSignal>,
 }
 

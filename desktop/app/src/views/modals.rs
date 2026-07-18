@@ -2,9 +2,16 @@ use gpui::prelude::*;
 use gpui::{div, px, ClickEvent, Context, FontWeight, IntoElement, SharedString, Window};
 use knotq_storage_json::CalendarViewMode;
 
-use crate::app::{KnotQApp, OnboardingPhase, SyncAuthMode, SyncAuthStatus, View};
-use crate::theme_gpui::{token_hsla, token_rgba, Theme};
-use crate::views::sync_account::{sync_cta_bg, sync_cta_hover_bg};
+use crate::app::{KnotQApp, View};
+#[cfg(feature = "accounts")]
+use crate::app::OnboardingPhase;
+#[cfg(feature = "accounts")]
+use crate::app::{SyncAuthMode, SyncAuthStatus};
+use crate::theme_gpui::{token_hsla, token_rgba};
+#[cfg(feature = "accounts")]
+use crate::theme_gpui::Theme;
+#[cfg(feature = "accounts")]
+use crate::views::{sync_cta_bg, sync_cta_hover_bg};
 
 // ── Onboarding spotlight steps ───────────────────────────────────────────
 
@@ -128,6 +135,7 @@ fn step_spotlight(step: usize, vw: f32, vh: f32) -> (SpotlightRect, CardSide) {
 
 /// Visual weight of an onboarding account button, mirroring the Settings → Sync
 /// buttons: a blue primary CTA, a bordered secondary, and a quiet ghost link.
+#[cfg(feature = "accounts")]
 #[derive(Clone, Copy)]
 enum AccountChoiceVariant {
     Primary,
@@ -137,6 +145,7 @@ enum AccountChoiceVariant {
 
 /// A single onboarding account action, styled like the buttons in Settings → Sync.
 /// `mode` opens the browser sign-in (Some) or continues local-only (None).
+#[cfg(feature = "accounts")]
 fn onboarding_account_choice(
     id: &'static str,
     label: &'static str,
@@ -207,11 +216,16 @@ impl KnotQApp {
     /// After the tutorial (via "Done" or "Skip"): surface the sign-in / stay-local
     /// prompt, unless the user is already signed in, in which case we're done.
     fn advance_past_tutorial(&mut self) {
+        // Without the `accounts` feature there is no sign-in / stay-local prompt, so
+        // finishing the tutorial simply completes onboarding.
+        #[cfg(feature = "accounts")]
         if self.settings.sync_account.is_some() {
             self.finish_onboarding();
         } else {
             self.onboarding_phase = OnboardingPhase::AccountChoice;
         }
+        #[cfg(not(feature = "accounts"))]
+        self.finish_onboarding();
     }
 
     fn set_onboarding_page(&mut self, page: usize, cx: &mut Context<Self>) {
@@ -431,6 +445,7 @@ impl KnotQApp {
             return None;
         }
         let t = self.theme();
+        #[cfg(feature = "accounts")]
         if self.onboarding_phase == OnboardingPhase::AccountChoice {
             // Sign-in happens in the browser, so surface its progress/errors here
             // (there is no longer an in-app sign-in modal to host them).

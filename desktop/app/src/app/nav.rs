@@ -149,7 +149,10 @@ impl KnotQApp {
         } else {
             self.settings_return_selection = Some(self.selection.clone());
             self.selection.view = View::Settings;
+            #[cfg(feature = "accounts")]
             self.refresh_account_status_quiet(cx);
+            #[cfg(not(feature = "accounts"))]
+            let _ = cx;
         }
         self.dismiss_event_popup_if_hidden_context();
     }

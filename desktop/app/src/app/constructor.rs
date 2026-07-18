@@ -3,11 +3,13 @@ use std::collections::HashMap;
 use chrono::Local;
 use gpui::{Context, ScrollHandle};
 use knotq_state::{daily_queue_default_window_start, AppState};
+#[cfg(feature = "accounts")]
 use knotq_storage_json::{load_crdt_state, load_local_sync_state, workspace_path};
 
 use super::auto_update::{spawn_auto_update_task, AutoUpdateUiStatus};
 use super::bootstrap::{load_or_default_settings, load_or_seed};
 use super::services::{spawn_notification_task, spawn_save_task, spawn_timeline_task, AppServiceBus};
+#[cfg(feature = "accounts")]
 use super::sync_service::spawn_sync_task;
 use super::*;
 
@@ -24,6 +26,7 @@ impl KnotQApp {
         // Always start with the short tutorial. The sign-in / stay-local prompt is
         // surfaced only after the guide finishes (and skipped entirely if the user
         // is already signed in) — see `render_onboarding`.
+        #[cfg(feature = "accounts")]
         let onboarding_phase = OnboardingPhase::Guide;
         let editor_focus_handle = cx.focus_handle();
         let today = Local::now().date_naive();
@@ -34,11 +37,14 @@ impl KnotQApp {
         let notification_task =
             spawn_notification_task(service_bus.clone(), service_receivers.notification_rx, cx);
         let state_task = spawn_timeline_task(service_receivers.timeline_rx, cx);
+        #[cfg(feature = "accounts")]
         let sync_task = spawn_sync_task(service_receivers.sync_rx, cx);
         // Presence (multiplayer carets): ws-thread frames are funnelled here and
         // applied on the GPUI thread.
+        #[cfg(feature = "accounts")]
         let (presence_tx, presence_rx) =
             async_channel::unbounded::<knotq_sync::ws::PresenceEvent>();
+        #[cfg(feature = "accounts")]
         let presence_task = cx.spawn(async move |weak: gpui::WeakEntity<KnotQApp>, cx| {
             while let Ok(event) = presence_rx.recv().await {
                 if weak
@@ -52,6 +58,8 @@ impl KnotQApp {
                 }
             }
         });
+        // Google Calendar sync is a SEPARATE system from account sync and stays
+        // compiled in regardless of the `accounts` feature.
         let google_calendar_sync_task = Self::spawn_google_calendar_sync_task(cx);
         let auto_update_task = spawn_auto_update_task(auto_update_rx, cx);
         let quit_subscription = cx.on_app_quit(|app, _cx| {
@@ -62,11 +70,18 @@ impl KnotQApp {
 
         // Restore the long-lived CRDT documents from disk so their stable Yjs
         // identity survives this restart instead of being rebuilt from plain data.
+        // The CRDT/sync-state seeding only matters for account sync, so it is
+        // compiled out (and defaulted) when the `accounts` feature is off.
+        #[cfg(feature = "accounts")]
         let crdt_states = load_crdt_state(&workspace_path()).unwrap_or_default();
+        #[cfg(not(feature = "accounts"))]
+        let crdt_states: std::collections::HashMap<knotq_model::DocumentId, Vec<u8>> =
+            std::collections::HashMap::new();
 
         // Seed next_sequence from persisted sync state so post-restart edits never
         // reuse sequence numbers still present in the pending queue (Bug 1 fix).
         // Mirrors mobile/core/src/lib.rs:820-841.
+        #[cfg(feature = "accounts")]
         let initial_sequence = {
             let sync_state = load_local_sync_state(&workspace_path()).unwrap_or_default();
             let max_pending = sync_state
@@ -83,6 +98,8 @@ impl KnotQApp {
                 .unwrap_or(0);
             max_pending.max(max_pushed) + 1
         };
+        #[cfg(not(feature = "accounts"))]
+        let initial_sequence: u64 = 1;
 
         let mut app = Self {
             state: AppState::new(
@@ -126,30 +143,53 @@ impl KnotQApp {
             google_oauth_status: GoogleOAuthStatus::Idle,
             google_oauth_task: None,
             google_oauth_cancel_token: None,
+            #[cfg(feature = "accounts")]
             sync_advance_onboarding_on_success: false,
+            #[cfg(feature = "accounts")]
             sync_auth_status: SyncAuthStatus::Idle,
+            #[cfg(feature = "accounts")]
             sync_auth_cancel_token: None,
+            #[cfg(feature = "accounts")]
             sync_account_action: None,
             settings_dropdown: None,
+            #[cfg(feature = "accounts")]
             sync_run_status: SyncRunStatus::Idle,
+            #[cfg(feature = "accounts")]
             sync_auth_task: None,
+            #[cfg(feature = "accounts")]
             sync_subscription_poll_task: None,
+            #[cfg(feature = "accounts")]
             sync_status_quiet_task: None,
+            #[cfg(feature = "accounts")]
             email_verification_resend: EmailVerificationResend::Idle,
+            #[cfg(feature = "accounts")]
             email_verification_resend_task: None,
+            #[cfg(feature = "accounts")]
             sync_status_popover: None,
+            #[cfg(feature = "accounts")]
             last_synced_at: None,
+            #[cfg(feature = "accounts")]
             last_sync_poll_at: None,
+            #[cfg(feature = "accounts")]
             last_squash_attempt_at: None,
             window_is_active: false,
+            #[cfg(feature = "accounts")]
             sync_offline: false,
+            #[cfg(feature = "accounts")]
             sync_server_rejecting: false,
+            #[cfg(feature = "accounts")]
             sync_pending_hint: 0,
+            #[cfg(feature = "accounts")]
             cached_notification_schedule: None,
+            #[cfg(feature = "accounts")]
             ws_sync: None,
+            #[cfg(feature = "accounts")]
             ws_sync_token: std::sync::Arc::new(std::sync::Mutex::new(String::new())),
+            #[cfg(feature = "accounts")]
             ws_sync_api_base: None,
+            #[cfg(feature = "accounts")]
             presence_cursors: HashMap::new(),
+            #[cfg(feature = "accounts")]
             presence_tx,
             scheme_sessions: HashMap::new(),
             service_bus,
@@ -166,9 +206,11 @@ impl KnotQApp {
             _save_task: save_task,
             _notification_task: notification_task,
             _state_task: state_task,
+            #[cfg(feature = "accounts")]
             _sync_task: sync_task,
             _google_calendar_sync_task: google_calendar_sync_task,
             _auto_update_task: auto_update_task,
+            #[cfg(feature = "accounts")]
             _presence_task: presence_task,
             _window_activation_subscription: None,
             _editor_subscription: None,
@@ -177,6 +219,7 @@ impl KnotQApp {
             _window_bounds_subscription: None,
             _quit_subscription: quit_subscription,
             show_onboarding: needs_onboarding,
+            #[cfg(feature = "accounts")]
             onboarding_phase,
             onboarding_page: 0,
         };

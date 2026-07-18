@@ -1,13 +1,17 @@
 //! Computing the pending notification list and converting scheduled
 //! notifications into platform requests.
-use chrono::{DateTime, Duration, Utc};
+#[cfg(feature = "accounts")]
+use chrono::DateTime;
+use chrono::{Duration, Utc};
 use knotq_model::{Item, SchemeId, Workspace};
 use knotq_notifications::{
     compute_due_notifications_with_lead_times, NotificationRequest, ScheduledNotification,
     DEFAULT_DURABLE_NOTIFICATION_LIMIT,
 };
 use knotq_storage_json::NotificationDefaults;
+#[cfg(feature = "accounts")]
 use knotq_sync::NotificationScheduleSnapshot;
+#[cfg(feature = "accounts")]
 use sha2::{Digest, Sha256};
 
 use super::common::{
@@ -36,6 +40,7 @@ pub fn pending_notifications(
     .collect()
 }
 
+#[cfg(feature = "accounts")]
 pub(crate) fn notification_schedule_snapshot(
     workspace: &Workspace,
     defaults: NotificationDefaults,

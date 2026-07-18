@@ -12,6 +12,7 @@ use crate::theme_gpui::{
 };
 
 mod search;
+#[cfg(feature = "accounts")]
 mod sync_control;
 mod update_control;
 mod window_controls;
@@ -30,9 +31,13 @@ const MACOS_TRAFFIC_LIGHT_PAD: f32 = 80.0;
 const TITLE_EDGE_PAD: f32 = 16.0;
 
 // Semantic sync status colors (the theme has no status palette of its own).
+#[cfg(feature = "accounts")]
 pub(crate) const STATUS_OK: u32 = 0x22c55eff;
+#[cfg(feature = "accounts")]
 pub(crate) const STATUS_SYNCING: u32 = 0x3b82f6ff;
+#[cfg(feature = "accounts")]
 pub(crate) const STATUS_PENDING: u32 = 0xf59e0bff;
+#[cfg(feature = "accounts")]
 pub(crate) const STATUS_ERROR: u32 = 0xef4444ff;
 
 impl KnotQApp {

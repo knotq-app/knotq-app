@@ -1,6 +1,7 @@
 mod components;
 mod google_calendar;
 mod labels;
+#[cfg(feature = "accounts")]
 mod sync_panel;
 
 use gpui::prelude::*;

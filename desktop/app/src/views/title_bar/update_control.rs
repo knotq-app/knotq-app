@@ -7,7 +7,7 @@ use knotq_l10n::{t as tr, t_with as tr_with};
 use crate::app::auto_update::AutoUpdateUiStatus;
 use crate::app::KnotQApp;
 use crate::theme_gpui::{token_hsla, token_rgba, Theme};
-use crate::views::sync_account::{sync_cta_bg, sync_cta_hover_bg};
+use crate::views::{sync_cta_bg, sync_cta_hover_bg};
 
 #[derive(Clone, Copy)]
 enum TitleUpdateAction {

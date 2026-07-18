@@ -50,8 +50,12 @@ knotq-ui = { workspace = true }
 tungstenite = { version = "0.23", features = ["rustls-tls-webpki-roots"], optional = true }
 
 [features]
-# The persistent WebSocket sync transport (desktop tungstenite socket) ships on by
-# default; it falls back to HTTP polling automatically when the socket is down.
-# Build with `--no-default-features` to force the HTTP-only path.
-default = ["ws-sync"]
+# `accounts` gates ALL sign-in / sync / billing / subscription functionality. It is
+# OFF by default so shipped release builds compile that code out entirely and show a
+# "Coming soon" placeholder in its place. Dev/sandbox builds turn it on with
+# `--features accounts` (see local/run-app.sh). Turning it on pulls in the persistent
+# WebSocket sync transport (`ws-sync`), which falls back to HTTP polling when the
+# socket is down.
+default = []
+accounts = ["ws-sync"]
 ws-sync = ["dep:tungstenite"]

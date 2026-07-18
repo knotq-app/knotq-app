@@ -13,6 +13,7 @@ use crate::app::{
     SyncRunStatus,
 };
 use crate::theme_gpui::{token_hsla, token_rgba, Theme};
+use crate::views::{sync_cta_bg, sync_cta_hover_bg};
 
 /// Which provider backs the subscription, used to route the cancel action: a web
 /// subscription cancels through our backend; an Apple/Google one can only be
@@ -604,14 +605,6 @@ fn manage_account_menu(
         .gap(px(2.0))
         .children(rows)
         .into_any_element()
-}
-
-pub(crate) fn sync_cta_bg() -> u32 {
-    0x2563ebff
-}
-
-pub(crate) fn sync_cta_hover_bg() -> u32 {
-    0x1d4ed8ff
 }
 
 struct ManageMenuRowArgs {

@@ -5,7 +5,7 @@ use gpui_component::{Icon, IconName, Sizable};
 use crate::app::auto_update::AutoUpdateUiStatus;
 use crate::app::{KnotQApp, SettingsDropdown};
 use crate::theme_gpui::{token_hsla, token_rgba, Theme as UiTheme};
-use crate::views::sync_account::{sync_cta_bg, sync_cta_hover_bg};
+use crate::views::{sync_cta_bg, sync_cta_hover_bg};
 
 use super::labels::checked_time_label;
 

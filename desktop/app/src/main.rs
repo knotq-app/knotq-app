@@ -8,6 +8,7 @@ mod views;
 
 use std::borrow::Cow;
 
+#[cfg(feature = "accounts")]
 use chrono::{Duration as ChronoDuration, Utc};
 use gpui::prelude::*;
 use gpui::{
@@ -65,10 +66,13 @@ impl Render for KnotQApp {
             self._window_activation_subscription = Some(cx.observe_window_activation(
                 window,
                 |this: &mut KnotQApp, window, _cx| {
-                    let now = Utc::now();
                     let was_active = this.window_is_active;
                     this.window_is_active = window.is_window_active();
+                    // The catch-up-on-resume sync is part of account sync, which is
+                    // compiled out without the `accounts` feature.
+                    #[cfg(feature = "accounts")]
                     if !was_active && this.window_is_active {
+                        let now = Utc::now();
                         // No focus repoll while the socket is live — the persistent
                         // WebSocket's `changed` nudges + the on-(re)connect catch-up
                         // already keep us current, so regaining focus needs nothing.
@@ -86,6 +90,8 @@ impl Render for KnotQApp {
                             this.service_bus.signal_sync();
                         }
                     }
+                    #[cfg(not(feature = "accounts"))]
+                    let _ = was_active;
                 },
             ));
         }
