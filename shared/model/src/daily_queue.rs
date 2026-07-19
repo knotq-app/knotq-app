@@ -66,9 +66,16 @@ pub fn daily_queue_displaced_item_id(source: ItemId, source_date: NaiveDate) -> 
 }
 
 fn stable_daily_uuid(namespace: [u8; 16], name: &str) -> Uuid {
+    stable_derived_uuid(namespace, name.as_bytes())
+}
+
+/// SHA-256-based deterministic UUID derivation shared by every "same logical
+/// input on any device must mint the same id" scheme (daily-queue ids above,
+/// scheme content-document ids in `sync.rs`).
+pub(crate) fn stable_derived_uuid(namespace: [u8; 16], name: &[u8]) -> Uuid {
     let mut hasher = Sha256::new();
     hasher.update(namespace);
-    hasher.update(name.as_bytes());
+    hasher.update(name);
     let digest = hasher.finalize();
     let mut bytes = [0u8; 16];
     bytes.copy_from_slice(&digest[..16]);

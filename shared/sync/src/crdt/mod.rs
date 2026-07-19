@@ -383,7 +383,16 @@ impl WorkspaceCrdtDocuments {
             update_v1: self.workspace.encode_state_v1(),
             touched_items: Vec::new(),
         });
-        for doc in self.schemes.values() {
+        // Emit schemes in a stable order. `self.schemes` is a HashMap, whose
+        // iteration order is randomized per process; the caller queues these as
+        // pending edits, so an unstable order gives edits nondeterministic
+        // local-sequence numbers. Content still converges either way (CRDT merges
+        // commute), but a deterministic order keeps a fuzz seed — and any
+        // real-world "reproduce the exact push sequence" investigation —
+        // reproducible run to run.
+        let mut docs: Vec<&YrsSchemeDocument> = self.schemes.values().collect();
+        docs.sort_by_key(|doc| doc.id);
+        for doc in docs {
             // A full snapshot re-asserts every live item, so for the epoch
             // adoption rescue all of them count as locally touched (a queued
             // snapshot exists precisely to re-establish this device's content).

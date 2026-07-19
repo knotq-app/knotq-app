@@ -3,7 +3,8 @@ use std::collections::{HashMap, HashSet};
 use chrono::NaiveDate;
 
 use crate::{
-    daily_queue_scheme_id, daily_queue_sync_metadata, default_folder_sync, default_scheme_sync,
+    daily_queue_scheme_id, daily_queue_sync_metadata, default_folder_sync,
+    scheme_content_sync_metadata,
     CrdtBackend, DocumentId, FolderId, SchemeId, SyncDocumentKind, WorkspaceId,
 };
 
@@ -48,11 +49,17 @@ impl Workspace {
                 .copied()
                 .filter(|date| daily_queue_scheme_id(*date) == id)
                 .map(daily_queue_sync_metadata);
+            // Minting is DETERMINISTIC (derived from the scheme id): this entry is
+            // re-created whenever a binding was transiently dropped (the retain
+            // above runs against a workspace that momentarily lacked the scheme),
+            // and a random id here would rebind the same scheme to different fresh
+            // documents on different devices — orphaning the real content document
+            // when the divergent bindings merge. See `scheme_content_document_id`.
             let entry = self.scheme_sync.entry(id).or_insert_with(|| {
                 changed = true;
                 stable_daily_sync
                     .clone()
-                    .unwrap_or_else(default_scheme_sync)
+                    .unwrap_or_else(|| scheme_content_sync_metadata(id))
             });
             if let Some(stable_daily_sync) = stable_daily_sync {
                 if entry.id != stable_daily_sync.id {
@@ -319,5 +326,48 @@ impl Workspace {
         }
 
         changed
+    }
+}
+
+#[cfg(test)]
+mod scheme_binding_tests {
+    use crate::{scheme_content_document_id, Scheme, Workspace};
+
+    /// The scheme→content-document binding must survive being dropped and
+    /// re-minted — including independent re-mints on different devices. A random
+    /// re-mint bound the same scheme to a different fresh document per device;
+    /// the divergent bindings raced in the workspace-document merge and the
+    /// winner pointed at an empty document, silently orphaning the scheme's real
+    /// content (fuzz seed 21's fresh-puller divergence).
+    #[test]
+    fn scheme_binding_remint_is_deterministic_and_convergent() {
+        let scheme = Scheme::new("scheme", 0);
+        let scheme_id = scheme.id;
+
+        // Two devices independently minting for the same scheme converge.
+        let mut device_a = Workspace::new();
+        device_a.schemes.insert(scheme_id, scheme.clone());
+        device_a.ensure_sync_metadata();
+        let mut device_b = Workspace::new();
+        device_b.schemes.insert(scheme_id, scheme.clone());
+        device_b.ensure_sync_metadata();
+        let bound_a = device_a.scheme_sync[&scheme_id].id;
+        let bound_b = device_b.scheme_sync[&scheme_id].id;
+        assert_eq!(bound_a, bound_b, "independent mints must converge");
+        assert_eq!(bound_a, scheme_content_document_id(scheme_id));
+
+        // Transient absence drops the binding; the re-mint reproduces it.
+        device_a.schemes.remove(&scheme_id);
+        device_a.ensure_sync_metadata();
+        assert!(
+            !device_a.scheme_sync.contains_key(&scheme_id),
+            "binding is dropped while the scheme is absent"
+        );
+        device_a.schemes.insert(scheme_id, scheme);
+        device_a.ensure_sync_metadata();
+        assert_eq!(
+            device_a.scheme_sync[&scheme_id].id, bound_a,
+            "a re-mint after transient absence must rebuild the identical binding"
+        );
     }
 }
