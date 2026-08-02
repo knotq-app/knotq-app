@@ -25,6 +25,7 @@ impl KnotQApp {
         let mut assignments: Vec<UpRow> = Vec::new();
         let mut reminders: Vec<UpRow> = Vec::new();
         let mut upcoming: Vec<UpRow> = Vec::new();
+        let mut seen_future_recurring_items = std::collections::HashSet::new();
 
         for scheme in self.workspace.iter_schemes() {
             let is_daily = self.workspace.is_daily_queue_scheme(scheme.id);
@@ -36,6 +37,12 @@ impl KnotQApp {
                     }
                     let local_when = trigger_time(occ.kind, occ.start, occ.end);
                     let Some(when) = local_when else { continue };
+                    if item.repeats.is_some()
+                        && when >= now
+                        && !seen_future_recurring_items.insert((scheme.id, item.id))
+                    {
+                        continue;
+                    }
                     let retained_done = occ.state.is_done()
                         && self.retains_completed_calendar_item(scheme.id, item.id, &occ.id);
                     if when < now && occ.state.is_done() && !retained_done {
@@ -70,6 +77,49 @@ impl KnotQApp {
                         ItemKind::Event if when < today_end => upcoming.push(row),
                         ItemKind::Event => {}
                         ItemKind::Procedure => {}
+                    }
+                }
+
+                // The normal scan starts today, so it cannot include yesterday's
+                // recurrence. Keep a bounded set of missed instances alongside
+                // the future occurrence above.
+                for occ in recurring_overdue_occurrences(item, today_start) {
+                    let retained_done = occ.state.is_done()
+                        && self.retains_completed_calendar_item(scheme.id, item.id, &occ.id);
+                    if occ.state.is_done() && !retained_done {
+                        continue;
+                    }
+                    if item.available.is_some_and(|available| available > now) {
+                        continue;
+                    }
+                    let Some(when) = trigger_time(occ.kind, occ.start, occ.end) else {
+                        continue;
+                    };
+                    let row = UpRow {
+                        scheme_id: scheme.id,
+                        item_id: item.id,
+                        occurrence: occ.id,
+                        occurrence_index: occ.occurrence_index,
+                        scheme_name: scheme_name.clone(),
+                        color_index: scheme.color_index,
+                        is_daily,
+                        text: item.text(),
+                        is_done: occ.state.is_done(),
+                        when_label: when_label(self.time_format, occ.kind, occ.start, occ.end),
+                        date_color: row_status_color(
+                            occ.kind,
+                            occ.start,
+                            occ.end,
+                            token_hsla(t.text_highlight),
+                        ),
+                        sort_key: when,
+                        start: occ.start,
+                        end: occ.end,
+                    };
+                    match occ.kind {
+                        ItemKind::Assignment => assignments.push(row),
+                        ItemKind::Reminder => reminders.push(row),
+                        _ => {}
                     }
                 }
 

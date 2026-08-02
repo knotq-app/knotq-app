@@ -9,7 +9,7 @@ use std::{
 };
 
 use crate::{
-    files::write_atomic,
+    files::{write_atomic, write_atomic_if_changed},
     paths::schemes_dir,
     schema::{DailyQueueIndexEntry, SchemeIndex},
     scheme_xml::{decode_scheme_xml, encode_scheme_xml},
@@ -198,7 +198,14 @@ pub(crate) fn write_scheme_file(
         )
     })?;
     let xml = encode_scheme_xml(scheme)?;
-    write_atomic(&path, xml.as_bytes())
+    // A full save rewrites every scheme, but one edit changes exactly one of
+    // them, and each rewrite is a durable atomic write — temp file, fsync,
+    // rename — costing milliseconds. On a workspace with a couple of dozen
+    // schemes that is most of the cost of an edit, spent re-persisting bytes
+    // identical to what is already on disk. Compare first: the read comes from
+    // the page cache, so an unchanged scheme is essentially free, while anything
+    // that differs — or that cannot be read back — still gets written.
+    write_atomic_if_changed(&path, xml.as_bytes())
 }
 
 pub fn scheme_path_for_workspace(

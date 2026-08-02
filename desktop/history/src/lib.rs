@@ -3,11 +3,13 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::{collections::BTreeMap, fs, path::Path, sync::atomic::AtomicU64};
 
+mod cadence;
 mod capture;
 mod retention;
 mod store;
 mod support;
 
+use cadence::{min_snapshot_interval, SnapshotCadence};
 use capture::{list_internal_snapshots, record_workspace_snapshot_at};
 use retention::rotate_snapshots;
 use store::{blob_path, history_store_exists, read_snapshot_record};
@@ -92,7 +94,27 @@ pub(crate) enum SnapshotEntryKind {
 }
 
 pub fn record_workspace_snapshot(workspace_dir: &Path) -> Result<()> {
-    record_workspace_snapshot_at(workspace_dir, Utc::now())
+    // Rate limited — see `cadence`. This runs after every save, and an
+    // unthrottled snapshot re-hashes the whole workspace to produce a restore
+    // point that rotation then discards.
+    static CADENCE: std::sync::Mutex<Option<SnapshotCadence>> = std::sync::Mutex::new(None);
+
+    let now = Utc::now();
+    let due = {
+        let mut guard = CADENCE.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        guard
+            .get_or_insert_with(SnapshotCadence::default)
+            .is_due(workspace_dir, now, min_snapshot_interval())
+    };
+    if !due {
+        return Ok(());
+    }
+    record_workspace_snapshot_at(workspace_dir, now)?;
+    let mut guard = CADENCE.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    guard
+        .get_or_insert_with(SnapshotCadence::default)
+        .recorded(workspace_dir, now);
+    Ok(())
 }
 
 pub fn list_workspace_snapshots(workspace_dir: &Path) -> Result<Vec<WorkspaceSnapshot>> {

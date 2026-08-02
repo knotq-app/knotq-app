@@ -2,7 +2,7 @@ use chrono::{Datelike, Duration, Local, TimeZone, Utc};
 use gpui::prelude::*;
 use gpui::{div, px, ClickEvent, Context, Hsla, IntoElement, MouseButton, MouseDownEvent};
 use gpui_component::scroll::ScrollableElement as _;
-use knotq_model::{ItemId, ItemKind, OccurrenceId, SchemeId};
+use knotq_model::{Item, ItemId, ItemKind, Occurrence, OccurrenceId, SchemeId};
 use knotq_rrule::ItemOccurrenceExt;
 
 use crate::app::{daily_queue_marker_color, KnotQApp, OpenEventPopupArgs};

@@ -18,8 +18,8 @@ use std::path::{Path, PathBuf};
 
 pub use crdt_state::{crdt_state_path, load_crdt_state, save_crdt_state};
 pub use files::{
-    load_daily_queue_scheme, load_daily_queue_schemes_for_calendar_range, load_workspace,
-    load_workspace_with_options, save_workspace, save_workspace_incremental,
+    edit_timing_enabled, load_daily_queue_scheme, load_daily_queue_schemes_for_calendar_range,
+    load_workspace, load_workspace_with_options, save_workspace, save_workspace_incremental,
 };
 pub use knotq_history::{
     list_workspace_snapshots, record_workspace_snapshot, restore_workspace_snapshot,

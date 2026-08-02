@@ -3,6 +3,8 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use chrono::{DateTime, Utc};
 use knotq_model::{DocumentId, OperationId, ReplicaId, SyncDocumentKind, Workspace, WorkspaceId};
 use serde::{Deserialize, Serialize};
+use yrs::updates::{decoder::Decode, encoder::Encode};
+use yrs::Update;
 
 use crate::{
     validate_crdt_update_sequence, CrdtDocumentUpdate, PushUpdatesRequest, SyncDocumentRef,
@@ -520,6 +522,114 @@ pub fn queue_account_switch_reseed(
     }
 }
 
+/// Beyond this many queued edits for one document, merging them costs less than
+/// carrying them separately. Generous on purpose: merging decodes and re-encodes
+/// the whole backlog, so it should be rare relative to editing.
+pub const MAX_PENDING_PER_DOCUMENT: usize = 32;
+
+/// Merge a document's queued deltas into one equivalent update once there are
+/// too many, and report how many documents were compacted.
+///
+/// The queue only drains on a successful push. A device that cannot push —
+/// signed out, offline for a long stretch, or running a build with accounts
+/// compiled out — otherwise accumulates one entry per edit forever, and the
+/// whole file is re-read and re-written on every later edit, so editing gets
+/// steadily slower the longer it goes unsynced.
+///
+/// Lossless by construction: `Update::merge_updates` produces a single update
+/// with the same effect as applying the originals in order, and — unlike
+/// substituting a full snapshot — it needs no live document and no base beyond
+/// the one the first delta already needed. That matters because most of a real
+/// backlog belongs to daily-queue schemes that are loaded lazily and so have no
+/// document in memory to snapshot from; dropping those entries instead would
+/// silently discard edits.
+///
+/// A document whose updates fail to decode or merge is left exactly as it was:
+/// a queue that cannot be compacted is a performance problem, but discarding it
+/// would be a data-loss one.
+pub fn compact_pending_documents(
+    sync_state: &mut LocalSyncState,
+    max_pending_per_document: usize,
+) -> usize {
+    let mut counts: HashMap<DocumentId, usize> = HashMap::new();
+    for edit in &sync_state.pending {
+        *counts.entry(edit.document).or_default() += 1;
+    }
+    let overfull: Vec<DocumentId> = counts
+        .into_iter()
+        .filter(|(_, count)| *count > max_pending_per_document)
+        .map(|(document, _)| document)
+        .collect();
+    if overfull.is_empty() {
+        return 0;
+    }
+
+    let mut compacted = 0;
+    for document in overfull {
+        let Some(merged) = merge_document_pending(sync_state, document) else {
+            continue;
+        };
+        sync_state.pending.retain(|edit| edit.document != document);
+        sync_state.push_pending(merged);
+        compacted += 1;
+    }
+    if compacted > 0 {
+        // `push_pending` appends, but a merged entry inherits the sequence of the
+        // last edit it replaced, so restore submission order across documents.
+        sync_state
+            .pending
+            .make_contiguous()
+            .sort_by_key(|edit| edit.local_sequence);
+    }
+    compacted
+}
+
+/// One update equivalent to every queued edit for `document`, or `None` if they
+/// cannot be decoded and merged.
+fn merge_document_pending(
+    sync_state: &LocalSyncState,
+    document: DocumentId,
+) -> Option<PendingCrdtEdit> {
+    let queued: Vec<&PendingCrdtEdit> = sync_state
+        .pending
+        .iter()
+        .filter(|edit| edit.document == document)
+        .collect();
+    let last = queued.last().copied()?;
+
+    let mut updates = Vec::with_capacity(queued.len());
+    for edit in &queued {
+        updates.push(Update::decode_v1(&edit.update_v1).ok()?);
+    }
+    let merged = Update::merge_updates(updates);
+
+    // The union of everything the merged edit now carries, for the epoch
+    // adoption rescue — order-preserving so it stays deterministic.
+    let mut touched_items = Vec::new();
+    let mut seen = HashSet::new();
+    for edit in &queued {
+        for item in &edit.touched_items {
+            if seen.insert(item.clone()) {
+                touched_items.push(item.clone());
+            }
+        }
+    }
+
+    Some(PendingCrdtEdit {
+        operation_id: OperationId::new(),
+        workspace_id: last.workspace_id,
+        replica_id: last.replica_id,
+        // Keep the newest sequence so the merged edit sits where the backlog
+        // ended, relative to other documents' queued edits.
+        local_sequence: last.local_sequence,
+        created_at: last.created_at,
+        document,
+        kind: last.kind,
+        update_v1: merged.encode_v1(),
+        touched_items,
+    })
+}
+
 #[cfg(test)]
 mod account_change_tests {
     use super::{DocumentSyncCursor, LocalSyncState, MediaSyncCursor, PendingCrdtEdit};
@@ -703,5 +813,184 @@ mod account_change_tests {
         assert!(state.reset_for_account_change(account_b, SERVER_B));
         assert!(state.document_cursors.is_empty());
         assert!(state.media_cursors.is_empty());
+    }
+}
+
+#[cfg(test)]
+mod compaction_tests {
+    use super::{compact_pending_documents, LocalSyncState, PendingCrdtEdit, MAX_PENDING_PER_DOCUMENT};
+    use chrono::Utc;
+    use knotq_model::{DocumentId, OperationId, ReplicaId, SyncDocumentKind, WorkspaceId};
+    use yrs::updates::decoder::Decode;
+    use yrs::{Doc, GetString, ReadTxn, Text, Transact, Update};
+
+    /// A real Yjs delta: append `text` to the doc and encode just that change.
+    fn text_delta(doc: &Doc, text: &str) -> Vec<u8> {
+        let before = doc.transact().state_vector();
+        let root = doc.get_or_insert_text("body");
+        {
+            let mut txn = doc.transact_mut();
+            let len = root.len(&txn);
+            root.insert(&mut txn, len, text);
+        }
+        doc.transact().encode_diff_v1(&before)
+    }
+
+    fn edit(
+        workspace: WorkspaceId,
+        document: DocumentId,
+        sequence: u64,
+        update_v1: Vec<u8>,
+    ) -> PendingCrdtEdit {
+        PendingCrdtEdit {
+            operation_id: OperationId::new(),
+            workspace_id: workspace,
+            replica_id: ReplicaId::new(),
+            local_sequence: sequence,
+            created_at: Utc::now(),
+            document,
+            kind: SyncDocumentKind::Scheme,
+            update_v1,
+            touched_items: vec![format!("item-{sequence}")],
+        }
+    }
+
+    /// Queue `n` real deltas for `document`, returning the text they build up.
+    fn queue_deltas(
+        state: &mut LocalSyncState,
+        workspace: WorkspaceId,
+        document: DocumentId,
+        n: u64,
+    ) -> String {
+        let doc = Doc::new();
+        let mut expected = String::new();
+        for sequence in 1..=n {
+            let piece = format!("{sequence} ");
+            expected.push_str(&piece);
+            let delta = text_delta(&doc, &piece);
+            state.push_pending(edit(workspace, document, sequence, delta));
+        }
+        expected
+    }
+
+    fn apply_all(updates: impl IntoIterator<Item = Vec<u8>>) -> String {
+        let doc = Doc::new();
+        let root = doc.get_or_insert_text("body");
+        for update in updates {
+            let mut txn = doc.transact_mut();
+            txn.apply_update(Update::decode_v1(&update).unwrap()).unwrap();
+        }
+        let txn = doc.transact();
+        root.get_string(&txn)
+    }
+
+    #[test]
+    fn a_short_queue_is_left_alone() {
+        let workspace = WorkspaceId::new();
+        let document = DocumentId::new();
+        let mut state = LocalSyncState::default();
+        queue_deltas(&mut state, workspace, document, 4);
+
+        assert_eq!(
+            compact_pending_documents(&mut state, MAX_PENDING_PER_DOCUMENT),
+            0
+        );
+        assert_eq!(state.pending.len(), 4, "nothing to gain from compacting yet");
+    }
+
+    /// The point of the whole exercise: an unsyncable queue stops growing, and
+    /// the one entry left behind still says everything the originals said.
+    #[test]
+    fn an_overfull_queue_merges_without_losing_anything() {
+        let workspace = WorkspaceId::new();
+        let document = DocumentId::new();
+        let mut state = LocalSyncState::default();
+        let expected = queue_deltas(&mut state, workspace, document, 40);
+
+        assert_eq!(
+            compact_pending_documents(&mut state, MAX_PENDING_PER_DOCUMENT),
+            1
+        );
+        let remaining: Vec<&PendingCrdtEdit> = state
+            .pending
+            .iter()
+            .filter(|e| e.document == document)
+            .collect();
+        assert_eq!(remaining.len(), 1);
+        assert_eq!(
+            apply_all([remaining[0].update_v1.clone()]),
+            expected,
+            "the merged update must reproduce exactly what the 40 deltas built"
+        );
+        assert_eq!(
+            remaining[0].touched_items.len(),
+            40,
+            "touched items carry the union, for the epoch adoption rescue"
+        );
+    }
+
+    /// Compaction must not touch a document still within its budget — each is
+    /// bounded on its own.
+    #[test]
+    fn other_documents_keep_their_queued_deltas() {
+        let workspace = WorkspaceId::new();
+        let (busy, quiet) = (DocumentId::new(), DocumentId::new());
+        let mut state = LocalSyncState::default();
+        queue_deltas(&mut state, workspace, busy, 40);
+        let quiet_text = queue_deltas(&mut state, workspace, quiet, 3);
+
+        compact_pending_documents(&mut state, MAX_PENDING_PER_DOCUMENT);
+        let kept: Vec<Vec<u8>> = state
+            .pending
+            .iter()
+            .filter(|e| e.document == quiet)
+            .map(|e| e.update_v1.clone())
+            .collect();
+        assert_eq!(kept.len(), 3);
+        assert_eq!(apply_all(kept), quiet_text);
+    }
+
+    #[test]
+    fn the_queue_stays_ordered_by_local_sequence() {
+        let workspace = WorkspaceId::new();
+        let (busy, other) = (DocumentId::new(), DocumentId::new());
+        let mut state = LocalSyncState::default();
+        queue_deltas(&mut state, workspace, busy, 40);
+        state.push_pending(edit(workspace, other, 41, vec![0, 0]));
+
+        compact_pending_documents(&mut state, MAX_PENDING_PER_DOCUMENT);
+        let sequences: Vec<u64> = state.pending.iter().map(|e| e.local_sequence).collect();
+        let mut sorted = sequences.clone();
+        sorted.sort_unstable();
+        assert_eq!(sequences, sorted, "push order must follow local_sequence");
+    }
+
+    /// Stable: otherwise every later edit would pay to merge again.
+    #[test]
+    fn compacting_again_is_a_no_op() {
+        let workspace = WorkspaceId::new();
+        let document = DocumentId::new();
+        let mut state = LocalSyncState::default();
+        queue_deltas(&mut state, workspace, document, 40);
+
+        compact_pending_documents(&mut state, MAX_PENDING_PER_DOCUMENT);
+        let after_first = state.pending.len();
+        assert_eq!(compact_pending_documents(&mut state, MAX_PENDING_PER_DOCUMENT), 0);
+        assert_eq!(state.pending.len(), after_first);
+    }
+
+    /// Undecodable bytes must be left alone rather than thrown away — a queue we
+    /// cannot compact is slow, but discarding it would lose edits.
+    #[test]
+    fn a_document_that_cannot_be_merged_is_left_intact() {
+        let workspace = WorkspaceId::new();
+        let document = DocumentId::new();
+        let mut state = LocalSyncState::default();
+        for sequence in 1..=40 {
+            state.push_pending(edit(workspace, document, sequence, vec![0xff, 0xff, 0xff]));
+        }
+
+        assert_eq!(compact_pending_documents(&mut state, MAX_PENDING_PER_DOCUMENT), 0);
+        assert_eq!(state.pending.len(), 40);
     }
 }

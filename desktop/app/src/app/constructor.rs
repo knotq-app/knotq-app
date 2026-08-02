@@ -7,7 +7,9 @@ use knotq_storage_json::{load_crdt_state, load_local_sync_state, workspace_path}
 
 use super::auto_update::{spawn_auto_update_task, AutoUpdateUiStatus};
 use super::bootstrap::{load_or_default_settings, load_or_seed};
-use super::services::{spawn_notification_task, spawn_save_task, spawn_timeline_task, AppServiceBus};
+use super::services::{
+    spawn_notification_task, spawn_save_task, spawn_timeline_task, AppServiceBus,
+};
 #[cfg(feature = "accounts")]
 use super::sync_service::spawn_sync_task;
 use super::*;

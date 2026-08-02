@@ -126,18 +126,42 @@ pub fn load_daily_queue_schemes_for_calendar_range(
     Ok(schemes)
 }
 
+/// Whether to print the per-phase cost of a save (`KNOTQ_EDIT_TIMING=1`).
+/// Read once: this sits on the path taken by every edit.
+pub fn edit_timing_enabled() -> bool {
+    static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ENABLED.get_or_init(|| std::env::var_os("KNOTQ_EDIT_TIMING").is_some())
+}
+
 pub fn save_workspace(path: &Path, workspace: &Workspace) -> Result<()> {
+    let timing = edit_timing_enabled();
+    let t0 = std::time::Instant::now();
     let _guard = lock_workspace_save();
     let (base_dir, workspace) = prepare_workspace_save(path, workspace)?;
+    let t1 = std::time::Instant::now();
     for scheme in workspace.schemes.values() {
         write_scheme_file(&base_dir, &workspace, scheme)
             .with_context(|| format!("write scheme {}", scheme.id))?;
     }
     prune_removed_scheme_files(&base_dir, &workspace)?;
+    let t2 = std::time::Instant::now();
 
     let json = write_workspace_index(path, &workspace)?;
+    let t3 = std::time::Instant::now();
     write_daily_backup(&base_dir, &json, &workspace);
+    let t4 = std::time::Instant::now();
     record_history_snapshot(&base_dir);
+    if timing {
+        eprintln!(
+            "  save_workspace: prepare {}ms, {} scheme files {}ms, index {}ms, daily backup {}ms, history {}ms",
+            (t1 - t0).as_millis(),
+            workspace.schemes.len(),
+            (t2 - t1).as_millis(),
+            (t3 - t2).as_millis(),
+            (t4 - t3).as_millis(),
+            t4.elapsed().as_millis()
+        );
+    }
 
     Ok(())
 }
@@ -194,7 +218,10 @@ fn write_workspace_index(path: &Path, workspace: &Workspace) -> Result<String> {
         workspace: WorkspaceIndex::from_workspace_preserving(workspace, existing_daily_queue),
     };
     let json = serde_json::to_string_pretty(&env)?;
-    write_atomic(path, json.as_bytes())?;
+    // An edit to a scheme's items usually leaves the index (names, colours,
+    // folder tree) untouched. The callers still get the JSON back — the daily
+    // backup is written from it — but unchanged bytes need no durable rewrite.
+    write_atomic_if_changed(path, json.as_bytes())?;
     Ok(json)
 }
 
@@ -277,12 +304,47 @@ pub(crate) fn write_atomic(path: &Path, contents: &[u8]) -> Result<()> {
         // a zero-length "complete" file behind.
         file.sync_all()
             .with_context(|| format!("sync {}", tmp.display()))?;
-        fs::rename(&tmp, path).with_context(|| format!("rename {}", path.display()))
+        fs::rename(&tmp, path).with_context(|| format!("rename {}", path.display()))?;
+        // `sync_all` above makes the replacement file durable, but a rename is
+        // a directory operation. Flush the containing directory too so a power
+        // loss cannot leave the old name (or neither name) after callers were
+        // told the atomic save succeeded. `std` cannot do the corresponding
+        // directory flush on Windows; its rename semantics remain the platform
+        // default there, while every Unix target we ship (macOS, Linux, iOS)
+        // gets the stronger guarantee.
+        sync_parent_directory(path)?;
+        Ok(())
     })();
     if write_result.is_err() {
         let _ = fs::remove_file(&tmp);
     }
     write_result
+}
+
+/// Persist `contents` only when it differs from the current file.
+///
+/// Full workspace saves visit every scheme and the workspace index, although a
+/// typical edit changes only one scheme. Keeping this fast path next to the
+/// atomic writer makes it consistent for both kinds of file.
+pub(crate) fn write_atomic_if_changed(path: &Path, contents: &[u8]) -> Result<()> {
+    if fs::read(path).is_ok_and(|existing| existing == contents) {
+        return Ok(());
+    }
+    write_atomic(path, contents)
+}
+
+#[cfg(unix)]
+fn sync_parent_directory(path: &Path) -> Result<()> {
+    let parent = path.parent().unwrap_or_else(|| Path::new("."));
+    fs::File::open(parent)
+        .with_context(|| format!("open directory {}", parent.display()))?
+        .sync_all()
+        .with_context(|| format!("sync directory {}", parent.display()))
+}
+
+#[cfg(not(unix))]
+fn sync_parent_directory(_path: &Path) -> Result<()> {
+    Ok(())
 }
 
 fn ensure_workspace_gitignore(base_dir: &Path) -> Result<()> {
