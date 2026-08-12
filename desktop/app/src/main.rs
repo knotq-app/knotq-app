@@ -18,12 +18,13 @@ use gpui::{
 };
 use gpui_component::{
     input::{IndentInline, MoveDown, MoveUp, OutdentInline},
+    menu::AppMenuBar,
     Root,
 };
 
 use crate::app::{
     initial_window_bounds, load_or_default_settings, KnotQApp, View, DAILY_QUEUE_TITLE,
-    MIN_WINDOW_WIDTH,
+    MIN_WINDOW_HEIGHT, MIN_WINDOW_WIDTH,
 };
 use crate::assets::AppAssets;
 use crate::theme_gpui::{token_hsla, token_rgba, Theme, FONT_UI};
@@ -35,6 +36,7 @@ actions!(
         CloseSearch,
         NavWeekPrev,
         NavWeekNext,
+        ToggleFullscreen,
         QuitApp,
         OpenSettingsView,
         OpenCalendarView,
@@ -99,6 +101,11 @@ impl Render for KnotQApp {
             self._window_bounds_subscription = Some(cx.observe_window_bounds(
                 window,
                 |this: &mut KnotQApp, window, _cx| {
+                    // Fullscreen bounds are display-sized and should not replace
+                    // the user's preferred windowed size and position.
+                    if window.is_fullscreen() {
+                        return;
+                    }
                     let bounds = window.bounds();
                     this.remember_window_bounds(
                         f32::from(bounds.origin.x),
@@ -126,6 +133,7 @@ impl Render for KnotQApp {
             View::Settings => "Settings".to_string(),
         };
         let title_bar = self.render_title_bar(window, view, title, current_scheme_title, t, cx);
+        let app_menu_bar = self.render_app_menu_bar(window, cx);
 
         let sidebar = self.render_sidebar(window, cx);
         let upcoming = self.render_upcoming(cx);
@@ -212,6 +220,9 @@ impl Render for KnotQApp {
                     this.focus_current_editor(window, cx);
                     cx.notify();
                 }))
+                .on_action(cx.listener(|_, _: &ToggleFullscreen, window, _cx| {
+                    window.toggle_fullscreen();
+                }))
                 .on_action(cx.listener(|this, _: &NewItem, window, cx| {
                     if this.search_open {
                         this.close_search(window, cx);
@@ -280,6 +291,7 @@ impl Render for KnotQApp {
                 .on_action(cx.listener(|this, _: &OutdentInline, _window, cx| {
                     this.select_previous_search_result(cx);
                 }))
+                .children(app_menu_bar)
                 .child(title_bar)
                 .child(
                     div()
@@ -334,6 +346,33 @@ impl Render for KnotQApp {
     }
 }
 
+impl KnotQApp {
+    fn render_app_menu_bar(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Option<gpui::AnyElement> {
+        if !should_render_app_menu_bar() {
+            return None;
+        }
+        if self._app_menu_bar.is_none() {
+            self._app_menu_bar = Some(AppMenuBar::new(window, cx));
+        }
+        self._app_menu_bar.clone().map(|menu_bar| {
+            div()
+                .w_full()
+                .h(px(28.0))
+                .flex_shrink_0()
+                .child(menu_bar)
+                .into_any_element()
+        })
+    }
+}
+
+fn should_render_app_menu_bar() -> bool {
+    !cfg!(target_os = "macos")
+}
+
 fn titlebar_options() -> TitlebarOptions {
     if cfg!(target_os = "macos") {
         TitlebarOptions {
@@ -376,8 +415,8 @@ fn sync_component_theme(t: Theme, cx: &mut App) {
 
 /// (Re)installs the OS menu bar. Called at startup and again whenever the UI
 /// language changes, so menu titles re-resolve against the active locale.
-pub(crate) fn set_app_menus(cx: &mut App) {
-    cx.set_menus(vec![
+fn app_menus() -> Vec<Menu> {
+    vec![
         Menu {
             name: "KnotQ".into(),
             items: vec![
@@ -411,12 +450,69 @@ pub(crate) fn set_app_menus(cx: &mut App) {
                 MenuItem::action(knotq_l10n::t("menu.next_week"), NavWeekNext),
             ],
         },
-    ]);
+    ]
+}
+
+pub(crate) fn set_app_menus(cx: &mut App) {
+    cx.set_menus(app_menus());
+}
+
+fn app_key_bindings() -> Vec<KeyBinding> {
+    vec![
+        KeyBinding::new("cmd-q", QuitApp, None),
+        KeyBinding::new("secondary-q", QuitApp, None),
+        KeyBinding::new("cmd-,", OpenSettingsView, None),
+        KeyBinding::new("secondary-,", OpenSettingsView, None),
+        KeyBinding::new("cmd-z", AppUndo, Some("KnotQApp")),
+        KeyBinding::new("cmd-shift-z", AppRedo, Some("KnotQApp")),
+        KeyBinding::new("secondary-z", AppUndo, Some("KnotQApp")),
+        KeyBinding::new("secondary-shift-z", AppRedo, Some("KnotQApp")),
+        KeyBinding::new("secondary-y", AppRedo, Some("KnotQApp")),
+        KeyBinding::new("cmd-z", AppUndo, Some("SchemeEditor")),
+        KeyBinding::new("cmd-shift-z", AppRedo, Some("SchemeEditor")),
+        KeyBinding::new("secondary-z", AppUndo, Some("SchemeEditor")),
+        KeyBinding::new("secondary-shift-z", AppRedo, Some("SchemeEditor")),
+        KeyBinding::new("secondary-y", AppRedo, Some("SchemeEditor")),
+        KeyBinding::new("cmd-n", NewItem, None),
+        KeyBinding::new("secondary-n", NewItem, None),
+        KeyBinding::new("cmd-shift-n", NewFolder, None),
+        KeyBinding::new("secondary-shift-n", NewFolder, None),
+        KeyBinding::new("cmd-f", ToggleSearch, None),
+        KeyBinding::new("secondary-f", ToggleSearch, None),
+        KeyBinding::new("f2", RenameSelectedNode, Some("KnotQApp")),
+        KeyBinding::new("escape", CloseSearch, None),
+        KeyBinding::new("enter", SubmitEventPopup, Some("KnotQApp")),
+        KeyBinding::new("cmd-[", NavWeekPrev, Some("KnotQApp")),
+        KeyBinding::new("secondary-[", NavWeekPrev, Some("KnotQApp")),
+        KeyBinding::new("cmd-]", NavWeekNext, Some("KnotQApp")),
+        KeyBinding::new("secondary-]", NavWeekNext, Some("KnotQApp")),
+        KeyBinding::new("cmd-u", OpenCalendarView, None),
+        KeyBinding::new("secondary-u", OpenCalendarView, None),
+        KeyBinding::new("cmd-d", OpenDailyQueueView, None),
+        KeyBinding::new("secondary-d", OpenDailyQueueView, None),
+        // macOS convention plus a portable Windows/Linux convention.
+        KeyBinding::new("cmd-ctrl-f", ToggleFullscreen, None),
+        KeyBinding::new("f11", ToggleFullscreen, None),
+    ]
+}
+
+fn should_quit_after_window_closed(open_window_count: usize) -> bool {
+    open_window_count == 0
 }
 
 fn main() {
+    #[cfg(windows)]
+    if knotq_notifications::run_windows_secondary_instance_from_env() {
+        return;
+    }
+
     #[cfg(target_os = "linux")]
     if knotq_notifications::run_linux_notification_helper_from_env() {
+        return;
+    }
+
+    #[cfg(target_os = "linux")]
+    if knotq_notifications::run_linux_secondary_instance_from_env() {
         return;
     }
 
@@ -440,31 +536,7 @@ fn main() {
             ];
             let _ = cx.text_system().add_fonts(fonts);
 
-            cx.bind_keys([
-                KeyBinding::new("cmd-q", QuitApp, None),
-                KeyBinding::new("cmd-,", OpenSettingsView, None),
-                KeyBinding::new("cmd-z", AppUndo, Some("KnotQApp")),
-                KeyBinding::new("cmd-shift-z", AppRedo, Some("KnotQApp")),
-                KeyBinding::new("secondary-z", AppUndo, Some("KnotQApp")),
-                KeyBinding::new("secondary-shift-z", AppRedo, Some("KnotQApp")),
-                KeyBinding::new("secondary-y", AppRedo, Some("KnotQApp")),
-                KeyBinding::new("cmd-z", AppUndo, Some("SchemeEditor")),
-                KeyBinding::new("cmd-shift-z", AppRedo, Some("SchemeEditor")),
-                KeyBinding::new("secondary-z", AppUndo, Some("SchemeEditor")),
-                KeyBinding::new("secondary-shift-z", AppRedo, Some("SchemeEditor")),
-                KeyBinding::new("secondary-y", AppRedo, Some("SchemeEditor")),
-                KeyBinding::new("cmd-n", NewItem, None),
-                KeyBinding::new("cmd-shift-n", NewFolder, None),
-                KeyBinding::new("cmd-f", ToggleSearch, None),
-                KeyBinding::new("secondary-f", ToggleSearch, None),
-                KeyBinding::new("f2", RenameSelectedNode, Some("KnotQApp")),
-                KeyBinding::new("escape", CloseSearch, None),
-                KeyBinding::new("enter", SubmitEventPopup, Some("KnotQApp")),
-                KeyBinding::new("cmd-[", NavWeekPrev, Some("KnotQApp")),
-                KeyBinding::new("cmd-]", NavWeekNext, Some("KnotQApp")),
-                KeyBinding::new("cmd-u", OpenCalendarView, None),
-                KeyBinding::new("cmd-d", OpenDailyQueueView, None),
-            ]);
+            cx.bind_keys(app_key_bindings());
 
             cx.on_action(|_: &QuitApp, cx| cx.quit());
             cx.activate(true);
@@ -479,7 +551,10 @@ fn main() {
             let opts = WindowOptions {
                 titlebar: Some(titlebar_options()),
                 window_bounds: Some(WindowBounds::Windowed(initial_bounds)),
-                window_min_size: Some(gpui::size(px(MIN_WINDOW_WIDTH), px(1.0))),
+                window_min_size: Some(gpui::size(
+                    px(MIN_WINDOW_WIDTH),
+                    px(MIN_WINDOW_HEIGHT),
+                )),
                 window_decorations: window_decorations(),
                 ..Default::default()
             };
@@ -487,11 +562,7 @@ fn main() {
             crate::notifications::configure_notification_handling();
             cx.open_window(opts, |window, cx| {
                 let app = cx.new(KnotQApp::new);
-                let weak_app = app.downgrade();
                 window.on_window_should_close(cx, move |_window, cx| {
-                    let _ = weak_app.update(cx, |app, _cx| {
-                        app.flush_for_shutdown("window close");
-                    });
                     cx.quit();
                     true
                 });
@@ -500,9 +571,66 @@ fn main() {
             })
             .unwrap();
 
+            cx.on_window_closed(|cx| {
+                if should_quit_after_window_closed(cx.windows().len()) {
+                    cx.quit();
+                }
+            })
+            .detach();
+
             // Request notification authorization after the window is open and
             // the app is active — macOS requires this to show the permission
             // dialog.
             crate::notifications::request_authorization_nonblocking();
         });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use gpui::{Action, Keystroke};
+
+    fn has_binding(bindings: &[KeyBinding], key: &str, action: &dyn Action) -> bool {
+        let keystroke = Keystroke::parse(key).unwrap();
+        bindings.iter().any(|binding| {
+            binding.action().partial_eq(action)
+                && binding.match_keystrokes(&[keystroke.clone()]) == Some(false)
+        })
+    }
+
+    #[test]
+    fn portable_app_shortcuts_include_ctrl_and_fullscreen_variants() {
+        let bindings = app_key_bindings();
+        for (key, action) in [
+            ("secondary-q", &QuitApp as &dyn Action),
+            ("secondary-,", &OpenSettingsView),
+            ("secondary-n", &NewItem),
+            ("secondary-shift-n", &NewFolder),
+            ("secondary-[", &NavWeekPrev),
+            ("secondary-]", &NavWeekNext),
+            ("secondary-u", &OpenCalendarView),
+            ("secondary-d", &OpenDailyQueueView),
+            ("f11", &ToggleFullscreen),
+        ] {
+            assert!(has_binding(&bindings, key, action), "missing {key}");
+        }
+    }
+
+    #[test]
+    fn non_macos_menu_bar_policy_matches_platform() {
+        assert_eq!(should_render_app_menu_bar(), !cfg!(target_os = "macos"));
+        let menu_names = app_menus()
+            .into_iter()
+            .map(|menu| menu.name.to_string())
+            .collect::<Vec<_>>();
+        assert!(menu_names.iter().any(|name| name == "KnotQ"));
+        assert!(menu_names.len() >= 4);
+    }
+
+    #[test]
+    fn only_last_window_close_quits_application() {
+        assert!(should_quit_after_window_closed(0));
+        assert!(!should_quit_after_window_closed(1));
+        assert!(!should_quit_after_window_closed(2));
+    }
 }

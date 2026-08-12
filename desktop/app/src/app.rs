@@ -563,6 +563,7 @@ pub const DAILY_QUEUE_COLOR_INDEX: u8 = 0;
 pub const DEFAULT_WINDOW_WIDTH: f32 = 1250.0;
 pub const DEFAULT_WINDOW_HEIGHT: f32 = 750.0;
 pub const MIN_WINDOW_WIDTH: f32 = 800.0;
+pub const MIN_WINDOW_HEIGHT: f32 = 500.0;
 // Page older days in two-week chunks (matching the initial render window) so
 // each scroll-back expansion only materializes a couple weeks of editors at a
 // time rather than a whole month in a single frame.
@@ -727,6 +728,8 @@ pub struct KnotQApp {
     pub _search_subscription: Option<Subscription>,
     pub _appearance_subscription: Option<Subscription>,
     pub _window_bounds_subscription: Option<Subscription>,
+    /// Windows and Linux render GPUI's application menu model in-window.
+    pub _app_menu_bar: Option<Entity<gpui_component::menu::AppMenuBar>>,
     pub _quit_subscription: Subscription,
     pub show_onboarding: bool,
     #[cfg(feature = "accounts")]

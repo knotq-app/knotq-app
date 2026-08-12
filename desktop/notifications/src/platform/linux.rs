@@ -1,7 +1,8 @@
 use crate::action_payload::request_has_action_payload;
+use crate::response::wake_notification_response_listeners;
 use crate::{
-    dispatch_response, AuthorizationStatus, Error, NotificationRequest, NotificationResponse,
-    PlatformStatus, Result, ACTION_MARK_DONE, NOTIFICATION_SNOOZE_ACTIONS,
+    AuthorizationStatus, Error, NotificationRequest, NotificationResponse, PlatformStatus, Result,
+    ACTION_MARK_DONE, NOTIFICATION_SNOOZE_ACTIONS,
 };
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
@@ -15,6 +16,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Condvar, Mutex, OnceLock};
 use std::time::Duration as StdDuration;
 use zbus::blocking::{Connection, MessageIterator, Proxy};
+use zbus::fdo::{RequestNameFlags, RequestNameReply};
 use zbus::message::Type as MessageType;
 use zbus::zvariant::Value;
 use zbus::MatchRule;
@@ -27,6 +29,10 @@ const HELPER_PATH: &str = "/com/enigmadux/KnotQ/NotificationHelper";
 const HELPER_INTERFACE: &str = "com.enigmadux.KnotQ.NotificationHelper";
 const HELPER_SIGNAL_SCHEDULE_CHANGED: &str = "ScheduleChanged";
 const HELPER_ARG: &str = "--knotq-notification-helper";
+const APP_BUS_NAME: &str = "com.enigmadux.KnotQ.Application";
+const APP_PATH: &str = "/com/enigmadux/KnotQ/Application";
+const APP_INTERFACE: &str = "com.enigmadux.KnotQ.Application";
+const APP_SIGNAL_ACTIVATE: &str = "Activate";
 const APP_NAME: &str = "KnotQ";
 const APP_ICON: &str = "knotq";
 const DURABLE_STATE_FILE: &str = "linux_notification_schedule.json";
@@ -40,6 +46,14 @@ const TIMER_CLOCK_REFRESH: StdDuration = StdDuration::from_secs(60 * 60);
 
 static FALLBACK_STATE: OnceLock<Mutex<FallbackNotificationState>> = OnceLock::new();
 static ACTION_LISTENER_STARTED: AtomicBool = AtomicBool::new(false);
+static APP_INSTANCE_CONNECTION: OnceLock<Connection> = OnceLock::new();
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum InstanceRole {
+    Primary,
+    Secondary,
+    Unmanaged,
+}
 
 #[derive(Default)]
 struct FallbackNotificationState {
@@ -54,6 +68,8 @@ struct PendingEntry {
 struct DurableNotificationState {
     pending: BTreeMap<String, NotificationRequest>,
     delivered: BTreeMap<String, DurableDeliveredNotification>,
+    #[serde(default)]
+    responses: Vec<NotificationResponse>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -138,6 +154,7 @@ impl FileLock {
     fn acquire(path: &Path) -> Result<Self> {
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent).map_err(io_error)?;
+            secure_data_directory(parent)?;
         }
         let file = OpenOptions::new()
             .create(true)
@@ -145,6 +162,7 @@ impl FileLock {
             .write(true)
             .open(path)
             .map_err(io_error)?;
+        secure_data_file(path)?;
         let rc = unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX) };
         if rc == -1 {
             return Err(io_error(std::io::Error::last_os_error()));
@@ -179,7 +197,8 @@ pub fn authorization_status() -> Result<AuthorizationStatus> {
 }
 
 pub fn configure_notification_handling() {
-    ensure_action_listener();
+    // The durable helper is the sole D-Bus action listener. Having both the app
+    // and helper listen makes a single "Mark done" action race through twice.
 }
 
 pub fn schedule(app_id: &str, request: &NotificationRequest) -> Result<()> {
@@ -188,7 +207,13 @@ pub fn schedule(app_id: &str, request: &NotificationRequest) -> Result<()> {
 }
 
 pub fn deliver_now(app_id: &str, request: &NotificationRequest) -> Result<()> {
+    install_autostart_entry()?;
+    ensure_helper_running()?;
     show_notification(app_id, request).map(|_| ())
+}
+
+pub fn take_durable_responses() -> Vec<NotificationResponse> {
+    with_durable_state(|state| std::mem::take(&mut state.responses)).unwrap_or_default()
 }
 
 pub fn cancel(_app_id: &str, ids: &[String]) -> Result<()> {
@@ -317,6 +342,80 @@ pub fn run_helper_from_env() -> bool {
         std::process::exit(1);
     }
     true
+}
+
+pub fn run_secondary_instance_from_env() -> bool {
+    let Ok(connection) = Connection::session() else {
+        // If D-Bus is unavailable, preserve normal startup instead of making
+        // KnotQ impossible to launch on minimal/headless sessions.
+        return false;
+    };
+    let reply = connection
+        .request_name_with_flags(APP_BUS_NAME, RequestNameFlags::DoNotQueue.into())
+        .ok();
+    match instance_role(reply) {
+        InstanceRole::Primary => {
+            let listener_connection = connection.clone();
+            if APP_INSTANCE_CONNECTION.set(connection).is_ok() {
+                spawn_app_activation_listener(listener_connection);
+            }
+            false
+        }
+        InstanceRole::Secondary => {
+            signal_primary_app(&connection);
+            true
+        }
+        InstanceRole::Unmanaged => false,
+    }
+}
+
+fn instance_role(reply: Option<RequestNameReply>) -> InstanceRole {
+    match reply {
+        Some(RequestNameReply::PrimaryOwner | RequestNameReply::AlreadyOwner) => {
+            InstanceRole::Primary
+        }
+        Some(RequestNameReply::Exists | RequestNameReply::InQueue) => InstanceRole::Secondary,
+        None => InstanceRole::Unmanaged,
+    }
+}
+
+fn spawn_app_activation_listener(connection: Connection) {
+    let _ = std::thread::Builder::new()
+        .name("knotq-linux-single-instance".to_string())
+        .spawn(move || {
+            let Ok(builder) = MatchRule::builder()
+                .msg_type(MessageType::Signal)
+                .path(APP_PATH)
+            else {
+                return;
+            };
+            let Ok(builder) = builder.interface(APP_INTERFACE) else {
+                return;
+            };
+            let Ok(builder) = builder.member(APP_SIGNAL_ACTIVATE) else {
+                return;
+            };
+            let rule = builder.build();
+            let Ok(mut messages) = MessageIterator::for_match_rule(rule, &connection, Some(16))
+            else {
+                return;
+            };
+            for message in &mut messages {
+                if message.is_ok() {
+                    wake_notification_response_listeners();
+                }
+            }
+        });
+}
+
+fn signal_primary_app(connection: &Connection) {
+    let _ = connection.emit_signal(
+        None::<&str>,
+        APP_PATH,
+        APP_INTERFACE,
+        APP_SIGNAL_ACTIVATE,
+        &(),
+    );
 }
 
 fn schedule_unchecked(app_id: &str, request: &NotificationRequest) -> Result<()> {
@@ -450,7 +549,6 @@ fn cancel_all_fallback_pending() {
 }
 
 fn show_notification(app_id: &str, request: &NotificationRequest) -> Result<u32> {
-    ensure_action_listener();
     let connection = Connection::session().map_err(dbus_error)?;
     let proxy = notifications_proxy(&connection)?;
     let replaces_id = delivered_remote_id(&request.id).unwrap_or(0);
@@ -557,9 +655,12 @@ fn close_remote_notifications(remote_ids: Vec<u32>) -> Result<()> {
 fn run_helper() -> Result<()> {
     ensure_service_available()?;
     let owner_connection = Connection::session().map_err(dbus_error)?;
-    owner_connection
-        .request_name(HELPER_BUS_NAME)
+    let reply = owner_connection
+        .request_name_with_flags(HELPER_BUS_NAME, RequestNameFlags::DoNotQueue.into())
         .map_err(dbus_error)?;
+    if !owns_requested_name(reply) {
+        return Ok(());
+    }
 
     ensure_action_listener();
     let wake = Arc::new(HelperWake::default());
@@ -581,6 +682,13 @@ fn run_helper() -> Result<()> {
             .min(HELPER_MAX_SLEEP);
         wake.wait(wait);
     }
+}
+
+fn owns_requested_name(reply: RequestNameReply) -> bool {
+    matches!(
+        reply,
+        RequestNameReply::PrimaryOwner | RequestNameReply::AlreadyOwner
+    )
 }
 
 fn take_due_requests(now: DateTime<Utc>) -> Result<Vec<NotificationRequest>> {
@@ -797,8 +905,36 @@ fn dispatch_action(remote_id: u32, action_id: String) {
             })
     });
     if let Some(response) = response {
-        dispatch_response(response);
+        if persist_response(response).is_ok() {
+            launch_main_app();
+        }
     }
+}
+
+fn persist_response(response: NotificationResponse) -> Result<()> {
+    with_durable_state(|state| enqueue_response(state, response))
+}
+
+fn enqueue_response(state: &mut DurableNotificationState, response: NotificationResponse) {
+    let duplicate = state.responses.iter().any(|existing| {
+        existing.notification_id == response.notification_id
+            && existing.action_id == response.action_id
+            && existing.user_info == response.user_info
+    });
+    if !duplicate {
+        state.responses.push(response);
+    }
+}
+
+fn launch_main_app() {
+    let Ok(exe) = std::env::current_exe() else {
+        return;
+    };
+    let _ = Command::new(exe)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn();
 }
 
 fn forget_remote_notification(remote_id: u32) {
@@ -856,7 +992,18 @@ fn write_atomic(path: &Path, contents: &[u8]) -> Result<()> {
     }
     let tmp = path.with_extension("tmp");
     fs::write(&tmp, contents).map_err(io_error)?;
+    secure_data_file(&tmp)?;
     fs::rename(&tmp, path).map_err(io_error)
+}
+
+fn secure_data_directory(path: &Path) -> Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+    fs::set_permissions(path, fs::Permissions::from_mode(0o700)).map_err(io_error)
+}
+
+fn secure_data_file(path: &Path) -> Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+    fs::set_permissions(path, fs::Permissions::from_mode(0o600)).map_err(io_error)
 }
 
 fn ensure_service_available() -> Result<()> {
@@ -895,10 +1042,21 @@ fn autostart_path() -> PathBuf {
 }
 
 fn data_dir() -> PathBuf {
-    if let Ok(home) = std::env::var("HOME") {
-        return PathBuf::from(home).join(".local/share/knotq");
+    if let Some(dir) = linux_data_dir(std::env::var_os("XDG_DATA_HOME"), std::env::var_os("HOME")) {
+        return dir;
     }
     PathBuf::from(".")
+}
+
+fn linux_data_dir(
+    xdg: Option<std::ffi::OsString>,
+    home: Option<std::ffi::OsString>,
+) -> Option<PathBuf> {
+    if let Some(xdg) = xdg.filter(|value| !value.is_empty()) {
+        return Some(PathBuf::from(xdg).join("knotq"));
+    }
+    home.map(PathBuf::from)
+        .map(|path| path.join(".local/share/knotq"))
 }
 
 fn config_dir() -> PathBuf {
@@ -931,4 +1089,83 @@ fn dbus_error(error: zbus::Error) -> Error {
 
 fn io_error(error: std::io::Error) -> Error {
     Error::Platform(error.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn response() -> NotificationResponse {
+        NotificationResponse {
+            notification_id: "notification-1".into(),
+            action_id: ACTION_MARK_DONE.into(),
+            user_info: BTreeMap::from([("item_id".into(), "item-1".into())]),
+        }
+    }
+
+    #[test]
+    fn durable_action_handoff_is_deduplicated_and_drained_once() {
+        let mut state = DurableNotificationState::default();
+        enqueue_response(&mut state, response());
+        enqueue_response(&mut state, response());
+        assert_eq!(state.responses.len(), 1);
+
+        let encoded = serde_json::to_vec(&state).unwrap();
+        let mut state: DurableNotificationState = serde_json::from_slice(&encoded).unwrap();
+        let drained = std::mem::take(&mut state.responses);
+        assert_eq!(drained, vec![response()]);
+        assert!(state.responses.is_empty());
+    }
+
+    #[test]
+    fn instance_decision_exits_only_when_primary_name_is_taken() {
+        assert_eq!(
+            instance_role(Some(RequestNameReply::PrimaryOwner)),
+            InstanceRole::Primary
+        );
+        assert_eq!(
+            instance_role(Some(RequestNameReply::Exists)),
+            InstanceRole::Secondary
+        );
+        assert_eq!(instance_role(None), InstanceRole::Unmanaged);
+    }
+
+    #[test]
+    fn duplicate_helper_does_not_enter_delivery_loop() {
+        assert!(owns_requested_name(RequestNameReply::PrimaryOwner));
+        assert!(owns_requested_name(RequestNameReply::AlreadyOwner));
+        assert!(!owns_requested_name(RequestNameReply::Exists));
+        assert!(!owns_requested_name(RequestNameReply::InQueue));
+    }
+
+    #[test]
+    fn durable_notification_path_honors_nonempty_xdg_home() {
+        assert_eq!(
+            linux_data_dir(Some("/xdg".into()), Some("/home/user".into())),
+            Some(PathBuf::from("/xdg/knotq"))
+        );
+    }
+
+    #[test]
+    fn durable_notification_files_are_private() {
+        use std::os::unix::fs::PermissionsExt;
+        let root = std::env::temp_dir().join(format!(
+            "knotq-notification-permissions-{}",
+            std::process::id()
+        ));
+        let path = root.join("state.json");
+        fs::create_dir_all(&root).unwrap();
+        secure_data_directory(&root).unwrap();
+        fs::write(&path, b"{}").unwrap();
+        secure_data_file(&path).unwrap();
+        assert_eq!(
+            fs::metadata(&root).unwrap().permissions().mode() & 0o777,
+            0o700
+        );
+        assert_eq!(
+            fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+        fs::remove_dir_all(root).ok();
+    }
 }

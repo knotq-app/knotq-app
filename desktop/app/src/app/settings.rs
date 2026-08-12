@@ -4,7 +4,9 @@ use knotq_storage_json::{
     NotificationDefaults, SavedWindowPosition, SavedWindowSize, ThemeMode, TimeFormat,
 };
 
-use super::{KnotQApp, DEFAULT_WINDOW_HEIGHT, DEFAULT_WINDOW_WIDTH, MIN_WINDOW_WIDTH};
+use super::{
+    KnotQApp, DEFAULT_WINDOW_HEIGHT, DEFAULT_WINDOW_WIDTH, MIN_WINDOW_HEIGHT, MIN_WINDOW_WIDTH,
+};
 use crate::theme_gpui::{all_themes, Theme};
 
 impl KnotQApp {
@@ -73,6 +75,8 @@ impl KnotQApp {
         apply_language_setting(self.settings.language.as_deref());
         self.save_app_settings();
         crate::set_app_menus(cx);
+        // The non-macOS menu bar snapshots the menu model when constructed.
+        self._app_menu_bar = None;
         cx.refresh_windows();
         cx.notify();
     }
@@ -106,7 +110,7 @@ impl KnotQApp {
         }
         let next_size = SavedWindowSize {
             width: width.max(MIN_WINDOW_WIDTH).round(),
-            height: height.max(1.0).round(),
+            height: height.max(MIN_WINDOW_HEIGHT).round(),
         };
         let next_position = if x.is_finite() && y.is_finite() {
             Some(SavedWindowPosition {
@@ -168,7 +172,7 @@ pub fn initial_window_size(settings: &AppSettings) -> SavedWindowSize {
     });
     SavedWindowSize {
         width: size.width.max(MIN_WINDOW_WIDTH).round(),
-        height: size.height.max(1.0).round(),
+        height: size.height.max(MIN_WINDOW_HEIGHT).round(),
     }
 }
 
@@ -188,4 +192,26 @@ pub fn initial_window_bounds(settings: &AppSettings, cx: &App) -> Bounds<Pixels>
         }
     }
     Bounds::centered(None, size, cx)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn restored_window_size_is_clamped_to_usable_minimum() {
+        let mut settings = AppSettings::default();
+        settings.window_size = Some(SavedWindowSize {
+            width: 320.0,
+            height: 1.0,
+        });
+
+        assert_eq!(
+            initial_window_size(&settings),
+            SavedWindowSize {
+                width: MIN_WINDOW_WIDTH,
+                height: MIN_WINDOW_HEIGHT,
+            }
+        );
+    }
 }

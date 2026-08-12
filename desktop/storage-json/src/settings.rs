@@ -37,6 +37,7 @@ pub fn load_app_settings(path: &Path) -> Result<AppSettings> {
 pub fn save_app_settings(path: &Path, settings: &AppSettings) -> Result<()> {
     if let Some(dir) = path.parent() {
         fs::create_dir_all(dir).ok();
+        secure_directory_permissions(dir)?;
     }
     // Work on a clone so the live in-memory settings keep their tokens; only the
     // serialized copy is redacted.
@@ -48,6 +49,31 @@ pub fn save_app_settings(path: &Path, settings: &AppSettings) -> Result<()> {
     };
     let json = serde_json::to_string_pretty(&env)?;
     write_atomic(path, json.as_bytes())?;
+    secure_file_permissions(path)?;
+    Ok(())
+}
+
+#[cfg(unix)]
+fn secure_directory_permissions(path: &Path) -> Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+    fs::set_permissions(path, fs::Permissions::from_mode(0o700))
+        .with_context(|| format!("secure {}", path.display()))
+}
+
+#[cfg(not(unix))]
+fn secure_directory_permissions(_path: &Path) -> Result<()> {
+    Ok(())
+}
+
+#[cfg(unix)]
+fn secure_file_permissions(path: &Path) -> Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+    fs::set_permissions(path, fs::Permissions::from_mode(0o600))
+        .with_context(|| format!("secure {}", path.display()))
+}
+
+#[cfg(not(unix))]
+fn secure_file_permissions(_path: &Path) -> Result<()> {
     Ok(())
 }
 
@@ -135,7 +161,9 @@ mod tests {
     use super::*;
 
     fn temp_settings_path() -> std::path::PathBuf {
-        std::env::temp_dir().join(format!("knotq-settings-test-{}.json", Uuid::new_v4()))
+        std::env::temp_dir()
+            .join(format!("knotq-settings-test-{}", Uuid::new_v4()))
+            .join("settings.json")
     }
 
     fn sync_account(bearer: &str, refresh: &str) -> SyncAccountSettings {
@@ -204,6 +232,22 @@ mod tests {
             ..Default::default()
         };
         save_app_settings(&path, &settings).unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(
+                fs::metadata(path.parent().unwrap())
+                    .unwrap()
+                    .permissions()
+                    .mode()
+                    & 0o777,
+                0o700
+            );
+            assert_eq!(
+                fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+                0o600
+            );
+        }
 
         let raw = fs::read_to_string(&path).unwrap();
         assert!(
@@ -230,7 +274,7 @@ mod tests {
         let g = &loaded.google_accounts[0];
         assert_eq!(g.access_token, "GOOGLE-ACCESS");
         assert_eq!(g.refresh_token, "GOOGLE-REFRESH");
-        fs::remove_file(&path).ok();
+        fs::remove_dir_all(path.parent().unwrap()).ok();
 
         // 2. With the keychain disabled, tokens stay in the file and round-trip.
         let path = temp_settings_path();
@@ -248,6 +292,6 @@ mod tests {
         let loaded = load_app_settings(&path).unwrap();
         assert_eq!(loaded.sync_account.unwrap().bearer_token, "INFILE-BEARER");
         std::env::remove_var("KNOTQ_DISABLE_KEYCHAIN");
-        fs::remove_file(&path).ok();
+        fs::remove_dir_all(path.parent().unwrap()).ok();
     }
 }

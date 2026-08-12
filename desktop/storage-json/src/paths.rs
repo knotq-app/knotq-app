@@ -38,19 +38,51 @@ pub fn data_dir() -> PathBuf {
     }
 
     #[cfg(not(target_os = "windows"))]
+    #[cfg(all(not(target_os = "macos"), not(target_os = "windows")))]
+    if let Some(dir) = linux_data_dir(std::env::var_os("XDG_DATA_HOME"), std::env::var_os("HOME")) {
+        return dir;
+    }
+
+    #[cfg(not(target_os = "windows"))]
     if let Ok(home) = std::env::var("HOME") {
         #[cfg(target_os = "macos")]
         {
             let home = PathBuf::from(home);
             return home.join("Library/Application Support/KnotQ");
         }
-        #[cfg(all(not(target_os = "macos"), not(target_os = "windows")))]
-        {
-            let home = PathBuf::from(home);
-            return home.join(".local/share/knotq");
-        }
     }
     PathBuf::from(".")
+}
+
+#[cfg(all(not(target_os = "macos"), not(target_os = "windows")))]
+fn linux_data_dir(
+    xdg: Option<std::ffi::OsString>,
+    home: Option<std::ffi::OsString>,
+) -> Option<PathBuf> {
+    xdg.filter(|value| !value.is_empty())
+        .map(PathBuf::from)
+        .map(|path| path.join("knotq"))
+        .or_else(|| {
+            home.map(PathBuf::from)
+                .map(|path| path.join(".local/share/knotq"))
+        })
+}
+
+#[cfg(all(test, not(target_os = "macos"), not(target_os = "windows")))]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn linux_data_path_honors_nonempty_xdg_home() {
+        assert_eq!(
+            linux_data_dir(Some("/xdg".into()), Some("/home/user".into())),
+            Some(PathBuf::from("/xdg/knotq"))
+        );
+        assert_eq!(
+            linux_data_dir(Some("".into()), Some("/home/user".into())),
+            Some(PathBuf::from("/home/user/.local/share/knotq"))
+        );
+    }
 }
 
 pub fn image_assets_dir() -> PathBuf {

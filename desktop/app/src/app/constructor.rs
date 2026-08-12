@@ -211,6 +211,7 @@ impl KnotQApp {
             _search_subscription: None,
             _appearance_subscription: None,
             _window_bounds_subscription: None,
+            _app_menu_bar: None,
             _quit_subscription: quit_subscription,
             show_onboarding: needs_onboarding,
             #[cfg(feature = "accounts")]
