@@ -600,26 +600,58 @@ pub(crate) fn write_http_response(stream: &mut TcpStream, body: &str) -> std::io
     )
 }
 
+#[cfg(not(target_os = "windows"))]
 pub(crate) fn open_browser(url: &str) -> Result<()> {
     let mut command = open_browser_command(url);
     command.spawn().context("open URL in browser")?;
     Ok(())
 }
 
+#[cfg(target_os = "windows")]
+pub(crate) fn open_browser(url: &str) -> Result<()> {
+    use windows::core::{w, PCWSTR};
+    use windows::Win32::UI::Shell::ShellExecuteW;
+    use windows::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL;
+
+    let url = windows_wide_string(url)?;
+    // ShellExecuteW with the `open` verb invokes the registered HTTPS handler.
+    // `explorer.exe <url>` is not equivalent: Explorer may interpret the URL as
+    // a filesystem location and open Documents instead of the default browser.
+    let result = unsafe {
+        ShellExecuteW(
+            None,
+            w!("open"),
+            PCWSTR(url.as_ptr()),
+            PCWSTR::null(),
+            PCWSTR::null(),
+            SW_SHOWNORMAL,
+        )
+    };
+    let code = result.0 as isize;
+    if !shell_execute_succeeded(code) {
+        anyhow::bail!("Windows could not open the default browser (ShellExecuteW code {code})");
+    }
+    Ok(())
+}
+
+#[cfg(target_os = "windows")]
+fn windows_wide_string(value: &str) -> Result<Vec<u16>> {
+    if value.contains('\0') {
+        anyhow::bail!("URL contains a NUL character");
+    }
+    Ok(value.encode_utf16().chain(std::iter::once(0)).collect())
+}
+
+#[cfg(target_os = "windows")]
+fn shell_execute_succeeded(code: isize) -> bool {
+    code > 32
+}
+
+#[cfg(not(target_os = "windows"))]
 fn open_browser_command(url: &str) -> Command {
     #[cfg(target_os = "macos")]
     let command = {
         let mut command = Command::new("open");
-        command.arg(url);
-        command
-    };
-
-    #[cfg(target_os = "windows")]
-    let command = {
-        // Invoke Explorer directly instead of routing the URL through `cmd /C
-        // start`. OAuth and sync URLs contain `&` query separators; cmd treats
-        // those as command delimiters unless every URL is shell-escaped.
-        let mut command = Command::new("explorer.exe");
         command.arg(url);
         command
     };
@@ -638,22 +670,33 @@ fn open_browser_command(url: &str) -> Command {
 
 #[cfg(test)]
 mod browser_command_tests {
-    use super::open_browser_command;
-
     const AUTH_URL: &str = "https://www.knotq.com/signin?redirect_uri=http%3A%2F%2F127.0.0.1%3A43129&state=state&code_challenge=challenge&code_challenge_method=S256";
 
     #[cfg(target_os = "windows")]
     #[test]
-    fn windows_opens_urls_without_a_command_shell() {
-        let command = open_browser_command(AUTH_URL);
-        assert_eq!(command.get_program(), "explorer.exe");
-        assert_eq!(command.get_args().collect::<Vec<_>>(), [AUTH_URL]);
+    fn windows_preserves_the_complete_url_for_shell_execute() {
+        let wide = super::windows_wide_string(AUTH_URL).unwrap();
+        assert_eq!(wide.last(), Some(&0));
+        assert_eq!(String::from_utf16(&wide[..wide.len() - 1]).unwrap(), AUTH_URL);
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn windows_shell_execute_result_uses_documented_success_boundary() {
+        assert!(!super::shell_execute_succeeded(32));
+        assert!(super::shell_execute_succeeded(33));
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn windows_rejects_embedded_nul_before_calling_shell_execute() {
+        assert!(super::windows_wide_string("https://knotq.com/\0bad").is_err());
     }
 
     #[cfg(target_os = "macos")]
     #[test]
     fn macos_passes_the_full_url_to_open() {
-        let command = open_browser_command(AUTH_URL);
+        let command = super::open_browser_command(AUTH_URL);
         assert_eq!(command.get_program(), "open");
         assert_eq!(command.get_args().collect::<Vec<_>>(), [AUTH_URL]);
     }
@@ -661,7 +704,7 @@ mod browser_command_tests {
     #[cfg(all(unix, not(target_os = "macos")))]
     #[test]
     fn linux_passes_the_full_url_to_xdg_open() {
-        let command = open_browser_command(AUTH_URL);
+        let command = super::open_browser_command(AUTH_URL);
         assert_eq!(command.get_program(), "xdg-open");
         assert_eq!(command.get_args().collect::<Vec<_>>(), [AUTH_URL]);
     }
