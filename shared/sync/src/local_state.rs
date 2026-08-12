@@ -488,14 +488,31 @@ pub fn queue_workspace_bootstrap_updates(
 /// already pushed to the previous account never reaches the new one — the cross-account
 /// content gap (a device shows lines the new account never receives). Full snapshots
 /// union idempotently on the server, and with deterministic item creation items dedupe
-/// rather than duplicate. Call on a detected account switch, before the pull; the
-/// bootstrap then treats these queued snapshots as valid pending and does not re-queue.
+/// rather than duplicate. Call after pulling the destination workspace;
+/// `excluded_documents` contains documents that pull could not safely merge and
+/// therefore must not be re-seeded from an incompatible account history.
 pub fn queue_account_switch_reseed(
     sync_state: &mut LocalSyncState,
     crdt: &WorkspaceCrdtDocuments,
     workspace: &Workspace,
     replica_id: ReplicaId,
+    excluded_documents: &HashSet<DocumentId>,
 ) {
+    // Pending scheme edits survive the cursor reset so local content can follow the
+    // user to the destination account. After its workspace index has been pulled,
+    // however, a scheme absent from that merged index is an orphan (for example a
+    // source-only scheme that the destination history already tombstoned). Never
+    // push such a document: its destination base may legitimately be schema-less,
+    // and it is no longer addressable from the workspace in any case.
+    let indexed_scheme_documents: HashSet<DocumentId> = workspace
+        .scheme_sync
+        .values()
+        .map(|metadata| metadata.id)
+        .collect();
+    sync_state.pending.retain(|edit| {
+        edit.kind != SyncDocumentKind::Scheme || indexed_scheme_documents.contains(&edit.document)
+    });
+
     let mut next_sequence = sync_state
         .pending
         .iter()
@@ -504,7 +521,10 @@ pub fn queue_account_switch_reseed(
         .unwrap_or(0)
         + 1;
     for update in crdt.full_snapshot_updates().updates {
-        if update.kind != SyncDocumentKind::Scheme {
+        if update.kind != SyncDocumentKind::Scheme
+            || !indexed_scheme_documents.contains(&update.document)
+            || excluded_documents.contains(&update.document)
+        {
             continue;
         }
         sync_state.push_pending(PendingCrdtEdit {
@@ -632,9 +652,17 @@ fn merge_document_pending(
 
 #[cfg(test)]
 mod account_change_tests {
-    use super::{DocumentSyncCursor, LocalSyncState, MediaSyncCursor, PendingCrdtEdit};
+    use std::collections::HashSet;
+
+    use super::{
+        queue_account_switch_reseed, DocumentSyncCursor, LocalSyncState, MediaSyncCursor,
+        PendingCrdtEdit,
+    };
+    use crate::WorkspaceCrdtDocuments;
     use chrono::Utc;
-    use knotq_model::{DocumentId, OperationId, ReplicaId, SyncDocumentKind, WorkspaceId};
+    use knotq_model::{
+        DocumentId, OperationId, ReplicaId, Scheme, SyncDocumentKind, Workspace, WorkspaceId,
+    };
 
     const SERVER_A: &str = "https://a.api.knotq.com";
     const SERVER_B: &str = "https://b.api.knotq.com";
@@ -813,6 +841,27 @@ mod account_change_tests {
         assert!(state.reset_for_account_change(account_b, SERVER_B));
         assert!(state.document_cursors.is_empty());
         assert!(state.media_cursors.is_empty());
+    }
+
+    #[test]
+    fn account_switch_reseed_drops_pending_orphan_scheme_documents() {
+        let mut workspace = Workspace::new();
+        let scheme = Scheme::new("Indexed", 0);
+        let scheme_id = scheme.id;
+        workspace.schemes.insert(scheme_id, scheme);
+        workspace.ensure_sync_metadata();
+        let indexed = workspace.scheme_sync[&scheme_id].id;
+        let orphan = DocumentId::new();
+        let replica = ReplicaId::new();
+        let crdt = WorkspaceCrdtDocuments::try_new(&workspace).unwrap();
+        let mut state = LocalSyncState::default();
+        state.push_pending(pending(workspace.id, indexed, SyncDocumentKind::Scheme));
+        state.push_pending(pending(workspace.id, orphan, SyncDocumentKind::Scheme));
+
+        queue_account_switch_reseed(&mut state, &crdt, &workspace, replica, &HashSet::new());
+
+        assert!(state.pending.iter().any(|edit| edit.document == indexed));
+        assert!(state.pending.iter().all(|edit| edit.document != orphan));
     }
 }
 

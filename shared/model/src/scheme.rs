@@ -98,3 +98,18 @@ fn default_true() -> bool {
 fn is_false(value: &bool) -> bool {
     !*value
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn expanded_palette_index_round_trips_in_existing_scheme_schema() {
+        let scheme = Scheme::new("Colorful", 17);
+        let json = serde_json::to_string(&scheme).unwrap();
+        let decoded: Scheme = serde_json::from_str(&json).unwrap();
+
+        assert_eq!(decoded.color_index, 17);
+        assert!(json.contains("\"color_index\":17"));
+    }
+}

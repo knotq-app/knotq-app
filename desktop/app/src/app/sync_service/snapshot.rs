@@ -113,20 +113,6 @@ pub(super) fn sync_snapshot(snapshot: SyncSnapshot) -> Result<SyncRunResult> {
             update,
         );
     }
-    if account_switched {
-        // Force re-seed this device's scheme content to the new account. The bootstrap
-        // below only re-seeds documents the new server LACKS, so a scheme the new
-        // account already holds from another origin would otherwise never receive this
-        // device's content (the cross-account content gap). Full snapshots union
-        // idempotently; deterministic item creation dedupes items.
-        queue_account_switch_reseed(
-            &mut local_state,
-            &crdt_docs,
-            &workspace,
-            snapshot.replica_id,
-        );
-    }
-
     let mut pushed = Vec::new();
 
     // One batched pull syncs the whole workspace: the server returns the current
@@ -168,6 +154,27 @@ pub(super) fn sync_snapshot(snapshot: SyncSnapshot) -> Result<SyncRunResult> {
             snapshot.replica_id,
             &mut crdt_docs,
         )?;
+    }
+    if account_switched {
+        // Re-seed only after adopting the destination account's workspace index.
+        // Queueing before the pull could retain a source-account-only scheme as an
+        // orphan pending document; if the destination already had a tombstoned base
+        // for that document, the server correctly rejected the orphan snapshot as
+        // schema-invalid. The post-pull CRDT contains both local and destination
+        // history, and the materialized workspace now defines the authoritative set
+        // of scheme documents that may be pushed.
+        let reseed_excluded = pull
+            .skipped
+            .iter()
+            .map(|skipped| skipped.document)
+            .collect();
+        queue_account_switch_reseed(
+            &mut local_state,
+            &crdt_docs,
+            &workspace,
+            snapshot.replica_id,
+            &reseed_excluded,
+        );
     }
 
     upload_local_media_assets(&client, &mut local_state, &workspace, &pull.remote_latest)?;

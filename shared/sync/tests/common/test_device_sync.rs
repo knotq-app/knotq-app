@@ -79,6 +79,29 @@ impl TestDevice {
                 });
             }
         }
+        if self.account_switch_reseed_pending {
+            let reseed_excluded = pull
+                .skipped
+                .iter()
+                .map(|skipped| skipped.document)
+                .collect();
+            knotq_sync::queue_account_switch_reseed(
+                &mut self.local_state,
+                &apply_crdt,
+                &self.workspace,
+                self.replica_id,
+                &reseed_excluded,
+            );
+            self.next_sequence = self
+                .local_state
+                .pending
+                .iter()
+                .map(|edit| edit.local_sequence)
+                .max()
+                .unwrap_or(0)
+                + 1;
+            self.account_switch_reseed_pending = false;
+        }
 
         // remote_latest was captured from the server-authoritative pull above.
         queue_workspace_bootstrap_updates(
@@ -184,6 +207,29 @@ impl TestDevice {
                     touched_items: update.touched_items,
                 });
             }
+        }
+        if self.account_switch_reseed_pending {
+            let reseed_excluded = pull
+                .skipped
+                .iter()
+                .map(|skipped| skipped.document)
+                .collect();
+            knotq_sync::queue_account_switch_reseed(
+                &mut self.local_state,
+                &apply_crdt,
+                &self.workspace,
+                self.replica_id,
+                &reseed_excluded,
+            );
+            self.next_sequence = self
+                .local_state
+                .pending
+                .iter()
+                .map(|edit| edit.local_sequence)
+                .max()
+                .unwrap_or(0)
+                + 1;
+            self.account_switch_reseed_pending = false;
         }
         // remote_latest was captured from the server-authoritative pull above.
         queue_workspace_bootstrap_updates(

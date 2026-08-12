@@ -81,6 +81,12 @@ impl TestDevice {
         self.record_changes(WorkspaceCrdtChangeSet::default().workspace());
     }
 
+    pub fn set_scheme_color(&mut self, scheme_id: SchemeId, color_index: u8) {
+        self.scheme_mut(scheme_id).color_index = color_index;
+        // The palette index lives in the workspace document's node payload.
+        self.record_changes(WorkspaceCrdtChangeSet::default().workspace());
+    }
+
     pub fn add_folder(&mut self, name: &str) -> FolderId {
         let folder = Folder {
             id: FolderId::new(),

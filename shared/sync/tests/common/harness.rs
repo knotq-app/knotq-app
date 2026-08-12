@@ -143,6 +143,10 @@ impl Harness {
         self.device_mut(key).rename_scheme(scheme, name);
     }
 
+    pub fn set_scheme_color(&mut self, key: DeviceKey, scheme: SchemeId, color_index: u8) {
+        self.device_mut(key).set_scheme_color(scheme, color_index);
+    }
+
     pub fn add_folder(&mut self, key: DeviceKey, name: &str) -> FolderId {
         self.device_mut(key).add_folder(name)
     }

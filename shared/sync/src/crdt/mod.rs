@@ -711,6 +711,7 @@ impl WorkspaceCrdtDocuments {
         };
 
         let mut workspace_applied = false;
+        let mut workspace_update_eligible_for_materialization = false;
         for update in updates
             .iter()
             .filter(|update| update.kind == SyncDocumentKind::PersonalWorkspace)
@@ -726,6 +727,7 @@ impl WorkspaceCrdtDocuments {
                 );
                 continue;
             }
+            workspace_update_eligible_for_materialization = true;
             match self.workspace.apply_update_v1(&update.update_v1) {
                 // Only a merge that actually changed the document counts as
                 // applied. An echo of this replica's own push (the server
@@ -746,7 +748,7 @@ impl WorkspaceCrdtDocuments {
         // Defense in depth: the client does not blindly trust remote bytes. After
         // applying remote updates, re-run the same schema validation the server
         // performs before materializing/persisting anything.
-        if workspace_applied {
+        if workspace_update_eligible_for_materialization {
             if let Err(err) = self.workspace.validate() {
                 outcome.push_workspace_error("workspace validation", err);
                 return outcome;
@@ -758,9 +760,21 @@ impl WorkspaceCrdtDocuments {
         // When no workspace update changed the doc (empty batch or pure echo),
         // `outcome.workspace` stays the `current` clone — re-materializing would
         // only re-derive the same content.
-        if workspace_applied {
+        if workspace_update_eligible_for_materialization {
             match self.materialize_workspace(current, &HashSet::new()) {
-                Ok(workspace) => outcome.workspace = workspace,
+                Ok(workspace) => {
+                    // A no-op CRDT merge can still expose stale optimistic UI state:
+                    // the long-lived document may already contain the server's
+                    // resolution while `current` still holds a local color/name/
+                    // folder/archive value. Only replace on a real workspace-index
+                    // mismatch so a true own-push echo remains entirely inert.
+                    if workspace_applied
+                        || workspace_document_snapshot(&workspace)
+                            != workspace_document_snapshot(current)
+                    {
+                        outcome.workspace = workspace;
+                    }
+                }
                 Err(err) => {
                     outcome.push_workspace_error("workspace materialization", err);
                     return outcome;
@@ -812,7 +826,32 @@ impl WorkspaceCrdtDocuments {
                     outcome.applied += 1;
                     touched_schemes.insert(scheme_id);
                 }
-                Ok(false) => {}
+                Ok(false) => {
+                    // A byte-level no-op is usually an echo of this replica's own
+                    // push. It can also be the first update pulled after concurrent
+                    // text edits resolved differently from the optimistic plaintext
+                    // still held by the UI. In that case the CRDT already contains
+                    // the server result, so applying the update changes no structs,
+                    // but skipping materialization would leave the visible workspace
+                    // permanently stale. Compare before opting out: true echoes stay
+                    // cheap and do not disturb active editing.
+                    let visible_items = outcome
+                        .workspace
+                        .schemes
+                        .get(&scheme_id)
+                        .map(|scheme| &scheme.items);
+                    let crdt_items = self
+                        .schemes
+                        .get(&scheme_id)
+                        .and_then(|document| document.scheme_items().ok());
+                    if matches!(
+                        (visible_items, crdt_items.as_ref()),
+                        (Some(visible), Some(authoritative))
+                            if visible.as_slice() != authoritative.as_slice()
+                    ) {
+                        touched_schemes.insert(scheme_id);
+                    }
+                }
                 Err(err) => {
                     let doc_id = update.document;
                     outcome.push_document_error(
@@ -1043,7 +1082,7 @@ struct FolderPayload {
     parent: Option<FolderId>,
 }
 
-#[derive(Deserialize, Serialize)]
+#[derive(Deserialize, PartialEq, Serialize)]
 pub(crate) struct WorkspaceDocumentSnapshot {
     schema: String,
     id: knotq_model::WorkspaceId,
@@ -1060,7 +1099,7 @@ pub(crate) struct WorkspaceDocumentSnapshot {
     folder_sync: Vec<FolderSyncEntry>,
 }
 
-#[derive(Deserialize, Serialize)]
+#[derive(Deserialize, PartialEq, Serialize)]
 struct SchemeWorkspaceEntry {
     id: SchemeId,
     name: String,
@@ -1069,31 +1108,31 @@ struct SchemeWorkspaceEntry {
     source: SchemeSource,
 }
 
-#[derive(Deserialize, Serialize)]
+#[derive(Deserialize, PartialEq, Serialize)]
 struct DailyQueueEntry {
     date: NaiveDate,
     scheme: SchemeId,
 }
 
-#[derive(Deserialize, Serialize)]
+#[derive(Deserialize, PartialEq, Serialize)]
 struct DeletedSchemeOriginEntry {
     scheme: SchemeId,
     origin: DeletedSchemeOrigin,
 }
 
-#[derive(Deserialize, Serialize)]
+#[derive(Deserialize, PartialEq, Serialize)]
 struct DeletedFolderOriginEntry {
     folder: FolderId,
     origin: DeletedFolderOrigin,
 }
 
-#[derive(Deserialize, Serialize)]
+#[derive(Deserialize, PartialEq, Serialize)]
 struct SchemeSyncEntry {
     scheme: SchemeId,
     sync: SyncDocumentMeta,
 }
 
-#[derive(Deserialize, Serialize)]
+#[derive(Deserialize, PartialEq, Serialize)]
 struct FolderSyncEntry {
     folder: FolderId,
     sync: SyncDocumentMeta,

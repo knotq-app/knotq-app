@@ -228,6 +228,12 @@ pub struct NoticeModal {
     pub button_label: String,
 }
 
+#[derive(Clone, Copy, Debug)]
+pub struct SchemeColorPicker {
+    pub scheme_id: SchemeId,
+    pub anchor: Point<Pixels>,
+}
+
 #[derive(Clone, Debug)]
 pub enum SidebarContextTarget {
     Background,
@@ -578,6 +584,7 @@ pub struct KnotQApp {
     pub(crate) event_popup_title_subscription: Option<Subscription>,
     pub date_popover: Option<DatePickerPopover>,
     pub repeat_popover: Option<RepeatPopover>,
+    pub scheme_color_picker: Option<SchemeColorPicker>,
     pub search_open: bool,
     pub search_input: Option<Entity<InputState>>,
     pub search_selected_index: usize,

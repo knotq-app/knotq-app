@@ -19,6 +19,7 @@ pub mod editor_context_menu;
 pub mod event_popup;
 pub mod modals;
 pub mod repeat_popover;
+pub mod scheme_color_picker;
 pub mod scheme_view;
 pub mod search;
 pub mod settings;

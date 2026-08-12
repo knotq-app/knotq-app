@@ -393,3 +393,66 @@ fn own_push_echo_applies_zero_updates_and_reuses_current_workspace() {
         "current workspace content is reused untouched"
     );
 }
+
+/// A pulled update can be a byte-level no-op while the UI's optimistic plaintext
+/// is stale (for example after concurrent text edits resolved in the CRDT). In that
+/// case the authoritative document must still re-materialize the visible scheme.
+#[test]
+fn no_op_pull_repairs_stale_visible_scheme_content() {
+    let mut workspace = Workspace::new();
+    let scheme_id = add_root_scheme(&mut workspace, "Plan");
+    workspace
+        .schemes
+        .get_mut(&scheme_id)
+        .unwrap()
+        .items
+        .push(Item::new("First"));
+    workspace.ensure_sync_metadata();
+
+    let mut docs = WorkspaceCrdtDocuments::try_new(&workspace).unwrap();
+    let mut authoritative = workspace.clone();
+    authoritative.schemes.get_mut(&scheme_id).unwrap().items[0].set_text("Merged server text");
+    let pushed = docs
+        .sync_changes(
+            &authoritative,
+            &WorkspaceCrdtChangeSet::default().touch_scheme(scheme_id),
+        )
+        .updates;
+
+    // `docs` already contains `pushed`, so applying it again is a CRDT no-op. The
+    // materialized workspace intentionally remains stale to model the UI race.
+    let outcome = docs.apply_remote_updates(&workspace, &stored_updates(workspace.id, pushed));
+
+    assert!(outcome.is_ok(), "{:?}", outcome.document_errors);
+    assert_eq!(outcome.applied, 0, "the CRDT update itself is an echo");
+    assert_eq!(
+        outcome.workspace.schemes[&scheme_id].items[0].text(),
+        "Merged server text"
+    );
+}
+
+#[test]
+fn no_op_workspace_pull_repairs_stale_visible_scheme_color_and_name() {
+    let mut workspace = Workspace::new();
+    let scheme_id = add_root_scheme(&mut workspace, "Local name");
+    workspace.ensure_sync_metadata();
+
+    let mut docs = WorkspaceCrdtDocuments::try_new(&workspace).unwrap();
+    let mut authoritative = workspace.clone();
+    let scheme = authoritative.schemes.get_mut(&scheme_id).unwrap();
+    scheme.name = "Merged name".to_string();
+    scheme.color_index = 17;
+    let pushed = docs
+        .sync_changes(
+            &authoritative,
+            &WorkspaceCrdtChangeSet::default().workspace(),
+        )
+        .updates;
+
+    let outcome = docs.apply_remote_updates(&workspace, &stored_updates(workspace.id, pushed));
+
+    assert!(outcome.is_ok(), "{:?}", outcome.workspace_errors);
+    assert_eq!(outcome.applied, 0, "the CRDT update itself is an echo");
+    assert_eq!(outcome.workspace.schemes[&scheme_id].name, "Merged name");
+    assert_eq!(outcome.workspace.schemes[&scheme_id].color_index, 17);
+}

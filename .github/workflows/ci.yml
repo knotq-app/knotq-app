@@ -89,3 +89,26 @@ jobs:
 
       - name: Test workspace
         run: cargo test --workspace
+
+  sync-fuzz:
+    name: Deep sync fuzz
+    runs-on: ubuntu-24.04
+    env:
+      KNOTQ_FUZZ_SEEDS: 100
+      KNOTQ_FUZZ_STEPS: 240
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        continue-on-error: true
+        with:
+          key: sync-fuzz
+
+      - name: Run model-based multi-device sync fuzzer
+        run: cargo test -p knotq-sync --test sync_property_model -- --nocapture
+
+      - name: Run deterministic hard-scenario fuzzer
+        run: cargo test -p knotq-sync --test hard_scenarios scenario_l_randomized_fuzz_seeds -- --exact --nocapture
