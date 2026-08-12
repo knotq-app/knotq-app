@@ -601,29 +601,70 @@ pub(crate) fn write_http_response(stream: &mut TcpStream, body: &str) -> std::io
 }
 
 pub(crate) fn open_browser(url: &str) -> Result<()> {
+    let mut command = open_browser_command(url);
+    command.spawn().context("open URL in browser")?;
+    Ok(())
+}
+
+fn open_browser_command(url: &str) -> Command {
     #[cfg(target_os = "macos")]
-    let mut command = {
+    let command = {
         let mut command = Command::new("open");
         command.arg(url);
         command
     };
 
     #[cfg(target_os = "windows")]
-    let mut command = {
-        let mut command = Command::new("cmd");
-        command.args(["/C", "start", "", url]);
+    let command = {
+        // Invoke Explorer directly instead of routing the URL through `cmd /C
+        // start`. OAuth and sync URLs contain `&` query separators; cmd treats
+        // those as command delimiters unless every URL is shell-escaped.
+        let mut command = Command::new("explorer.exe");
+        command.arg(url);
         command
     };
 
     #[cfg(all(unix, not(target_os = "macos")))]
-    let mut command = {
+    let command = {
+        // `xdg-open` is spawned directly, not through a shell, so query-string
+        // separators such as `&` remain part of this one argument.
         let mut command = Command::new("xdg-open");
         command.arg(url);
         command
     };
 
-    command.spawn().context("open URL in browser")?;
-    Ok(())
+    command
+}
+
+#[cfg(test)]
+mod browser_command_tests {
+    use super::open_browser_command;
+
+    const AUTH_URL: &str = "https://www.knotq.com/signin?redirect_uri=http%3A%2F%2F127.0.0.1%3A43129&state=state&code_challenge=challenge&code_challenge_method=S256";
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn windows_opens_urls_without_a_command_shell() {
+        let command = open_browser_command(AUTH_URL);
+        assert_eq!(command.get_program(), "explorer.exe");
+        assert_eq!(command.get_args().collect::<Vec<_>>(), [AUTH_URL]);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn macos_passes_the_full_url_to_open() {
+        let command = open_browser_command(AUTH_URL);
+        assert_eq!(command.get_program(), "open");
+        assert_eq!(command.get_args().collect::<Vec<_>>(), [AUTH_URL]);
+    }
+
+    #[cfg(all(unix, not(target_os = "macos")))]
+    #[test]
+    fn linux_passes_the_full_url_to_xdg_open() {
+        let command = open_browser_command(AUTH_URL);
+        assert_eq!(command.get_program(), "xdg-open");
+        assert_eq!(command.get_args().collect::<Vec<_>>(), [AUTH_URL]);
+    }
 }
 
 pub(crate) fn random_token(len: usize) -> String {
