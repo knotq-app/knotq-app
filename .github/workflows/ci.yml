@@ -64,7 +64,9 @@ jobs:
         run: cargo check --workspace
 
       - name: Test workspace
-        run: cargo test --workspace
+        run: |
+          cargo test --workspace
+          sh bundling/tests/linux-installer-layout.sh
 
   check-windows:
     name: Check (Windows)

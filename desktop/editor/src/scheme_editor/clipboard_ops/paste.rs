@@ -1,5 +1,12 @@
 use super::super::*;
 
+fn normalize_clipboard_newlines(text: &str) -> String {
+    // Windows clipboard text conventionally uses CRLF. The editor's buffer is
+    // LF-based, so normalize at the external-text boundary before lines become
+    // item text (and handle the occasional bare CR producer as well).
+    text.replace("\r\n", "\n").replace('\r', "\n")
+}
+
 impl SchemeEditor {
     pub(in crate::scheme_editor) fn paste_text(
         &mut self,
@@ -10,14 +17,19 @@ impl SchemeEditor {
         if self.read_only {
             return;
         }
-        self.replace_selection(text, window, cx);
+        self.replace_selection(&normalize_clipboard_newlines(text), window, cx);
     }
 
-    pub(in crate::scheme_editor) fn paste_plain(&mut self, window: Option<&mut Window>, cx: &mut Context<Self>) {
+    pub(in crate::scheme_editor) fn paste_plain(
+        &mut self,
+        window: Option<&mut Window>,
+        cx: &mut Context<Self>,
+    ) {
         if self.read_only {
             return;
         }
         if let Some(text) = cx.read_from_clipboard().and_then(|item| item.text()) {
+            let text = normalize_clipboard_newlines(&text);
             if let Some(rows) = self.selected_whole_rows() {
                 self.paste_plain_text_as_items(rows, &text, window, cx);
                 return;
@@ -53,7 +65,11 @@ impl SchemeEditor {
         self.replace_rows_with_items(delete_range, items, window, cx)
     }
 
-    pub(in crate::scheme_editor) fn paste(&mut self, window: Option<&mut Window>, cx: &mut Context<Self>) {
+    pub(in crate::scheme_editor) fn paste(
+        &mut self,
+        window: Option<&mut Window>,
+        cx: &mut Context<Self>,
+    ) {
         if self.read_only {
             return;
         }
@@ -80,7 +96,6 @@ impl SchemeEditor {
             self.paste_text(&text, window, cx);
         }
     }
-
 
     pub(in crate::scheme_editor) fn paste_spliced_items(
         &mut self,
@@ -312,5 +327,18 @@ impl SchemeEditor {
         } else {
             row + 1..row + 1
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::normalize_clipboard_newlines;
+
+    #[test]
+    fn windows_clipboard_newlines_are_normalized_before_editing() {
+        assert_eq!(
+            normalize_clipboard_newlines("first\r\nsecond\rthird\nfourth"),
+            "first\nsecond\nthird\nfourth"
+        );
     }
 }

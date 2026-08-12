@@ -50,7 +50,7 @@ impl KnotQApp {
         t: Theme,
         cx: &mut Context<Self>,
     ) -> gpui::AnyElement {
-        let linux_client_decorations = Self::uses_linux_client_decorations();
+        let linux_client_decorations = Self::uses_linux_client_decorations(window);
         let title_content_w = if linux_client_decorations {
             LINUX_TITLE_CONTENT_W
         } else {
@@ -190,18 +190,20 @@ impl KnotQApp {
                 .items_center()
                 .justify_center()
                 .window_control_area(WindowControlArea::Drag)
+                // A custom title bar should retain the platform convention:
+                // double-clicking its empty area toggles zoom/maximize.
+                .on_click(|event, window, cx| {
+                    cx.stop_propagation();
+                    if event.click_count() == 2 {
+                        window.zoom_window();
+                    } else if cfg!(target_os = "linux") && event.is_right_click() {
+                        window.show_window_menu(event.position());
+                    }
+                })
                 .when(linux_client_decorations, |s| {
                     s.on_mouse_down(MouseButton::Left, |_, window, cx| {
                         cx.stop_propagation();
                         window.start_window_move();
-                    })
-                    .on_click(|event, window, cx| {
-                        cx.stop_propagation();
-                        if event.click_count() == 2 {
-                            window.zoom_window();
-                        } else if event.is_right_click() {
-                            window.show_window_menu(event.position());
-                        }
                     })
                 })
                 .child(
