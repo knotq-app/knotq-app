@@ -163,11 +163,17 @@ pub(super) fn sync_snapshot(snapshot: SyncSnapshot) -> Result<SyncRunResult> {
         // schema-invalid. The post-pull CRDT contains both local and destination
         // history, and the materialized workspace now defines the authoritative set
         // of scheme documents that may be pushed.
+        let reseed_excluded = pull
+            .skipped
+            .iter()
+            .map(|skipped| skipped.document)
+            .collect();
         queue_account_switch_reseed(
             &mut local_state,
             &crdt_docs,
             &workspace,
             snapshot.replica_id,
+            &reseed_excluded,
         );
     }
 

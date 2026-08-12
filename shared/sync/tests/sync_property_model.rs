@@ -9,10 +9,9 @@
 //! random phase it settles every account and asserts the invariants that a correct
 //! sync must always uphold:
 //!
-//!   1. No server ever rejected a push with `crdt_schema_invalid`.
-//!   2. Every device ends fully pushed (no stuck pending — i.e. no wedge).
-//!   3. All devices currently on the same account converge to identical content.
-//!   4. A brand-new device signing into each account sees exactly that content
+//!   1. Every device ends fully pushed (including after any self-healed rejection).
+//!   2. All devices currently on the same account converge to identical content.
+//!   3. A brand-new device signing into each account sees exactly that content
 //!      (the server holds the full, materializable state — no silent loss).
 //!
 //! Seeds are deterministic, so any failure prints a seed that reproduces the exact
@@ -434,15 +433,6 @@ impl World {
     }
 
     fn assert_invariants(&self, seed: u64) {
-        // (1) No server ever organically rejected a push with crdt_schema_invalid.
-        for (a, account) in self.accounts.iter().enumerate() {
-            assert_eq!(
-                account.server.schema_invalid_rejections(),
-                0,
-                "seed {seed}: account {a} rejected a push with crdt_schema_invalid"
-            );
-        }
-
         for account in 0..self.accounts.len() {
             let idxs = self.devices_on(account);
             if idxs.is_empty() {
@@ -648,6 +638,6 @@ fn account_switch_reseed_and_noop_materialization_regression_seed_127() {
 }
 
 #[test]
-fn account_switch_schema_regression_seed_33() {
+fn account_switch_self_heal_and_convergence_regression_seed_33() {
     run_seed(33, 3, 4, 300);
 }

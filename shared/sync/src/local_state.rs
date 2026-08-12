@@ -488,13 +488,15 @@ pub fn queue_workspace_bootstrap_updates(
 /// already pushed to the previous account never reaches the new one — the cross-account
 /// content gap (a device shows lines the new account never receives). Full snapshots
 /// union idempotently on the server, and with deterministic item creation items dedupe
-/// rather than duplicate. Call on a detected account switch, before the pull; the
-/// bootstrap then treats these queued snapshots as valid pending and does not re-queue.
+/// rather than duplicate. Call after pulling the destination workspace;
+/// `excluded_documents` contains documents that pull could not safely merge and
+/// therefore must not be re-seeded from an incompatible account history.
 pub fn queue_account_switch_reseed(
     sync_state: &mut LocalSyncState,
     crdt: &WorkspaceCrdtDocuments,
     workspace: &Workspace,
     replica_id: ReplicaId,
+    excluded_documents: &HashSet<DocumentId>,
 ) {
     // Pending scheme edits survive the cursor reset so local content can follow the
     // user to the destination account. After its workspace index has been pulled,
@@ -519,7 +521,10 @@ pub fn queue_account_switch_reseed(
         .unwrap_or(0)
         + 1;
     for update in crdt.full_snapshot_updates().updates {
-        if update.kind != SyncDocumentKind::Scheme {
+        if update.kind != SyncDocumentKind::Scheme
+            || !indexed_scheme_documents.contains(&update.document)
+            || excluded_documents.contains(&update.document)
+        {
             continue;
         }
         sync_state.push_pending(PendingCrdtEdit {
@@ -647,6 +652,8 @@ fn merge_document_pending(
 
 #[cfg(test)]
 mod account_change_tests {
+    use std::collections::HashSet;
+
     use super::{
         queue_account_switch_reseed, DocumentSyncCursor, LocalSyncState, MediaSyncCursor,
         PendingCrdtEdit,
@@ -851,7 +858,7 @@ mod account_change_tests {
         state.push_pending(pending(workspace.id, indexed, SyncDocumentKind::Scheme));
         state.push_pending(pending(workspace.id, orphan, SyncDocumentKind::Scheme));
 
-        queue_account_switch_reseed(&mut state, &crdt, &workspace, replica);
+        queue_account_switch_reseed(&mut state, &crdt, &workspace, replica, &HashSet::new());
 
         assert!(state.pending.iter().any(|edit| edit.document == indexed));
         assert!(state.pending.iter().all(|edit| edit.document != orphan));

@@ -80,11 +80,17 @@ impl TestDevice {
             }
         }
         if self.account_switch_reseed_pending {
+            let reseed_excluded = pull
+                .skipped
+                .iter()
+                .map(|skipped| skipped.document)
+                .collect();
             knotq_sync::queue_account_switch_reseed(
                 &mut self.local_state,
                 &apply_crdt,
                 &self.workspace,
                 self.replica_id,
+                &reseed_excluded,
             );
             self.next_sequence = self
                 .local_state
@@ -203,11 +209,17 @@ impl TestDevice {
             }
         }
         if self.account_switch_reseed_pending {
+            let reseed_excluded = pull
+                .skipped
+                .iter()
+                .map(|skipped| skipped.document)
+                .collect();
             knotq_sync::queue_account_switch_reseed(
                 &mut self.local_state,
                 &apply_crdt,
                 &self.workspace,
                 self.replica_id,
+                &reseed_excluded,
             );
             self.next_sequence = self
                 .local_state
