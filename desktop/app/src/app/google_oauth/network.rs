@@ -289,7 +289,9 @@ pub(crate) fn google_refresh_token_form(
     ]
 }
 
-pub(crate) fn google_desktop_client_secret_form_field(config: &GoogleOAuthConfig) -> (&'static str, String) {
+pub(crate) fn google_desktop_client_secret_form_field(
+    config: &GoogleOAuthConfig,
+) -> (&'static str, String) {
     // Google Desktop OAuth clients can require client_secret at the token endpoint even
     // with PKCE. In a shipped desktop app this is not confidential; it is the
     // installed-app credential Google expects us to send.
@@ -600,113 +602,50 @@ pub(crate) fn write_http_response(stream: &mut TcpStream, body: &str) -> std::io
     )
 }
 
-#[cfg(not(target_os = "windows"))]
 pub(crate) fn open_browser(url: &str) -> Result<()> {
-    let mut command = open_browser_command(url);
-    command.spawn().context("open URL in browser")?;
-    Ok(())
+    open_browser_with(url, webbrowser::open)
 }
 
-#[cfg(target_os = "windows")]
-pub(crate) fn open_browser(url: &str) -> Result<()> {
-    use windows::core::{w, PCWSTR};
-    use windows::Win32::UI::Shell::ShellExecuteW;
-    use windows::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL;
-
-    let url = windows_wide_string(url)?;
-    // ShellExecuteW with the `open` verb invokes the registered HTTPS handler.
-    // `explorer.exe <url>` is not equivalent: Explorer may interpret the URL as
-    // a filesystem location and open Documents instead of the default browser.
-    let result = unsafe {
-        ShellExecuteW(
-            None,
-            w!("open"),
-            PCWSTR(url.as_ptr()),
-            PCWSTR::null(),
-            PCWSTR::null(),
-            SW_SHOWNORMAL,
-        )
-    };
-    let code = result.0 as isize;
-    if !shell_execute_succeeded(code) {
-        anyhow::bail!("Windows could not open the default browser (ShellExecuteW code {code})");
-    }
-    Ok(())
-}
-
-#[cfg(target_os = "windows")]
-fn windows_wide_string(value: &str) -> Result<Vec<u16>> {
-    if value.contains('\0') {
-        anyhow::bail!("URL contains a NUL character");
-    }
-    Ok(value.encode_utf16().chain(std::iter::once(0)).collect())
-}
-
-#[cfg(target_os = "windows")]
-fn shell_execute_succeeded(code: isize) -> bool {
-    code > 32
-}
-
-#[cfg(not(target_os = "windows"))]
-fn open_browser_command(url: &str) -> Command {
-    #[cfg(target_os = "macos")]
-    let command = {
-        let mut command = Command::new("open");
-        command.arg(url);
-        command
-    };
-
-    #[cfg(all(unix, not(target_os = "macos")))]
-    let command = {
-        // `xdg-open` is spawned directly, not through a shell, so query-string
-        // separators such as `&` remain part of this one argument.
-        let mut command = Command::new("xdg-open");
-        command.arg(url);
-        command
-    };
-
-    command
+fn open_browser_with(url: &str, opener: impl FnOnce(&str) -> std::io::Result<()>) -> Result<()> {
+    opener(url).context("open URL in default browser")
 }
 
 #[cfg(test)]
 mod browser_command_tests {
+    use std::cell::RefCell;
+    use std::io;
+
     const AUTH_URL: &str = "https://www.knotq.com/signin?redirect_uri=http%3A%2F%2F127.0.0.1%3A43129&state=state&code_challenge=challenge&code_challenge_method=S256";
 
-    #[cfg(target_os = "windows")]
     #[test]
-    fn windows_preserves_the_complete_url_for_shell_execute() {
-        let wide = super::windows_wide_string(AUTH_URL).unwrap();
-        assert_eq!(wide.last(), Some(&0));
-        assert_eq!(String::from_utf16(&wide[..wide.len() - 1]).unwrap(), AUTH_URL);
+    fn opener_receives_the_complete_url_unchanged() {
+        let received = RefCell::new(None);
+        super::open_browser_with(AUTH_URL, |url| {
+            *received.borrow_mut() = Some(url.to_string());
+            Ok(())
+        })
+        .unwrap();
+
+        assert_eq!(received.into_inner().as_deref(), Some(AUTH_URL));
     }
 
-    #[cfg(target_os = "windows")]
     #[test]
-    fn windows_shell_execute_result_uses_documented_success_boundary() {
-        assert!(!super::shell_execute_succeeded(32));
-        assert!(super::shell_execute_succeeded(33));
+    fn opener_errors_keep_browser_context() {
+        let error = super::open_browser_with(AUTH_URL, |_| {
+            Err(io::Error::new(io::ErrorKind::NotFound, "no handler"))
+        })
+        .unwrap_err();
+
+        assert!(error.to_string().contains("open URL in default browser"));
     }
 
-    #[cfg(target_os = "windows")]
     #[test]
-    fn windows_rejects_embedded_nul_before_calling_shell_execute() {
-        assert!(super::windows_wide_string("https://knotq.com/\0bad").is_err());
-    }
-
-    #[cfg(target_os = "macos")]
-    #[test]
-    fn macos_passes_the_full_url_to_open() {
-        let command = super::open_browser_command(AUTH_URL);
-        assert_eq!(command.get_program(), "open");
-        assert_eq!(command.get_args().collect::<Vec<_>>(), [AUTH_URL]);
-    }
-
-    #[cfg(all(unix, not(target_os = "macos")))]
-    #[test]
-    fn linux_passes_the_full_url_to_xdg_open() {
-        let command = super::open_browser_command(AUTH_URL);
-        assert_eq!(command.get_program(), "xdg-open");
-        assert_eq!(command.get_args().collect::<Vec<_>>(), [AUTH_URL]);
+    fn hardened_browser_dependency_accepts_https_and_rejects_file_urls() {
+        let mut options = webbrowser::BrowserOptions::new();
+        options.with_dry_run(true);
+        webbrowser::open_browser_with_options(webbrowser::Browser::Default, AUTH_URL, &options)
+            .unwrap();
+        assert!(webbrowser::open("file:///C:/Users/customer/Documents").is_err());
     }
 }
 

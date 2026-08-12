@@ -49,6 +49,26 @@ fn archived_scheme_stays_archived_across_sync_round_trips() {
 }
 
 #[test]
+fn expanded_palette_index_converges_without_a_schema_change() {
+    let mut h = Harness::new(2);
+    h.login_all();
+
+    let scheme = h.add_scheme(D0, "Colorful", &["kept content"]);
+    h.settle();
+
+    // Indices above the original six-color palette are still the existing u8
+    // wire field. Older clients preserve the value and safely render it modulo
+    // the palette they know; newer clients render the expanded palette entry.
+    h.set_scheme_color(D0, scheme, 17);
+    h.settle();
+
+    h.assert_all_converged();
+    assert_eq!(h.device(D0).workspace.schemes[&scheme].color_index, 17);
+    assert_eq!(h.device(D1).workspace.schemes[&scheme].color_index, 17);
+    h.assert_scheme_items(D1, scheme, &["kept content"]);
+}
+
+#[test]
 fn fresh_device_pulls_existing_archived_scheme_with_content() {
     let mut h = Harness::new(2);
     h.login_all();

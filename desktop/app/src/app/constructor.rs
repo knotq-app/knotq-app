@@ -110,6 +110,7 @@ impl KnotQApp {
             event_popup_title_subscription: None,
             date_popover: None,
             repeat_popover: None,
+            scheme_color_picker: None,
             search_open: false,
             search_input: None,
             search_selected_index: 0,

@@ -641,3 +641,13 @@ fn undo_redo_fuzz_converges() {
         run_seed_undo(seed.wrapping_add(13), 3, 4, steps);
     }
 }
+
+#[test]
+fn account_switch_reseed_and_noop_materialization_regression_seed_127() {
+    run_seed_undo(127, 3, 4, 300);
+}
+
+#[test]
+fn account_switch_schema_regression_seed_33() {
+    run_seed(33, 3, 4, 300);
+}

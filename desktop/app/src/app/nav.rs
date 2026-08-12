@@ -62,6 +62,11 @@ impl KnotQApp {
             cx.notify();
             return true;
         }
+        if self.scheme_color_picker.take().is_some() {
+            self.focus_app_root(window);
+            cx.notify();
+            return true;
+        }
         false
     }
 

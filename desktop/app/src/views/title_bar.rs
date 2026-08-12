@@ -1,7 +1,7 @@
 use gpui::prelude::*;
 use gpui::{div, px, ClickEvent, Context, IntoElement, MouseButton, Window, WindowControlArea};
+use gpui_component::tooltip::Tooltip;
 use gpui_component::{Icon, IconName, Sizable};
-use knotq_commands::Command;
 use knotq_l10n::t as tr;
 use knotq_model::SchemeId;
 use knotq_storage_json::CalendarViewMode;
@@ -23,7 +23,6 @@ const LINUX_WINDOW_CONTROLS_W: f32 = 132.0;
 const TITLE_MARKER_SIZE: f32 = 18.0;
 const TITLE_TEXT_W: f32 = 190.0;
 const LINUX_TITLE_TEXT_W: f32 = 150.0;
-const COLOR_SWATCH_ORDER: &[u8] = &[0, 1, 5, 2, 3, 4];
 // macOS renders native traffic-light controls at the top-left, so the title bar
 // reserves room for them. Other platforms have no left-side window controls, so
 // they fall back to the normal edge padding instead of leaving dead space.
@@ -93,41 +92,34 @@ impl KnotQApp {
             token_hsla(t.text_dim)
         };
 
-        let mut color_swatches: Vec<gpui::AnyElement> = Vec::new();
+        let mut color_picker_button = None;
         if let Some((scheme_id, _, color_index)) = active_scheme {
-            for (i, color_ix) in COLOR_SWATCH_ORDER.iter().copied().enumerate() {
-                let is_active = *color_index == color_ix;
-                let dot = palette_hsla(scheme_color(color_ix, t.is_dark), 1.0);
-                let active_border = t.caret_color;
-                color_swatches.push(
-                    div()
-                        .id(("title-color-sw", i))
-                        .w(px(18.0))
-                        .h(px(18.0))
-                        .rounded(px(3.0))
-                        .bg(dot)
-                        .border_1()
-                        .border_color(token_rgba(if is_active {
-                            active_border
-                        } else {
-                            0x00000000
-                        }))
-                        .cursor_pointer()
-                        .on_click({
-                            let scheme_id = *scheme_id;
-                            cx.listener(move |this, _: &ClickEvent, _w, cx| {
-                                this.apply(
-                                    Command::SetSchemeColor {
-                                        id: scheme_id,
-                                        color_index: color_ix,
-                                    },
-                                    cx,
-                                );
-                            })
-                        })
-                        .into_any_element(),
-                );
-            }
+            let scheme_id = *scheme_id;
+            let dot = palette_hsla(scheme_color(*color_index, t.is_dark), 1.0);
+            color_picker_button = Some(
+                div()
+                    .id("title-scheme-color")
+                    .w(px(30.0))
+                    .h(px(26.0))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .rounded(px(6.0))
+                    .border_1()
+                    .border_color(token_rgba(t.border_soft))
+                    .bg(token_rgba(t.button_bg))
+                    .cursor_pointer()
+                    .hover(move |s| s.bg(token_rgba(t.button_hover)))
+                    .on_click(cx.listener(move |this, event: &ClickEvent, _window, cx| {
+                        this.toggle_scheme_color_picker(scheme_id, event.position(), cx);
+                        cx.stop_propagation();
+                    }))
+                    .tooltip(|window, cx| {
+                        Tooltip::new(tr("mobile.scheme.color_label")).build(window, cx)
+                    })
+                    .child(div().w(px(16.0)).h(px(16.0)).rounded(px(3.0)).bg(dot))
+                    .into_any_element(),
+            );
         }
 
         let mut calendar_mode_controls: Vec<gpui::AnyElement> = Vec::new();
@@ -256,13 +248,7 @@ impl KnotQApp {
                 .items_center()
                 .justify_end()
                 .gap(px(8.0))
-                .child(
-                    div()
-                        .flex()
-                        .items_center()
-                        .gap(px(6.0))
-                        .children(color_swatches),
-                )
+                .when_some(color_picker_button, |s, button| s.child(button))
                 .when(!calendar_mode_controls.is_empty(), move |s| {
                     s.child(
                         div()

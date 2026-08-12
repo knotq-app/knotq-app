@@ -1,8 +1,6 @@
 use std::collections::{HashMap, HashSet};
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
-#[cfg(not(target_os = "windows"))]
-use std::process::Command;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{mpsc, Arc};
 use std::time::{Duration as StdDuration, Instant};
@@ -290,8 +288,6 @@ fn google_oauth_client_secret_from_compiled(compiled: Option<&str>) -> Option<St
         .filter(|client_secret| !client_secret.is_empty())
         .map(ToOwned::to_owned)
 }
-
-
 mod app_methods;
 mod calendar;
 mod network;

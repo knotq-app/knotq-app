@@ -28,6 +28,7 @@ impl TestDevice {
             store_crdt,
             crdt_states,
             local_state,
+            account_switch_reseed_pending: false,
             next_sequence: 1,
             media_assets: HashMap::new(),
             last_skipped: Vec::new(),
@@ -224,18 +225,10 @@ impl TestDevice {
         if let Some(update) = reidentified {
             self.queue_reidentified_workspace(update);
         }
-        // Force re-seed every scheme's full content to the new account. The bootstrap
-        // only re-seeds documents the new server LACKS (remote_latest == 0); a scheme
-        // the new account already holds from another origin (or empty) would otherwise
-        // never receive this device's content — the cross-account content gap. Full
-        // snapshots union idempotently, and with deterministic item creation items
-        // dedupe instead of duplicating.
-        knotq_sync::queue_account_switch_reseed(
-            &mut self.local_state,
-            &self.store_crdt,
-            &self.workspace,
-            self.replica_id,
-        );
+        // The production drivers defer the scheme reseed until after pulling the
+        // destination account's authoritative workspace index. Remember that work
+        // here so `try_sync` mirrors the same ordering.
+        self.account_switch_reseed_pending = true;
         self.next_sequence = self
             .local_state
             .pending

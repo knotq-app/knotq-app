@@ -6,7 +6,9 @@
 
 use chrono::{DateTime, Local};
 use gpui::{Hsla, Rgba};
-pub use knotq_theme::{all_themes, scheme_color, token_hsla, token_rgba, Theme, PALETTE};
+pub use knotq_theme::{
+    all_themes, scheme_color, token_hsla, token_rgba, Theme, PALETTE, SCHEME_COLOR_ORDER,
+};
 
 pub const FONT_UI: &str = "SF Pro Text";
 pub const FONT_DISPLAY: &str = "SF Pro Display";

@@ -99,7 +99,7 @@ impl Default for Workspace {
     }
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct Folder {
     pub id: FolderId,
     pub name: String,

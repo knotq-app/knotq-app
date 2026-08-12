@@ -149,6 +149,7 @@ pub struct TestDevice {
     store_crdt: WorkspaceCrdtDocuments,
     crdt_states: HashMap<DocumentId, Vec<u8>>,
     local_state: LocalSyncState,
+    account_switch_reseed_pending: bool,
     next_sequence: u64,
     /// In-memory stand-in for the desktop's `media/` assets directory.
     /// Maps image_name (e.g. "<uuid>.png") → raw bytes.  Populated by
