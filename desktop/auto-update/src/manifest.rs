@@ -1,10 +1,26 @@
+use std::time::Duration;
+
 use anyhow::{bail, Context, Result};
 use semver::{BuildMetadata, Prerelease, Version};
 
 use crate::{AutoUpdateConfig, ManifestAsset, TargetKind, UpdateManifest, DEFAULT_MANIFEST_URL};
 
+const UPDATE_REQUEST_TIMEOUT: Duration = Duration::from_secs(15);
+
 pub(crate) fn fetch_manifest(config: &AutoUpdateConfig) -> Result<UpdateManifest> {
-    let response = ureq::get(&config.update_manifest_url)
+    fetch_manifest_with_timeout(config, UPDATE_REQUEST_TIMEOUT)
+}
+
+fn fetch_manifest_with_timeout(
+    config: &AutoUpdateConfig,
+    timeout: Duration,
+) -> Result<UpdateManifest> {
+    let agent = ureq::AgentBuilder::new()
+        .timeout_connect(timeout)
+        .timeout(timeout)
+        .build();
+    let response = agent
+        .get(&config.update_manifest_url)
         .set("Accept", "application/json")
         .set("User-Agent", &config.user_agent)
         .call()
@@ -77,6 +93,42 @@ pub(crate) fn validate_asset_kind(asset: &ManifestAsset) -> Result<()> {
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use std::{
+        io::Read,
+        net::TcpListener,
+        thread,
+        time::{Duration, Instant},
+    };
+
+    use super::*;
+
+    #[test]
+    fn manifest_fetch_times_out_when_the_server_never_responds() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut request = [0; 1024];
+            let _ = stream.read(&mut request);
+            thread::sleep(Duration::from_millis(250));
+        });
+        let config = AutoUpdateConfig {
+            current_version: Version::new(0, 1, 44),
+            update_manifest_url: format!("http://{address}/latest.json"),
+            user_agent: "KnotQ-test".into(),
+        };
+
+        let started_at = Instant::now();
+        let result = fetch_manifest_with_timeout(&config, Duration::from_millis(50));
+
+        assert!(result.is_err());
+        assert!(started_at.elapsed() < Duration::from_secs(1));
+        server.join().unwrap();
+    }
 }
 
 pub(crate) fn target_kind() -> Result<TargetKind> {

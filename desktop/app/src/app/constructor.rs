@@ -146,6 +146,8 @@ impl KnotQApp {
             #[cfg(feature = "accounts")]
             sync_account_action: None,
             settings_dropdown: None,
+            settings_showing_timing: false,
+            scheme_color_popover: None,
             #[cfg(feature = "accounts")]
             sync_run_status: SyncRunStatus::Idle,
             #[cfg(feature = "accounts")]
@@ -211,6 +213,7 @@ impl KnotQApp {
             _search_subscription: None,
             _appearance_subscription: None,
             _window_bounds_subscription: None,
+            _app_menu_bar: None,
             _quit_subscription: quit_subscription,
             show_onboarding: needs_onboarding,
             #[cfg(feature = "accounts")]

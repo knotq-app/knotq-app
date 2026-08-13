@@ -1,5 +1,5 @@
 use chrono::{DateTime, Local, Utc};
-use knotq_l10n::{available_locales, t as tr, t_with as tr_with};
+use knotq_l10n::{available_locales, t as tr, t_count as tr_count, t_with as tr_with};
 use knotq_storage_json::{CalendarViewMode, CalendarWeekRange, ThemeMode, TimeFormat};
 
 pub(super) fn checked_time_label(checked_at: DateTime<Utc>) -> String {
@@ -11,6 +11,12 @@ pub(super) fn theme_mode_label(mode: ThemeMode) -> &'static str {
         ThemeMode::Dark => tr("settings.appearance.theme_dark"),
         ThemeMode::Light => tr("settings.appearance.theme_light"),
         ThemeMode::System => tr("settings.appearance.theme_system"),
+        ThemeMode::RosePineMoon => tr("settings.appearance.theme_rose_pine_moon"),
+        ThemeMode::CatppuccinMocha => tr("settings.appearance.theme_catppuccin_mocha"),
+        ThemeMode::TokyoNight => tr("settings.appearance.theme_tokyo_night"),
+        ThemeMode::Parchment => tr("settings.appearance.theme_parchment"),
+        ThemeMode::RosePineDawn => tr("settings.appearance.theme_rose_pine_dawn"),
+        ThemeMode::CatppuccinLatte => tr("settings.appearance.theme_catppuccin_latte"),
     }
 }
 
@@ -33,6 +39,32 @@ pub(super) fn time_format_label(format: TimeFormat) -> &'static str {
         TimeFormat::TwelveHour => tr("settings.time.clock_12h"),
         TimeFormat::TwentyFourHour => tr("settings.time.clock_24h"),
     }
+}
+
+pub(super) fn upcoming_lookahead_label(days: u16) -> String {
+    match days {
+        7 => tr_count("sync.disclosure.period_weeks", 1),
+        14 => tr_count("sync.disclosure.period_weeks", 2),
+        30 => tr_count("sync.disclosure.period_months", 1),
+        90 => tr_count("sync.disclosure.period_months", 3),
+        180 => tr_count("sync.disclosure.period_months", 6),
+        365 => tr_count("sync.disclosure.period_years", 1),
+        days => tr_count("sync.disclosure.period_days", i64::from(days)),
+    }
+}
+
+pub(super) fn upcoming_lookahead_options() -> Vec<(String, u16)> {
+    [1, 2, 3, 7, 14, 30, 90, 180, 365]
+        .into_iter()
+        .map(|days| (upcoming_lookahead_label(days), days))
+        .collect()
+}
+
+pub(super) fn upcoming_item_limit_options() -> Vec<(String, u16)> {
+    [5, 10, 14, 20, 30, 50, 100]
+        .into_iter()
+        .map(|count| (count.to_string(), count))
+        .collect()
 }
 
 pub(super) fn notification_offset_label(offset_secs: i64) -> &'static str {
@@ -63,7 +95,10 @@ pub(super) fn google_calendar_last_synced_label(value: DateTime<Utc>) -> String 
         "settings.google_calendar.synced_at",
         &[(
             "when",
-            &value.with_timezone(&Local).format("%b %-d %H:%M").to_string(),
+            &value
+                .with_timezone(&Local)
+                .format("%b %-d %H:%M")
+                .to_string(),
         )],
     )
 }

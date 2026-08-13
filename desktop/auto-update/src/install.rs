@@ -144,10 +144,21 @@ fn install_linux_update(downloaded_tar_gz: &Path, temp_dir: &Path) -> Result<Pat
 
     let source_assets = extracted.join("assets");
     if source_assets.is_dir() {
-        sync_dir_filtered(&source_assets, &install_dir.join("assets"), |_| false)?;
+        install_linux_assets(&source_assets, &install_dir.join("assets"))?;
     }
 
     Ok(target_exe)
+}
+
+#[cfg(target_os = "linux")]
+fn install_linux_assets(source: &Path, destination: &Path) -> Result<()> {
+    // Older installers placed `assets` beside ~/.local/bin/knotq. That generic
+    // directory may be shared by unrelated software, so Linux updates must never
+    // prune entries that are absent from KnotQ's archive.
+    fs::create_dir_all(destination)
+        .with_context(|| format!("failed to create {}", destination.display()))?;
+    copy_entries(source, destination, &|_| false)?;
+    copy_permissions(source, destination)
 }
 
 #[cfg(any(target_os = "macos", target_os = "linux"))]
@@ -422,4 +433,36 @@ fn temp_path_for(destination: &Path) -> Result<PathBuf> {
 #[cfg(target_os = "windows")]
 pub(crate) fn powershell_string(path: &Path) -> String {
     path.display().to_string().replace('\'', "''")
+}
+
+#[cfg(all(test, target_os = "linux"))]
+mod linux_tests {
+    use super::*;
+
+    #[test]
+    fn linux_asset_update_preserves_unrelated_destination_files() {
+        let root = std::env::temp_dir().join(format!(
+            "knotq-linux-assets-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let source = root.join("source");
+        let destination = root.join("destination");
+        fs::create_dir_all(&source).unwrap();
+        fs::create_dir_all(&destination).unwrap();
+        fs::write(source.join("knotq.svg"), b"new").unwrap();
+        fs::write(destination.join("unrelated.txt"), b"keep").unwrap();
+
+        install_linux_assets(&source, &destination).unwrap();
+
+        assert_eq!(fs::read(destination.join("knotq.svg")).unwrap(), b"new");
+        assert_eq!(
+            fs::read(destination.join("unrelated.txt")).unwrap(),
+            b"keep"
+        );
+        fs::remove_dir_all(root).ok();
+    }
 }

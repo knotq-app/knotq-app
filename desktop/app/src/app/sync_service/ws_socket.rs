@@ -86,8 +86,8 @@ impl RawSocketFactory for TungsteniteFactory {
         // ClientRequestBuilder adds the WebSocket handshake headers; we add auth.
         let request =
             ClientRequestBuilder::new(uri).with_header("Authorization", format!("Bearer {token}"));
-        let (socket, _response) = tungstenite::connect(request)
-            .map_err(|err| io::Error::other(err.to_string()))?;
+        let (socket, _response) =
+            tungstenite::connect(request).map_err(|err| io::Error::other(err.to_string()))?;
         Ok(Box::new(TungsteniteSocket { socket }))
     }
 }

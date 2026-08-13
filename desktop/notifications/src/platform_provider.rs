@@ -101,6 +101,18 @@ pub fn run_linux_notification_helper_from_env() -> bool {
     platform::run_helper_from_env()
 }
 
+/// Returns true when this process forwarded a helper-triggered activation to an
+/// already-running primary instance and should exit before creating GPUI state.
+#[cfg(target_os = "linux")]
+pub fn run_linux_secondary_instance_from_env() -> bool {
+    platform::run_secondary_instance_from_env()
+}
+
+#[cfg(target_os = "linux")]
+pub(crate) fn take_linux_durable_responses() -> Vec<NotificationResponse> {
+    platform::take_durable_responses()
+}
+
 impl NotificationRequest {
     pub fn new(
         id: impl Into<String>,
@@ -285,6 +297,11 @@ mod platform;
 #[cfg(windows)]
 #[path = "platform/windows.rs"]
 mod platform;
+
+#[cfg(windows)]
+pub(crate) fn dispatch_windows_activation_args(args: Vec<String>) {
+    platform::dispatch_activation_args(args);
+}
 
 #[cfg(target_os = "linux")]
 #[path = "platform/linux.rs"]

@@ -131,7 +131,10 @@ fn google_oauth_error_timeout() -> &'static str {
 }
 
 fn google_oauth_error_access_denied() -> String {
-    knotq_l10n::t_with("google.oauth.error.provider_error", &[("error", "access_denied")])
+    knotq_l10n::t_with(
+        "google.oauth.error.provider_error",
+        &[("error", "access_denied")],
+    )
 }
 
 fn is_google_oauth_browser_cancel_or_timeout(err: &str) -> bool {
@@ -289,7 +292,6 @@ fn google_oauth_client_secret_from_compiled(compiled: Option<&str>) -> Option<St
         .filter(|client_secret| !client_secret.is_empty())
         .map(ToOwned::to_owned)
 }
-
 
 mod app_methods;
 mod calendar;

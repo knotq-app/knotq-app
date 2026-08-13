@@ -341,10 +341,7 @@ impl KnotQApp {
         } else {
             knotq_l10n::t_with(
                 "daily.carryover.from_date",
-                &[(
-                    "date",
-                    &format_contextual_date(source_date, today.year()),
-                )],
+                &[("date", &format_contextual_date(source_date, today.year()))],
             )
         };
 

@@ -111,14 +111,10 @@ fn normalize_api_base(raw: &str) -> Result<String> {
         // Bearer tokens must never travel in cleartext, so plain http is only
         // permitted to a loopback host (local dev / self-hosted Worker on-box).
         if !is_loopback_http_authority(after_scheme) {
-            return Err(anyhow!(knotq_l10n::t(
-                "sync.error.api_url_https_required"
-            )));
+            return Err(anyhow!(knotq_l10n::t("sync.error.api_url_https_required")));
         }
     } else if trimmed.strip_prefix("https://").is_none() {
-        return Err(anyhow!(knotq_l10n::t(
-            "sync.error.api_url_scheme_required"
-        )));
+        return Err(anyhow!(knotq_l10n::t("sync.error.api_url_scheme_required")));
     }
     Ok(trimmed.to_string())
 }

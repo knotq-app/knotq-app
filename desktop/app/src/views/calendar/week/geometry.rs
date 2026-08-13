@@ -4,7 +4,10 @@ use super::super::*;
 
 /// Convert a window-relative Y coordinate to an hour fraction (0.0–24.0)
 /// using the calendar scroll container's bounds and offset.
-pub(in crate::views::calendar) fn window_y_to_hour(window_y: f32, scroll_handle: &ScrollHandle) -> f32 {
+pub(in crate::views::calendar) fn window_y_to_hour(
+    window_y: f32,
+    scroll_handle: &ScrollHandle,
+) -> f32 {
     let bounds = scroll_handle.bounds();
     let viewport_y = window_y - f32::from(bounds.top());
     let scroll_offset_y = f32::from(scroll_handle.offset().y);

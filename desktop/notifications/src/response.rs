@@ -1,7 +1,7 @@
 use std::collections::BTreeMap;
 use std::sync::Mutex;
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
 pub struct NotificationResponse {
     pub notification_id: String,
     pub action_id: String,
@@ -13,10 +13,20 @@ static NOTIFICATION_RESPONSE_LISTENERS: Mutex<Vec<Box<dyn Fn() -> bool + Send + 
     Mutex::new(Vec::new());
 
 pub fn take_notification_responses() -> Vec<NotificationResponse> {
-    let Ok(mut responses) = NOTIFICATION_RESPONSES.lock() else {
-        return Vec::new();
-    };
-    std::mem::take(&mut *responses)
+    let drained = NOTIFICATION_RESPONSES
+        .lock()
+        .map(|mut responses| std::mem::take(&mut *responses))
+        .unwrap_or_default();
+    #[cfg(target_os = "linux")]
+    {
+        let mut drained = drained;
+        drained.extend(crate::platform_provider::take_linux_durable_responses());
+        drained
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        drained
+    }
 }
 
 #[doc(hidden)]
@@ -32,6 +42,13 @@ pub fn dispatch_response(response: NotificationResponse) {
 pub fn add_notification_response_listener(listener: impl Fn() -> bool + Send + Sync + 'static) {
     if let Ok(mut listeners) = NOTIFICATION_RESPONSE_LISTENERS.lock() {
         listeners.push(Box::new(listener));
+    }
+}
+
+#[cfg(target_os = "linux")]
+pub(crate) fn wake_notification_response_listeners() {
+    if let Ok(mut listeners) = NOTIFICATION_RESPONSE_LISTENERS.lock() {
+        listeners.retain(|listener| listener());
     }
 }
 

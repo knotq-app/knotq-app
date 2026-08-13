@@ -9,6 +9,7 @@ fn main() {
     let manifest_dir = PathBuf::from(env::var("CARGO_MANIFEST_DIR").unwrap());
     let l10n_dir = manifest_dir.join("../../l10n").canonicalize().unwrap();
     println!("cargo:rerun-if-changed={}", l10n_dir.display());
+    println!("cargo:rerun-if-changed={}", l10n_dir.join("locales.json").display());
 
     let mut codes = Vec::new();
     for entry in fs::read_dir(&l10n_dir).unwrap() {
@@ -19,6 +20,7 @@ fn main() {
         if !name.ends_with(".json") || name == "locales.json" {
             continue;
         }
+        println!("cargo:rerun-if-changed={}", path.display());
         codes.push(name.trim_end_matches(".json").to_string());
     }
     codes.sort();

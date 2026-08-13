@@ -4,7 +4,9 @@ pub(crate) fn google_calendar_sources(workspace: &Workspace) -> Vec<ExistingGoog
     google_calendar_sources_matching(workspace, |_| true)
 }
 
-pub(crate) fn active_google_calendar_sources(workspace: &Workspace) -> Vec<ExistingGoogleCalendarSource> {
+pub(crate) fn active_google_calendar_sources(
+    workspace: &Workspace,
+) -> Vec<ExistingGoogleCalendarSource> {
     google_calendar_sources_matching(workspace, |scheme_id| {
         !workspace.is_scheme_deleted(scheme_id)
     })
@@ -271,7 +273,10 @@ pub(crate) fn apply_google_calendar_metadata(
     metadata_changed
 }
 
-pub(crate) fn apply_google_calendar_items(scheme: &mut Scheme, calendar: &ImportedGoogleCalendar) -> bool {
+pub(crate) fn apply_google_calendar_items(
+    scheme: &mut Scheme,
+    calendar: &ImportedGoogleCalendar,
+) -> bool {
     if calendar.full_sync {
         let mut items = calendar
             .items
@@ -395,7 +400,10 @@ pub(crate) fn item_occurrence_identity_eq(left: &Item, right: &Item) -> bool {
         && left.repeats == right.repeats
 }
 
-pub(crate) fn external_matches_key(external: &ExternalItemSource, key: &GoogleExternalEventKey) -> bool {
+pub(crate) fn external_matches_key(
+    external: &ExternalItemSource,
+    key: &GoogleExternalEventKey,
+) -> bool {
     external.event_id == key.event_id && external.instance_id == key.instance_id
 }
 
@@ -501,7 +509,9 @@ fn google_event_original_start(event: &GoogleEvent) -> Option<CalendarDateTime> 
         .map(CalendarDateTime::utc)
 }
 
-pub(crate) fn google_event_datetime_to_utc(datetime: &GoogleEventDateTime) -> Option<DateTime<Utc>> {
+pub(crate) fn google_event_datetime_to_utc(
+    datetime: &GoogleEventDateTime,
+) -> Option<DateTime<Utc>> {
     datetime
         .date_time
         .or_else(|| datetime.date.and_then(local_date_midnight_utc))
@@ -515,7 +525,9 @@ pub(crate) fn local_date_midnight_utc(date: NaiveDate) -> Option<DateTime<Utc>> 
         .map(|datetime| datetime.with_timezone(&Utc))
 }
 
-pub(crate) fn google_event_recurrence(event: &GoogleEvent) -> Option<knotq_model::CalendarRecurrence> {
+pub(crate) fn google_event_recurrence(
+    event: &GoogleEvent,
+) -> Option<knotq_model::CalendarRecurrence> {
     let mut recurrence = knotq_model::CalendarRecurrence::default();
     for raw in event.recurrence.as_ref()? {
         let Some((kind, value)) = raw.split_once(':') else {
@@ -551,10 +563,7 @@ pub(crate) fn google_event_recurrence(event: &GoogleEvent) -> Option<knotq_model
     }
 }
 
-fn apply_google_recurrence_exdates(
-    items: &mut [Item],
-    calendar: &ImportedGoogleCalendar,
-) -> bool {
+fn apply_google_recurrence_exdates(items: &mut [Item], calendar: &ImportedGoogleCalendar) -> bool {
     let mut changed = false;
     for item in items {
         if apply_google_recurrence_exdates_to_item(

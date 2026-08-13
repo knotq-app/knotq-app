@@ -37,6 +37,12 @@ pub enum ThemeMode {
     System,
     Dark,
     Light,
+    RosePineMoon,
+    CatppuccinMocha,
+    TokyoNight,
+    Parchment,
+    RosePineDawn,
+    CatppuccinLatte,
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
@@ -59,6 +65,34 @@ pub struct SavedWindowPosition {
     pub y: f32,
 }
 
+/// Local presentation preferences for the Upcoming surfaces. These are kept in
+/// settings rather than the workspace because changing a horizon must never be
+/// interpreted as a document edit or synced as collaborative content.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct UpcomingDisplaySettings {
+    pub event_lookahead_days: u16,
+    pub reminder_lookahead_days: u16,
+    pub assignment_lookahead_days: u16,
+    pub maximum_items: u16,
+    pub show_overdue: bool,
+    pub show_completed: bool,
+}
+
+impl Default for UpcomingDisplaySettings {
+    fn default() -> Self {
+        Self {
+            // The mobile dashboard historically queried one shared two-week
+            // range and displayed up to fourteen combined rows.
+            event_lookahead_days: 14,
+            reminder_lookahead_days: 14,
+            assignment_lookahead_days: 14,
+            maximum_items: 14,
+            show_overdue: true,
+            show_completed: true,
+        }
+    }
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct AppSettings {
     #[serde(default)]
@@ -73,6 +107,8 @@ pub struct AppSettings {
     pub time_format: TimeFormat,
     #[serde(default)]
     pub notification_defaults: NotificationDefaults,
+    #[serde(default)]
+    pub upcoming_display: UpcomingDisplaySettings,
     #[serde(default = "default_true")]
     pub auto_update: bool,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -106,6 +142,7 @@ impl Default for AppSettings {
             theme_mode: ThemeMode::default(),
             time_format: TimeFormat::default(),
             notification_defaults: NotificationDefaults::default(),
+            upcoming_display: UpcomingDisplaySettings::default(),
             auto_update: default_true(),
             scheduled_notification_ids: Vec::new(),
             window_size: None,

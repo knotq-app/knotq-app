@@ -1,5 +1,5 @@
 use gpui::prelude::*;
-use gpui::{deferred, div, px, ClickEvent, Context, IntoElement};
+use gpui::{deferred, div, px, ClickEvent, Context, IntoElement, MouseButton, ScrollWheelEvent};
 use gpui_component::{Icon, IconName, Sizable};
 
 use crate::app::auto_update::AutoUpdateUiStatus;
@@ -89,14 +89,62 @@ pub(super) fn settings_section(
         .into_any_element()
 }
 
+/// A drill-in row rather than another inline selector. Timing has enough
+/// independent controls that keeping it on the root page made Settings harder
+/// to scan on shorter desktop windows.
+pub(super) fn settings_navigation_row<F>(
+    id: &'static str,
+    label: &'static str,
+    t: UiTheme,
+    cx: &mut Context<KnotQApp>,
+    on_click: F,
+) -> gpui::AnyElement
+where
+    F: Fn(&mut KnotQApp, &mut Context<KnotQApp>) + 'static,
+{
+    div()
+        .id(id)
+        .px(px(10.0))
+        .py(px(6.0))
+        .min_h(px(34.0))
+        .flex()
+        .items_center()
+        .justify_between()
+        .gap(px(8.0))
+        .bottom_divider(t)
+        .cursor_pointer()
+        .hover({
+            let c = t.row_hover;
+            move |h| h.bg(token_rgba(c))
+        })
+        .on_click(cx.listener(move |this, _: &ClickEvent, _window, cx| {
+            on_click(this, cx);
+        }))
+        .child(
+            div()
+                .text_size(px(11.0))
+                .font_weight(gpui::FontWeight::SEMIBOLD)
+                .text_color(token_hsla(t.text_primary))
+                .child(label),
+        )
+        .child(
+            div()
+                .text_size(px(17.0))
+                .line_height(px(17.0))
+                .text_color(token_hsla(t.text_soft))
+                .child("›"),
+        )
+        .into_any_element()
+}
+
 /// Bundled plain-data parameters for [`settings_dropdown_group`]. `T` is the
 /// value type of each dropdown option (generic per-caller, e.g. `ThemeMode`).
 pub(super) struct SettingsDropdownGroupArgs<T> {
     pub id: &'static str,
     pub label: &'static str,
     pub dropdown: SettingsDropdown,
-    pub selected_label: &'static str,
-    pub options: Vec<(&'static str, T)>,
+    pub selected_label: String,
+    pub options: Vec<(String, T)>,
     pub current: T,
     pub is_open: bool,
     pub t: UiTheme,
@@ -240,24 +288,34 @@ where
                         ),
                 )
                 .when(is_open, |s| {
-                    s.child(deferred(
-                        div()
-                            .absolute()
-                            .top(px(32.0))
-                            .left_0()
-                            .w_full()
-                            .max_w(px(240.0))
-                            .p(px(3.0))
-                            .rounded(px(5.0))
-                            .border_1()
-                            .border_color(token_rgba(t.border_main))
-                            .bg(token_rgba(t.bg_modal))
-                            .shadow_md()
-                            .flex()
-                            .flex_col()
-                            .gap(px(2.0))
-                            .children(option_rows),
-                    ))
+                    s.child(
+                        deferred(
+                            div()
+                                .id((id, 99_usize))
+                                .absolute()
+                                .top(px(32.0))
+                                .left_0()
+                                .w_full()
+                                .max_w(px(240.0))
+                                .max_h(px(360.0))
+                                .p(px(3.0))
+                                .rounded(px(5.0))
+                                .border_1()
+                                .border_color(token_rgba(t.border_main))
+                                .bg(token_rgba(t.bg_modal))
+                                .shadow_md()
+                                .occlude()
+                                .flex()
+                                .flex_col()
+                                .gap(px(2.0))
+                                .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                                .on_click(|_: &ClickEvent, _, cx| cx.stop_propagation())
+                                .on_scroll_wheel(|_: &ScrollWheelEvent, _, cx| cx.stop_propagation())
+                                .overflow_y_scroll()
+                                .children(option_rows),
+                        )
+                        .with_priority(100),
+                    )
                 }),
         )
         .into_any_element()

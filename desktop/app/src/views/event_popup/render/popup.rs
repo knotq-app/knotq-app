@@ -179,66 +179,70 @@ impl KnotQApp {
                             .flex_col()
                             .gap(px(2.0))
                             .child(
-                            div()
-                                .w(px(EVENT_POPUP_WIDTH - 28.0))
-                                .flex()
-                                .items_start()
-                                .gap(px(EVENT_POPUP_HEADER_GAP))
-                                .child(
-                                    div()
-                                        .id("popup-done-checkbox")
-                                        .flex_shrink_0()
-                                        .mt(px(3.0))
-                                        .opacity(if can_toggle_done { 1.0 } else { 0.35 })
-                                        .child(task_checkbox(is_done, t))
-                                        .when(can_toggle_done, |s| s.cursor_pointer())
-                                        .on_click(cx.listener(
-                                            move |this, _: &ClickEvent, _w, cx| {
-                                                if !can_toggle_done {
-                                                    return;
-                                                }
-                                                if let Some(popup) = this.event_popup.as_mut() {
-                                                    popup.close_all_menus();
-                                                    popup.draft_done = !popup.draft_done;
-                                                    popup.done_dirty = true;
-                                                }
-                                                cx.stop_propagation();
-                                                cx.notify();
-                                            },
-                                        )),
-                                )
-                                .child(
-                                    div()
-                                        .flex_1()
-                                        .min_w_0()
-                                        .flex()
-                                        .flex_col()
-                                        .gap(px(2.0))
-                                        .child(event_title_input(title_input, title, t))
-                                        .child(event_scheme_chip(
-                                            scheme_label,
-                                            accent,
-                                            scheme_id,
-                                            item_id,
-                                            editable,
-                                            t,
-                                            cx,
-                                        )),
-                                )
-                                .when(editable, |row| {
-                                    row.child(div().flex_shrink_0().mt(px(3.0)).child(
-                                        delete_event_icon_button(has_repeating_occurrence, t, cx),
-                                    ))
-                                })
-                                .when(!editable, |row| {
-                                    row.child(
+                                div()
+                                    .w(px(EVENT_POPUP_WIDTH - 28.0))
+                                    .flex()
+                                    .items_start()
+                                    .gap(px(EVENT_POPUP_HEADER_GAP))
+                                    .child(
                                         div()
+                                            .id("popup-done-checkbox")
                                             .flex_shrink_0()
-                                            .mt(px(1.0))
-                                            .child(read_only_event_badge(t)),
+                                            .mt(px(3.0))
+                                            .opacity(if can_toggle_done { 1.0 } else { 0.35 })
+                                            .child(task_checkbox(is_done, t))
+                                            .when(can_toggle_done, |s| s.cursor_pointer())
+                                            .on_click(cx.listener(
+                                                move |this, _: &ClickEvent, _w, cx| {
+                                                    if !can_toggle_done {
+                                                        return;
+                                                    }
+                                                    if let Some(popup) = this.event_popup.as_mut() {
+                                                        popup.close_all_menus();
+                                                        popup.draft_done = !popup.draft_done;
+                                                        popup.done_dirty = true;
+                                                    }
+                                                    cx.stop_propagation();
+                                                    cx.notify();
+                                                },
+                                            )),
                                     )
-                                }),
-                        ),
+                                    .child(
+                                        div()
+                                            .flex_1()
+                                            .min_w_0()
+                                            .flex()
+                                            .flex_col()
+                                            .gap(px(2.0))
+                                            .child(event_title_input(title_input, title, t))
+                                            .child(event_scheme_chip(
+                                                scheme_label,
+                                                accent,
+                                                scheme_id,
+                                                item_id,
+                                                editable,
+                                                t,
+                                                cx,
+                                            )),
+                                    )
+                                    .when(editable, |row| {
+                                        row.child(div().flex_shrink_0().mt(px(3.0)).child(
+                                            delete_event_icon_button(
+                                                has_repeating_occurrence,
+                                                t,
+                                                cx,
+                                            ),
+                                        ))
+                                    })
+                                    .when(!editable, |row| {
+                                        row.child(
+                                            div()
+                                                .flex_shrink_0()
+                                                .mt(px(1.0))
+                                                .child(read_only_event_badge(t)),
+                                        )
+                                    }),
+                            ),
                     ),
             )
             .child(

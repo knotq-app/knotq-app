@@ -60,6 +60,6 @@ mod rows;
 mod trash;
 mod tree;
 
-use crate::views::FOLDER_ICON_SIZE;
 use self::components::*;
 use self::drag::*;
+use crate::views::FOLDER_ICON_SIZE;

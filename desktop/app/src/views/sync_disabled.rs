@@ -13,7 +13,11 @@ use crate::theme_gpui::{token_hsla, token_rgba, Theme};
 
 impl KnotQApp {
     /// Replaces the Settings → Sync panel with a short "Coming soon" card.
-    pub(crate) fn settings_sync_panel(&mut self, t: Theme, _cx: &mut Context<Self>) -> gpui::AnyElement {
+    pub(crate) fn settings_sync_panel(
+        &mut self,
+        t: Theme,
+        _cx: &mut Context<Self>,
+    ) -> gpui::AnyElement {
         div()
             .w_full()
             .rounded(px(8.0))

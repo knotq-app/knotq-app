@@ -179,7 +179,8 @@ fn is_protocol_outdated(status: u16, code: &str) -> bool {
 }
 
 fn protocol_outdated(code: &str) -> anyhow::Error {
-    anyhow::Error::new(SyncProtocolOutdated).context(format!("sync backend rejected request: {code}"))
+    anyhow::Error::new(SyncProtocolOutdated)
+        .context(format!("sync backend rejected request: {code}"))
 }
 
 pub(super) fn normalize_api_base(raw: &str) -> Result<String> {

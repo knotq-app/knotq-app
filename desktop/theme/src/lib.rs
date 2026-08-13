@@ -87,8 +87,17 @@ pub struct Theme {
     pub row_stripe: Color,
 }
 
-pub fn all_themes() -> [Theme; 2] {
-    [theme_obsidian(), theme_light()]
+pub fn all_themes() -> [Theme; 8] {
+    [
+        theme_obsidian(),
+        theme_light(),
+        theme_rose_pine_moon(),
+        theme_catppuccin_mocha(),
+        theme_tokyo_night(),
+        theme_parchment(),
+        theme_rose_pine_dawn(),
+        theme_catppuccin_latte(),
+    ]
 }
 
 /// Convert a packed 0xRRGGBBAA token into [`Rgba`].

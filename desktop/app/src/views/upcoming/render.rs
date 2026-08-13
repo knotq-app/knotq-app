@@ -14,8 +14,12 @@ impl KnotQApp {
             .single()
             .map(|dt| dt.with_timezone(&Utc))
             .unwrap_or(now);
-        let horizon = upcoming_range(now).end;
-        let today_end = today_start + Duration::days(1);
+        let display = self.settings.upcoming_display;
+        let longest_lookahead = display
+            .event_lookahead_days
+            .max(display.reminder_lookahead_days)
+            .max(display.assignment_lookahead_days);
+        let horizon = today_start + Duration::days(i64::from(longest_lookahead));
         self.ensure_daily_queue_calendar_range_loaded(
             Local::now().date_naive(),
             horizon.with_timezone(&Local).date_naive(),
@@ -37,6 +41,16 @@ impl KnotQApp {
                     }
                     let local_when = trigger_time(occ.kind, occ.start, occ.end);
                     let Some(when) = local_when else { continue };
+                    let kind_horizon = today_start
+                        + Duration::days(i64::from(match occ.kind {
+                            ItemKind::Event => display.event_lookahead_days,
+                            ItemKind::Reminder => display.reminder_lookahead_days,
+                            ItemKind::Assignment => display.assignment_lookahead_days,
+                            ItemKind::Procedure => 0,
+                        }));
+                    if when >= kind_horizon || (!display.show_overdue && when < now) {
+                        continue;
+                    }
                     if item.repeats.is_some()
                         && when >= now
                         && !seen_future_recurring_items.insert((scheme.id, item.id))
@@ -45,6 +59,9 @@ impl KnotQApp {
                     }
                     let retained_done = occ.state.is_done()
                         && self.retains_completed_calendar_item(scheme.id, item.id, &occ.id);
+                    if occ.state.is_done() && !display.show_completed {
+                        continue;
+                    }
                     if when < now && occ.state.is_done() && !retained_done {
                         continue;
                     }
@@ -74,8 +91,7 @@ impl KnotQApp {
                     match occ.kind {
                         ItemKind::Assignment => assignments.push(row),
                         ItemKind::Reminder => reminders.push(row),
-                        ItemKind::Event if when < today_end => upcoming.push(row),
-                        ItemKind::Event => {}
+                        ItemKind::Event => upcoming.push(row),
                         ItemKind::Procedure => {}
                     }
                 }
@@ -84,6 +100,9 @@ impl KnotQApp {
                 // recurrence. Keep a bounded set of missed instances alongside
                 // the future occurrence above.
                 for occ in recurring_overdue_occurrences(item, today_start) {
+                    if !display.show_overdue || (occ.state.is_done() && !display.show_completed) {
+                        continue;
+                    }
                     let retained_done = occ.state.is_done()
                         && self.retains_completed_calendar_item(scheme.id, item.id, &occ.id);
                     if occ.state.is_done() && !retained_done {
@@ -131,6 +150,9 @@ impl KnotQApp {
                         &OccurrenceId::Single,
                     );
                 if item.repeats.is_none() && (!is_done || retained_done) {
+                    if !display.show_overdue || (is_done && !display.show_completed) {
+                        continue;
+                    }
                     let kind = item.kind();
                     if !matches!(kind, ItemKind::Assignment | ItemKind::Reminder) {
                         continue;
@@ -174,6 +196,24 @@ impl KnotQApp {
         // makes the row "jump" out from under the user's cursor when they click it.
         for v in [&mut assignments, &mut reminders, &mut upcoming] {
             v.sort_by_key(|r| r.sort_key);
+        }
+        let mut combined = assignments
+            .into_iter()
+            .map(|row| (0_u8, row))
+            .chain(reminders.into_iter().map(|row| (1_u8, row)))
+            .chain(upcoming.into_iter().map(|row| (2_u8, row)))
+            .collect::<Vec<_>>();
+        combined.sort_by_key(|(_, row)| row.sort_key);
+        combined.truncate(usize::from(display.maximum_items));
+        let mut assignments = Vec::new();
+        let mut reminders = Vec::new();
+        let mut upcoming = Vec::new();
+        for (section, row) in combined {
+            match section {
+                0 => assignments.push(row),
+                1 => reminders.push(row),
+                _ => upcoming.push(row),
+            }
         }
         let scroll_content = div()
             .id("upcoming-scroll")

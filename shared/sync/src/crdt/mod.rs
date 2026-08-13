@@ -331,16 +331,7 @@ impl WorkspaceCrdtDocuments {
                 .apply_update_v1(state)
                 .context("restore workspace CRDT state")?;
         }
-        let mut schemes = HashMap::new();
-        for id in workspace.schemes.keys() {
-            let meta = scheme_meta(&workspace, *id)?;
-            let doc = YrsSchemeDocument::for_replica(meta.id, None);
-            if let Some(state) = states.get(&meta.id).filter(|s| !s.is_empty()) {
-                doc.apply_update_v1(state)
-                    .with_context(|| format!("restore scheme CRDT state {id}"))?;
-            }
-            schemes.insert(*id, doc);
-        }
+        let schemes = restore_scheme_documents(&workspace, states)?;
         Ok(Self {
             workspace: workspace_doc,
             schemes,
@@ -1097,6 +1088,82 @@ struct SchemeSyncEntry {
 struct FolderSyncEntry {
     folder: FolderId,
     sync: SyncDocumentMeta,
+}
+
+/// Below this many schemes, spawning threads costs more than the decode saves.
+const PARALLEL_RESTORE_MIN_DOCUMENTS: usize = 8;
+
+/// Rebuild one scheme CRDT document per scheme, decoding the persisted states in
+/// parallel.
+///
+/// This is the bulk of a cold start: mobile opens the core on the main actor
+/// before the first frame, and desktop opens it before the window, so every
+/// millisecond here is a millisecond of blank app. The documents are completely
+/// independent — each gets a fresh random authoring clientID and decodes its own
+/// bytes, touching nothing shared — so the only ordering that ever mattered was
+/// the loop's, and the result is a `HashMap`.
+fn restore_scheme_documents(
+    workspace: &Workspace,
+    states: &HashMap<DocumentId, Vec<u8>>,
+) -> anyhow::Result<HashMap<SchemeId, YrsSchemeDocument>> {
+    let ids: Vec<SchemeId> = workspace.schemes.keys().copied().collect();
+    let threads = std::thread::available_parallelism()
+        .map(|n| n.get())
+        .unwrap_or(1)
+        .min(ids.len());
+
+    if threads <= 1 || ids.len() < PARALLEL_RESTORE_MIN_DOCUMENTS {
+        return ids
+            .iter()
+            .map(|id| Ok((*id, restore_scheme_document(workspace, states, *id)?)))
+            .collect();
+    }
+
+    let chunk = ids.len().div_ceil(threads);
+    let restored: Vec<anyhow::Result<Vec<(SchemeId, YrsSchemeDocument)>>> =
+        std::thread::scope(|scope| {
+            let handles: Vec<_> = ids
+                .chunks(chunk)
+                .map(|chunk| {
+                    scope.spawn(move || {
+                        chunk
+                            .iter()
+                            .map(|id| Ok((*id, restore_scheme_document(workspace, states, *id)?)))
+                            .collect::<anyhow::Result<Vec<_>>>()
+                    })
+                })
+                .collect();
+            handles
+                .into_iter()
+                // A worker panic is not recoverable state — propagate it the way
+                // an unscoped panic would rather than silently dropping schemes.
+                .map(|handle| {
+                    handle
+                        .join()
+                        .unwrap_or_else(|payload| std::panic::resume_unwind(payload))
+                })
+                .collect()
+        });
+
+    let mut schemes = HashMap::with_capacity(ids.len());
+    for chunk in restored {
+        schemes.extend(chunk?);
+    }
+    Ok(schemes)
+}
+
+fn restore_scheme_document(
+    workspace: &Workspace,
+    states: &HashMap<DocumentId, Vec<u8>>,
+    id: SchemeId,
+) -> anyhow::Result<YrsSchemeDocument> {
+    let meta = scheme_meta(workspace, id)?;
+    let doc = YrsSchemeDocument::for_replica(meta.id, None);
+    if let Some(state) = states.get(&meta.id).filter(|state| !state.is_empty()) {
+        doc.apply_update_v1(state)
+            .with_context(|| format!("restore scheme CRDT state {id}"))?;
+    }
+    Ok(doc)
 }
 
 #[cfg(test)]

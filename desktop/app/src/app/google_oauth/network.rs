@@ -289,7 +289,9 @@ pub(crate) fn google_refresh_token_form(
     ]
 }
 
-pub(crate) fn google_desktop_client_secret_form_field(config: &GoogleOAuthConfig) -> (&'static str, String) {
+pub(crate) fn google_desktop_client_secret_form_field(
+    config: &GoogleOAuthConfig,
+) -> (&'static str, String) {
     // Google Desktop OAuth clients can require client_secret at the token endpoint even
     // with PKCE. In a shipped desktop app this is not confidential; it is the
     // installed-app credential Google expects us to send.

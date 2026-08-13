@@ -8,8 +8,9 @@ use knotq_storage_json::CalendarViewMode;
 
 use crate::app::{daily_queue_marker_color, KnotQApp, View};
 use crate::theme_gpui::{
-    palette_hsla, scheme_color, token_hsla, token_rgba, Theme, FONT_SIZE_HEADLINE,
+    palette_hsla, scheme_color, token_hsla, token_rgba, Theme, PALETTE, FONT_SIZE_HEADLINE,
 };
+use knotq_ui::{clamped_popover_left, popover_top_biased_below};
 
 mod search;
 #[cfg(feature = "accounts")]
@@ -23,7 +24,6 @@ const LINUX_WINDOW_CONTROLS_W: f32 = 132.0;
 const TITLE_MARKER_SIZE: f32 = 18.0;
 const TITLE_TEXT_W: f32 = 190.0;
 const LINUX_TITLE_TEXT_W: f32 = 150.0;
-const COLOR_SWATCH_ORDER: &[u8] = &[0, 1, 5, 2, 3, 4];
 // macOS renders native traffic-light controls at the top-left, so the title bar
 // reserves room for them. Other platforms have no left-side window controls, so
 // they fall back to the normal edge padding instead of leaving dead space.
@@ -50,7 +50,7 @@ impl KnotQApp {
         t: Theme,
         cx: &mut Context<Self>,
     ) -> gpui::AnyElement {
-        let linux_client_decorations = Self::uses_linux_client_decorations();
+        let linux_client_decorations = Self::uses_linux_client_decorations(window);
         let title_content_w = if linux_client_decorations {
             LINUX_TITLE_CONTENT_W
         } else {
@@ -93,42 +93,46 @@ impl KnotQApp {
             token_hsla(t.text_dim)
         };
 
-        let mut color_swatches: Vec<gpui::AnyElement> = Vec::new();
-        if let Some((scheme_id, _, color_index)) = active_scheme {
-            for (i, color_ix) in COLOR_SWATCH_ORDER.iter().copied().enumerate() {
-                let is_active = *color_index == color_ix;
-                let dot = palette_hsla(scheme_color(color_ix, t.is_dark), 1.0);
-                let active_border = t.caret_color;
-                color_swatches.push(
+        let marker = if let Some((scheme_id, _, _color_index)) = active_scheme {
+            div()
+                .id("title-scheme-color")
+                .rounded(px(7.0))
+                .bg(token_rgba(t.button_bg))
+                .border_1()
+                .border_color(token_rgba(t.border_soft))
+                .cursor_pointer()
+                .flex()
+                .items_center()
+                .justify_center()
+                .px(px(6.0))
+                .py(px(4.0))
+                .hover({
+                    let hover = t.button_hover;
+                    move |s| s.bg(token_rgba(hover))
+                })
+                .on_click({
+                    let scheme_id = *scheme_id;
+                    cx.listener(move |this, event: &ClickEvent, _window, cx| {
+                        this.scheme_color_popover = Some((event.position(), scheme_id));
+                        cx.notify();
+                    })
+                })
+                .child(
                     div()
-                        .id(("title-color-sw", i))
-                        .w(px(18.0))
-                        .h(px(18.0))
+                        .w(px(TITLE_MARKER_SIZE))
+                        .h(px(TITLE_MARKER_SIZE))
                         .rounded(px(3.0))
-                        .bg(dot)
-                        .border_1()
-                        .border_color(token_rgba(if is_active {
-                            active_border
-                        } else {
-                            0x00000000
-                        }))
-                        .cursor_pointer()
-                        .on_click({
-                            let scheme_id = *scheme_id;
-                            cx.listener(move |this, _: &ClickEvent, _w, cx| {
-                                this.apply(
-                                    Command::SetSchemeColor {
-                                        id: scheme_id,
-                                        color_index: color_ix,
-                                    },
-                                    cx,
-                                );
-                            })
-                        })
-                        .into_any_element(),
-                );
-            }
-        }
+                        .bg(marker_color),
+                )
+                .into_any_element()
+        } else {
+            div()
+                .w(px(TITLE_MARKER_SIZE))
+                .h(px(TITLE_MARKER_SIZE))
+                .rounded(px(3.0))
+                .bg(marker_color)
+                .into_any_element()
+        };
 
         let mut calendar_mode_controls: Vec<gpui::AnyElement> = Vec::new();
         if view == View::Union {
@@ -190,18 +194,20 @@ impl KnotQApp {
                 .items_center()
                 .justify_center()
                 .window_control_area(WindowControlArea::Drag)
+                // A custom title bar should retain the platform convention:
+                // double-clicking its empty area toggles zoom/maximize.
+                .on_click(|event, window, cx| {
+                    cx.stop_propagation();
+                    if event.click_count() == 2 {
+                        window.zoom_window();
+                    } else if cfg!(target_os = "linux") && event.is_right_click() {
+                        window.show_window_menu(event.position());
+                    }
+                })
                 .when(linux_client_decorations, |s| {
                     s.on_mouse_down(MouseButton::Left, |_, window, cx| {
                         cx.stop_propagation();
                         window.start_window_move();
-                    })
-                    .on_click(|event, window, cx| {
-                        cx.stop_propagation();
-                        if event.click_count() == 2 {
-                            window.zoom_window();
-                        } else if event.is_right_click() {
-                            window.show_window_menu(event.position());
-                        }
                     })
                 })
                 .child(
@@ -211,13 +217,7 @@ impl KnotQApp {
                         .items_center()
                         .justify_center()
                         .gap(px(8.0))
-                        .child(
-                            div()
-                                .w(px(TITLE_MARKER_SIZE))
-                                .h(px(TITLE_MARKER_SIZE))
-                                .rounded(px(3.0))
-                                .bg(marker_color),
-                        )
+                        .child(marker)
                         .child(
                             div()
                                 .w(px(title_text_w))
@@ -254,13 +254,6 @@ impl KnotQApp {
                 .items_center()
                 .justify_end()
                 .gap(px(8.0))
-                .child(
-                    div()
-                        .flex()
-                        .items_center()
-                        .gap(px(6.0))
-                        .children(color_swatches),
-                )
                 .when(!calendar_mode_controls.is_empty(), move |s| {
                     s.child(
                         div()
@@ -308,5 +301,81 @@ impl KnotQApp {
         )
         .children(self.render_linux_window_controls(window, t, cx))
         .into_any_element()
+    }
+}
+
+impl KnotQApp {
+    pub(crate) fn render_scheme_color_popover(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Option<gpui::AnyElement> {
+        let (anchor, scheme_id) = self.scheme_color_popover?;
+        let t = self.theme();
+        let current = self
+            .workspace
+            .schemes
+            .iter()
+            .find(|(_, scheme)| scheme.id == scheme_id)
+            .map(|(_, scheme)| scheme.color_index)
+            .unwrap_or_default();
+        let card_w = 230.0;
+        let card_h = 178.0;
+        let viewport_w = px(f32::from(window.viewport_size().width));
+        let viewport_h = px(f32::from(window.viewport_size().height));
+        let left = clamped_popover_left(anchor.x - px(18.0), px(card_w), viewport_w);
+        let top = popover_top_biased_below(anchor.y + px(8.0), px(card_h), viewport_h);
+        let scrim = div()
+            .id("scheme-color-popover-scrim")
+            .absolute()
+            .inset_0()
+            .bg(token_rgba(0x00000001))
+            .on_click(cx.listener(|this, _: &ClickEvent, _window, cx| {
+                this.scheme_color_popover = None;
+                cx.notify();
+            }));
+        let mut colors = div().grid().grid_cols(6).gap(px(7.0));
+        for index in 0..PALETTE.len() {
+            let index = index as u8;
+            colors = colors.child(
+                div()
+                    .id(("scheme-color-option", index as usize))
+                    .w(px(28.0))
+                    .h(px(28.0))
+                    .rounded(px(6.0))
+                    .bg(palette_hsla(scheme_color(index, t.is_dark), 1.0))
+                    .border_2()
+                    .border_color(token_rgba(if current == index { t.text_primary } else { 0x00000000 }))
+                    .cursor_pointer()
+                    .on_click(cx.listener(move |this, _: &ClickEvent, _window, cx| {
+                        this.apply(Command::SetSchemeColor { id: scheme_id, color_index: index }, cx);
+                        this.scheme_color_popover = None;
+                    })),
+            );
+        }
+        Some(
+            div()
+                .id("scheme-color-popover")
+                .absolute()
+                .inset_0()
+                .child(scrim)
+                .child(
+                    div()
+                        .id("scheme-color-popover-card")
+                        .absolute()
+                        .left(left)
+                        .top(top)
+                        .w(px(card_w))
+                        .bg(token_hsla(t.bg_modal))
+                        .border_1()
+                        .border_color(token_rgba(t.border_overlay))
+                        .rounded(px(10.0))
+                        .shadow_lg()
+                        .p(px(14.0))
+                        .child(colors)
+                        .on_click(|_: &ClickEvent, _window, cx| cx.stop_propagation()),
+                )
+                .into_any_element(),
+        )
     }
 }

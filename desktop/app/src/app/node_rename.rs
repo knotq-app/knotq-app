@@ -120,7 +120,12 @@ impl KnotQApp {
             return;
         };
         let input = cx.new(|cx| {
-            SingleLineEditor::new(t("sidebar.rename.placeholder"), original_name.clone(), window, cx)
+            SingleLineEditor::new(
+                t("sidebar.rename.placeholder"),
+                original_name.clone(),
+                window,
+                cx,
+            )
         });
         let sub = cx.subscribe_in(&input, window, Self::on_rename_node_input_event);
         input.update(cx, |input, cx| input.focus_and_select_all(window, cx));

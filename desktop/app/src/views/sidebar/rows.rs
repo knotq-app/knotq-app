@@ -338,8 +338,7 @@ fn google_calendar_offline_marker(t: Theme) -> gpui::AnyElement {
         .justify_center()
         .opacity(0.78)
         .tooltip(move |window, cx| {
-            Tooltip::new(knotq_l10n::t("sidebar.google_calendar_offline_tooltip"))
-                .build(window, cx)
+            Tooltip::new(knotq_l10n::t("sidebar.google_calendar_offline_tooltip")).build(window, cx)
         })
         .child(
             Icon::empty()

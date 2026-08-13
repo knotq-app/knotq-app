@@ -10,8 +10,8 @@ use knotq_rrule::ItemOccurrenceExt;
 use knotq_storage_json::CalendarViewMode;
 
 use crate::app::{
-    daily_queue_marker_color, CalendarDragState, CalendarMoveState, CalendarResizeState,
-    KnotQApp, OpenEventPopupArgs, CALENDAR_WEEK_VIEW_DAYS,
+    daily_queue_marker_color, CalendarDragState, CalendarMoveState, CalendarResizeState, KnotQApp,
+    OpenEventPopupArgs, CALENDAR_WEEK_VIEW_DAYS,
 };
 use crate::theme_gpui::{
     calendar_item_color, date_status_color, event_status_color, token_hsla, token_rgba, Theme,
@@ -96,9 +96,9 @@ mod render_blocks;
 mod tasks;
 mod week;
 
-pub(crate) use self::tasks::CalendarOccurrenceCache;
 use self::layout::*;
 use self::render_blocks::*;
+pub(crate) use self::tasks::CalendarOccurrenceCache;
 
 impl KnotQApp {
     pub fn render_calendar(

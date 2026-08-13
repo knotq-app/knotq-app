@@ -380,7 +380,10 @@ async fn compute_next_timeline_deadline(
     let now = Utc::now();
     let (workspace, retained_deadline) = weak
         .update(cx, |app, _cx| {
-            (app.workspace.clone(), app.retained_completed().next_expiry())
+            (
+                app.workspace.clone(),
+                app.retained_completed().next_expiry(),
+            )
         })
         .ok()?;
     let event_deadline = cx
@@ -388,10 +391,14 @@ async fn compute_next_timeline_deadline(
         .spawn(async move { next_event_completion_deadline(&workspace, now) })
         .await;
 
-    [event_deadline, next_daily_queue_deadline(), retained_deadline]
-        .into_iter()
-        .flatten()
-        .min()
+    [
+        event_deadline,
+        next_daily_queue_deadline(),
+        retained_deadline,
+    ]
+    .into_iter()
+    .flatten()
+    .min()
 }
 
 fn sync_daily_queue_day_boundary_if_needed(

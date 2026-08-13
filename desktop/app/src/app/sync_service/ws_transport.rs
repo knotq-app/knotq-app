@@ -153,7 +153,8 @@ fn unauthorized(code: &str) -> anyhow::Error {
 }
 
 fn protocol_outdated(code: &str) -> anyhow::Error {
-    anyhow::Error::new(SyncProtocolOutdated).context(format!("sync backend rejected request: {code}"))
+    anyhow::Error::new(SyncProtocolOutdated)
+        .context(format!("sync backend rejected request: {code}"))
 }
 
 fn unreachable_network(error: WsRequestError) -> anyhow::Error {

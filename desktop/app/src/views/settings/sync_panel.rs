@@ -7,7 +7,11 @@ use crate::app::KnotQApp;
 use crate::theme_gpui::{token_hsla, token_rgba, Theme as UiTheme};
 
 impl KnotQApp {
-    pub(super) fn settings_sync_panel(&mut self, t: UiTheme, cx: &mut Context<Self>) -> gpui::AnyElement {
+    pub(super) fn settings_sync_panel(
+        &mut self,
+        t: UiTheme,
+        cx: &mut Context<Self>,
+    ) -> gpui::AnyElement {
         let account = self.settings.sync_account.as_ref();
         let signed_in = account.is_some();
         let sync_enabled = account.is_some_and(|account| account.supports_sync);
