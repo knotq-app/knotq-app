@@ -11,6 +11,7 @@ use knotq_auto_update::{
 };
 use knotq_storage_json::data_dir;
 
+use super::sync_auth::analytics_api_base;
 use super::KnotQApp;
 
 const AUTO_UPDATE_STARTUP_DELAY: StdDuration = StdDuration::ZERO;
@@ -403,12 +404,24 @@ async fn prepare_available_update(
         }
     };
     let updates_dir = data_dir().join("updates");
+    let analytics_base = analytics_api_base();
     let prepared = cx
         .background_executor()
         .spawn({
             let config = config.clone();
             let update = update.clone();
-            async move { prepare_update(&config, &update, &app_path, &updates_dir) }
+            async move {
+                record_update_download(&analytics_base, "update_download_started", &update.version);
+                let result = prepare_update(&config, &update, &app_path, &updates_dir);
+                if result.is_ok() {
+                    record_update_download(
+                        &analytics_base,
+                        "update_download_verified",
+                        &update.version,
+                    );
+                }
+                result
+            }
         })
         .await;
 
@@ -439,6 +452,21 @@ async fn prepare_available_update(
             );
         }
     }
+}
+
+/// Best-effort, aggregate-only telemetry. A failed request must never affect an
+/// update. The payload contains only the platform, event, and release version.
+fn record_update_download(api_base: &str, event: &str, version: &impl std::fmt::Display) {
+    let url = format!("{}/v1/analytics/events", api_base.trim_end_matches('/'));
+    let _ = ureq::post(&url)
+        .set("content-type", "application/json")
+        .set("user-agent", concat!("KnotQ/", env!("CARGO_PKG_VERSION")))
+        .send_json(ureq::json!({
+            "event": event,
+            "platform": std::env::consts::OS,
+            "device": "desktop",
+            "release_version": version.to_string(),
+        }));
 }
 
 async fn install_or_refresh_ready_update(
