@@ -35,6 +35,13 @@ fn default_sync_api_base() -> String {
     }
 }
 
+/// Public, unauthenticated service base used by aggregate product telemetry.
+/// This follows the same debug/sandbox and `KNOTQ_API_BASE` routing as account
+/// traffic, but sends no account credentials or persistent device identifier.
+pub(crate) fn analytics_api_base() -> String {
+    default_sync_api_base()
+}
+
 /// The KnotQ marketing/auth site origins. The hosted sign-in, account, and
 /// checkout pages live here; the app opens whichever matches the backend it is
 /// configured for (see [`sync_web_base`]).
