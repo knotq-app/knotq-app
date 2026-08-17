@@ -641,3 +641,57 @@ fn undo_redo_fuzz_converges() {
         run_seed_undo(seed.wrapping_add(13), 3, 4, steps);
     }
 }
+
+/// Replay a single seed of the undo fuzz, for triaging a failure a broad run
+/// reported.
+///
+/// Caveat: this does NOT yet reproduce a broad run's failure reliably. CRDT
+/// clientIDs, folder→document bindings and fractional position minting are now
+/// deterministic under `set_deterministic_id_seed`, but enough of the sync path
+/// still iterates `HashMap`s (whose order is randomized per process) that a
+/// seed does not fully pin the scenario — a seed that fails inside
+/// `undo_redo_fuzz_converges` may pass here. Closing that gap is what would make
+/// the remaining deep-fuzz convergence failure debuggable.
+#[test]
+#[ignore = "triage helper; runs one seed chosen by KNOTQ_REPRO_SEED"]
+fn replay_undo_seed() {
+    let seed = env_usize("KNOTQ_REPRO_SEED", 349) as u64;
+    let steps = env_usize("KNOTQ_FUZZ_STEPS", 400);
+    run_seed_undo(seed.wrapping_add(13), 3, 4, steps);
+}
+
+/// Pinned regression for the account-switch push corruption.
+///
+/// This exact scenario wedged a device's push loop with repeated
+/// `crdt_schema_invalid` rejections: after hopping accounts it pushed an
+/// incremental delta for a *derived* document id whose base on the new server
+/// shared none of its history. It took 1500 seeds x 400 steps of
+/// `account_hopping_fuzz_converges` to surface (~10 minutes), far too slow to
+/// guard every change — but the run is now deterministic, so the one failing
+/// seed replays here in milliseconds and CI gets the guard for free.
+///
+/// Reproducibility rests on clientIDs, folder->document bindings, document
+/// creation order and fractional position minting all being deterministic under
+/// `set_deterministic_id_seed`; if a future change reintroduces unseeded
+/// randomness on the sync path this stops testing what it claims to, which is
+/// what `client_id_determinism.rs` guards.
+#[test]
+fn account_switch_push_corruption_regression() {
+    run_seed(3_965_727_026_934, 4, 2, 120);
+}
+
+/// Replay a single seed of the plain (non-undo) fuzz, for triaging a failure a
+/// broad run reported. `KNOTQ_REPRO_ACCOUNTS` / `KNOTQ_REPRO_DEVICES` /
+/// `KNOTQ_FUZZ_STEPS` match the shape the reporting test used.
+#[test]
+#[ignore = "triage helper; runs one seed chosen by KNOTQ_REPRO_SEED"]
+fn replay_seed() {
+    let seed: u64 = std::env::var("KNOTQ_REPRO_SEED")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(0);
+    let accounts = env_usize("KNOTQ_REPRO_ACCOUNTS", 4);
+    let devices = env_usize("KNOTQ_REPRO_DEVICES", 2);
+    let steps = env_usize("KNOTQ_FUZZ_STEPS", 120);
+    run_seed(seed, accounts, devices, steps);
+}

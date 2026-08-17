@@ -3,7 +3,64 @@ use super::*;
 impl KnotQApp {
     pub fn render_upcoming(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
         let t = self.theme();
+        let rows = self.upcoming_rows(cx);
+
+        let scroll_content = div()
+            .id("upcoming-scroll")
+            .flex_1()
+            .w_full()
+            .min_h_0()
+            .flex()
+            .flex_col()
+            .pt(px(8.0))
+            .px(px(4.0))
+            .child(self.render_section(
+                knotq_l10n::t("upcoming.section.assignments"),
+                &rows.assignments,
+                knotq_l10n::t("upcoming.empty.none"),
+                "asgn",
+                cx,
+            ))
+            .child(self.render_section(
+                knotq_l10n::t("upcoming.section.reminders"),
+                &rows.reminders,
+                knotq_l10n::t("upcoming.empty.none"),
+                "rem",
+                cx,
+            ))
+            .child(self.render_section(
+                knotq_l10n::t("upcoming.section.upcoming"),
+                &rows.upcoming,
+                knotq_l10n::t("upcoming.empty.none_today"),
+                "up",
+                cx,
+            ));
+        let scroll_content = scroll_content.overflow_y_scrollbar().into_any_element();
+
+        div()
+            .w(px(258.0))
+            .h_full()
+            .flex_shrink_0()
+            .flex()
+            .flex_col()
+            .overflow_hidden()
+            .bg(token_hsla(t.bg_app))
+            .child(scroll_content)
+    }
+
+    /// The panel's rows, recomputed only when something they depend on changed.
+    ///
+    /// The scan behind this walks every item in every scheme and expands each
+    /// one's recurrence. The root view re-renders on every keystroke, so without
+    /// the cache that whole scan is repeated per character typed even though a
+    /// text edit cannot move an item in or out of the upcoming list.
+    fn upcoming_rows(&mut self, cx: &mut Context<Self>) -> UpcomingRows {
         let now = Utc::now();
+        let display = self.settings.upcoming_display;
+        let longest_lookahead = display
+            .event_lookahead_days
+            .max(display.reminder_lookahead_days)
+            .max(display.assignment_lookahead_days);
         let today_start = Local
             .from_local_datetime(
                 &Local::now()
@@ -14,18 +71,70 @@ impl KnotQApp {
             .single()
             .map(|dt| dt.with_timezone(&Utc))
             .unwrap_or(now);
-        let display = self.settings.upcoming_display;
-        let longest_lookahead = display
-            .event_lookahead_days
-            .max(display.reminder_lookahead_days)
-            .max(display.assignment_lookahead_days);
         let horizon = today_start + Duration::days(i64::from(longest_lookahead));
+        // Loading a daily-queue range can add schemes, so it must run before the
+        // key is read; when it does load something it bumps the content
+        // revision and invalidates the entry below on its own.
         self.ensure_daily_queue_calendar_range_loaded(
             Local::now().date_naive(),
             horizon.with_timezone(&Local).date_naive(),
             cx,
         );
 
+        let key = UpcomingRowsKey {
+            schedule_revision: self.state.schedule_revision(),
+            second: now.timestamp(),
+            display,
+            time_format: self.time_format,
+            theme_mode: self.theme_mode,
+            system_theme_dark: self.system_theme_dark,
+        };
+        if let Some(cached) = self
+            .upcoming_cache
+            .as_ref()
+            .filter(|cached| cached.key == key)
+        {
+            let mut rows = cached.rows.clone();
+            self.refresh_upcoming_row_text(&mut rows);
+            return rows;
+        }
+
+        let rows = self.scan_upcoming_rows(now, today_start, horizon, display);
+        self.upcoming_cache = Some(UpcomingCache {
+            key,
+            rows: rows.clone(),
+        });
+        rows
+    }
+
+    /// Re-read the body text of rows carried over from a previous scan.
+    ///
+    /// A text-only edit deliberately does not invalidate the cache — it cannot
+    /// change which items are upcoming — but it *can* change the text of a row
+    /// already on screen, and typing into a dated item is exactly that case.
+    /// There are at most `maximum_items` rows, so this is a handful of lookups
+    /// rather than another pass over every item in the workspace.
+    fn refresh_upcoming_row_text(&self, rows: &mut UpcomingRows) {
+        for row in rows.iter_mut() {
+            let text = self
+                .workspace
+                .scheme(row.scheme_id)
+                .and_then(|scheme| scheme.items.iter().find(|item| item.id == row.item_id))
+                .map(|item| item.text());
+            if let Some(text) = text {
+                row.text = text;
+            }
+        }
+    }
+
+    fn scan_upcoming_rows(
+        &self,
+        now: chrono::DateTime<Utc>,
+        today_start: chrono::DateTime<Utc>,
+        horizon: chrono::DateTime<Utc>,
+        display: knotq_model::UpcomingDisplaySettings,
+    ) -> UpcomingRows {
+        let t = self.theme();
         let mut assignments: Vec<UpRow> = Vec::new();
         let mut reminders: Vec<UpRow> = Vec::new();
         let mut upcoming: Vec<UpRow> = Vec::new();
@@ -215,47 +324,12 @@ impl KnotQApp {
                 _ => upcoming.push(row),
             }
         }
-        let scroll_content = div()
-            .id("upcoming-scroll")
-            .flex_1()
-            .w_full()
-            .min_h_0()
-            .flex()
-            .flex_col()
-            .pt(px(8.0))
-            .px(px(4.0))
-            .child(self.render_section(
-                knotq_l10n::t("upcoming.section.assignments"),
-                &assignments,
-                knotq_l10n::t("upcoming.empty.none"),
-                "asgn",
-                cx,
-            ))
-            .child(self.render_section(
-                knotq_l10n::t("upcoming.section.reminders"),
-                &reminders,
-                knotq_l10n::t("upcoming.empty.none"),
-                "rem",
-                cx,
-            ))
-            .child(self.render_section(
-                knotq_l10n::t("upcoming.section.upcoming"),
-                &upcoming,
-                knotq_l10n::t("upcoming.empty.none_today"),
-                "up",
-                cx,
-            ));
-        let scroll_content = scroll_content.overflow_y_scrollbar().into_any_element();
 
-        div()
-            .w(px(258.0))
-            .h_full()
-            .flex_shrink_0()
-            .flex()
-            .flex_col()
-            .overflow_hidden()
-            .bg(token_hsla(t.bg_app))
-            .child(scroll_content)
+        UpcomingRows {
+            assignments,
+            reminders,
+            upcoming,
+        }
     }
 
     fn render_section(

@@ -59,6 +59,11 @@ impl YrsSchemeDocument {
 
     /// Full document state as a v1 update, for durable persistence. Cached: the
     /// document is only re-serialized when it changed since the last call.
+    /// This document's authoring clientID.
+    pub(crate) fn client_id(&self) -> u64 {
+        self.doc.client_id().get()
+    }
+
     pub fn encode_state_v1(&self) -> Vec<u8> {
         self.encode_cache
             .get(|| self.doc.transact().encode_diff_v1(&StateVector::default()))

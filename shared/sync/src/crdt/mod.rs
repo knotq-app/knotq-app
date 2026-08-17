@@ -353,6 +353,14 @@ impl WorkspaceCrdtDocuments {
     /// Snapshot every owned document's full `state_v1`, keyed by document id, for
     /// durable persistence. Restoring these via [`from_states`](Self::from_states)
     /// with the same `replica_id` round-trips the documents losslessly.
+    /// Every owned document's authoring clientID. Exposed for the test that
+    /// pins them to the document half of the partitioned clientID space.
+    pub fn probe_client_ids(&self) -> Vec<u64> {
+        let mut ids = vec![self.workspace.client_id()];
+        ids.extend(self.schemes.values().map(|doc| doc.client_id()));
+        ids
+    }
+
     pub fn document_states(&self) -> HashMap<DocumentId, Vec<u8>> {
         let mut out = HashMap::new();
         out.insert(self.workspace.id, self.workspace.encode_state_v1());
@@ -477,7 +485,14 @@ impl WorkspaceCrdtDocuments {
                 Err(err) => eprintln!("heal workspace CRDT document failed: {err:#}"),
             }
         }
-        for (scheme_id, doc) in &self.schemes {
+        // Sorted: `healed` is order-bearing downstream (it gates which pending
+        // edits get replaced by a snapshot).
+        let mut heal_ids: Vec<SchemeId> = self.schemes.keys().copied().collect();
+        heal_ids.sort();
+        for scheme_id in &heal_ids {
+            let Some(doc) = self.schemes.get(scheme_id) else {
+                continue;
+            };
             if !should_heal(doc.id)
                 || !state_is_invalid(SyncDocumentKind::Scheme, doc.encode_state_v1())
             {
@@ -599,7 +614,13 @@ impl WorkspaceCrdtDocuments {
 
         self.schemes
             .retain(|id, _| workspace.schemes.contains_key(id));
-        for (id, scheme) in &workspace.schemes {
+        // Sorted: a document created here takes a fresh random clientID, so
+        // HashMap iteration order would decide which scheme receives which id.
+        // Content converges either way, but a seeded run must replay exactly.
+        let mut ordered: Vec<SchemeId> = workspace.schemes.keys().copied().collect();
+        ordered.sort();
+        for id in &ordered {
+            let scheme = &workspace.schemes[id];
             let meta = scheme_meta(&workspace, *id)?;
             // A doc created here starts from an empty base (no restored bytes), so it
             // gets a fresh identity — never the stable clientID, which is reserved for
@@ -663,6 +684,11 @@ impl WorkspaceCrdtDocuments {
         );
         self.schemes
             .retain(|id, _| workspace.schemes.contains_key(id));
+        // Sorted for the same reason as `replace_all`: a first-sight document
+        // takes a fresh random clientID here, and the emitted updates are queued
+        // in this order, so HashMap order would make a seeded run unreplayable.
+        let mut scheme_ids: Vec<SchemeId> = scheme_ids.into_iter().collect();
+        scheme_ids.sort();
         for id in scheme_ids {
             let Some(scheme) = workspace.schemes.get(&id) else {
                 continue;
@@ -1106,13 +1132,28 @@ fn restore_scheme_documents(
     workspace: &Workspace,
     states: &HashMap<DocumentId, Vec<u8>>,
 ) -> anyhow::Result<HashMap<SchemeId, YrsSchemeDocument>> {
-    let ids: Vec<SchemeId> = workspace.schemes.keys().copied().collect();
+    // Sorted: each restored document takes a fresh random clientID, so the order
+    // decides which scheme gets which id.
+    let ids: Vec<SchemeId> = {
+        let mut ids: Vec<SchemeId> = workspace.schemes.keys().copied().collect();
+        ids.sort();
+        ids
+    };
     let threads = std::thread::available_parallelism()
         .map(|n| n.get())
         .unwrap_or(1)
         .min(ids.len());
 
-    if threads <= 1 || ids.len() < PARALLEL_RESTORE_MIN_DOCUMENTS {
+    // Restore serially while the deterministic id stream is armed. It is
+    // thread-local, so workers would not see it and would mint clientIDs from the
+    // OS CSPRNG instead — silently making a seeded property-fuzz run unreplayable,
+    // since `from_states` runs on every sync. (Handing each worker a copy of the
+    // parent's stream would be worse: they would all mint the *same* clientIDs.)
+    // Production never arms the seed and keeps the parallel path.
+    if threads <= 1
+        || ids.len() < PARALLEL_RESTORE_MIN_DOCUMENTS
+        || knotq_model::deterministic_id_seed().is_some()
+    {
         return ids
             .iter()
             .map(|id| Ok((*id, restore_scheme_document(workspace, states, *id)?)))

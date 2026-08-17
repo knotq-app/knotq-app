@@ -604,6 +604,9 @@ pub struct KnotQApp {
     pub pending_delete: Option<DeleteConfirmation>,
     pub notice_modal: Option<NoticeModal>,
     pub sidebar_context_menu: Option<SidebarContextMenu>,
+    /// Memoized rows for the upcoming panel. Deriving them scans every item in
+    /// every scheme, and the root view re-renders on every keystroke.
+    pub(crate) upcoming_cache: Option<crate::views::upcoming::UpcomingCache>,
     pub editor_context_menu: Option<EditorContextMenu>,
     pub google_calendar_picker: Option<GoogleCalendarPickerState>,
     pub google_calendar_picker_task: Option<Task<()>>,

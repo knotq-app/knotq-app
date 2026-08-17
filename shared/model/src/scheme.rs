@@ -3,7 +3,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::{Item, ItemId, SchemeId};
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Scheme {
     pub id: SchemeId,
     pub name: String,
