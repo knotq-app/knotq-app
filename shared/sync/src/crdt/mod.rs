@@ -575,7 +575,7 @@ impl WorkspaceCrdtDocuments {
 
         self.schemes.insert(scheme_id, adopted);
         let workspace = self
-            .materialize_workspace(current, &HashSet::from([scheme_id]))
+            .materialize_workspace(current)
             .context("materialize after epoch adoption")?;
         Ok((workspace, rescue))
     }
@@ -793,7 +793,7 @@ impl WorkspaceCrdtDocuments {
         // `outcome.workspace` stays the `current` clone — re-materializing would
         // only re-derive the same content.
         if workspace_update_eligible_for_materialization {
-            match self.materialize_workspace(current, &HashSet::new()) {
+            match self.materialize_workspace(current) {
                 Ok(workspace) => {
                     // A no-op CRDT merge can still expose stale optimistic UI state:
                     // the long-lived document may already contain the server's
@@ -924,7 +924,7 @@ impl WorkspaceCrdtDocuments {
         }
 
         if !touched_schemes.is_empty() {
-            match self.materialize_workspace(current, &touched_schemes) {
+            match self.materialize_workspace(current) {
                 Ok(workspace) => outcome.workspace = workspace,
                 Err(err) => outcome.push_workspace_error("scheme materialization", err),
             }
@@ -933,11 +933,10 @@ impl WorkspaceCrdtDocuments {
         outcome
     }
 
-    fn materialize_workspace(
-        &self,
-        current: &Workspace,
-        changed_schemes: &HashSet<SchemeId>,
-    ) -> anyhow::Result<Workspace> {
+    /// Rebuild the workspace from the CRDT documents, using `current` only for
+    /// state the documents do not carry (a scheme with no local document, and
+    /// the local-only calendar sync token).
+    fn materialize_workspace(&self, current: &Workspace) -> anyhow::Result<Workspace> {
         let snapshot: WorkspaceDocumentSnapshot = self.workspace.snapshot()?;
         let scheme_sync = snapshot
             .scheme_sync
@@ -981,32 +980,34 @@ impl WorkspaceCrdtDocuments {
         };
 
         for entry in snapshot.schemes {
-            // Decoding a scheme's items from its CRDT document is the dominant cost of
-            // materializing a large workspace, and a sync changes a handful of schemes.
-            // For a scheme that did not change (not in `changed_schemes`) and is already
-            // present in `current`, its document is byte-identical to what produced
-            // `current`, so reuse those items instead of re-decoding. Changed or
-            // brand-new schemes are derived from the authoritative document.
-            let items = if changed_schemes.contains(&entry.id)
-                || !current.schemes.contains_key(&entry.id)
-            {
-                self.schemes
-                    .get(&entry.id)
-                    .and_then(|doc| doc.scheme_items().ok())
-                    .or_else(|| {
-                        current
-                            .schemes
-                            .get(&entry.id)
-                            .map(|scheme| scheme.items.clone())
-                    })
-                    .unwrap_or_default()
-            } else {
-                current
-                    .schemes
-                    .get(&entry.id)
-                    .map(|scheme| scheme.items.clone())
-                    .unwrap_or_default()
-            };
+            // The document is authoritative: derive items from it whenever this
+            // replica has one, and fall back to `current` only when it does not.
+            //
+            // This used to reuse `current`'s items for any scheme not in
+            // `changed_schemes`, on the assumption that such a document is
+            // byte-identical to what produced `current`. That assumption does not
+            // hold. A document can take remote content in a merge whose result is
+            // never adopted — an aborted pull, a rejected batch — and because Yjs
+            // replays an already-delivered update as a no-op, the scheme is never
+            // marked changed again. The reuse then pinned the stale items
+            // *permanently*: the device's document and the server agreed while its
+            // workspace showed older content, forever (found by the property
+            // fuzzer at 3000 seeds, `undo_redo_fuzz_converges`).
+            //
+            // Deriving unconditionally costs ~16 ms on a 168-scheme / 3.7k-item
+            // workspace, and only on a pull that changed something — a background
+            // sync step, not the interactive path.
+            let items = self
+                .schemes
+                .get(&entry.id)
+                .and_then(|doc| doc.scheme_items().ok())
+                .or_else(|| {
+                    current
+                        .schemes
+                        .get(&entry.id)
+                        .map(|scheme| scheme.items.clone())
+                })
+                .unwrap_or_default();
             workspace.schemes.insert(
                 entry.id,
                 Scheme {

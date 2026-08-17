@@ -679,6 +679,21 @@ fn account_switch_push_corruption_regression() {
     run_seed(3_965_727_026_934, 4, 2, 120);
 }
 
+/// Pinned regression for the frozen-stale-workspace divergence.
+///
+/// A device's CRDT document and the server agreed while its materialized
+/// workspace showed older content — permanently. `materialize_workspace` reused
+/// `current`'s items for any scheme the current batch did not change, assuming
+/// such a document matches what produced `current`; a document that took content
+/// in a merge whose result was never adopted breaks that assumption, and since
+/// Yjs replays a delivered update as a no-op the scheme is never marked changed
+/// again. Took 3000 seeds x 400 steps of `undo_redo_fuzz_converges` to surface;
+/// replays here in under a second.
+#[test]
+fn frozen_stale_workspace_divergence_regression() {
+    run_seed_undo(2_336, 3, 4, 400);
+}
+
 /// Replay a single seed of the plain (non-undo) fuzz, for triaging a failure a
 /// broad run reported. `KNOTQ_REPRO_ACCOUNTS` / `KNOTQ_REPRO_DEVICES` /
 /// `KNOTQ_FUZZ_STEPS` match the shape the reporting test used.
