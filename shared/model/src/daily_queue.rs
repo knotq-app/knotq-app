@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use chrono::NaiveDate;
 use sha2::{Digest, Sha256};
 use uuid::Uuid;
@@ -27,18 +29,43 @@ impl DailyQueueConfig {
     pub const PAGE_DAYS: i64 = PAGE_DAYS;
 }
 
+// Memo for the two per-date derivations below.
+//
+// Both are SHA-256 over a freshly formatted date string, and both are called
+// once per daily-queue entry by the sync-metadata checks that run on every
+// applied command — a workspace with a few months of days pays hundreds of
+// digests per keystroke otherwise. They are pure functions of the date, so
+// caching them is exactly equivalent. Thread-local, so background sync threads
+// get their own table rather than contending on a lock.
+thread_local! {
+    static DAILY_QUEUE_IDS: std::cell::RefCell<HashMap<NaiveDate, (SchemeId, DocumentId)>> =
+        std::cell::RefCell::new(HashMap::new());
+}
+
+fn daily_queue_ids(date: NaiveDate) -> (SchemeId, DocumentId) {
+    DAILY_QUEUE_IDS.with(|cache| {
+        if let Some(ids) = cache.borrow().get(&date) {
+            return *ids;
+        }
+        let formatted = date.to_string();
+        let ids = (
+            SchemeId(stable_daily_uuid(DAILY_QUEUE_SCHEME_NAMESPACE, &formatted)),
+            DocumentId(stable_daily_uuid(
+                DAILY_QUEUE_DOCUMENT_NAMESPACE,
+                &formatted,
+            )),
+        );
+        cache.borrow_mut().insert(date, ids);
+        ids
+    })
+}
+
 pub fn daily_queue_scheme_id(date: NaiveDate) -> SchemeId {
-    SchemeId(stable_daily_uuid(
-        DAILY_QUEUE_SCHEME_NAMESPACE,
-        &date.to_string(),
-    ))
+    daily_queue_ids(date).0
 }
 
 pub fn daily_queue_document_id(date: NaiveDate) -> DocumentId {
-    DocumentId(stable_daily_uuid(
-        DAILY_QUEUE_DOCUMENT_NAMESPACE,
-        &date.to_string(),
-    ))
+    daily_queue_ids(date).1
 }
 
 pub fn daily_queue_sync_metadata(date: NaiveDate) -> SyncDocumentMeta {

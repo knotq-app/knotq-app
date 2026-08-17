@@ -37,6 +37,7 @@ impl SchemeEditor {
             read_only: scheme.is_read_only(),
             theme,
             time_format,
+            synced_revision: None,
             rows,
             text,
             selection: initial_selection,
@@ -326,9 +327,17 @@ impl SchemeEditor {
         self.indent_current_line(delta, cx);
     }
 
+    /// Reconcile the editor with the scheme it is showing.
+    ///
+    /// `revision` is the workspace content revision `scheme` came from. Rebuilding
+    /// the buffer walks every item, and the view re-renders far more often than
+    /// the content changes (cursor blink, hover, sibling panels), so an unchanged
+    /// revision with unchanged presentation skips the rebuild entirely. Pass
+    /// `None` to force the rebuild.
     pub fn sync_from_scheme(
         &mut self,
-        scheme: Scheme,
+        scheme: &Scheme,
+        revision: Option<u64>,
         theme: Theme,
         time_format: TimeFormat,
         window: &mut Window,
@@ -341,7 +350,22 @@ impl SchemeEditor {
         self.read_only = scheme.is_read_only();
         let time_format_changed = self.time_format != time_format;
         self.time_format = time_format;
+        let scheme_changed = self.scheme_id != scheme.id;
         self.scheme_id = scheme.id;
+
+        // Nothing that feeds the buffer moved since the last rebuild.
+        let unchanged = !scheme_changed
+            && !theme_changed
+            && !time_format_changed
+            && !color_changed
+            && revision.is_some()
+            && self.synced_revision == revision;
+        if unchanged {
+            self.relayout_if_dirty(window);
+            return;
+        }
+        self.synced_revision = revision;
+
         let (text, rows) = build_buffer(&scheme.items);
         if text != self.text
             || !same_rows(&rows, &self.rows)

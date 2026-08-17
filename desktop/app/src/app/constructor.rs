@@ -132,6 +132,7 @@ impl KnotQApp {
             pending_delete: None,
             notice_modal: None,
             sidebar_context_menu: None,
+            upcoming_cache: None,
             editor_context_menu: None,
             google_calendar_picker: None,
             google_calendar_picker_task: None,

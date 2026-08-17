@@ -58,7 +58,19 @@ pub(crate) struct YrsJsonDocument {
 
 impl YrsJsonDocument {
     pub(crate) fn new(id: DocumentId, kind: SyncDocumentKind) -> Self {
-        let doc = Doc::new();
+        // Built exactly like `new_with_client_id` (same guid, same `OffsetKind`),
+        // differing only in taking a fresh random clientID. It previously used a
+        // bare `Doc::new()`, which left the document without its guid and — the
+        // part that matters — took yrs's *unpartitioned* default clientID rather
+        // than one in the document namespace, so a fresh workspace document could
+        // alias an item-skeleton seed clientID. See `random_document_client_id`
+        // and `stable_item_seed_client_id`; the scheme document has always done
+        // this correctly.
+        let doc = Doc::with_options(yrs_doc_options(
+            id,
+            random_document_client_id(),
+            OffsetKind::Bytes,
+        ));
         // The workspace document is decomposed into independent, id-keyed maps so
         // that concurrent edits to distinct entities (e.g. two replicas each adding
         // a folder) merge additively instead of resolving as whole-document LWW.
@@ -99,6 +111,11 @@ impl YrsJsonDocument {
             Some(replica) => Self::new_with_client_id(id, kind, stable_client_id(replica, id)),
             None => Self::new(id, kind),
         }
+    }
+
+    /// This document's authoring clientID.
+    pub(crate) fn client_id(&self) -> u64 {
+        self.doc.client_id().get()
     }
 
     /// Full document state as a v1 update, for durable persistence. Cached: the
@@ -196,8 +213,18 @@ impl YrsJsonDocument {
             }
         }
         let mut positions: HashMap<String, String> = HashMap::new();
-        for ordered in children_by_parent.values() {
-            assign_fractional_positions(ordered, &stored_node_positions, &mut positions);
+        // Sorted by parent: `assign_fractional_positions` mints position keys
+        // into the shared `positions` map, so iterating the parents in HashMap
+        // order let the same node come out with a different key run to run —
+        // and device to device, which is divergence, not just irreproducibility.
+        let mut parents: Vec<&String> = children_by_parent.keys().collect();
+        parents.sort();
+        for parent in parents {
+            assign_fractional_positions(
+                &children_by_parent[parent],
+                &stored_node_positions,
+                &mut positions,
+            );
         }
         // The root folder (and any orphan) is nobody's child; give it a stable
         // standalone key so every node carries a non-empty position.

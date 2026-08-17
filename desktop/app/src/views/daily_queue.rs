@@ -45,6 +45,7 @@ impl KnotQApp {
         let has_explicit_focus = focused_item.is_some();
         let time_format = self.time_format;
         let theme = self.theme();
+        let revision = self.state.content_revision();
         let mut sections = Vec::with_capacity(dates.len());
         let mut seen_today = false;
 
@@ -70,7 +71,7 @@ impl KnotQApp {
             self.daily_queue_visible_dates.insert(date);
             let remote_cursors = self.remote_cursors_for_scheme(scheme_id);
             editor.update(cx, |editor, cx| {
-                editor.sync_from_scheme(scheme, theme, time_format, window, cx);
+                editor.sync_from_scheme(&scheme, Some(revision), theme, time_format, window, cx);
                 editor.set_remote_cursors(remote_cursors, cx);
                 editor.relayout_if_dirty_for_width(px(available_width), window);
                 if focused == Some(scheme_id) {

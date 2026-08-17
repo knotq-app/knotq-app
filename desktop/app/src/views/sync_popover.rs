@@ -7,7 +7,7 @@ use gpui::{
 use knotq_l10n::{t as tr, t_with as tr_with};
 use knotq_ui::{clamped_popover_left, popover_top_biased_below};
 
-use super::title_bar::{STATUS_ERROR, STATUS_OK, STATUS_PENDING, STATUS_SYNCING};
+use super::title_bar::{STATUS_ERROR, STATUS_OK, STATUS_SYNCING};
 use crate::app::{KnotQApp, SyncAuthStatus, SyncRunStatus};
 use crate::theme_gpui::{token_hsla, token_rgba, Theme};
 
@@ -199,10 +199,10 @@ impl KnotQApp {
                 }),
             },
             // Being offline isn't an error: edits keep landing locally and the
-            // daemon resyncs on its own once the connection returns, so present
-            // it as a waiting state instead of surfacing the transport error.
+            // daemon resyncs on its own once the connection returns, so keep
+            // the calm blue activity color rather than surfacing a warning.
             SyncRunStatus::Error { .. } if self.sync_offline => SyncStatusView {
-                dot_color: STATUS_PENDING,
+                dot_color: STATUS_SYNCING,
                 headline: tr("sync.status.offline").into(),
                 detail: Some(tr("sync.popover.offline_detail").into()),
             },
@@ -219,7 +219,7 @@ impl KnotQApp {
                 })),
             },
             _ if pending > 0 => SyncStatusView {
-                dot_color: STATUS_PENDING,
+                dot_color: STATUS_SYNCING,
                 headline: tr("sync.status.sync").into(),
                 detail: Some(tr("sync.popover.waiting_next_run").into()),
             },

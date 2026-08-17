@@ -159,6 +159,25 @@ pub enum Command {
 }
 
 impl Command {
+    /// Whether this command changes nothing but item body text — leaving every
+    /// date, marker, recurrence, completion state, item ordering and workspace
+    /// structure exactly as it was.
+    ///
+    /// Views that derive a *schedule* from the workspace (the upcoming panel,
+    /// the calendar) can keep their derivation across such a command and just
+    /// re-read the text of the rows they already have. Deliberately conservative:
+    /// only the one variant that provably touches text alone qualifies, so a new
+    /// command variant defaults to invalidating those derivations.
+    pub fn changes_only_item_text(&self) -> bool {
+        match self {
+            Command::UpdateItemText { .. } => true,
+            Command::Batch(commands) => {
+                !commands.is_empty() && commands.iter().all(Command::changes_only_item_text)
+            }
+            _ => false,
+        }
+    }
+
     /// Collapses a `Vec<Command>` into a single `Command`, returning `None` for
     /// an empty vec, the single element for a one-element vec, or `Batch` otherwise.
     pub fn from_vec(mut commands: Vec<Command>) -> Option<Command> {

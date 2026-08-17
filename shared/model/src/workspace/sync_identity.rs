@@ -3,8 +3,8 @@ use std::collections::{HashMap, HashSet};
 use chrono::NaiveDate;
 
 use crate::{
-    daily_queue_scheme_id, daily_queue_sync_metadata, default_folder_sync,
-    scheme_content_sync_metadata,
+    daily_queue_document_id, daily_queue_scheme_id, daily_queue_sync_metadata,
+    folder_sync_metadata, scheme_content_sync_metadata,
     CrdtBackend, DocumentId, FolderId, SchemeId, SyncDocumentKind, WorkspaceId,
 };
 
@@ -14,7 +14,84 @@ use super::{
 };
 
 impl Workspace {
+    /// Whether [`ensure_sync_metadata`](Self::ensure_sync_metadata) would leave
+    /// this workspace untouched — i.e. every scheme and folder already has a
+    /// well-formed sync binding and no stale binding is left over.
+    ///
+    /// This is the read-only half of `ensure_sync_metadata`, kept in step with
+    /// it below. It exists because the repair pass runs on the per-keystroke
+    /// path (every applied command re-derives the CRDT changeset) where it
+    /// almost always finds nothing to do, and because a caller that only needs
+    /// a *normalized* workspace can skip cloning one when this returns true.
+    pub fn sync_metadata_is_current(&self) -> bool {
+        if self.sync.kind != SyncDocumentKind::PersonalWorkspace
+            || self.sync.crdt != CrdtBackend::Yrs
+        {
+            return false;
+        }
+
+        // `daily_queue` is tiny next to `schemes`, so materializing just its
+        // ids keeps the membership tests below allocation-cheap.
+        let daily_queue_ids: HashSet<SchemeId> = self.daily_queue.values().copied().collect();
+
+        // No binding may outlive its scheme (the `retain` in the repair pass).
+        if self.scheme_sync.keys().any(|id| {
+            !self.schemes.contains_key(id) && !daily_queue_ids.contains(id)
+        }) {
+            return false;
+        }
+
+        let scheme_binding_is_current = |id: SchemeId| {
+            let Some(entry) = self.scheme_sync.get(&id) else {
+                return false;
+            };
+            if entry.kind != SyncDocumentKind::Scheme || entry.crdt != CrdtBackend::Yrs {
+                return false;
+            }
+            true
+        };
+        if !self.schemes.keys().copied().all(&scheme_binding_is_current)
+            || !daily_queue_ids.iter().copied().all(&scheme_binding_is_current)
+        {
+            return false;
+        }
+
+        // A daily-queue scheme whose id is the one derived from its date must be
+        // bound to that date's stable document. Compare the document id directly
+        // rather than through `daily_queue_sync_metadata`: that builds a whole
+        // `SyncDocumentMeta`, whose `local` constructor draws a random UUID from
+        // the OS that is then thrown away — once per daily-queue entry, on a
+        // path that runs for every applied command.
+        if self.daily_queue.iter().any(|(date, id)| {
+            daily_queue_scheme_id(*date) == *id
+                && self.scheme_sync.get(id).map(|entry| entry.id)
+                    != Some(daily_queue_document_id(*date))
+        }) {
+            return false;
+        }
+
+        if self
+            .folder_sync
+            .keys()
+            .any(|id| !self.folders.contains_key(id))
+        {
+            return false;
+        }
+        self.folders.keys().all(|id| {
+            self.folder_sync.get(id).is_some_and(|entry| {
+                entry.kind == SyncDocumentKind::Folder && entry.crdt == CrdtBackend::Yrs
+            })
+        })
+    }
+
     pub fn ensure_sync_metadata(&mut self) -> bool {
+        // The full pass allocates several id sets over every scheme and folder,
+        // and runs on the per-keystroke path where it virtually never has
+        // anything to repair. Skipping it when the invariants already hold is
+        // exactly equivalent: the pass would have returned `false` unmutated.
+        if self.sync_metadata_is_current() {
+            return false;
+        }
         let mut changed = false;
         if self.sync.kind != SyncDocumentKind::PersonalWorkspace {
             self.sync.kind = SyncDocumentKind::PersonalWorkspace;
@@ -84,9 +161,12 @@ impl Workspace {
             changed = true;
         }
         for id in folder_ids {
+            // Derived from the folder id, never random: two devices minting for
+            // the same folder must converge on one document (see
+            // `folder_document_id`).
             let entry = self.folder_sync.entry(id).or_insert_with(|| {
                 changed = true;
-                default_folder_sync()
+                folder_sync_metadata(id)
             });
             if entry.kind != SyncDocumentKind::Folder {
                 entry.kind = SyncDocumentKind::Folder;
@@ -326,6 +406,83 @@ impl Workspace {
         }
 
         changed
+    }
+}
+
+#[cfg(test)]
+mod sync_metadata_fast_path_tests {
+    use crate::{
+        daily_queue_scheme_id, CrdtBackend, Scheme, SyncDocumentKind, Workspace,
+    };
+    use chrono::NaiveDate;
+
+    /// `sync_metadata_is_current` gates `ensure_sync_metadata`, so a workspace it
+    /// calls current must genuinely be one the repair pass would not touch. Any
+    /// disagreement here means the fast path is silently skipping a repair.
+    fn assert_agrees(label: &str, workspace: &Workspace) {
+        let predicted_no_change = workspace.sync_metadata_is_current();
+        let mut probe = workspace.clone();
+        let actually_changed = probe.ensure_sync_metadata();
+        assert_eq!(
+            predicted_no_change, !actually_changed,
+            "{label}: fast path said current={predicted_no_change} but the repair pass \
+             changed={actually_changed}"
+        );
+        assert!(
+            probe.sync_metadata_is_current(),
+            "{label}: a normalized workspace must be reported current"
+        );
+    }
+
+    #[test]
+    fn fast_path_matches_the_repair_pass() {
+        let mut workspace = Workspace::new();
+        assert_agrees("fresh", &workspace);
+
+        let scheme = Scheme::new("scheme", 0);
+        let scheme_id = scheme.id;
+        workspace.schemes.insert(scheme_id, scheme);
+        assert_agrees("scheme with no binding", &workspace);
+
+        workspace.ensure_sync_metadata();
+        assert_agrees("scheme with a binding", &workspace);
+
+        // A stale binding left behind by a removed scheme.
+        workspace.schemes.remove(&scheme_id);
+        assert_agrees("binding outliving its scheme", &workspace);
+        workspace.ensure_sync_metadata();
+
+        // A binding with the wrong document kind.
+        let scheme = Scheme::new("other", 1);
+        let other_id = scheme.id;
+        workspace.schemes.insert(other_id, scheme);
+        workspace.ensure_sync_metadata();
+        workspace
+            .scheme_sync
+            .get_mut(&other_id)
+            .unwrap()
+            .kind = SyncDocumentKind::Folder;
+        assert_agrees("binding with the wrong kind", &workspace);
+        workspace.ensure_sync_metadata();
+
+        workspace.scheme_sync.get_mut(&other_id).unwrap().crdt = CrdtBackend::OperationLog;
+        assert_agrees("binding with the wrong crdt backend", &workspace);
+        workspace.ensure_sync_metadata();
+
+        // A daily-queue scheme bound to the wrong document.
+        let date = NaiveDate::from_ymd_opt(2026, 8, 16).unwrap();
+        let daily_id = daily_queue_scheme_id(date);
+        workspace.daily_queue.insert(date, daily_id);
+        assert_agrees("daily queue with no binding", &workspace);
+        workspace.ensure_sync_metadata();
+        assert_agrees("daily queue with a binding", &workspace);
+
+        workspace.scheme_sync.get_mut(&daily_id).unwrap().id = workspace.sync.id;
+        assert_agrees("daily queue bound to the wrong document", &workspace);
+        workspace.ensure_sync_metadata();
+
+        workspace.sync.kind = SyncDocumentKind::Scheme;
+        assert_agrees("workspace document with the wrong kind", &workspace);
     }
 }
 
