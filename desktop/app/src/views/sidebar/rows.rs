@@ -163,43 +163,51 @@ impl KnotQApp {
         context_menu_open: bool,
         cx: &mut Context<Self>,
     ) -> Option<gpui::AnyElement> {
-        let scheme = self.workspace.scheme(sid)?.clone();
+        // Read out only the handful of fields the row draws. Cloning the whole
+        // `Scheme` here would copy all of its items — for every visible scheme,
+        // on every render, and the root view re-renders on every keystroke.
+        let (scheme_id, color_index, scheme_name, google_offline) = {
+            let scheme = self.workspace.scheme(sid)?;
+            (
+                scheme.id,
+                scheme.color_index,
+                self.scheme_display_name(scheme),
+                matches!(
+                    &scheme.source,
+                    SchemeSource::ImportedCalendar(source)
+                        if source.provider == CalendarProvider::Google
+                            && !self.google_calendar_has_local_credentials(scheme)
+                ),
+            )
+        };
         let is_sel = is_scheme_view && selected_id == Some(sid);
         let pl_s = NAV_ROW_INDENT_BASE + depth as f32 * 9.0;
-        let square = scheme_square_color(scheme.color_index, t.is_dark);
-        let scheme_group = SharedString::from(format!("scheme-row-{}", scheme.id));
+        let square = scheme_square_color(color_index, t.is_dark);
+        let scheme_group = SharedString::from(format!("scheme-row-{scheme_id}"));
         let rename = self
             .rename_node
             .as_ref()
-            .filter(|rename| rename.target == NodeRef::Scheme(scheme.id))
+            .filter(|rename| rename.target == NodeRef::Scheme(scheme_id))
             .map(|rename| (rename.input.clone(), rename.error.clone()));
         let is_renaming = rename.is_some();
         let has_rename_error = rename.as_ref().is_some_and(|(_, error)| error.is_some());
         let drag_info = NavigatorDragInfo {
-            node: NodeRef::Scheme(scheme.id),
+            node: NodeRef::Scheme(scheme_id),
             kind: NavigatorNodeKind::Scheme,
             source: NavigatorDragSource::Active {
                 parent: folder_id,
                 position,
             },
-            label: self.scheme_display_name(&scheme),
-            color_index: Some(scheme.color_index),
+            label: scheme_name.clone(),
+            color_index: Some(color_index),
             theme: t,
         };
         let drop_parent = folder_id;
         let drop_position = position;
-        let scheme_id = scheme.id;
-        let scheme_name = self.scheme_display_name(&scheme);
-        let google_offline = matches!(
-            &scheme.source,
-            SchemeSource::ImportedCalendar(source)
-                if source.provider == CalendarProvider::Google
-                    && !self.google_calendar_has_local_credentials(&scheme)
-        );
 
         Some(
             div()
-                .id(SharedString::from(format!("scheme-{}", scheme.id)))
+                .id(SharedString::from(format!("scheme-{scheme_id}")))
                 .group(scheme_group.clone())
                 .relative()
                 .flex()
@@ -254,9 +262,9 @@ impl KnotQApp {
                     }),
                 )
                 .child({
-                    let id = scheme.id;
+                    let id = scheme_id;
                     let base = div()
-                        .id(SharedString::from(format!("scheme-main-{}", scheme.id)))
+                        .id(SharedString::from(format!("scheme-main-{scheme_id}")))
                         .flex_1()
                         .min_w_0()
                         .when(!has_rename_error, |s| s.h_full())

@@ -82,6 +82,21 @@ pub struct LocalSyncState {
     /// Absent in older files, so it defaults to 0 and triggers the heal.
     #[serde(default)]
     pub recovery_version: u32,
+    /// Set when cursors were reset for an account/server change, cleared once
+    /// this device has re-seeded full snapshots against the new server.
+    ///
+    /// Scheme and daily-queue content documents are keyed by *derived* ids, so
+    /// the same document id exists on every account. After a switch this
+    /// device's local document holds the old account's history while the new
+    /// server holds an unrelated base under the same id — and an incremental
+    /// `encode_diff_v1` against the local state vector assumes a receiver that
+    /// already has that history. Applying such a delta to the new base can
+    /// delete structs it never had (observed: the scheme's `schema` key), which
+    /// the server rejects as `crdt_schema_invalid` — permanently, because the
+    /// device just re-queues the same delta. While this is set every document is
+    /// re-seeded as a full snapshot instead, which merges into any base.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub reseed_all_documents: bool,
 }
 
 impl LocalSyncState {
@@ -110,6 +125,24 @@ impl LocalSyncState {
         self.media_cursors.clear();
         self.pending
             .retain(|edit| edit.kind != SyncDocumentKind::PersonalWorkspace);
+    }
+
+    /// As [`clear_cursors_for_full_repull`], plus arming the full-snapshot
+    /// re-seed an account/server change requires (see `reseed_all_documents`).
+    fn clear_cursors_for_account_change(&mut self) {
+        self.clear_cursors_for_full_repull();
+        self.reseed_all_documents = true;
+    }
+
+    /// Whether this device still owes the current server a full snapshot of
+    /// every document.
+    pub fn needs_full_reseed(&self) -> bool {
+        self.reseed_all_documents
+    }
+
+    /// Clear the re-seed obligation once the snapshots have been queued.
+    pub fn clear_full_reseed(&mut self) {
+        self.reseed_all_documents = false;
     }
 
     /// Apply any pending one-time recovery for the current
@@ -162,7 +195,7 @@ impl LocalSyncState {
         if !(workspace_changed || server_changed) {
             return false;
         }
-        self.clear_cursors_for_full_repull();
+        self.clear_cursors_for_account_change();
         true
     }
 
@@ -430,10 +463,16 @@ pub fn queue_workspace_bootstrap_updates(
     // Re-seed full snapshots from the live, persistent documents so the base the
     // server rebuilds shares clientID + clocks with this device's incremental diffs
     // (a throwaway snapshot would carry a fresh identity that competes with them).
+    // After an account/server change this device shares no history with the new
+    // server's documents, so an incremental delta against the local state vector
+    // is not applicable there — every document must go out as a full snapshot,
+    // even one the server already has a base for (a snapshot merges into any
+    // base; a foreign-history delta corrupts it). See `reseed_all_documents`.
+    let reseed_all = sync_state.needs_full_reseed();
     for update in crdt.full_snapshot_updates().updates {
         // Only documents the server lacks a base for are seeded here; a document the
         // server already holds converges through the normal pull/push CRDT merge.
-        if remote_latest.get(&update.document).copied().unwrap_or(0) != 0 {
+        if !reseed_all && remote_latest.get(&update.document).copied().unwrap_or(0) != 0 {
             continue;
         }
         // A just-healed document's queued edits predate the heal (they are the
@@ -744,6 +783,84 @@ mod account_change_tests {
             .pending
             .iter()
             .all(|edit| edit.kind == SyncDocumentKind::Scheme));
+    }
+
+    /// An account/server change must arm the full-snapshot re-seed.
+    ///
+    /// Scheme and daily-queue documents carry *derived* ids, so the same
+    /// document id exists on the new account with a completely different
+    /// history. Pushing an incremental delta against it made the server reject
+    /// the batch with `crdt_schema_invalid` — permanently, since the device just
+    /// re-queued the same delta (found by the property fuzzer at depth,
+    /// `account_hopping_fuzz_converges`). While the flag is set, every document
+    /// goes out as a full snapshot, which merges into any base.
+    #[test]
+    fn an_account_change_arms_the_full_snapshot_reseed() {
+        let account_a = WorkspaceId::new();
+        let account_b = WorkspaceId::new();
+        let mut state = configured_state(account_a, SERVER_A);
+        assert!(
+            !state.needs_full_reseed(),
+            "a steady-state device owes no re-seed"
+        );
+
+        assert!(state.reset_for_account_change(account_b, SERVER_A));
+        assert!(
+            state.needs_full_reseed(),
+            "switching account must force full snapshots, not incremental deltas"
+        );
+
+        state.clear_full_reseed();
+        assert!(!state.needs_full_reseed());
+    }
+
+    /// Changing only the backend (prod -> sandbox) is the same hazard: a
+    /// different server holds different history under the same document ids.
+    #[test]
+    fn a_server_change_arms_the_full_snapshot_reseed() {
+        let account = WorkspaceId::new();
+        let mut state = configured_state(account, SERVER_A);
+        assert!(state.reset_for_account_change(account, SERVER_B));
+        assert!(state.needs_full_reseed());
+    }
+
+    /// A no-op reset must not arm it — re-seeding every document on every sync
+    /// would push the whole workspace repeatedly.
+    #[test]
+    fn no_reseed_is_armed_without_an_actual_account_change() {
+        let account = WorkspaceId::new();
+        let mut state = configured_state(account, SERVER_A);
+        assert!(!state.reset_for_account_change(account, SERVER_A));
+        assert!(!state.needs_full_reseed());
+    }
+
+    /// The flag has to survive a restart: the device still owes the new server
+    /// full snapshots even if it is closed before the first post-switch sync.
+    #[test]
+    fn the_reseed_obligation_round_trips_through_persistence() {
+        let account_a = WorkspaceId::new();
+        let account_b = WorkspaceId::new();
+        let mut state = configured_state(account_a, SERVER_A);
+        state.reset_for_account_change(account_b, SERVER_A);
+
+        let json = serde_json::to_string(&state).expect("serialize");
+        let restored: LocalSyncState = serde_json::from_str(&json).expect("deserialize");
+        assert!(
+            restored.needs_full_reseed(),
+            "a device closed mid-switch must still re-seed on next launch"
+        );
+
+        // And a state that owes nothing stays quiet across a round trip, so the
+        // flag never gets stuck on for existing installs.
+        let mut settled = configured_state(account_b, SERVER_A);
+        settled.clear_full_reseed();
+        let json = serde_json::to_string(&settled).expect("serialize");
+        assert!(
+            !json.contains("reseed_all_documents"),
+            "the default must not be written out"
+        );
+        let restored: LocalSyncState = serde_json::from_str(&json).expect("deserialize");
+        assert!(!restored.needs_full_reseed());
     }
 
     #[test]

@@ -19,6 +19,13 @@ pub fn set_deterministic_id_seed(seed: Option<u64>) {
     DETERMINISTIC_ID_STATE.with(|cell| cell.set(seed));
 }
 
+/// The current deterministic-id state, so test tooling can take a reading,
+/// mint ids for a side computation, and restore it — leaving the stream the
+/// scenario draws from untouched. Test/fuzz infrastructure only.
+pub fn deterministic_id_seed() -> Option<u64> {
+    DETERMINISTIC_ID_STATE.with(|cell| cell.get())
+}
+
 fn split_mix_64(state: &mut u64) -> u64 {
     *state = state.wrapping_add(0x9E37_79B9_7F4A_7C15);
     let mut z = *state;
@@ -45,6 +52,17 @@ fn next_id_uuid() -> Uuid {
             Uuid::from_bytes(bytes)
         }
     })
+}
+
+/// A fresh random UUID that honours [`set_deterministic_id_seed`].
+///
+/// Use this anywhere a random identifier is minted outside the `Id` newtypes —
+/// notably the Yjs document clientIDs, which must stay *fresh-random per
+/// construction* for merge correctness but also have to be replayable, or a
+/// failing fuzz seed cannot be reproduced. In production the deterministic seed
+/// is never set, so this is exactly `Uuid::new_v4()`.
+pub fn next_random_uuid() -> Uuid {
+    next_id_uuid()
 }
 
 macro_rules! id_newtype {

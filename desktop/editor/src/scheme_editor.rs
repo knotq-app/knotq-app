@@ -269,6 +269,10 @@ pub struct SchemeEditor {
     read_only: bool,
     theme: Theme,
     time_format: TimeFormat,
+    /// Content revision of the workspace the buffer was last rebuilt from.
+    /// Rebuilding it costs a pass over every item, and the view re-renders far
+    /// more often than the content changes, so an unchanged revision skips it.
+    synced_revision: Option<u64>,
     rows: Vec<EditorRow>,
     text: String,
     selection: TextSelection,

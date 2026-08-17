@@ -24,7 +24,7 @@ pub enum NodeRef {
     Scheme(SchemeId),
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Workspace {
     #[serde(default)]
     pub id: WorkspaceId,
@@ -56,6 +56,44 @@ pub struct Workspace {
 }
 
 impl Workspace {
+    /// Clone every field except `schemes`, which comes back empty.
+    ///
+    /// `schemes` holds all the item content and so dominates the cost of cloning
+    /// a workspace; this lets a caller that can carry most `Scheme` values over
+    /// unchanged (see `AppState::sync_workspace_from_store_reusing_untouched`)
+    /// avoid deep-cloning them. Destructured exhaustively on purpose: a field
+    /// added to `Workspace` must be handled here or this stops compiling.
+    pub fn clone_without_schemes(&self) -> Self {
+        let Workspace {
+            id,
+            sync,
+            root,
+            folders,
+            schemes: _,
+            scheme_sync,
+            folder_sync,
+            daily_queue,
+            recently_deleted,
+            deleted_scheme_origins,
+            recently_deleted_folders,
+            deleted_folder_origins,
+        } = self;
+        Self {
+            id: *id,
+            sync: sync.clone(),
+            root: *root,
+            folders: folders.clone(),
+            schemes: HashMap::new(),
+            scheme_sync: scheme_sync.clone(),
+            folder_sync: folder_sync.clone(),
+            daily_queue: daily_queue.clone(),
+            recently_deleted: recently_deleted.clone(),
+            deleted_scheme_origins: deleted_scheme_origins.clone(),
+            recently_deleted_folders: recently_deleted_folders.clone(),
+            deleted_folder_origins: deleted_folder_origins.clone(),
+        }
+    }
+
     pub fn new() -> Self {
         let id = WorkspaceId::new();
         let root = personal_workspace_root_folder_id(id);

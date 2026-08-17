@@ -332,7 +332,13 @@ impl WorkspaceCrdtDocuments {
                 .context("restore workspace CRDT state")?;
         }
         let mut schemes = HashMap::new();
-        for id in workspace.schemes.keys() {
+        // Sorted: each restored document takes a fresh random clientID, so the
+        // iteration order decides which scheme gets which id. Content converges
+        // either way, but a seeded property-fuzz run has to replay exactly, and
+        // `from_states` runs on every sync.
+        let mut ordered: Vec<SchemeId> = workspace.schemes.keys().copied().collect();
+        ordered.sort();
+        for id in &ordered {
             let meta = scheme_meta(&workspace, *id)?;
             let doc = YrsSchemeDocument::for_replica(meta.id, None);
             if let Some(state) = states.get(&meta.id).filter(|s| !s.is_empty()) {
@@ -362,6 +368,14 @@ impl WorkspaceCrdtDocuments {
     /// Snapshot every owned document's full `state_v1`, keyed by document id, for
     /// durable persistence. Restoring these via [`from_states`](Self::from_states)
     /// with the same `replica_id` round-trips the documents losslessly.
+    /// Every owned document's authoring clientID. Exposed for the test that
+    /// pins them to the document half of the partitioned clientID space.
+    pub fn probe_client_ids(&self) -> Vec<u64> {
+        let mut ids = vec![self.workspace.client_id()];
+        ids.extend(self.schemes.values().map(|doc| doc.client_id()));
+        ids
+    }
+
     pub fn document_states(&self) -> HashMap<DocumentId, Vec<u8>> {
         let mut out = HashMap::new();
         out.insert(self.workspace.id, self.workspace.encode_state_v1());
@@ -486,7 +500,14 @@ impl WorkspaceCrdtDocuments {
                 Err(err) => eprintln!("heal workspace CRDT document failed: {err:#}"),
             }
         }
-        for (scheme_id, doc) in &self.schemes {
+        // Sorted: `healed` is order-bearing downstream (it gates which pending
+        // edits get replaced by a snapshot).
+        let mut heal_ids: Vec<SchemeId> = self.schemes.keys().copied().collect();
+        heal_ids.sort();
+        for scheme_id in &heal_ids {
+            let Some(doc) = self.schemes.get(scheme_id) else {
+                continue;
+            };
             if !should_heal(doc.id)
                 || !state_is_invalid(SyncDocumentKind::Scheme, doc.encode_state_v1())
             {
@@ -554,7 +575,7 @@ impl WorkspaceCrdtDocuments {
 
         self.schemes.insert(scheme_id, adopted);
         let workspace = self
-            .materialize_workspace(current, &HashSet::from([scheme_id]))
+            .materialize_workspace(current)
             .context("materialize after epoch adoption")?;
         Ok((workspace, rescue))
     }
@@ -608,7 +629,13 @@ impl WorkspaceCrdtDocuments {
 
         self.schemes
             .retain(|id, _| workspace.schemes.contains_key(id));
-        for (id, scheme) in &workspace.schemes {
+        // Sorted: a document created here takes a fresh random clientID, so
+        // HashMap iteration order would decide which scheme receives which id.
+        // Content converges either way, but a seeded run must replay exactly.
+        let mut ordered: Vec<SchemeId> = workspace.schemes.keys().copied().collect();
+        ordered.sort();
+        for id in &ordered {
+            let scheme = &workspace.schemes[id];
             let meta = scheme_meta(&workspace, *id)?;
             // A doc created here starts from an empty base (no restored bytes), so it
             // gets a fresh identity — never the stable clientID, which is reserved for
@@ -672,6 +699,11 @@ impl WorkspaceCrdtDocuments {
         );
         self.schemes
             .retain(|id, _| workspace.schemes.contains_key(id));
+        // Sorted for the same reason as `replace_all`: a first-sight document
+        // takes a fresh random clientID here, and the emitted updates are queued
+        // in this order, so HashMap order would make a seeded run unreplayable.
+        let mut scheme_ids: Vec<SchemeId> = scheme_ids.into_iter().collect();
+        scheme_ids.sort();
         for id in scheme_ids {
             let Some(scheme) = workspace.schemes.get(&id) else {
                 continue;
@@ -761,7 +793,7 @@ impl WorkspaceCrdtDocuments {
         // `outcome.workspace` stays the `current` clone — re-materializing would
         // only re-derive the same content.
         if workspace_update_eligible_for_materialization {
-            match self.materialize_workspace(current, &HashSet::new()) {
+            match self.materialize_workspace(current) {
                 Ok(workspace) => {
                     // A no-op CRDT merge can still expose stale optimistic UI state:
                     // the long-lived document may already contain the server's
@@ -892,7 +924,7 @@ impl WorkspaceCrdtDocuments {
         }
 
         if !touched_schemes.is_empty() {
-            match self.materialize_workspace(current, &touched_schemes) {
+            match self.materialize_workspace(current) {
                 Ok(workspace) => outcome.workspace = workspace,
                 Err(err) => outcome.push_workspace_error("scheme materialization", err),
             }
@@ -901,11 +933,10 @@ impl WorkspaceCrdtDocuments {
         outcome
     }
 
-    fn materialize_workspace(
-        &self,
-        current: &Workspace,
-        changed_schemes: &HashSet<SchemeId>,
-    ) -> anyhow::Result<Workspace> {
+    /// Rebuild the workspace from the CRDT documents, using `current` only for
+    /// state the documents do not carry (a scheme with no local document, and
+    /// the local-only calendar sync token).
+    fn materialize_workspace(&self, current: &Workspace) -> anyhow::Result<Workspace> {
         let snapshot: WorkspaceDocumentSnapshot = self.workspace.snapshot()?;
         let scheme_sync = snapshot
             .scheme_sync
@@ -949,32 +980,34 @@ impl WorkspaceCrdtDocuments {
         };
 
         for entry in snapshot.schemes {
-            // Decoding a scheme's items from its CRDT document is the dominant cost of
-            // materializing a large workspace, and a sync changes a handful of schemes.
-            // For a scheme that did not change (not in `changed_schemes`) and is already
-            // present in `current`, its document is byte-identical to what produced
-            // `current`, so reuse those items instead of re-decoding. Changed or
-            // brand-new schemes are derived from the authoritative document.
-            let items = if changed_schemes.contains(&entry.id)
-                || !current.schemes.contains_key(&entry.id)
-            {
-                self.schemes
-                    .get(&entry.id)
-                    .and_then(|doc| doc.scheme_items().ok())
-                    .or_else(|| {
-                        current
-                            .schemes
-                            .get(&entry.id)
-                            .map(|scheme| scheme.items.clone())
-                    })
-                    .unwrap_or_default()
-            } else {
-                current
-                    .schemes
-                    .get(&entry.id)
-                    .map(|scheme| scheme.items.clone())
-                    .unwrap_or_default()
-            };
+            // The document is authoritative: derive items from it whenever this
+            // replica has one, and fall back to `current` only when it does not.
+            //
+            // This used to reuse `current`'s items for any scheme not in
+            // `changed_schemes`, on the assumption that such a document is
+            // byte-identical to what produced `current`. That assumption does not
+            // hold. A document can take remote content in a merge whose result is
+            // never adopted — an aborted pull, a rejected batch — and because Yjs
+            // replays an already-delivered update as a no-op, the scheme is never
+            // marked changed again. The reuse then pinned the stale items
+            // *permanently*: the device's document and the server agreed while its
+            // workspace showed older content, forever (found by the property
+            // fuzzer at 3000 seeds, `undo_redo_fuzz_converges`).
+            //
+            // Deriving unconditionally costs ~16 ms on a 168-scheme / 3.7k-item
+            // workspace, and only on a pull that changed something — a background
+            // sync step, not the interactive path.
+            let items = self
+                .schemes
+                .get(&entry.id)
+                .and_then(|doc| doc.scheme_items().ok())
+                .or_else(|| {
+                    current
+                        .schemes
+                        .get(&entry.id)
+                        .map(|scheme| scheme.items.clone())
+                })
+                .unwrap_or_default();
             workspace.schemes.insert(
                 entry.id,
                 Scheme {

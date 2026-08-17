@@ -1,0 +1,68 @@
+name: Sync fuzz (deep)
+
+# The sync property fuzzer runs at its default depth in `cargo test --workspace`
+# on every PR, which takes seconds but only samples a narrow slice of the
+# scenario space. The convergence and push-corruption bugs fixed in v0.51.0 both
+# needed roughly ten times that depth to surface (~15 minutes), so the deep run
+# lives here on a schedule instead of blocking PRs.
+#
+# A failure prints the seed that reproduces it. Runs are deterministic, so
+# `KNOTQ_REPRO_SEED=<seed> cargo test -p knotq-sync --test sync_property_model \
+# --release -- --ignored replay_seed` replays it locally in milliseconds — see
+# `replay_seed` / `replay_undo_seed`.
+
+on:
+  schedule:
+    # 04:00 UTC daily, off the usual working hours for this repo.
+    - cron: "0 4 * * *"
+  workflow_dispatch:
+    inputs:
+      seeds:
+        description: "Seeds per fuzz test"
+        required: false
+        default: "1500"
+      steps:
+        description: "Operations per seed"
+        required: false
+        default: "400"
+
+concurrency:
+  group: sync-fuzz-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  deep-fuzz:
+    name: Deep property fuzz
+    runs-on: ubuntu-24.04
+    # The default 1500 x 400 run takes ~15 minutes; leave headroom for a cold
+    # cache and for the manual dispatch to ask for more.
+    timeout-minutes: 90
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        continue-on-error: true
+        with:
+          key: sync-fuzz
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y pkg-config libdbus-1-dev
+
+      - name: Run the sync property fuzzer at depth
+        env:
+          KNOTQ_FUZZ_SEEDS: ${{ github.event.inputs.seeds || '1500' }}
+          KNOTQ_FUZZ_STEPS: ${{ github.event.inputs.steps || '400' }}
+        # Release build: a debug fuzz run of this depth takes hours.
+        run: cargo test -p knotq-sync --test sync_property_model --release -- --nocapture
+
+      - name: Run the multi-origin daily-queue stress
+        env:
+          KNOTQ_FUZZ_SEEDS: "3000"
+        run: |
+          cargo test -p knotq-sync --test sync_property_model --release -- \
+            --ignored --exact daily_queue_multiorigin_stress --nocapture

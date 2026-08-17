@@ -5,7 +5,7 @@ use knotq_l10n::t as tr;
 use crate::app::{KnotQApp, SyncAuthStatus, SyncRunStatus, View};
 use crate::theme_gpui::{token_hsla, token_rgba, Theme};
 
-use super::{STATUS_ERROR, STATUS_OK, STATUS_PENDING, STATUS_SYNCING};
+use super::{STATUS_ERROR, STATUS_OK, STATUS_SYNCING};
 
 pub(super) struct TitleSyncStatus {
     pub(super) label: String,
@@ -148,11 +148,11 @@ impl KnotQApp {
                 label: tr("sync.status.sync").to_string(),
                 dot_color: STATUS_SYNCING,
             },
-            // Offline is a waiting state, not a failure — the pending dot says
-            // "changes will sync later" without alarming red.
+            // Offline is a waiting state, not a failure — use the same calm
+            // blue as an active sync instead of an attention-grabbing warning.
             SyncRunStatus::Error { .. } if self.sync_offline => TitleSyncStatus {
                 label: tr("sync.status.offline").to_string(),
-                dot_color: STATUS_PENDING,
+                dot_color: STATUS_SYNCING,
             },
             SyncRunStatus::Error { .. } => TitleSyncStatus {
                 label: tr("sync.status.sync").to_string(),
@@ -160,7 +160,7 @@ impl KnotQApp {
             },
             _ if pending > 0 => TitleSyncStatus {
                 label: tr("sync.status.sync").to_string(),
-                dot_color: STATUS_PENDING,
+                dot_color: STATUS_SYNCING,
             },
             _ => TitleSyncStatus {
                 label: tr("sync.status.sync").to_string(),

@@ -1,7 +1,7 @@
 use std::collections::{HashMap, HashSet};
 
 use chrono::NaiveDate;
-use knotq_commands::{Command, CommandError, CommandOrigin, CommandReceipt};
+use knotq_commands::{ChangeSet, Command, CommandError, CommandOrigin, CommandReceipt};
 use knotq_index::IndexedWorkspace;
 use knotq_model::{
     AppSettings, CalendarViewMode, CalendarWeekRange, DocumentId, NodeRef, NotificationDefaults,
@@ -34,6 +34,15 @@ pub struct AppState {
     // True when app code has mutated `workspace` directly and the canonical store
     // must be rebuilt before the next dispatched command.
     direct_workspace_dirty: bool,
+    // Monotonic counter bumped by every route that can change `workspace` or
+    // `retained_completed`.
+    content_revision: u64,
+    // As `content_revision`, but a command that only rewrites item body text
+    // does not bump it. The upcoming panel's row set (which items are due, in
+    // what order) cannot change under such an edit, so it can keep its scan and
+    // re-read just the text of the handful of rows it is showing — which is what
+    // makes typing cheap, since typing is exactly that kind of command.
+    schedule_revision: u64,
 
     // Fields still read directly by knotq-app during the shell slimming phase.
     // Keep them synchronized when dispatching through state.
@@ -94,6 +103,8 @@ impl AppState {
             notifications,
             event_bus: EventBus::default(),
             direct_workspace_dirty: false,
+            content_revision: 0,
+            schedule_revision: 0,
             workspace,
             theme_mode: settings.theme_mode,
             system_theme_dark: true,
@@ -131,7 +142,41 @@ impl AppState {
         &self.retained_completed
     }
 
+    /// The canonical workspace held by the store, which `self.workspace` is a
+    /// working copy of. Exposed so tests can assert the two stay in step.
+    pub fn store_workspace(&self) -> &Workspace {
+        self.store.workspace()
+    }
+
+    /// Revision of everything the workspace-derived views read. Bumped by every
+    /// mutation route, so a view can cache a projection of the workspace and
+    /// reuse it while this is unchanged.
+    pub fn content_revision(&self) -> u64 {
+        self.content_revision
+    }
+
+    /// Revision of the workspace's *schedule* — which items are dated, repeating,
+    /// done, and in what order. Unlike [`content_revision`](Self::content_revision)
+    /// this survives a text-only edit.
+    pub fn schedule_revision(&self) -> u64 {
+        self.schedule_revision
+    }
+
+    fn bump_content_revision(&mut self) {
+        self.content_revision = self.content_revision.wrapping_add(1);
+        self.schedule_revision = self.schedule_revision.wrapping_add(1);
+    }
+
+    /// Bump only the content revision, for a change that provably left the
+    /// schedule alone.
+    fn bump_content_revision_text_only(&mut self) {
+        self.content_revision = self.content_revision.wrapping_add(1);
+    }
+
     pub fn retained_completed_mut(&mut self) -> &mut RetainedCompletedItems {
+        // Handing out `&mut` is itself the mutation for revision purposes: the
+        // caller took it in order to insert, remove, or purge.
+        self.bump_content_revision();
         &mut self.retained_completed
     }
 
@@ -168,6 +213,7 @@ impl AppState {
         self.store.mark_dirty_from_command(cmd);
         self.sync_workspace_from_store_dirty();
         self.direct_workspace_dirty = true;
+        self.bump_content_revision();
     }
 
     /// Mark a single scheme as dirty.
@@ -176,6 +222,7 @@ impl AppState {
         self.dirty_schemes.insert(scheme_id);
         self.index_dirty = true;
         self.direct_workspace_dirty = true;
+        self.bump_content_revision();
     }
 
     /// Mark only the workspace index as dirty (folder structure changes, etc.)
@@ -183,10 +230,12 @@ impl AppState {
         self.store.mark_index_dirty();
         self.index_dirty = true;
         self.direct_workspace_dirty = true;
+        self.bump_content_revision();
     }
 
     pub fn mark_direct_workspace_dirty(&mut self) {
         self.direct_workspace_dirty = true;
+        self.bump_content_revision();
     }
 
     /// Returns true if any scheme or the index needs saving.
@@ -232,6 +281,53 @@ impl AppState {
         self.workspace = self.store.workspace().clone();
         self.sync_workspace_from_store_dirty();
         self.direct_workspace_dirty = false;
+        self.bump_content_revision();
+    }
+
+    /// Refresh the local workspace copy after a command, carrying over the
+    /// `Scheme` values the command did not touch instead of deep-cloning them.
+    ///
+    /// The two copies were identical before the command (`sync_store_from_workspace`
+    /// flushes any direct mutation into the store first), and the command's
+    /// effect is confined to `touched` — the same guarantee the incremental save
+    /// already relies on to decide which scheme files to write. Cloning only
+    /// those schemes turns a per-keystroke copy of the entire workspace into a
+    /// copy of the one scheme being edited.
+    fn sync_workspace_from_store_reusing_untouched(
+        &mut self,
+        touched: &ChangeSet,
+        text_only: bool,
+    ) {
+        let mut carried_over = std::mem::take(&mut self.workspace.schemes);
+        let store = self.store.workspace();
+        let mut next = store.clone_without_schemes();
+        next.schemes.reserve(store.schemes.len());
+        for (id, scheme) in &store.schemes {
+            let reused = if touched.schemes.contains(id) {
+                None
+            } else {
+                carried_over.remove(id)
+            };
+            next.schemes
+                .insert(*id, reused.unwrap_or_else(|| scheme.clone()));
+        }
+        // A `touched` set that under-reported would leave a stale scheme here,
+        // and the next direct-mutation flush would push that stale copy back
+        // into the store as if it were an edit. Catch any such drift in debug
+        // builds and every test run rather than let it corrupt data silently.
+        debug_assert_eq!(
+            &next,
+            store,
+            "reusing untouched schemes diverged from the store; `touched` under-reported"
+        );
+        self.workspace = next;
+        self.sync_workspace_from_store_dirty();
+        self.direct_workspace_dirty = false;
+        if text_only {
+            self.bump_content_revision_text_only();
+        } else {
+            self.bump_content_revision();
+        }
     }
 
     /// The search/calendar/channel index over the live workspace, rebuilt lazily
@@ -252,8 +348,9 @@ impl AppState {
         origin: CommandOrigin,
     ) -> Result<CommandReceipt, CommandError> {
         self.sync_store_from_workspace();
+        let text_only = command.changes_only_item_text();
         let receipt = self.store.apply_prechecked_local(command, origin)?;
-        self.sync_workspace_from_store();
+        self.sync_workspace_from_store_reusing_untouched(&receipt.touched, text_only);
         Ok(receipt)
     }
 

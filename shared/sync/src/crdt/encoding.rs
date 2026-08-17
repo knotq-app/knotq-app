@@ -43,7 +43,11 @@ pub fn stable_client_id(replica_id: ReplicaId, document_id: DocumentId) -> u64 {
 /// rebuilt document still never collides with an item-skeleton seed.
 pub(crate) fn random_document_client_id() -> u64 {
     // v4 UUIDs are CSPRNG-backed; take 64 bits of that entropy (no extra rand dep).
-    let (hi, _) = uuid::Uuid::new_v4().as_u64_pair();
+    // Minted through the model so the sync property fuzzer's deterministic id seed
+    // covers clientIDs too — they are a merge input, so a run whose clientIDs came
+    // from the OS CSPRNG could not be replayed from its seed. Production never sets
+    // that seed, so this stays a fresh `Uuid::new_v4()` there.
+    let (hi, _) = knotq_model::next_random_uuid().as_u64_pair();
     document_namespace_client_id(hi)
 }
 
