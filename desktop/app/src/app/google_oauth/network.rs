@@ -23,31 +23,59 @@ pub(crate) fn run_google_oauth(
 
     google_oauth_log(format!("oauth.browser_open scopes=\"{scope}\""));
     open_browser(&auth_url)?;
-    let code = match wait_for_oauth_code(
+    // The exchange runs while the browser is still waiting on our response, so
+    // the tab can be told the truth: a grant that ticked no calendar box has to
+    // read as "not connected" there, not only back in the app.
+    let token = match wait_for_oauth_callback(
         &listener,
         &state,
         StdDuration::from_secs(120),
-        knotq_l10n::t("google.oauth.callback.success_body"),
-        knotq_l10n::t("google.oauth.callback.failure_body"),
+        |err| {
+            if err.downcast_ref::<GoogleCalendarScopeDenied>().is_some() {
+                knotq_l10n::t("google.oauth.callback.scope_denied_body").to_string()
+            } else {
+                knotq_l10n::t("google.oauth.callback.failure_body").to_string()
+            }
+        },
         Some(cancel_token),
-    ) {
-        Ok(code) => {
+        |code| {
             google_oauth_log("oauth.callback ok");
-            code
-        }
+            google_oauth_log("oauth.exchange start");
+            let token = match exchange_auth_code(&config, &redirect_uri, code, &code_verifier) {
+                Ok(token) => {
+                    google_oauth_log("oauth.exchange ok");
+                    token
+                }
+                Err(err) => {
+                    google_oauth_log(format!("oauth.exchange failed: {err:#}"));
+                    return Err(err);
+                }
+            };
+            // Google reports what the user actually ticked, which can be less
+            // than what was asked for: the calendar checkboxes are not ticked for
+            // them, so finishing the screen without touching anything grants
+            // nothing but `openid`/`email`.
+            let granted_scope = token
+                .scope
+                .clone()
+                .unwrap_or_else(|| GOOGLE_OAUTH_SCOPES.join(" "));
+            let missing_scopes = missing_google_calendar_scopes(&granted_scope);
+            if !missing_scopes.is_empty() {
+                google_oauth_log(format!(
+                    "oauth.scope_denied granted=\"{granted_scope}\" missing=\"{}\"",
+                    missing_scopes.join(" ")
+                ));
+                return Err(anyhow!(GoogleCalendarScopeDenied));
+            }
+            Ok((
+                token,
+                knotq_l10n::t("google.oauth.callback.success_body").to_string(),
+            ))
+        },
+    ) {
+        Ok(token) => token,
         Err(err) => {
             google_oauth_log(format!("oauth.callback failed: {err:#}"));
-            return Err(err);
-        }
-    };
-    google_oauth_log("oauth.exchange start");
-    let token = match exchange_auth_code(&config, &redirect_uri, &code, &code_verifier) {
-        Ok(token) => {
-            google_oauth_log("oauth.exchange ok");
-            token
-        }
-        Err(err) => {
-            google_oauth_log(format!("oauth.exchange failed: {err:#}"));
             return Err(err);
         }
     };
@@ -55,18 +83,10 @@ pub(crate) fn run_google_oauth(
         .refresh_token
         .clone()
         .ok_or_else(|| anyhow!(knotq_l10n::t("google.oauth.error.no_refresh_token")))?;
-    // Google reports what the user actually ticked, which can be less than what
-    // was asked for. Storing an account whose grant cannot list a calendar only
-    // buys a stack of API errors later, so refuse it here instead.
-    let granted_scope = token.scope.clone().unwrap_or_else(|| scope.clone());
-    let missing_scopes = missing_google_calendar_scopes(&granted_scope);
-    if !missing_scopes.is_empty() {
-        google_oauth_log(format!(
-            "oauth.scope_denied granted=\"{granted_scope}\" missing=\"{}\"",
-            missing_scopes.join(" ")
-        ));
-        bail!(knotq_l10n::t("google.oauth.error.calendar_scope_denied"));
-    }
+    let granted_scope = token
+        .scope
+        .clone()
+        .unwrap_or_else(|| GOOGLE_OAUTH_SCOPES.join(" "));
     let claims = token.id_token.as_deref().and_then(decode_id_token_claims);
     let account_id = claims
         .as_ref()
@@ -124,6 +144,20 @@ pub(crate) fn google_auth_url(
     format!("{GOOGLE_AUTH_URL}?{query}")
 }
 
+/// The user finished Google's consent screen without granting the calendar
+/// reads. Typed rather than a message, so the browser page and the in-app
+/// notice can each be chosen from it without matching on localized text.
+#[derive(Debug)]
+pub(crate) struct GoogleCalendarScopeDenied;
+
+impl std::fmt::Display for GoogleCalendarScopeDenied {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(knotq_l10n::t("google.oauth.error.calendar_scope_denied"))
+    }
+}
+
+impl std::error::Error for GoogleCalendarScopeDenied {}
+
 /// Block on a loopback OAuth/PKCE redirect, returning the `code` query parameter
 /// once the browser hits the listener (and the `state` matches). Shared by the
 /// Google Calendar import and the sync browser sign-in; callers pass the success
@@ -136,6 +170,32 @@ pub(crate) fn wait_for_oauth_code(
     failure_body: &str,
     cancel_token: Option<&AtomicBool>,
 ) -> Result<String> {
+    wait_for_oauth_callback(
+        listener,
+        expected_state,
+        timeout,
+        |_| failure_body.to_string(),
+        cancel_token,
+        |code| Ok((code.to_string(), success_body.to_string())),
+    )
+}
+
+/// The same loopback wait, with the browser's page decided by `finish` rather
+/// than by whether a code arrived.
+///
+/// The tab is still open and waiting on our response when `finish` runs, so
+/// whatever the code turns out to be worth — a grant that covers nothing, an
+/// exchange Google rejects — can be said on the page the user is already
+/// looking at. Reporting only inside the app is how a user ends up with a
+/// browser that said "connected" and an app that says permission denied.
+pub(crate) fn wait_for_oauth_callback<T>(
+    listener: &TcpListener,
+    expected_state: &str,
+    timeout: StdDuration,
+    failure_body: impl Fn(&anyhow::Error) -> String,
+    cancel_token: Option<&AtomicBool>,
+    finish: impl FnOnce(&str) -> Result<(T, String)>,
+) -> Result<T> {
     let started = Instant::now();
     while started.elapsed() < timeout {
         if cancel_token.is_some_and(|cancel_token| cancel_token.load(Ordering::SeqCst)) {
@@ -143,14 +203,14 @@ pub(crate) fn wait_for_oauth_code(
         }
         match listener.accept() {
             Ok((mut stream, _)) => {
-                let result = read_oauth_callback(&mut stream, expected_state);
-                let body = if result.is_ok() {
-                    success_body
-                } else {
-                    failure_body
+                let outcome = read_oauth_callback(&mut stream, expected_state)
+                    .and_then(|code| finish(&code));
+                let body = match &outcome {
+                    Ok((_, body)) => body.clone(),
+                    Err(err) => failure_body(err),
                 };
-                let _ = write_http_response(&mut stream, body);
-                return result;
+                let _ = write_http_response(&mut stream, &body);
+                return outcome.map(|(value, _)| value);
             }
             Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => {
                 std::thread::sleep(StdDuration::from_millis(100));

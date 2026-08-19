@@ -233,6 +233,7 @@
   "google.calendar.reconnect_title": "Google Calendar reconnect",
   "google.calendar.refresh_failed_title": "Google Calendar refresh failed",
   "google.oauth.callback.failure_body": "Google Calendar connection failed. You can close this tab and return to KnotQ.",
+  "google.oauth.callback.scope_denied_body": "KnotQ still needs permission to read your calendars. Google's permission screen leaves the calendar checkboxes off until you turn them on — close this tab, connect again in KnotQ, and turn on both calendar permissions.",
   "google.oauth.callback.success_body": "Google Calendar is connected. You can close this tab and return to KnotQ.",
   "google.oauth.error.calendar_scope_denied": "KnotQ needs permission to read your calendars. On Google's permission screen, turn on both calendar checkboxes, then connect again.",
   "google.oauth.error.cancelled": "Google OAuth browser callback cancelled",

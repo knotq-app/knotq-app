@@ -111,6 +111,56 @@
     }
 
     #[test]
+    fn a_denied_calendar_grant_tells_the_browser_tab_too() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let state = "state-token";
+
+        let (page_tx, page_rx) = mpsc::channel();
+        std::thread::spawn(move || {
+            // The browser hitting the loopback redirect with a valid code.
+            for _ in 0..50 {
+                if let Ok(mut stream) = std::net::TcpStream::connect(("127.0.0.1", port)) {
+                    use std::io::Read as _;
+                    use std::io::Write as _;
+                    let _ = write!(stream, "GET /?code=abc&state={state} HTTP/1.1\r\n\r\n");
+                    let mut page = String::new();
+                    let _ = stream.read_to_string(&mut page);
+                    let _ = page_tx.send(page);
+                    return;
+                }
+                std::thread::sleep(StdDuration::from_millis(10));
+            }
+        });
+
+        let err = wait_for_oauth_callback(
+            &listener,
+            state,
+            StdDuration::from_secs(2),
+            |err| {
+                if err.downcast_ref::<GoogleCalendarScopeDenied>().is_some() {
+                    knotq_l10n::t("google.oauth.callback.scope_denied_body").to_string()
+                } else {
+                    knotq_l10n::t("google.oauth.callback.failure_body").to_string()
+                }
+            },
+            None,
+            |_code| -> Result<((), String)> { Err(anyhow!(GoogleCalendarScopeDenied)) },
+        )
+        .expect_err("a grant without calendar access is refused");
+        assert!(err.downcast_ref::<GoogleCalendarScopeDenied>().is_some());
+
+        // The tab the user is looking at says so too, rather than congratulating
+        // them on a connection the app is about to refuse.
+        let page = page_rx
+            .recv_timeout(StdDuration::from_secs(2))
+            .expect("browser response");
+        assert!(page.contains(knotq_l10n::t("google.oauth.callback.scope_denied_body")));
+        assert!(!page.contains(knotq_l10n::t("google.oauth.callback.success_body")));
+    }
+
+    #[test]
     fn granted_scopes_missing_calendar_access_are_reported() {
         // What Google hands back when the user ticks neither calendar checkbox.
         assert_eq!(
