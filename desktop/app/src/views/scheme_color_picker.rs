@@ -17,6 +17,7 @@ impl KnotQApp {
         &mut self,
         scheme_id: SchemeId,
         anchor: gpui::Point<gpui::Pixels>,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         if self
@@ -27,6 +28,10 @@ impl KnotQApp {
         } else {
             self.scheme_color_picker = Some(SchemeColorPicker { scheme_id, anchor });
         }
+        // Clicking a title bar button leaves focus wherever it was, and the
+        // Escape action is dispatched down the focus path — without this the
+        // popover can only be dismissed with the mouse.
+        self.focus_app_root(window);
         cx.notify();
     }
 
@@ -45,8 +50,11 @@ impl KnotQApp {
         let t = self.theme();
         let viewport_width = px(f32::from(window.viewport_size().width));
         let viewport_height = px(f32::from(window.viewport_size().height));
+        // Centered under the title-bar swatch that opens it, rather than hung
+        // off one edge: the trigger sits mid-title-bar, so an edge-aligned card
+        // reads as belonging to whatever it happens to point at.
         let left = clamped_popover_left(
-            picker.anchor.x - px(PICKER_WIDTH),
+            picker.anchor.x - px(PICKER_WIDTH / 2.0),
             px(PICKER_WIDTH),
             viewport_width,
         );

@@ -21,6 +21,11 @@ const TITLE_CONTENT_W: f32 = 430.0;
 const LINUX_TITLE_CONTENT_W: f32 = 340.0;
 const LINUX_WINDOW_CONTROLS_W: f32 = 132.0;
 const TITLE_MARKER_SIZE: f32 = 18.0;
+// The pressable frame around the marker on a scheme, sized like the other title
+// bar buttons, and the slightly smaller dot that sits inside it.
+const TITLE_MARKER_BUTTON_W: f32 = 30.0;
+const TITLE_MARKER_BUTTON_H: f32 = 26.0;
+const TITLE_MARKER_DOT_SIZE: f32 = 16.0;
 const TITLE_TEXT_W: f32 = 190.0;
 const LINUX_TITLE_TEXT_W: f32 = 150.0;
 // macOS renders native traffic-light controls at the top-left, so the title bar
@@ -90,15 +95,21 @@ impl KnotQApp {
             token_hsla(t.text_dim)
         };
 
-        let mut color_picker_button = None;
-        if let Some((scheme_id, _, color_index)) = active_scheme {
-            let scheme_id = *scheme_id;
-            let dot = palette_hsla(scheme_color(*color_index, t.is_dark), 1.0);
-            color_picker_button = Some(
+        // The square beside the title is both the scheme's color and the way to
+        // change it: one control instead of an indicator here and a separate
+        // picker button at the other end of the title bar.
+        let picker_open = self
+            .scheme_color_picker
+            .is_some_and(|picker| Some(picker.scheme_id) == active_scheme.map(|(id, _, _)| *id));
+        let title_marker = match active_scheme {
+            // On a scheme the marker keeps the button chrome the old picker had,
+            // so it still reads as something to press rather than as a bare
+            // status dot.
+            Some((scheme_id, _, _)) => {
+                let scheme_id = *scheme_id;
                 div()
-                    .id("title-scheme-color")
-                    .w(px(30.0))
-                    .h(px(26.0))
+                    .w(px(TITLE_MARKER_BUTTON_W))
+                    .h(px(TITLE_MARKER_BUTTON_H))
                     .flex()
                     .items_center()
                     .justify_center()
@@ -106,19 +117,41 @@ impl KnotQApp {
                     .border_1()
                     .border_color(token_rgba(t.border_soft))
                     .bg(token_rgba(t.button_bg))
+                    .child(
+                        div()
+                            .w(px(TITLE_MARKER_DOT_SIZE))
+                            .h(px(TITLE_MARKER_DOT_SIZE))
+                            .rounded(px(3.0))
+                            .bg(marker_color),
+                    )
+                    .id("title-scheme-color")
                     .cursor_pointer()
-                    .hover(move |s| s.bg(token_rgba(t.button_hover)))
-                    .on_click(cx.listener(move |this, event: &ClickEvent, _window, cx| {
-                        this.toggle_scheme_color_picker(scheme_id, event.position(), cx);
+                    .hover(move |marker| marker.bg(token_rgba(t.button_hover)))
+                    // The title bar is a window-drag region, so the press has to
+                    // stop here or picking a color starts a window move instead.
+                    .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                    .on_click(cx.listener(move |this, event: &ClickEvent, window, cx| {
+                        this.toggle_scheme_color_picker(scheme_id, event.position(), window, cx);
                         cx.stop_propagation();
                     }))
-                    .tooltip(|window, cx| {
-                        Tooltip::new(tr("mobile.scheme.color_label")).build(window, cx)
+                    // The open picker's scrim swallows the mouse-out, so a
+                    // tooltip raised here would hang beside the popover until
+                    // the popover itself is dismissed.
+                    .when(!picker_open, |marker| {
+                        marker.tooltip(|window, cx| {
+                            Tooltip::new(tr("mobile.scheme.color_label")).build(window, cx)
+                        })
                     })
-                    .child(div().w(px(16.0)).h(px(16.0)).rounded(px(3.0)).bg(dot))
-                    .into_any_element(),
-            );
-        }
+                    .into_any_element()
+            }
+            // Every other view just shows its color; there is nothing to pick.
+            None => div()
+                .w(px(TITLE_MARKER_SIZE))
+                .h(px(TITLE_MARKER_SIZE))
+                .rounded(px(3.0))
+                .bg(marker_color)
+                .into_any_element(),
+        };
 
         let mut calendar_mode_controls: Vec<gpui::AnyElement> = Vec::new();
         if view == View::Union {
@@ -203,13 +236,7 @@ impl KnotQApp {
                         .items_center()
                         .justify_center()
                         .gap(px(8.0))
-                        .child(
-                            div()
-                                .w(px(TITLE_MARKER_SIZE))
-                                .h(px(TITLE_MARKER_SIZE))
-                                .rounded(px(3.0))
-                                .bg(marker_color),
-                        )
+                        .child(title_marker)
                         .child(
                             div()
                                 .w(px(title_text_w))
@@ -246,7 +273,6 @@ impl KnotQApp {
                 .items_center()
                 .justify_end()
                 .gap(px(8.0))
-                .when_some(color_picker_button, |s, button| s.child(button))
                 .when(!calendar_mode_controls.is_empty(), move |s| {
                     s.child(
                         div()

@@ -30,7 +30,12 @@ impl KnotQApp {
                 _ => None,
             };
             let syncing = matches!(self.google_oauth_status, GoogleOAuthStatus::InProgress);
-            return read_only_toolbar(account_label, google_state, syncing, c, cx);
+            // A pending browser sign-in is the one "in progress" state the user
+            // can end themselves — Google may have answered in the browser with
+            // an error KnotQ never sees, and waiting out the callback timeout is
+            // not something to make anyone do.
+            let cancellable = syncing && self.google_oauth_cancel_token.is_some();
+            return read_only_toolbar(account_label, google_state, syncing, cancellable, c, cx);
         }
 
         let state = editor.read(cx).toolbar_state();
@@ -260,6 +265,7 @@ fn read_only_toolbar(
     account_label: String,
     google_state: Option<ReadOnlyGoogleState>,
     syncing: bool,
+    cancellable: bool,
     c: Theme,
     cx: &mut Context<KnotQApp>,
 ) -> gpui::AnyElement {
@@ -320,6 +326,7 @@ fn read_only_toolbar(
                             ReadOnlyGoogleState::Offline(scheme_id) => read_only_reconnect_button(
                                 scheme_id,
                                 syncing,
+                                cancellable,
                                 read_only_text,
                                 muted_text,
                                 cx,
@@ -384,6 +391,7 @@ fn read_only_refresh_button(
 fn read_only_reconnect_button(
     scheme_id: SchemeId,
     syncing: bool,
+    cancellable: bool,
     text_color: gpui::Hsla,
     muted_text: gpui::Hsla,
     cx: &mut Context<KnotQApp>,
@@ -397,17 +405,23 @@ fn read_only_reconnect_button(
         .px(px(6.0))
         .rounded(px(5.0))
         .opacity(if syncing { 0.55 } else { 1.0 })
-        .when(!syncing, |button| {
+        .when(!syncing || cancellable, |button| {
             button
                 .cursor_pointer()
                 .hover(|s| s.bg(token_rgba(0x00000016)))
                 .on_click(cx.listener(move |this, _: &ClickEvent, _window, cx| {
-                    this.start_google_calendar_scheme_reconnect(scheme_id, cx);
+                    if cancellable {
+                        this.cancel_google_calendar_connect(cx);
+                    } else {
+                        this.start_google_calendar_scheme_reconnect(scheme_id, cx);
+                    }
                     cx.stop_propagation();
                 }))
         })
         .tooltip(move |window, cx| {
-            Tooltip::new(if syncing {
+            Tooltip::new(if cancellable {
+                knotq_l10n::t("scheme.toolbar.cancel_connecting_google_calendar")
+            } else if syncing {
                 knotq_l10n::t("scheme.toolbar.connecting_google_calendar")
             } else {
                 knotq_l10n::t("scheme.toolbar.sign_in_locally_google_calendar")
