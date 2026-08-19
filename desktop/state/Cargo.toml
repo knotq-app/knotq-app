@@ -13,3 +13,7 @@ knotq-notifications = { workspace = true }
 knotq-rrule = { workspace = true }
 knotq-sync = { workspace = true }
 serde = { workspace = true }
+
+[dev-dependencies]
+chrono = { workspace = true }
+knotq-storage-json = { workspace = true }

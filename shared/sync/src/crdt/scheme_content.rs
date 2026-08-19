@@ -10,10 +10,42 @@ fn init_scheme_maps(doc: &Doc) {
     doc.get_or_insert_map("items_by_id");
 }
 
+/// What the document held for each item the last time this device wrote it.
+///
+/// Reading an item back out of the CRDT costs a JSON parse and a text
+/// materialization, and `replace_scheme` needs that for every item just to work
+/// out which ones changed — so a single keystroke paid it for the whole scheme
+/// (~0.5 ms of a ~1.4 ms edit on a 252-item scheme). This is that read-back,
+/// kept in step with our own writes and thrown away the moment anything else
+/// touches the document.
+struct StoredItemsShadow {
+    /// The item ids, in document order, that this shadow describes. A scheme
+    /// whose items were added, removed or reordered does not match and falls
+    /// back to reading the document.
+    ids: Vec<String>,
+    items: HashMap<String, StoredItem>,
+}
+
 pub struct YrsSchemeDocument {
     pub(crate) id: DocumentId,
     doc: Doc,
     encode_cache: EncodeCache,
+    shadow: Mutex<Option<StoredItemsShadow>>,
+    /// Cleared by an observer on *any* update to the document — a remote apply, a
+    /// re-seed, our own writes. `replace_scheme` re-arms it only after it has
+    /// refreshed the shadow, so the shadow can never describe a document that
+    /// something else has changed underneath it.
+    shadow_valid: Arc<AtomicBool>,
+}
+
+/// Install the shadow's invalidation observer on `doc`.
+fn shadow_invalidator(doc: &Doc) -> Arc<AtomicBool> {
+    let valid = Arc::new(AtomicBool::new(false));
+    let flag = Arc::clone(&valid);
+    let _ = doc.observe_update_v1_with("knotq_stored_shadow", move |_txn, _evt| {
+        flag.store(false, Ordering::Relaxed);
+    });
+    valid
 }
 
 impl YrsSchemeDocument {
@@ -30,10 +62,13 @@ impl YrsSchemeDocument {
         ));
         init_scheme_maps(&doc);
         let encode_cache = EncodeCache::new(&doc);
+        let shadow_valid = shadow_invalidator(&doc);
         Self {
             id,
             doc,
             encode_cache,
+            shadow: Mutex::new(None),
+            shadow_valid,
         }
     }
 
@@ -41,10 +76,13 @@ impl YrsSchemeDocument {
         let doc = Doc::with_options(yrs_doc_options(id, client_id, OffsetKind::Utf16));
         init_scheme_maps(&doc);
         let encode_cache = EncodeCache::new(&doc);
+        let shadow_valid = shadow_invalidator(&doc);
         Self {
             id,
             doc,
             encode_cache,
+            shadow: Mutex::new(None),
+            shadow_valid,
         }
     }
 
@@ -129,13 +167,37 @@ impl YrsSchemeDocument {
     /// tombstoned) — i.e. the items the resulting update touches.
     pub fn replace_scheme(&self, scheme: &Scheme) -> anyhow::Result<HashSet<String>> {
         let mut touched: HashSet<String> = HashSet::new();
+        let desired_ids = scheme
+            .items
+            .iter()
+            .map(|item| item.id.to_string())
+            .collect::<Vec<_>>();
+        // Reuse the previous read-back when nothing but this device's own writes
+        // has happened since, and the scheme still holds exactly the same items in
+        // the same order. Anything else — a remote update, an item added, removed
+        // or reordered — reads the document as before.
+        let reusable_shadow = self
+            .shadow_valid
+            .swap(false, Ordering::AcqRel)
+            .then(|| {
+                self.shadow
+                    .lock()
+                    .unwrap_or_else(|err| err.into_inner())
+                    .take()
+                    .filter(|shadow| shadow.ids == desired_ids)
+            })
+            .flatten();
         // Deterministically create the skeleton for any new item BEFORE the main edit
         // transaction, so two devices that independently create the same item dedupe
         // into one container instead of clobbering one. The content/metadata writes
         // below then fill those skeletons under the device clientID (and so still merge
         // AB/BA). Applied as sub-updates because each item's skeleton uses its own
         // id-derived clientID.
-        self.ensure_item_skeletons(scheme)?;
+        // Every item already has its container when the shadow describes this exact
+        // item set, and creating them is another walk over the whole scheme.
+        if reusable_shadow.is_none() {
+            self.ensure_item_skeletons(scheme)?;
+        }
         let metadata = self.doc.get_or_insert_map("scheme_file");
         let items_by_id = self.doc.get_or_insert_map("items_by_id");
         let mut txn = self.doc.transact_mut();
@@ -161,27 +223,29 @@ impl YrsSchemeDocument {
         }
 
         // Snapshot what is currently stored so we can reuse positions and skip
-        // unchanged entries.
-        let stored_keys = items_by_id
-            .keys(&txn)
-            .map(str::to_string)
-            .collect::<Vec<_>>();
-        let mut stored: HashMap<String, StoredItem> = HashMap::new();
-        for key in stored_keys {
-            if let Some(item_map) = item_map_ref(&items_by_id, &txn, &key) {
-                stored.insert(key, read_stored_item(&item_map, &txn));
+        // unchanged entries — or take the shadow's copy of that same read-back.
+        let mut stored: HashMap<String, StoredItem> = match reusable_shadow {
+            Some(shadow) => shadow.items,
+            None => {
+                let stored_keys = items_by_id
+                    .keys(&txn)
+                    .map(str::to_string)
+                    .collect::<Vec<_>>();
+                let mut stored = HashMap::new();
+                for key in stored_keys {
+                    if let Some(item_map) = item_map_ref(&items_by_id, &txn, &key) {
+                        stored.insert(key, read_stored_item(&item_map, &txn));
+                    }
+                }
+                stored
             }
-        }
+        };
 
         // Assign each item a fractional `position`. Ordering lives on the item,
         // not in a shared array, so concurrent inserts/reorders merge without the
         // duplicate-id wedge. Keep an existing position whenever it still sorts
         // after the previous item; otherwise mint a fresh key between neighbors.
-        let desired = scheme
-            .items
-            .iter()
-            .map(|i| i.id.to_string())
-            .collect::<Vec<_>>();
+        let desired = &desired_ids;
         let mut positions: Vec<String> = Vec::with_capacity(desired.len());
         for (idx, id) in desired.iter().enumerate() {
             let prev = positions.last().cloned();
@@ -311,7 +375,34 @@ impl YrsSchemeDocument {
                     }
                 }
             }
+            // Keep the read-back in step with what this pass wrote, so the shadow
+            // below describes the document as it now stands. Only the items this
+            // pass touched can differ from what `stored` already holds.
+            if touched.contains(&item_id) {
+                let content = normalize_inline_content(&item.content.to_inlines());
+                stored.insert(
+                    item_id,
+                    StoredItem {
+                        position: position.clone(),
+                        snapshot_json: next_snapshot,
+                        content_shadow: Some(content.clone()),
+                        content,
+                        deleted: false,
+                    },
+                );
+            }
         }
+
+        // Published after the writes: the observer that guards the shadow fires on
+        // our own transaction too, so arming it any earlier would leave a shadow
+        // marked valid for a document still being written.
+        drop(txn);
+        let shadow = StoredItemsShadow {
+            ids: desired_ids,
+            items: stored,
+        };
+        *self.shadow.lock().unwrap_or_else(|err| err.into_inner()) = Some(shadow);
+        self.shadow_valid.store(true, Ordering::Release);
         Ok(touched)
     }
 
