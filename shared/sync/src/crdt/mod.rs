@@ -709,8 +709,8 @@ impl WorkspaceCrdtDocuments {
         let workspace = workspace.as_ref();
         let mut outcome = WorkspaceCrdtSyncOutcome::default();
 
-        let workspace_documents_missing = documents_missing(self, &workspace);
-        let workspace_documents_removed = documents_removed(self, &workspace);
+        let workspace_documents_missing = documents_missing(self, workspace);
+        let workspace_documents_removed = documents_removed(self, workspace);
         if changeset.workspace || workspace_documents_missing || workspace_documents_removed {
             // A document-set change (a scheme added or removed) must re-emit the
             // full workspace state so a server that lost the document can rebuild
@@ -718,7 +718,7 @@ impl WorkspaceCrdtDocuments {
             let force = workspace_documents_missing || workspace_documents_removed;
             match self
                 .workspace
-                .sync_snapshot(&workspace_document_snapshot(&workspace), force)
+                .sync_snapshot(&workspace_document_snapshot(workspace), force)
             {
                 Ok(Some(update)) => outcome.updates.push(update),
                 Ok(None) => {}
@@ -745,7 +745,7 @@ impl WorkspaceCrdtDocuments {
             let Some(scheme) = workspace.schemes.get(&id) else {
                 continue;
             };
-            let meta = match scheme_meta(&workspace, id) {
+            let meta = match scheme_meta(workspace, id) {
                 Ok(meta) => meta,
                 Err(err) => {
                     outcome.push_error(format!("scheme CRDT metadata {id}"), err);
