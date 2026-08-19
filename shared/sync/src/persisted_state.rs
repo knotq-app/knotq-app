@@ -5,12 +5,12 @@ use knotq_model::DocumentId;
 use crate::{PersistedCrdtState, PersistedDocumentState};
 
 impl PersistedCrdtState {
-    pub fn from_states(states: &HashMap<DocumentId, Vec<u8>>) -> Self {
+    pub fn from_states<B: AsRef<[u8]>>(states: &HashMap<DocumentId, B>) -> Self {
         let mut documents = states
             .iter()
             .map(|(document, state_v1)| PersistedDocumentState {
                 document: *document,
-                state_v1: state_v1.clone(),
+                state_v1: state_v1.as_ref().to_vec(),
             })
             .collect::<Vec<_>>();
         // Stable order keeps the on-disk file diff-friendly and deterministic.

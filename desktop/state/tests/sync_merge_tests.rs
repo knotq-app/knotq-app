@@ -47,10 +47,10 @@ fn app_state_with_scheme(name: &str) -> (AppState, SchemeId) {
 /// hand back the run's result (merged workspace + final document states).
 fn simulated_sync_run_rename(
     snapshot_workspace: &Workspace,
-    snapshot_states: &HashMap<DocumentId, Vec<u8>>,
+    snapshot_states: &HashMap<DocumentId, std::sync::Arc<[u8]>>,
     scheme_id: SchemeId,
     new_name: &str,
-) -> (Workspace, HashMap<DocumentId, Vec<u8>>) {
+) -> (Workspace, HashMap<DocumentId, std::sync::Arc<[u8]>>) {
     let other_device = ReplicaId::new();
     let mut run_docs =
         WorkspaceCrdtDocuments::from_states(snapshot_workspace, other_device, snapshot_states)
@@ -69,11 +69,11 @@ fn simulated_sync_run_rename(
 /// (a scheme-content change) rather than the scheme name.
 fn simulated_sync_run_edit_item(
     snapshot_workspace: &Workspace,
-    snapshot_states: &HashMap<DocumentId, Vec<u8>>,
+    snapshot_states: &HashMap<DocumentId, std::sync::Arc<[u8]>>,
     scheme_id: SchemeId,
     item_index: usize,
     new_text: &str,
-) -> (Workspace, HashMap<DocumentId, Vec<u8>>) {
+) -> (Workspace, HashMap<DocumentId, std::sync::Arc<[u8]>>) {
     let other_device = ReplicaId::new();
     let mut run_docs =
         WorkspaceCrdtDocuments::from_states(snapshot_workspace, other_device, snapshot_states)

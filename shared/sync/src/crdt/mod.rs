@@ -9,7 +9,8 @@
 //! Shared data carriers (the `*Snapshot`/`*Entry` structs) and schema constants stay
 //! in this module so the submodules — its descendants — can use them directly.
 use std::collections::{HashMap, HashSet};
-use std::sync::atomic::AtomicBool;
+use std::borrow::Cow;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 use anyhow::{anyhow, Context};
@@ -42,7 +43,7 @@ use crate::{CrdtDocumentUpdate, StoredCrdtUpdate};
 /// keeping the document wrapper trivially constructible.
 pub(crate) struct EncodeCache {
     dirty: Arc<AtomicBool>,
-    bytes: Mutex<Option<Vec<u8>>>,
+    bytes: Mutex<Option<Arc<[u8]>>>,
 }
 
 impl EncodeCache {
@@ -62,6 +63,17 @@ impl EncodeCache {
     /// Return the document's full `state_v1`, re-encoding via `encode` only when the
     /// document changed since the last call.
     pub(crate) fn get(&self, encode: impl FnOnce() -> Vec<u8>) -> Vec<u8> {
+        self.get_shared(encode).to_vec()
+    }
+
+    /// The same state, shared rather than copied.
+    ///
+    /// Handing out a copy costs the length of the document on every call, and
+    /// the save path asks all of them for it: on a 178-document workspace that
+    /// was 8 MB of memcpy on the UI thread every time a save came due. Callers
+    /// that only pass the bytes along take the `Arc`; the ones that need an
+    /// owned `Vec` (wire updates) still call [`Self::get`].
+    pub(crate) fn get_shared(&self, encode: impl FnOnce() -> Vec<u8>) -> Arc<[u8]> {
         // Clear dirty up front: a change racing in during `encode` re-sets it, so the
         // next call recomputes rather than serving a stale cache.
         if !self.dirty.swap(false, std::sync::atomic::Ordering::AcqRel) {
@@ -71,11 +83,11 @@ impl EncodeCache {
                 .unwrap_or_else(|e| e.into_inner())
                 .as_ref()
             {
-                return bytes.clone();
+                return Arc::clone(bytes);
             }
         }
-        let bytes = encode();
-        *self.bytes.lock().unwrap_or_else(|e| e.into_inner()) = Some(bytes.clone());
+        let bytes: Arc<[u8]> = Arc::from(encode());
+        *self.bytes.lock().unwrap_or_else(|e| e.into_inner()) = Some(Arc::clone(&bytes));
         bytes
     }
 }
@@ -296,13 +308,15 @@ impl WorkspaceCrdtDocuments {
     /// the store's reconcile, which force-emits a full snapshot establishing this
     /// device as the creator. This is the single way the real drivers obtain their
     /// CRDT: they never rebuild from plain data with a throwaway identity.
-    pub fn from_states(
+    /// Generic over the byte container so a caller can pass the shared states
+    /// straight from [`Self::document_states`] without copying them first.
+    pub fn from_states<B: AsRef<[u8]>>(
         workspace: &Workspace,
         // The replica id is no longer used for clientID derivation — every document is
         // built under a fresh random authoring identity (see below) — but the parameter
         // is kept so the desktop/mobile/test call sites stay unchanged.
         _replica_id: ReplicaId,
-        states: &HashMap<DocumentId, Vec<u8>>,
+        states: &HashMap<DocumentId, B>,
     ) -> anyhow::Result<Self> {
         let mut workspace = workspace.clone();
         workspace.ensure_sync_metadata();
@@ -320,7 +334,10 @@ impl WorkspaceCrdtDocuments {
         // delete that never takes on the server). A fresh random id per construction makes
         // `(clientID, clock)` reuse impossible, so every merge is commutative and converges
         // (worst case: duplicated content, which still converges identically everywhere).
-        let workspace_state = states.get(&workspace.sync.id).filter(|s| !s.is_empty());
+        let workspace_state = states
+            .get(&workspace.sync.id)
+            .map(AsRef::as_ref)
+            .filter(|state: &&[u8]| !state.is_empty());
         let workspace_doc = YrsJsonDocument::for_replica(
             workspace.sync.id,
             SyncDocumentKind::PersonalWorkspace,
@@ -341,7 +358,11 @@ impl WorkspaceCrdtDocuments {
         for id in &ordered {
             let meta = scheme_meta(&workspace, *id)?;
             let doc = YrsSchemeDocument::for_replica(meta.id, None);
-            if let Some(state) = states.get(&meta.id).filter(|s| !s.is_empty()) {
+            if let Some(state) = states
+                .get(&meta.id)
+                .map(AsRef::as_ref)
+                .filter(|state: &&[u8]| !state.is_empty())
+            {
                 doc.apply_update_v1(state)
                     .with_context(|| format!("restore scheme CRDT state {id}"))?;
             }
@@ -376,11 +397,16 @@ impl WorkspaceCrdtDocuments {
         ids
     }
 
-    pub fn document_states(&self) -> HashMap<DocumentId, Vec<u8>> {
+    /// Every owned document's persisted state, shared rather than copied.
+    ///
+    /// The states are handed straight to the writer, so there is nothing to gain
+    /// from each caller owning its own 8 MB of them — and this runs on the UI
+    /// thread every time a save comes due.
+    pub fn document_states(&self) -> HashMap<DocumentId, Arc<[u8]>> {
         let mut out = HashMap::new();
-        out.insert(self.workspace.id, self.workspace.encode_state_v1());
+        out.insert(self.workspace.id, self.workspace.encode_state_shared_v1());
         for doc in self.schemes.values() {
-            out.insert(doc.id, doc.encode_state_v1());
+            out.insert(doc.id, doc.encode_state_shared_v1());
         }
         out
     }

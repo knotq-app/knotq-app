@@ -74,7 +74,14 @@ pub(super) fn sync_snapshot(snapshot: SyncSnapshot) -> Result<SyncRunResult> {
     // deterministic identity plus its newest local edits — never rebuilt from plain
     // data. Disk fills documents the in-memory store doesn't hold (e.g. archived /
     // off-screen Daily Queue schemes loaded by `workspace_for_background_sync`).
-    let mut crdt_states = load_crdt_state(&path).unwrap_or_default();
+    let mut crdt_states: std::collections::HashMap<
+        knotq_model::DocumentId,
+        std::sync::Arc<[u8]>,
+    > = load_crdt_state(&path)
+        .unwrap_or_default()
+        .into_iter()
+        .map(|(document, state)| (document, std::sync::Arc::from(state)))
+        .collect();
     crdt_states.extend(snapshot.crdt_states);
     // When this device adopts a different account's canonical workspace id (a
     // sign-in into an account it did not last sync — e.g. prod -> sandbox), carry
@@ -96,7 +103,7 @@ pub(super) fn sync_snapshot(snapshot: SyncSnapshot) -> Result<SyncRunResult> {
                 CrdtDocumentUpdate {
                     document: workspace.sync.id,
                     kind: SyncDocumentKind::PersonalWorkspace,
-                    update_v1: state,
+                    update_v1: state.to_vec(),
                     touched_items: Vec::new(),
                 }
             })

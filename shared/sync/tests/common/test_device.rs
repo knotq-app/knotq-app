@@ -13,7 +13,7 @@ impl TestDevice {
         workspace.canonicalize_personal_sync_identity(account_workspace);
         let replica_id = ReplicaId::new();
         let store_crdt =
-            WorkspaceCrdtDocuments::from_states(&workspace, replica_id, &HashMap::new())
+            WorkspaceCrdtDocuments::from_states::<Vec<u8>>(&workspace, replica_id, &HashMap::new())
                 .expect("seed store crdt");
         let crdt_states = store_crdt.document_states();
         let local_state = LocalSyncState {

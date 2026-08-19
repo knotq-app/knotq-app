@@ -150,8 +150,9 @@ struct SyncSnapshot {
     pending: Vec<PendingCrdtEdit>,
     /// This device's current CRDT document state, so the background sync seeds its
     /// CRDT from the UI store's latest local edits (with the same stable identity)
-    /// rather than from a possibly-staler on-disk copy.
-    crdt_states: HashMap<DocumentId, Vec<u8>>,
+    /// rather than from a possibly-staler on-disk copy. Shared, not copied: this
+    /// is handed over from the UI thread.
+    crdt_states: HashMap<DocumentId, std::sync::Arc<[u8]>>,
     /// Lead-time defaults for the notification schedule. The schedule itself
     /// (recurrence expansion + per-occurrence hashing — the heaviest snapshot step)
     /// is computed on the background sync thread from `workspace`, not on main.
@@ -174,7 +175,7 @@ struct SyncRunResult {
     /// The merged CRDT document state after applying remote updates, handed back so
     /// the UI store adopts the canonical merged identity (never rebuilt from plain
     /// data).
-    crdt_states: HashMap<DocumentId, Vec<u8>>,
+    crdt_states: HashMap<DocumentId, std::sync::Arc<[u8]>>,
     pushed: Vec<PushedDocument>,
     remote_updates_applied: usize,
     remaining_pending: usize,

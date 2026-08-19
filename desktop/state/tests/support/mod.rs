@@ -12,7 +12,7 @@ pub fn date(year: i32, month: u32, day: u32) -> NaiveDate {
 }
 
 pub fn test_state() -> AppState {
-    AppState::new(
+    AppState::new::<Vec<u8>>(
         Workspace::new(),
         AppSettings::default(),
         date(2026, 1, 1),

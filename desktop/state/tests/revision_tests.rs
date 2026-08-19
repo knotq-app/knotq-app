@@ -27,7 +27,7 @@ fn state_with_scheme() -> (AppState, SchemeId) {
         .push(NodeRef::Scheme(scheme_id));
     workspace.schemes.insert(scheme_id, scheme);
     workspace.ensure_sync_metadata();
-    let state = AppState::new(
+    let state = AppState::new::<Vec<u8>>(
         workspace,
         AppSettings::default(),
         date(2026, 8, 16),
@@ -381,7 +381,7 @@ fn state_with_two_schemes() -> (AppState, SchemeId, SchemeId) {
         workspace.schemes.insert(scheme.id, scheme);
     }
     workspace.ensure_sync_metadata();
-    let state = AppState::new(
+    let state = AppState::new::<Vec<u8>>(
         workspace,
         AppSettings::default(),
         date(2026, 8, 16),

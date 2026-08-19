@@ -14,7 +14,7 @@ fn local_commands_are_recorded_as_pending_store_operations() {
     let workspace_id = workspace.id;
     let root = workspace.root;
     let replica_id = ReplicaId::new();
-    let mut store = WorkspaceStore::new(workspace, replica_id, false, Default::default(), 1);
+    let mut store = WorkspaceStore::new::<Vec<u8>>(workspace, replica_id, false, Default::default(), 1);
 
     let receipt = store
         .apply_local(
@@ -54,7 +54,7 @@ fn acknowledged_store_operations_are_removed_in_order() {
     let workspace = Workspace::new();
     let root = workspace.root;
     let replica_id = ReplicaId::new();
-    let mut store = WorkspaceStore::new(workspace, replica_id, false, Default::default(), 1);
+    let mut store = WorkspaceStore::new::<Vec<u8>>(workspace, replica_id, false, Default::default(), 1);
 
     for name in ["A", "B"] {
         store
@@ -85,7 +85,7 @@ fn acknowledged_store_operations_are_removed_in_order() {
 fn direct_daily_queue_creation_records_valid_crdt_updates() {
     let workspace = Workspace::new();
     let replica_id = ReplicaId::new();
-    let mut store = WorkspaceStore::new(workspace, replica_id, false, Default::default(), 1);
+    let mut store = WorkspaceStore::new::<Vec<u8>>(workspace, replica_id, false, Default::default(), 1);
 
     let date = NaiveDate::from_ymd_opt(2026, 6, 11).unwrap();
     let id = daily_queue_scheme_id(date);

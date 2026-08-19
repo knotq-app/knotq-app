@@ -44,7 +44,7 @@ fn state_with_schemes() -> (AppState, Vec<SchemeId>) {
         workspace.schemes.insert(scheme.id, scheme);
     }
     workspace.ensure_sync_metadata();
-    let state = AppState::new(
+    let state = AppState::new::<Vec<u8>>(
         workspace,
         AppSettings::default(),
         date(2026, 8, 16),

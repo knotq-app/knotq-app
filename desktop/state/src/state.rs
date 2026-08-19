@@ -69,13 +69,13 @@ pub struct AppState {
 }
 
 impl AppState {
-    pub fn new(
+    pub fn new<B: AsRef<[u8]>>(
         workspace: Workspace,
         settings: AppSettings,
         today: NaiveDate,
         loaded_start: NaiveDate,
         initial_dirty: bool,
-        crdt_states: HashMap<DocumentId, Vec<u8>>,
+        crdt_states: HashMap<DocumentId, B>,
         initial_sequence: u64,
     ) -> Self {
         let store = WorkspaceStore::new(
@@ -295,7 +295,7 @@ impl AppState {
 
     /// Snapshot the long-lived CRDT documents' persisted state — for durable saving
     /// and for seeding the background sync with this device's latest local edits.
-    pub fn crdt_document_states(&self) -> HashMap<DocumentId, Vec<u8>> {
+    pub fn crdt_document_states(&self) -> HashMap<DocumentId, std::sync::Arc<[u8]>> {
         self.store.crdt_document_states()
     }
 
@@ -443,10 +443,10 @@ impl AppState {
     /// undo history survives — the local operations it refers to are still in
     /// the merged workspace. Returns false when the merge isn't possible and
     /// the caller must fall back to the replace path.
-    pub fn merge_workspace_from_sync(
+    pub fn merge_workspace_from_sync<B: AsRef<[u8]>>(
         &mut self,
         sync_workspace: &Workspace,
-        crdt_states: &HashMap<DocumentId, Vec<u8>>,
+        crdt_states: &HashMap<DocumentId, B>,
     ) -> bool {
         // Flush direct (non-command) workspace mutations into the store first so
         // the merge materializes from documents that already carry them.
@@ -461,10 +461,10 @@ impl AppState {
         true
     }
 
-    pub fn replace_workspace_from_sync(
+    pub fn replace_workspace_from_sync<B: AsRef<[u8]>>(
         &mut self,
         workspace: Workspace,
-        crdt_states: HashMap<DocumentId, Vec<u8>>,
+        crdt_states: HashMap<DocumentId, B>,
     ) {
         // Work out which schemes this sync run actually changed by diffing the
         // incoming content against the current one. The replace path runs only

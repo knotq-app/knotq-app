@@ -3307,6 +3307,7 @@ dependencies = [
  "knotq-model",
  "knotq-notifications",
  "knotq-rrule",
+ "knotq-storage-json",
  "knotq-sync",
  "serde",
 ]

@@ -39,7 +39,10 @@ fn encoded_under_seed(seed: u64) -> Vec<Vec<u8>> {
     let workspace = workspace_with_schemes(4);
     let docs = WorkspaceCrdtDocuments::try_new(&workspace).expect("build documents");
     let states = docs.document_states();
-    let mut out: Vec<Vec<u8>> = states.into_values().collect();
+    let mut out: Vec<Vec<u8>> = states
+        .into_values()
+        .map(|state| state.to_vec())
+        .collect();
     out.sort();
     set_deterministic_id_seed(None);
     out
@@ -75,7 +78,11 @@ fn unseeded_documents_get_fresh_client_ids_each_construction() {
     let mut seen: HashSet<Vec<u8>> = HashSet::new();
     for _ in 0..8 {
         let docs = WorkspaceCrdtDocuments::try_new(&workspace).expect("build documents");
-        let mut states: Vec<Vec<u8>> = docs.document_states().into_values().collect();
+        let mut states: Vec<Vec<u8>> = docs
+            .document_states()
+            .into_values()
+            .map(|state| state.to_vec())
+            .collect();
         states.sort();
         assert!(
             seen.insert(states.concat()),
@@ -94,7 +101,11 @@ fn the_deterministic_seed_does_not_leak_across_threads() {
     let unseeded = std::thread::spawn(|| {
         let workspace = workspace_with_schemes(4);
         let docs = WorkspaceCrdtDocuments::try_new(&workspace).expect("build documents");
-        let mut states: Vec<Vec<u8>> = docs.document_states().into_values().collect();
+        let mut states: Vec<Vec<u8>> = docs
+            .document_states()
+            .into_values()
+            .map(|state| state.to_vec())
+            .collect();
         states.sort();
         states
     })

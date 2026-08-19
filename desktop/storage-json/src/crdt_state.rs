@@ -33,7 +33,12 @@ pub fn load_crdt_state(workspace_path: &Path) -> Result<HashMap<DocumentId, Vec<
     Ok(persisted.into_states())
 }
 
-pub fn save_crdt_state(workspace_path: &Path, states: &HashMap<DocumentId, Vec<u8>>) -> Result<()> {
+/// Generic over the byte container so the caller can hand over the shared states
+/// from the CRDT documents' encode cache rather than a copy of all of them.
+pub fn save_crdt_state<B: AsRef<[u8]>>(
+    workspace_path: &Path,
+    states: &HashMap<DocumentId, B>,
+) -> Result<()> {
     let path = crdt_state_path(workspace_path);
     let persisted = PersistedCrdtState::from_states(states);
     let json = serde_json::to_string(&persisted).context("serialize CRDT state")?;

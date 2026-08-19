@@ -1,4 +1,5 @@
 use std::collections::{HashMap, HashSet, VecDeque};
+use std::sync::Arc;
 
 use chrono::{DateTime, Utc};
 use knotq_commands::{
@@ -70,11 +71,11 @@ pub struct WorkspaceStore {
 }
 
 impl WorkspaceStore {
-    pub fn new(
+    pub fn new<B: AsRef<[u8]>>(
         workspace: Workspace,
         replica_id: ReplicaId,
         initial_dirty: bool,
-        crdt_states: HashMap<DocumentId, Vec<u8>>,
+        crdt_states: HashMap<DocumentId, B>,
         initial_sequence: u64,
     ) -> Self {
         let mut workspace = workspace;
@@ -101,7 +102,7 @@ impl WorkspaceStore {
 
     /// Snapshot the long-lived CRDT documents' state for durable persistence and to
     /// seed the background sync's CRDT from this device's latest local edits.
-    pub fn crdt_document_states(&self) -> HashMap<DocumentId, Vec<u8>> {
+    pub fn crdt_document_states(&self) -> HashMap<DocumentId, Arc<[u8]>> {
         self.crdt.document_states()
     }
 
@@ -251,12 +252,12 @@ impl WorkspaceStore {
     /// `crdt_states` (deterministic clientID). Used after a sync merges remote state:
     /// the store adopts the merged documents' canonical identity rather than
     /// re-seeding its own.
-    pub fn replace_workspace_with_crdt_states(
+    pub fn replace_workspace_with_crdt_states<B: AsRef<[u8]>>(
         &mut self,
         workspace: Workspace,
         dirty: WorkspaceDirtyState,
         clear_pending_operations: bool,
-        crdt_states: HashMap<DocumentId, Vec<u8>>,
+        crdt_states: HashMap<DocumentId, B>,
     ) {
         let mut workspace = workspace;
         let sync_metadata_dirty = workspace.ensure_sync_metadata();
@@ -290,10 +291,10 @@ impl WorkspaceStore {
     /// Returns false — leaving the documents for the caller's replace fallback —
     /// when the merged workspace fails validation or a document reports a
     /// non-benign apply error.
-    pub fn merge_sync_crdt_states(
+    pub fn merge_sync_crdt_states<B: AsRef<[u8]>>(
         &mut self,
         sync_workspace: &Workspace,
-        crdt_states: &HashMap<DocumentId, Vec<u8>>,
+        crdt_states: &HashMap<DocumentId, B>,
     ) -> bool {
         let received_at = Utc::now();
         // `crdt_states` always carries EVERY document, but a sync typically changes a
@@ -306,7 +307,7 @@ impl WorkspaceStore {
         let updates = crdt_states
             .iter()
             .filter(|(document, state)| {
-                current.get(*document).map(Vec::as_slice) != Some(state.as_slice())
+                current.get(*document).map(|state| &state[..]) != Some(state.as_ref())
             })
             .filter_map(|(document, state)| {
                 let kind = if *document == sync_workspace.sync.id {
@@ -318,7 +319,7 @@ impl WorkspaceStore {
                 // was never edited or pulled on either side); it contributes
                 // nothing and applying it would only trip post-apply schema
                 // validation, so skip it.
-                validate_crdt_update_sequence(kind, [state.as_slice()]).ok()?;
+                validate_crdt_update_sequence(kind, [state.as_ref()]).ok()?;
                 Some(StoredCrdtUpdate {
                     workspace_id: sync_workspace.id,
                     document: *document,
@@ -326,7 +327,7 @@ impl WorkspaceStore {
                     replica_id: self.replica_id,
                     sequence: 0,
                     received_at,
-                    update_v1: state.clone(),
+                    update_v1: state.as_ref().to_vec(),
                 })
             })
             .collect::<Vec<_>>();
@@ -441,10 +442,10 @@ impl WorkspaceStore {
 /// left empty and populated by the next sync (adopting the server's canonical
 /// identity) or force-emitted as a full snapshot on the next local edit — never
 /// rebuilt from plain data with a throwaway identity.
-fn restored_workspace_crdt(
+fn restored_workspace_crdt<B: AsRef<[u8]>>(
     workspace: &Workspace,
     replica_id: ReplicaId,
-    crdt_states: &HashMap<DocumentId, Vec<u8>>,
+    crdt_states: &HashMap<DocumentId, B>,
 ) -> WorkspaceCrdtDocuments {
     match WorkspaceCrdtDocuments::from_states(workspace, replica_id, crdt_states) {
         Ok(crdt) => crdt,

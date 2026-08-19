@@ -147,7 +147,7 @@ pub struct TestDevice {
     // file; round-tripping through it every sync exercises the persistence path the
     // real drivers use to hand the documents between restarts and threads.
     store_crdt: WorkspaceCrdtDocuments,
-    crdt_states: HashMap<DocumentId, Vec<u8>>,
+    crdt_states: HashMap<DocumentId, std::sync::Arc<[u8]>>,
     local_state: LocalSyncState,
     account_switch_reseed_pending: bool,
     next_sequence: u64,

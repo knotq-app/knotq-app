@@ -125,6 +125,12 @@ impl YrsJsonDocument {
             .get(|| self.doc.transact().encode_diff_v1(&StateVector::default()))
     }
 
+    /// The same state as [`Self::encode_state_v1`], shared rather than copied.
+    pub(crate) fn encode_state_shared_v1(&self) -> std::sync::Arc<[u8]> {
+        self.encode_cache
+            .get_shared(|| self.doc.transact().encode_diff_v1(&StateVector::default()))
+    }
+
     /// Reconcile the persistent workspace document to `snapshot` and return the
     /// resulting update as an incremental diff from this document's own prior
     /// state. Encoding from the *persistent* doc (rather than a throwaway one) is

@@ -69,6 +69,12 @@ impl YrsSchemeDocument {
             .get(|| self.doc.transact().encode_diff_v1(&StateVector::default()))
     }
 
+    /// The same state as [`Self::encode_state_v1`], shared rather than copied.
+    pub fn encode_state_shared_v1(&self) -> std::sync::Arc<[u8]> {
+        self.encode_cache
+            .get_shared(|| self.doc.transact().encode_diff_v1(&StateVector::default()))
+    }
+
     pub fn from_scheme(id: DocumentId, scheme: &Scheme) -> anyhow::Result<Self> {
         let this = Self::new(id);
         this.replace_scheme(scheme)?;
@@ -251,7 +257,8 @@ impl YrsSchemeDocument {
             match item_map_ref(&items_by_id, &txn, &item_id) {
                 None => {
                     touched.insert(item_id.clone());
-                    let item_map = items_by_id.insert(&mut txn, item_id, MapPrelim::default());
+                    let item_map =
+                        items_by_id.insert(&mut txn, item_id.clone(), MapPrelim::default());
                     write_new_item(&item_map, &mut txn, item, position, &next_snapshot)?;
                 }
                 Some(item_map) => {
