@@ -203,6 +203,14 @@ pub(crate) fn wait_for_oauth_callback<T>(
         }
         match listener.accept() {
             Ok((mut stream, _)) => {
+                // The listener is non-blocking so this wait stays cancellable,
+                // and on macOS the accepted socket inherits that flag: reading
+                // it before the browser's bytes land fails with EWOULDBLOCK
+                // ("Resource temporarily unavailable", os error 35) and the
+                // whole connect dies on a lost race. Put this socket back to
+                // blocking, with a timeout so a silent client cannot wedge us.
+                let _ = stream.set_nonblocking(false);
+                let _ = stream.set_read_timeout(Some(CALLBACK_READ_TIMEOUT));
                 let outcome = read_oauth_callback(&mut stream, expected_state)
                     .and_then(|code| finish(&code));
                 let body = match &outcome {
@@ -222,9 +230,20 @@ pub(crate) fn wait_for_oauth_callback<T>(
 }
 
 pub(crate) fn read_oauth_callback(stream: &mut TcpStream, expected_state: &str) -> Result<String> {
+    // Everything needed is on the request line, but one read is not guaranteed
+    // to hold it: keep reading until that line ends, or the peer stops talking.
     let mut buffer = [0u8; 4096];
-    let len = stream.read(&mut buffer).context("read OAuth callback")?;
-    let request = String::from_utf8_lossy(&buffer[..len]);
+    let mut filled = 0usize;
+    let request = loop {
+        let len = stream
+            .read(&mut buffer[filled..])
+            .context("read OAuth callback")?;
+        filled += len;
+        let request = String::from_utf8_lossy(&buffer[..filled]).into_owned();
+        if len == 0 || request.contains('\n') || filled == buffer.len() {
+            break request;
+        }
+    };
     let request_target = request
         .lines()
         .next()

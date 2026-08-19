@@ -110,6 +110,43 @@
         ));
     }
 
+    // macOS hands back an accepted socket that inherits the listener's
+    // non-blocking flag, so a browser that connects a moment before it sends the
+    // request used to fail the whole connect with EWOULDBLOCK ("Resource
+    // temporarily unavailable", os error 35).
+    #[test]
+    fn a_callback_that_arrives_after_the_connection_still_reads() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let state = "state-token";
+
+        std::thread::spawn(move || {
+            let mut stream = loop {
+                if let Ok(stream) = std::net::TcpStream::connect(("127.0.0.1", port)) {
+                    break stream;
+                }
+                std::thread::sleep(StdDuration::from_millis(10));
+            };
+            // Connected, but silent for a moment — the race that produced the
+            // report.
+            std::thread::sleep(StdDuration::from_millis(150));
+            use std::io::Write as _;
+            let _ = write!(stream, "GET /?code=abc&state={state} HTTP/1.1\r\n\r\n");
+        });
+
+        let code = wait_for_oauth_code(
+            &listener,
+            state,
+            StdDuration::from_secs(3),
+            "ok",
+            "failed",
+            None,
+        )
+        .expect("callback read");
+        assert_eq!(code, "abc");
+    }
+
     #[test]
     fn a_denied_calendar_grant_tells_the_browser_tab_too() {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();

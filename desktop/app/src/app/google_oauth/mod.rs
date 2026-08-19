@@ -61,6 +61,9 @@ const GOOGLE_REQUIRED_CALENDAR_SCOPES: &[(&str, &[&str])] = &[
         ],
     ),
 ];
+/// How long to wait for the browser to finish sending its redirect request once
+/// the connection has been accepted.
+const CALLBACK_READ_TIMEOUT: StdDuration = StdDuration::from_secs(10);
 const GOOGLE_OAUTH_LOG_FILE: &str = "knotq-google.log";
 const IMPORTED_GOOGLE_CALENDAR_SCHEME_NAME: &str = "Google Calendar";
 const GOOGLE_CALENDAR_BACKGROUND_SYNC_INTERVAL_SECS: u64 = 10 * 60;
