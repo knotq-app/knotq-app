@@ -21,7 +21,7 @@ impl KnotQApp {
                 SchemeSource::ImportedCalendar(source)
                     if source.provider == CalendarProvider::Google =>
                 {
-                    Some(if self.google_calendar_has_local_credentials(scheme) {
+                    Some(if self.google_calendar_account_can_sync(scheme) {
                         ReadOnlyGoogleState::Connected(scheme.id)
                     } else {
                         ReadOnlyGoogleState::Offline(scheme.id)

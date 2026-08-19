@@ -9,6 +9,8 @@
             refresh_token: "refresh".to_string(),
             expires_at: None,
             scope: "https://www.googleapis.com/auth/calendar.events.readonly".to_string(),
+            token_source: knotq_model::GoogleTokenSource::OAuthRefreshToken,
+            needs_reauth: false,
         }
     }
 
@@ -95,19 +97,90 @@
     }
 
     #[test]
-    fn google_oauth_browser_cancel_and_timeout_errors_are_non_modal() {
-        assert!(is_google_oauth_browser_cancel_or_timeout(
-            google_oauth_error_cancelled()
-        ));
-        assert!(is_google_oauth_browser_cancel_or_timeout(
-            google_oauth_error_timeout()
-        ));
-        assert!(is_google_oauth_browser_cancel_or_timeout(
+    fn google_oauth_user_cancelled_errors_are_non_modal() {
+        assert!(is_google_oauth_user_cancelled(google_oauth_error_cancelled()));
+        assert!(is_google_oauth_user_cancelled(
             &google_oauth_error_access_denied()
         ));
-        assert!(!is_google_oauth_browser_cancel_or_timeout(
+        // A timeout is *not* the user's doing: the usual cause is Google showing
+        // the browser an error page KnotQ never sees, which has to be reported.
+        assert!(!is_google_oauth_user_cancelled(google_oauth_error_timeout()));
+        assert!(!is_google_oauth_user_cancelled(
             "Google OAuth HTTP 400: invalid_request"
         ));
+    }
+
+    #[test]
+    fn granted_scopes_missing_calendar_access_are_reported() {
+        // What Google hands back when the user ticks neither calendar checkbox.
+        assert_eq!(
+            missing_google_calendar_scopes("openid https://www.googleapis.com/auth/userinfo.email"),
+            vec![
+                "https://www.googleapis.com/auth/calendar.calendarlist.readonly",
+                "https://www.googleapis.com/auth/calendar.events.readonly",
+            ]
+        );
+        // One box ticked is still not enough to import a calendar.
+        assert_eq!(
+            missing_google_calendar_scopes(
+                "openid https://www.googleapis.com/auth/calendar.events.readonly"
+            ),
+            vec!["https://www.googleapis.com/auth/calendar.calendarlist.readonly"]
+        );
+    }
+
+    #[test]
+    fn granted_scopes_covering_calendar_access_are_accepted() {
+        assert!(missing_google_calendar_scopes(&GOOGLE_OAUTH_SCOPES.join(" ")).is_empty());
+        // A broader grant from an earlier KnotQ version still covers both reads.
+        assert!(
+            missing_google_calendar_scopes("openid https://www.googleapis.com/auth/calendar.readonly")
+                .is_empty()
+        );
+        assert!(
+            missing_google_calendar_scopes("https://www.googleapis.com/auth/calendar").is_empty()
+        );
+    }
+
+    #[test]
+    fn insufficient_scope_failures_flag_the_account_for_reconnect() {
+        let mut account = account();
+        let err = google_calendar_request_error(
+            &mut account,
+            GoogleApiError {
+                status: Some(403),
+                message: "Google Calendar HTTP 403: {\"error\":{\"status\":\"PERMISSION_DENIED\",\"details\":[{\"reason\":\"ACCESS_TOKEN_SCOPE_INSUFFICIENT\"}]}}"
+                    .to_string(),
+            },
+        );
+        assert!(account.needs_reauth);
+        // The raw Google error body never reaches the user.
+        assert!(!format!("{err:#}").contains("ACCESS_TOKEN_SCOPE_INSUFFICIENT"));
+        assert!(format!("{err:#}").contains(google_account_label(&account)));
+    }
+
+    #[test]
+    fn an_account_needing_consent_again_is_not_syncable() {
+        let mut account = account();
+        assert!(google_account_can_sync(&account));
+        account.needs_reauth = true;
+        // Still holds a refresh token, but nothing it buys works until the user
+        // grants the calendar permissions again.
+        assert!(!google_account_can_sync(&account));
+    }
+
+    #[test]
+    fn transient_failures_leave_the_account_connected() {
+        let mut account = account();
+        let err = google_calendar_request_error(
+            &mut account,
+            GoogleApiError {
+                status: Some(503),
+                message: "Google Calendar HTTP 503: backend error".to_string(),
+            },
+        );
+        assert!(!account.needs_reauth);
+        assert!(format!("{err:#}").contains("503"));
     }
 
     #[test]

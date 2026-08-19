@@ -200,7 +200,7 @@ impl KnotQApp {
                 eprintln!("Google Calendar {label} failed: {err}");
                 google_oauth_log(format!("{label}.finish failed: {err}"));
                 if always_notify {
-                    if is_google_oauth_browser_cancel_or_timeout(&err) {
+                    if is_google_oauth_user_cancelled(&err) {
                         self.google_oauth_status = GoogleOAuthStatus::Idle;
                     } else {
                         self.show_google_calendar_error(

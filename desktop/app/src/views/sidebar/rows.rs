@@ -176,7 +176,7 @@ impl KnotQApp {
                     &scheme.source,
                     SchemeSource::ImportedCalendar(source)
                         if source.provider == CalendarProvider::Google
-                            && !self.google_calendar_has_local_credentials(scheme)
+                            && !self.google_calendar_account_can_sync(scheme)
                 ),
             )
         };

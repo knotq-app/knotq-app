@@ -101,7 +101,7 @@ impl KnotQApp {
                     return None;
                 }
 
-                let connected = self.google_calendar_has_local_credentials(scheme);
+                let connected = self.google_calendar_account_can_sync(scheme);
                 let account_label = self
                     .imported_calendar_account_label(scheme)
                     .unwrap_or_else(|| source.account_id.clone());

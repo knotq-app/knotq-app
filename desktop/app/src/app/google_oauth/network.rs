@@ -55,6 +55,18 @@ pub(crate) fn run_google_oauth(
         .refresh_token
         .clone()
         .ok_or_else(|| anyhow!(knotq_l10n::t("google.oauth.error.no_refresh_token")))?;
+    // Google reports what the user actually ticked, which can be less than what
+    // was asked for. Storing an account whose grant cannot list a calendar only
+    // buys a stack of API errors later, so refuse it here instead.
+    let granted_scope = token.scope.clone().unwrap_or_else(|| scope.clone());
+    let missing_scopes = missing_google_calendar_scopes(&granted_scope);
+    if !missing_scopes.is_empty() {
+        google_oauth_log(format!(
+            "oauth.scope_denied granted=\"{granted_scope}\" missing=\"{}\"",
+            missing_scopes.join(" ")
+        ));
+        bail!(knotq_l10n::t("google.oauth.error.calendar_scope_denied"));
+    }
     let claims = token.id_token.as_deref().and_then(decode_id_token_claims);
     let account_id = claims
         .as_ref()
@@ -72,7 +84,11 @@ pub(crate) fn run_google_oauth(
         access_token: token.access_token,
         refresh_token,
         expires_at,
-        scope: token.scope.unwrap_or(scope),
+        scope: granted_scope,
+        // Desktop runs the loopback OAuth flow itself and holds a refresh
+        // token, so the core renews access tokens without the shell's help.
+        token_source: knotq_model::GoogleTokenSource::OAuthRefreshToken,
+        needs_reauth: false,
     };
     google_oauth_log(format!(
         "oauth.account connected account={} scope=\"{}\"",
@@ -266,7 +282,61 @@ pub(crate) fn refresh_google_access_token_if_needed(
         "token.refresh ok account={label} scope=\"{}\"",
         account.scope
     ));
+    // A grant can be narrowed after the fact from the user's Google account
+    // page, and the refresh response is where that first shows up. Reporting it
+    // here beats letting the next Calendar call fail with a raw 403 body.
+    let missing_scopes = missing_google_calendar_scopes(&account.scope);
+    if !missing_scopes.is_empty() {
+        google_oauth_log(format!(
+            "token.refresh scope_insufficient account={label} missing=\"{}\"",
+            missing_scopes.join(" ")
+        ));
+        account.needs_reauth = true;
+        bail!(knotq_l10n::t_with(
+            "google.calendar.error.permission_denied",
+            &[("account", label.as_str())]
+        ));
+    }
+    account.needs_reauth = false;
     Ok(())
+}
+
+/// Whether a Calendar API failure means this account's Google grant no longer
+/// covers what KnotQ needs: a permission the user never ticked, or an
+/// authorization they have since revoked. Reconnecting fixes those; retrying
+/// never does.
+pub(crate) fn is_google_authorization_error(err: &GoogleApiError) -> bool {
+    match err.status {
+        Some(401) => true,
+        Some(403) => {
+            err.message.contains("ACCESS_TOKEN_SCOPE_INSUFFICIENT")
+                || err.message.contains("insufficientPermissions")
+        }
+        _ => false,
+    }
+}
+
+/// Turns a Calendar API failure into the message the user sees, flagging the
+/// account when the failure is one only a reconnect can clear. Without this the
+/// UI shows Google's raw JSON error body, which says nothing a user can act on.
+pub(crate) fn google_calendar_request_error(
+    account: &mut GoogleOAuthAccount,
+    err: GoogleApiError,
+) -> anyhow::Error {
+    if !is_google_authorization_error(&err) {
+        return anyhow!(err);
+    }
+    account.needs_reauth = true;
+    google_oauth_log(format!(
+        "account.needs_reauth account={} status={:?}: {}",
+        google_account_label(account),
+        err.status,
+        err.message
+    ));
+    anyhow!(knotq_l10n::t_with(
+        "google.calendar.error.permission_denied",
+        &[("account", google_account_label(account))]
+    ))
 }
 
 pub(crate) fn request_google_refresh_token(
@@ -325,7 +395,7 @@ pub(crate) fn google_oauth_client_id_for_refresh(
 }
 
 pub(crate) fn import_google_account_calendars(
-    account: &GoogleOAuthAccount,
+    account: &mut GoogleOAuthAccount,
     existing_sources: &[ExistingGoogleCalendarSource],
     mode: GoogleCalendarImportMode,
     target_calendar_id: Option<&str>,
@@ -337,14 +407,15 @@ pub(crate) fn import_google_account_calendars(
                 google_account_label(account),
                 calendars.len()
             ));
+            account.needs_reauth = false;
             calendars
         }
         Err(err) => {
             google_oauth_log(format!(
-                "calendar_list failed account={}: {err:#}",
+                "calendar_list failed account={}: {err}",
                 google_account_label(account)
             ));
-            return Err(err);
+            return Err(google_calendar_request_error(account, err));
         }
     };
     let fallback_count = calendars.len().max(1);
@@ -365,7 +436,10 @@ pub(crate) fn import_google_account_calendars(
             _ => {}
         }
         let sync_token = existing.and_then(|source| source.sync_token.clone());
-        let events = match list_google_events(&account.access_token, &calendar.id, sync_token) {
+        // Two statements, not one: the request borrows the account's token, and
+        // the error mapping needs the account mutably to flag a lost grant.
+        let events = list_google_events(&account.access_token, &calendar.id, sync_token);
+        let events = match events.map_err(|err| google_calendar_request_error(account, err)) {
             Ok(events) => {
                 google_oauth_log(format!(
                     "events.list ok account={} calendar={} events={} full_sync={}",
@@ -425,7 +499,9 @@ pub(crate) struct GoogleEventsSync {
     full_sync: bool,
 }
 
-pub(crate) fn list_google_calendars(access_token: &str) -> Result<Vec<GoogleCalendarListEntry>> {
+pub(crate) fn list_google_calendars(
+    access_token: &str,
+) -> std::result::Result<Vec<GoogleCalendarListEntry>, GoogleApiError> {
     let mut page_token: Option<String> = None;
     let mut calendars = Vec::new();
 
@@ -467,16 +543,16 @@ pub(crate) fn list_google_events(
     access_token: &str,
     calendar_id: &str,
     sync_token: Option<String>,
-) -> Result<GoogleEventsSync> {
+) -> std::result::Result<GoogleEventsSync, GoogleApiError> {
     match list_google_events_once(access_token, calendar_id, sync_token.clone()) {
         Ok(events) => Ok(events),
         Err(err) if err.status == Some(410) && sync_token.is_some() => {
             google_oauth_log(format!(
                 "events.list sync_token_expired calendar_id={calendar_id}; retrying full sync"
             ));
-            Ok(list_google_events_once(access_token, calendar_id, None)?)
+            list_google_events_once(access_token, calendar_id, None)
         }
-        Err(err) => Err(anyhow!(err)),
+        Err(err) => Err(err),
     }
 }
 

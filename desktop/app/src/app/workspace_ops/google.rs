@@ -24,7 +24,7 @@ impl KnotQApp {
         .filter(|label| !label.trim().is_empty())
     }
 
-    pub(crate) fn google_calendar_has_local_credentials(&self, scheme: &Scheme) -> bool {
+    pub(crate) fn google_calendar_account_can_sync(&self, scheme: &Scheme) -> bool {
         let SchemeSource::ImportedCalendar(source) = &scheme.source else {
             return true;
         };
@@ -32,7 +32,7 @@ impl KnotQApp {
             return true;
         }
         self.google_calendar_local_account(source)
-            .is_some_and(google_account_has_local_credentials)
+            .is_some_and(google_account_can_sync)
     }
 
     pub(crate) fn google_calendar_local_account(
@@ -95,8 +95,15 @@ pub(crate) fn google_account_matches_calendar_source(
     source_email.is_some_and(|source_email| emails_match(account_email, source_email))
 }
 
-pub(crate) fn google_account_has_local_credentials(account: &GoogleOAuthAccount) -> bool {
-    !account.refresh_token.trim().is_empty()
+/// Whether KnotQ can still sync this account on its own.
+///
+/// A refresh token is the credential; `needs_reauth` is Google having since
+/// refused what that credential buys — a permission the user declined, or an
+/// authorization they revoked. Both leave the account listed but unusable until
+/// the user goes back through consent, and the UI has to say so rather than
+/// showing a connected account whose every sync fails.
+pub(crate) fn google_account_can_sync(account: &GoogleOAuthAccount) -> bool {
+    !account.refresh_token.trim().is_empty() && !account.needs_reauth
 }
 
 pub(crate) fn google_calendar_source_target_label(source: &ImportedCalendarSource) -> String {

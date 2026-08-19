@@ -247,6 +247,25 @@ fn default_account_level() -> String {
     "free".to_string()
 }
 
+/// Where a linked Google account's access tokens come from.
+///
+/// Desktop and iOS run the browser OAuth flow themselves and end up holding a
+/// refresh token, so the core can mint new access tokens on its own. Android
+/// cannot: Google blocks the loopback flow there, and the supported replacement
+/// (Google Identity Services `AuthorizationClient`) hands out short-lived access
+/// tokens only — never a refresh token. Those accounts depend on the shell
+/// asking Google Identity for a fresh token before each sync.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum GoogleTokenSource {
+    /// The core holds a refresh token and renews access tokens itself.
+    #[default]
+    OAuthRefreshToken,
+    /// The platform identity service issues access tokens; the core must be
+    /// handed a fresh one and must never call the OAuth refresh endpoint.
+    PlatformIdentity,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct GoogleOAuthAccount {
     pub account_id: String,
@@ -254,10 +273,36 @@ pub struct GoogleOAuthAccount {
     pub email: Option<String>,
     pub client_id: String,
     pub access_token: String,
+    /// Empty for [`GoogleTokenSource::PlatformIdentity`] accounts, which never
+    /// receive one.
+    #[serde(default)]
     pub refresh_token: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub expires_at: Option<DateTime<Utc>>,
     pub scope: String,
+    #[serde(default, skip_serializing_if = "is_default_token_source")]
+    pub token_source: GoogleTokenSource,
+    /// Set when Google refused to renew authorization without the user going
+    /// through consent again, so the UI can offer an explicit reconnect instead
+    /// of failing every sync silently.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub needs_reauth: bool,
+}
+
+impl GoogleOAuthAccount {
+    /// Whether the core may spend a refresh token to renew this account's
+    /// access token by itself.
+    pub fn can_self_refresh(&self) -> bool {
+        self.token_source == GoogleTokenSource::OAuthRefreshToken && !self.refresh_token.is_empty()
+    }
+}
+
+fn is_default_token_source(source: &GoogleTokenSource) -> bool {
+    *source == GoogleTokenSource::default()
+}
+
+fn is_false(value: &bool) -> bool {
+    !*value
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]

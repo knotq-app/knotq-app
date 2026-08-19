@@ -22,6 +22,21 @@ impl KnotQApp {
         }
     }
 
+    /// Abandons a browser sign-in the user is no longer waiting on.
+    ///
+    /// Google can answer inside the browser — a declined permission, a blocked
+    /// request — in ways that never reach our loopback listener, and until the
+    /// callback times out the toolbar would otherwise sit on "Connecting" with
+    /// nothing to click.
+    pub(crate) fn cancel_google_calendar_connect(&mut self, cx: &mut Context<Self>) {
+        if self.google_oauth_cancel_token.is_none() {
+            return;
+        }
+        self.cancel_google_oauth_browser_flow();
+        self.google_oauth_status = GoogleOAuthStatus::Idle;
+        cx.notify();
+    }
+
     pub(super) fn finish_google_oauth_task(&mut self, cancel_token: Option<&Arc<AtomicBool>>) -> bool {
         if let Some(cancel_token) = cancel_token {
             match self.google_oauth_cancel_token.as_ref() {
@@ -598,7 +613,7 @@ impl KnotQApp {
             .settings
             .google_accounts
             .iter()
-            .filter(|account| google_account_has_local_credentials(account))
+            .filter(|account| google_account_can_sync(account))
             .filter(|account| {
                 sources
                     .iter()

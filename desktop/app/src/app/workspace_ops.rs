@@ -9,7 +9,7 @@ mod reconcile;
 mod trash;
 
 pub(crate) use google::{
-    emails_match, google_account_has_local_credentials, google_account_matches_calendar_source,
+    emails_match, google_account_can_sync, google_account_matches_calendar_source,
     google_calendar_source_target_label,
 };
 

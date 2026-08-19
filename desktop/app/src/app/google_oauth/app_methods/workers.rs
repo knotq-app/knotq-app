@@ -23,12 +23,15 @@ pub(super) fn run_google_calendar_picker_load(
             continue;
         }
 
-        match list_google_calendars(&account.access_token) {
+        let listed = list_google_calendars(&account.access_token);
+        let listed = listed.map_err(|err| google_calendar_request_error(&mut account, err));
+        match listed {
             Ok(calendars) => {
                 google_oauth_log(format!(
                     "picker.calendar_list ok account={label} calendars={}",
                     calendars.len()
                 ));
+                account.needs_reauth = false;
                 let calendars = calendars
                     .into_iter()
                     .map(|calendar| {
@@ -211,7 +214,7 @@ fn run_google_calendar_sync(
         }
 
         match import_google_account_calendars(
-            &account,
+            &mut account,
             &existing_sources,
             mode,
             target_calendar_id.as_deref(),
