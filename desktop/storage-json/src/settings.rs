@@ -191,6 +191,8 @@ mod tests {
             refresh_token: refresh.into(),
             expires_at: None,
             scope: "calendar".into(),
+            token_source: knotq_model::GoogleTokenSource::OAuthRefreshToken,
+            needs_reauth: false,
         }
     }
 

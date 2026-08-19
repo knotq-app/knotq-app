@@ -41,6 +41,8 @@ fn app_settings_roundtrip_preserves_google_accounts() {
             refresh_token: "refresh".to_string(),
             expires_at: Some(Utc.with_ymd_and_hms(2026, 5, 18, 12, 0, 0).unwrap()),
             scope: "https://www.googleapis.com/auth/calendar.events.readonly".to_string(),
+            token_source: knotq_model::GoogleTokenSource::OAuthRefreshToken,
+            needs_reauth: false,
         }],
         ..Default::default()
     };

@@ -139,6 +139,9 @@ impl KnotQApp {
             theme_mode: self.theme_mode,
             time_format: self.time_format,
             notification_defaults: self.notification_defaults,
+            // Desktop has no UI for the upcoming-display horizons, so carry the
+            // loaded value through rather than resetting it on every save.
+            upcoming_display: self.settings.upcoming_display,
             auto_update: self.settings.auto_update,
             scheduled_notification_ids: self.scheduled_notification_ids.clone(),
             window_size: self.window_size,

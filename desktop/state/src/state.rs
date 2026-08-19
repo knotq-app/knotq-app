@@ -43,6 +43,12 @@ pub struct AppState {
     // re-read just the text of the handful of rows it is showing — which is what
     // makes typing cheap, since typing is exactly that kind of command.
     schedule_revision: u64,
+    // Per-scheme view of `schedule_revision`: the value it held when a change
+    // *known to be confined to that scheme* last landed. A change whose scope is
+    // not known instead raises `all_schemes_schedule_revision`, so forgetting to
+    // narrow is conservative (everything looks changed) rather than stale.
+    scheme_schedule_revisions: HashMap<SchemeId, u64>,
+    all_schemes_schedule_revision: u64,
 
     // Fields still read directly by knotq-app during the shell slimming phase.
     // Keep them synchronized when dispatching through state.
@@ -105,6 +111,8 @@ impl AppState {
             direct_workspace_dirty: false,
             content_revision: 0,
             schedule_revision: 0,
+            scheme_schedule_revisions: HashMap::new(),
+            all_schemes_schedule_revision: 0,
             workspace,
             theme_mode: settings.theme_mode,
             system_theme_dark: true,
@@ -162,15 +170,49 @@ impl AppState {
         self.schedule_revision
     }
 
+    /// [`schedule_revision`](Self::schedule_revision) as seen by a single scheme:
+    /// unchanged while every schedule change lands somewhere else.
+    ///
+    /// A view that derives something per scheme — the upcoming panel expands each
+    /// item's recurrence, which is by far its most expensive work — can hold that
+    /// per-scheme result and rebuild only the schemes whose value moved. Pressing
+    /// Enter changes one scheme's schedule; without this it would invalidate all
+    /// of them.
+    pub fn scheme_schedule_revision(&self, scheme: SchemeId) -> u64 {
+        self.all_schemes_schedule_revision.max(
+            self.scheme_schedule_revisions
+                .get(&scheme)
+                .copied()
+                .unwrap_or(0),
+        )
+    }
+
     fn bump_content_revision(&mut self) {
         self.content_revision = self.content_revision.wrapping_add(1);
         self.schedule_revision = self.schedule_revision.wrapping_add(1);
+        // Scope unknown: assume every scheme moved.
+        self.all_schemes_schedule_revision = self.schedule_revision;
     }
 
     /// Bump only the content revision, for a change that provably left the
     /// schedule alone.
     fn bump_content_revision_text_only(&mut self) {
         self.content_revision = self.content_revision.wrapping_add(1);
+    }
+
+    /// Bump for a change whose effect is known to be confined to `schemes`.
+    ///
+    /// Only sound where the caller holds a [`ChangeSet`] that fully describes the
+    /// change — the same guarantee
+    /// [`sync_workspace_from_store_reusing_untouched`](Self::sync_workspace_from_store_reusing_untouched)
+    /// already debug-asserts before reusing the untouched `Scheme` values.
+    fn bump_content_revision_scoped(&mut self, schemes: &[SchemeId]) {
+        self.content_revision = self.content_revision.wrapping_add(1);
+        self.schedule_revision = self.schedule_revision.wrapping_add(1);
+        for scheme in schemes {
+            self.scheme_schedule_revisions
+                .insert(*scheme, self.schedule_revision);
+        }
     }
 
     pub fn retained_completed_mut(&mut self) -> &mut RetainedCompletedItems {
@@ -325,6 +367,12 @@ impl AppState {
         self.direct_workspace_dirty = false;
         if text_only {
             self.bump_content_revision_text_only();
+        } else if touched.folders.is_empty() {
+            // Schemes only: `touched` is exactly the set that differs, as the
+            // assertion above just checked. A folder in the change set means
+            // workspace-level structure moved too (which scheme is the daily
+            // queue, what is deleted), and that is not confined to any scheme.
+            self.bump_content_revision_scoped(&touched.schemes);
         } else {
             self.bump_content_revision();
         }

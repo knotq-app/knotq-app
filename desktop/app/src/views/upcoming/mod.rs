@@ -1,4 +1,6 @@
-use chrono::{Datelike, Duration, Local, TimeZone, Utc};
+use std::collections::HashMap;
+
+use chrono::{Datelike, Duration, Local, NaiveDate, TimeZone, Utc};
 use gpui::prelude::*;
 use gpui::{div, px, ClickEvent, Context, Hsla, IntoElement, MouseButton, MouseDownEvent};
 use gpui_component::scroll::ScrollableElement as _;
@@ -10,7 +12,7 @@ use crate::theme_gpui::{
     date_status_color, event_status_color, token_hsla, token_rgba, upcoming_scheme_color,
     FONT_MONO, FONT_SIZE_BODY, FONT_SIZE_CAPTION2,
 };
-use knotq_date_util::{format_time, upcoming_range};
+use knotq_date_util::{format_time, upcoming_range, UPCOMING_HORIZON_DAYS};
 
 #[derive(Clone)]
 pub(super) struct UpRow {
@@ -31,11 +33,6 @@ pub(super) struct UpRow {
 }
 
 /// The rows the panel shows, already filtered, sorted and truncated.
-///
-/// Producing this scans every item of every scheme and expands each one's
-/// recurrence, so it is cached against [`UpcomingRowsKey`] rather than redone on
-/// every render — the root view re-renders on every keystroke, and typing into
-/// an item's text cannot change what is upcoming.
 #[derive(Clone, Default)]
 pub(crate) struct UpcomingRows {
     assignments: Vec<UpRow>,
@@ -43,36 +40,100 @@ pub(crate) struct UpcomingRows {
     upcoming: Vec<UpRow>,
 }
 
-impl UpcomingRows {
-    fn iter_mut(&mut self) -> impl Iterator<Item = &mut UpRow> {
-        self.assignments
-            .iter_mut()
-            .chain(self.reminders.iter_mut())
-            .chain(self.upcoming.iter_mut())
+/// Which of the three passes over an item produced a candidate. Each keeps its
+/// own clock-dependent filters, so the pass has to survive into phase 2.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(super) enum CandidateSource {
+    /// An occurrence inside the two-week horizon.
+    Window,
+    /// A missed instance of a repeating item, from before today.
+    Overdue,
+    /// A non-repeating item whose date has already passed.
+    PastSingle,
+}
+
+/// One occurrence that could reach the panel, with every field that does *not*
+/// depend on the wall clock already resolved.
+///
+/// Producing these expands recurrence and is the expensive half of the panel;
+/// see the module docs on [`scan`].
+#[derive(Clone)]
+pub(super) struct Candidate {
+    item_id: ItemId,
+    /// Where the item sat in its scheme when phase 1 ran, as a hint only — the
+    /// id is still checked, and a miss falls back to a search. See
+    /// [`scan::candidate_text`].
+    item_index: usize,
+    occurrence: OccurrenceId,
+    occurrence_index: usize,
+    kind: ItemKind,
+    start: Option<chrono::DateTime<chrono::Utc>>,
+    end: Option<chrono::DateTime<chrono::Utc>>,
+    available: Option<chrono::DateTime<chrono::Utc>>,
+    /// The instant at which this occurrence starts overlapping the query window,
+    /// i.e. the value the horizon is compared against. Lets phase 2 re-apply the
+    /// *exact* horizon after phase 1 expanded a slightly wider, day-aligned one.
+    enters_window_at: chrono::DateTime<chrono::Utc>,
+    /// When the row sorts and when it counts as overdue.
+    trigger: chrono::DateTime<chrono::Utc>,
+    is_done: bool,
+    repeats: bool,
+    source: CandidateSource,
+}
+
+/// One scheme's candidates, and the [`AppState::scheme_schedule_revision`] they
+/// were built from.
+pub(super) struct SchemeCandidates {
+    revision: u64,
+    candidates: Vec<Candidate>,
+}
+
+/// The panel's cached phase-1 output.
+///
+/// Keyed by the local date rather than by the current second: the candidate set
+/// is derived from a query window that starts at midnight and ends a fixed
+/// number of whole days later, so it survives every tick of the clock within a
+/// day. Per scheme inside that, so a schedule edit rebuilds one scheme.
+pub(crate) struct UpcomingCache {
+    day: NaiveDate,
+    schemes: HashMap<SchemeId, SchemeCandidates>,
+}
+
+impl UpcomingCache {
+    fn new(day: NaiveDate) -> Self {
+        Self {
+            day,
+            schemes: HashMap::new(),
+        }
     }
 }
 
-/// Everything [`UpcomingRows`] is derived from. `second` is the wall clock
-/// truncated to a second: the rows depend on "now" (overdue styling, relative
-/// labels, the horizon cut-off), so the cache must expire with it, but no
-/// user-visible detail changes within one second. The theme enters as the pair
-/// that selects it rather than as a colour, so two themes that happen to share a
-/// light/dark polarity cannot collide.
-#[derive(Clone, Copy, PartialEq, Eq)]
-pub(crate) struct UpcomingRowsKey {
-    schedule_revision: u64,
-    second: i64,
-    time_format: knotq_model::TimeFormat,
-    theme_mode: knotq_model::ThemeMode,
-    system_theme_dark: bool,
+/// The instants phase 2 filters and formats against.
+#[derive(Clone, Copy)]
+pub(super) struct RowClock {
+    now: chrono::DateTime<chrono::Utc>,
+    /// Midnight tomorrow: an event triggering after it is not "today".
+    today_end: chrono::DateTime<chrono::Utc>,
+    horizon: chrono::DateTime<chrono::Utc>,
 }
 
-pub(crate) struct UpcomingCache {
-    key: UpcomingRowsKey,
-    rows: UpcomingRows,
+/// One scheme's input to phase 2: its cached candidates plus the live values the
+/// rows display. Nothing here is cached — a scheme's name, colour and
+/// daily-queue-ness are cheap to read and, unlike the candidates, are not all
+/// covered by the per-scheme revision.
+pub(super) struct SchemeRowSource<'a> {
+    scheme_id: SchemeId,
+    display_name: &'a str,
+    color_index: u8,
+    is_daily: bool,
+    items: &'a [Item],
+    candidates: &'a [Candidate],
 }
 
 mod formatting;
 mod render;
+mod scan;
+#[cfg(test)]
+mod tests;
 
 use self::formatting::*;

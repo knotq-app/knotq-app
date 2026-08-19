@@ -353,3 +353,322 @@ fn a_typing_burst_pins_the_schedule_revision() {
         "every keystroke must move the content revision so row text refreshes"
     );
 }
+
+// ---------------------------------------------------------------------------
+// Per-scheme narrowing
+// ---------------------------------------------------------------------------
+//
+// `schedule_revision` is workspace-wide, so any schedule change anywhere makes
+// the upcoming panel re-expand recurrence for every scheme in the workspace.
+// `scheme_schedule_revision` narrows that to the schemes a change actually
+// reached. The safe direction is over-reporting: a change whose scope is not
+// known must raise *every* scheme's view, so forgetting to narrow costs work
+// rather than correctness.
+
+fn state_with_two_schemes() -> (AppState, SchemeId, SchemeId) {
+    let mut workspace = Workspace::new();
+    let mut ids = Vec::new();
+    for name in ["first", "second"] {
+        let mut scheme = Scheme::new(name, 0);
+        scheme.items = vec![Item::new("alpha"), Item::new("beta")];
+        ids.push(scheme.id);
+        workspace
+            .folders
+            .get_mut(&workspace.root)
+            .unwrap()
+            .children
+            .push(NodeRef::Scheme(scheme.id));
+        workspace.schemes.insert(scheme.id, scheme);
+    }
+    workspace.ensure_sync_metadata();
+    let state = AppState::new(
+        workspace,
+        AppSettings::default(),
+        date(2026, 8, 16),
+        date(2026, 8, 1),
+        false,
+        Default::default(),
+        1,
+    );
+    (state, ids[0], ids[1])
+}
+
+#[test]
+fn a_scheme_scoped_change_leaves_other_schemes_pinned() {
+    let (mut state, first, second) = state_with_two_schemes();
+    let item = state.workspace.schemes[&first].items[0].id;
+    let before_second = state.scheme_schedule_revision(second);
+    let before_first = state.scheme_schedule_revision(first);
+
+    state
+        .apply_prechecked_local_command(
+            Command::SetItemDate {
+                scheme: first,
+                item,
+                kind: DateKind::End,
+                date: Some(chrono::Utc::now()),
+            },
+            CommandOrigin::User,
+        )
+        .unwrap();
+
+    assert_ne!(
+        before_first,
+        state.scheme_schedule_revision(first),
+        "the edited scheme has to look changed"
+    );
+    assert_eq!(
+        before_second,
+        state.scheme_schedule_revision(second),
+        "a date set in one scheme must not make every other scheme re-expand"
+    );
+}
+
+#[test]
+fn a_text_edit_pins_every_scheme() {
+    let (mut state, first, second) = state_with_two_schemes();
+    let item = state.workspace.schemes[&first].items[0].id;
+    let before = [
+        state.scheme_schedule_revision(first),
+        state.scheme_schedule_revision(second),
+    ];
+    state
+        .apply_prechecked_local_command(
+            Command::UpdateItemText {
+                scheme: first,
+                item,
+                text: "typed".into(),
+            },
+            CommandOrigin::User,
+        )
+        .unwrap();
+    assert_eq!(
+        before,
+        [
+            state.scheme_schedule_revision(first),
+            state.scheme_schedule_revision(second)
+        ],
+        "typing must not re-expand recurrence anywhere, not even in its own scheme"
+    );
+}
+
+/// The invariant the narrowing rests on: a scheme whose contents actually
+/// differ after a command must have a moved revision. Comparing the schemes
+/// themselves rather than trusting the change set is the point — this is the
+/// direction that shows stale rows if it ever breaks.
+#[test]
+fn every_scheme_that_changed_reports_a_moved_revision() {
+    let (mut state, first, second) = state_with_two_schemes();
+    let item = state.workspace.schemes[&second].items[0].id;
+    let root = state.workspace.root;
+
+    let cases: Vec<(&str, Command)> = vec![
+        (
+            "SetItemMarker",
+            Command::SetItemMarker {
+                scheme: second,
+                item,
+                marker: ItemMarker::Checkbox,
+            },
+        ),
+        (
+            "SetItemDate",
+            Command::SetItemDate {
+                scheme: second,
+                item,
+                kind: DateKind::Start,
+                date: Some(chrono::Utc::now()),
+            },
+        ),
+        (
+            "SetItemIndent",
+            Command::SetItemIndent {
+                scheme: second,
+                item,
+                indent: 1,
+            },
+        ),
+        (
+            "InsertItem",
+            Command::InsertItem {
+                scheme: second,
+                position: 0,
+                item: Item::new("new"),
+            },
+        ),
+        (
+            "ReorderItem",
+            Command::ReorderItem {
+                scheme: second,
+                from: 0,
+                to: 1,
+            },
+        ),
+        ("DeleteItem", Command::DeleteItem { scheme: second, item }),
+        (
+            "RenameScheme",
+            Command::RenameScheme {
+                id: second,
+                name: "renamed".into(),
+            },
+        ),
+        (
+            "SetSchemeColor",
+            Command::SetSchemeColor {
+                id: second,
+                color_index: 3,
+            },
+        ),
+        (
+            "CreateScheme",
+            Command::CreateScheme {
+                folder: root,
+                name: "another".into(),
+                color_index: 0,
+                position: None,
+            },
+        ),
+        (
+            "CreateFolder",
+            Command::CreateFolder {
+                parent: root,
+                name: "folder".into(),
+                position: None,
+            },
+        ),
+        ("DeleteScheme", Command::DeleteScheme { id: first }),
+    ];
+
+    for (label, command) in cases {
+        let before_schemes = state.workspace.schemes.clone();
+        let before_revisions: Vec<(SchemeId, u64)> = before_schemes
+            .keys()
+            .map(|id| (*id, state.scheme_schedule_revision(*id)))
+            .collect();
+
+        state
+            .apply_prechecked_local_command(command, CommandOrigin::User)
+            .unwrap_or_else(|err| panic!("{label}: {err}"));
+
+        for (id, before) in before_revisions {
+            let changed = state.workspace.schemes.get(&id) != before_schemes.get(&id);
+            if changed {
+                assert_ne!(
+                    before,
+                    state.scheme_schedule_revision(id),
+                    "{label} changed scheme {id:?} without moving its revision — \
+                     the upcoming panel would keep showing the old rows"
+                );
+            }
+        }
+    }
+}
+
+/// Deleting a scheme is workspace-level structure, not a scheme-scoped edit: it
+/// changes which schemes exist at all, so it has to invalidate everything.
+#[test]
+fn a_folder_scoped_change_invalidates_every_scheme() {
+    let (mut state, first, second) = state_with_two_schemes();
+    let before = [
+        state.scheme_schedule_revision(first),
+        state.scheme_schedule_revision(second),
+    ];
+    state
+        .apply_prechecked_local_command(
+            Command::DeleteScheme { id: first },
+            CommandOrigin::User,
+        )
+        .unwrap();
+    assert_ne!(before[0], state.scheme_schedule_revision(first));
+    assert_ne!(
+        before[1],
+        state.scheme_schedule_revision(second),
+        "a scheme leaving the workspace must invalidate the panel wholesale"
+    );
+}
+
+/// The direct-mutation and sync routes carry no change set, so they must raise
+/// every scheme's view — including one the state has never been asked about.
+#[test]
+fn scopeless_changes_raise_every_scheme_including_unseen_ones() {
+    let (mut state, first, _) = state_with_two_schemes();
+    // Never queried, so it has no entry of its own to compare against.
+    let unseen = SchemeId::new();
+
+    for (label, mutate) in [
+        (
+            "mark_direct_workspace_dirty",
+            Box::new(|state: &mut AppState| state.mark_direct_workspace_dirty())
+                as Box<dyn Fn(&mut AppState)>,
+        ),
+        (
+            "mark_index_dirty",
+            Box::new(|state: &mut AppState| state.mark_index_dirty()),
+        ),
+        (
+            "mark_scheme_dirty",
+            Box::new(move |state: &mut AppState| state.mark_scheme_dirty(first)),
+        ),
+        (
+            "retained_completed_mut",
+            Box::new(|state: &mut AppState| {
+                let _ = state.retained_completed_mut();
+            }),
+        ),
+        (
+            "replace_workspace",
+            Box::new(|state: &mut AppState| {
+                state.replace_workspace(Workspace::new(), date(2026, 8, 16), date(2026, 8, 1))
+            }),
+        ),
+    ] {
+        let before = state.scheme_schedule_revision(unseen);
+        mutate(&mut state);
+        assert_ne!(
+            before,
+            state.scheme_schedule_revision(unseen),
+            "{label} carries no scope, so it must invalidate every scheme"
+        );
+    }
+}
+
+/// A scheme's view of the schedule revision must never go backwards, however the
+/// scoped and unscoped bumps interleave — a cache comparing for equality would
+/// otherwise miss a change that happened to land back on an old value.
+#[test]
+fn a_schemes_revision_never_goes_backwards() {
+    let (mut state, first, second) = state_with_two_schemes();
+    let mut highest = [0u64; 2];
+    let item = state.workspace.schemes[&first].items[0].id;
+
+    for round in 0..12 {
+        if round % 3 == 0 {
+            state.mark_direct_workspace_dirty();
+        } else {
+            state
+                .apply_prechecked_local_command(
+                    Command::SetItemPriority {
+                        scheme: if round % 2 == 0 { first } else { second },
+                        item: if round % 2 == 0 {
+                            item
+                        } else {
+                            state.workspace.schemes[&second].items[0].id
+                        },
+                        priority: Some(round as u8 % 5),
+                    },
+                    CommandOrigin::User,
+                )
+                .unwrap();
+        }
+        for (i, scheme) in [first, second].into_iter().enumerate() {
+            let now = state.scheme_schedule_revision(scheme);
+            assert!(
+                now >= highest[i],
+                "round {round}: scheme revision went backwards ({} -> {now})",
+                highest[i]
+            );
+            highest[i] = now;
+        }
+    }
+    assert!(highest[0] > 0 && highest[1] > 0);
+}
