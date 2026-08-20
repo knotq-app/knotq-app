@@ -74,6 +74,27 @@ pub(crate) fn sweep_in_background_if_due(workspace_dir: &Path, now: DateTime<Utc
     }
 }
 
+/// Block until no background sweep is running.
+///
+/// A sweep is detached, and `sweep_in_background_if_due` runs on the first
+/// recorded snapshot of any store (nothing has swept it yet). A test that
+/// deletes its workspace directory the moment `record_workspace_snapshot_at`
+/// returns is therefore racing a thread still writing into it — which on Linux
+/// fails the delete outright with `DirectoryNotEmpty`. `SWEEPING` is set by the
+/// calling thread before the spawn, so by the time the recording call returns
+/// this sees a sweep that has started but not finished.
+#[cfg(test)]
+pub(crate) fn wait_for_background_sweep() {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    while SWEEPING.load(Ordering::SeqCst) {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "a background history sweep did not finish"
+        );
+        std::thread::yield_now();
+    }
+}
+
 fn is_due(workspace_dir: &Path, now: DateTime<Utc>) -> bool {
     match read_gc_state(workspace_dir).last_sweep {
         // A clock that moved backwards must not defer the sweep indefinitely.
@@ -293,6 +314,7 @@ mod tests {
             "orphaned blobs must be reclaimed too"
         );
 
+        wait_for_background_sweep();
         fs::remove_dir_all(dir).unwrap();
     }
 
@@ -318,6 +340,7 @@ mod tests {
             restore_workspace_snapshot(&dir, id).unwrap();
         }
 
+        wait_for_background_sweep();
         fs::remove_dir_all(dir).unwrap();
     }
 
@@ -327,6 +350,7 @@ mod tests {
         sweep_now(&dir, now).unwrap();
         let second = sweep_now(&dir, now).unwrap();
         assert_eq!(second, SweepReport::default());
+        wait_for_background_sweep();
         fs::remove_dir_all(dir).unwrap();
     }
 
@@ -344,6 +368,7 @@ mod tests {
         // A clock jumping backwards must not defer sweeps indefinitely.
         assert!(is_due(&dir, now - Duration::hours(5)));
 
+        wait_for_background_sweep();
         fs::remove_dir_all(dir).unwrap();
     }
 
@@ -371,6 +396,7 @@ mod tests {
         assert_eq!(report.blobs_removed, 0);
         assert_eq!(count_files(&store.join("blobs")), blobs_before);
 
+        wait_for_background_sweep();
         fs::remove_dir_all(dir).unwrap();
     }
 
@@ -398,6 +424,7 @@ mod tests {
         assert!(sweep_with_grace(&dir, now, Duration::zero()).unwrap() != SweepReport::default());
         assert!(!in_flight.exists());
 
+        wait_for_background_sweep();
         fs::remove_dir_all(dir).unwrap();
     }
 
@@ -429,6 +456,7 @@ mod tests {
             "re-storing an existing blob must refresh its mtime"
         );
 
+        wait_for_background_sweep();
         fs::remove_dir_all(dir).unwrap();
     }
 }

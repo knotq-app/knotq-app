@@ -293,6 +293,7 @@ mod tests {
             .join(MANIFEST_FILE)
             .exists());
 
+        crate::gc::wait_for_background_sweep();
         fs::remove_dir_all(workspace_dir).unwrap();
     }
 
@@ -311,6 +312,7 @@ mod tests {
         assert_eq!(snapshots.len(), 1);
         assert_eq!(snapshots[0].timestamp, first_time);
 
+        crate::gc::wait_for_background_sweep();
         fs::remove_dir_all(workspace_dir).unwrap();
     }
 
