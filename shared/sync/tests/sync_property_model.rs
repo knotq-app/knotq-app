@@ -82,6 +82,10 @@ struct World {
     /// When set, `step` may also undo/redo. Gated so the extra RNG draw happens
     /// only in the undo fuzz test — the other seeds keep their exact sequences.
     enable_undo: bool,
+    /// When set, `step` may also restart a device. Gated for the same reason as
+    /// `enable_undo`: enabling it unconditionally would shift every existing
+    /// seed's operation sequence, including the named regression seeds.
+    enable_restart: bool,
 }
 
 /// Ops in `edit_op` that mutate a scheme's item list (so an undo can revert it).
@@ -125,6 +129,7 @@ impl World {
             step_no: 0,
             trace: std::env::var("KNOTQ_FUZZ_TRACE").is_ok(),
             enable_undo: false,
+            enable_restart: false,
         }
     }
 
@@ -368,11 +373,44 @@ impl World {
         slot.dev.revert_scheme_items(scheme_id, prior_items);
     }
 
+    /// Quit and relaunch a device.
+    ///
+    /// A restart rebuilds the CRDT documents from the *persisted* per-document
+    /// states rather than from live memory, and reseeds the local sequence
+    /// counter — the layer where several real wedges have lived (a restart
+    /// reusing `local_sequence` produced `crdt_schema_invalid`; a rebuilt
+    /// document taking a fresh identity orphaned its content). Nothing else in
+    /// this fuzzer ever crossed that boundary, so every seed ran as if the app
+    /// never closed.
+    fn restart_op(&mut self, i: usize) {
+        self.log(&format!("dev{i} acct{} RESTART", self.devices[i].account));
+        let before = fingerprint(&self.devices[i].dev);
+        let pending_before = self.devices[i].dev.pending_count();
+
+        self.devices[i].dev.restart();
+
+        // A relaunch must be invisible: same content, same outbound queue. The
+        // wedge invariants after `settle` would eventually catch a divergence,
+        // but catching it *here* names the restart as the cause.
+        assert_eq!(
+            fingerprint(&self.devices[i].dev),
+            before,
+            "restarting device {i} changed the content it holds"
+        );
+        assert_eq!(
+            self.devices[i].dev.pending_count(),
+            pending_before,
+            "restarting device {i} lost unpushed edits"
+        );
+    }
+
     fn step(&mut self) {
         self.step_no += 1;
         let i = self.rng.below(self.devices.len() as u64) as usize;
         let roll = self.rng.below(100);
-        if roll < 25 {
+        if self.enable_restart && roll < 6 {
+            self.restart_op(i);
+        } else if roll < 25 {
             self.log(&format!("dev{i} acct{} SYNC", self.devices[i].account));
             let _ = self.sync_device(i); // mid-sequence sync errors may self-heal next round
         } else if roll < 34 {
@@ -496,6 +534,20 @@ impl World {
 
 fn run_seed(seed: u64, num_accounts: usize, num_devices: usize, steps: usize) {
     let mut world = World::new(seed, num_accounts, num_devices);
+    for _ in 0..steps {
+        world.step();
+    }
+    world.settle();
+    world.assert_invariants(seed);
+}
+
+/// Undo, redo *and* restarts in the same world — the combination that is hardest
+/// to reason about, since a restart drops the in-memory CRDT documents while a
+/// device still has an undo stack and unpushed edits.
+fn run_seed_restart(seed: u64, num_accounts: usize, num_devices: usize, steps: usize) {
+    let mut world = World::new(seed, num_accounts, num_devices);
+    world.enable_undo = true;
+    world.enable_restart = true;
     for _ in 0..steps {
         world.step();
     }
@@ -629,6 +681,33 @@ fn undo_redo_fuzz_converges() {
     let steps = env_usize("KNOTQ_FUZZ_STEPS", 160);
     for seed in 0..seeds {
         run_seed_undo(seed.wrapping_add(13), 3, 4, steps);
+    }
+}
+
+/// Restart fuzz: devices quit and relaunch mid-stream, restoring their CRDT
+/// documents from the persisted per-document states while edits, undos, account
+/// switches and syncs continue around them.
+///
+/// This is the one boundary the other fuzz tests never cross, and it is where
+/// the sequence-reuse and document-identity wedges lived.
+#[test]
+fn restart_fuzz_converges() {
+    let seeds = env_usize("KNOTQ_FUZZ_SEEDS", 24) as u64;
+    let steps = env_usize("KNOTQ_FUZZ_STEPS", 180);
+    for seed in 0..seeds {
+        run_seed_restart(seed.wrapping_add(101), 3, 4, steps);
+    }
+}
+
+/// A device that restarts while it still has unpushed edits must push exactly
+/// those edits — not re-mint their sequence numbers, and not drop them.
+#[test]
+fn restarting_with_unpushed_edits_keeps_them_pushable() {
+    let seeds = env_usize("KNOTQ_FUZZ_SEEDS", 16) as u64;
+    for seed in 0..seeds {
+        // One account, two devices: every edit one device makes must reach the
+        // other, restart or not.
+        run_seed_restart(seed.wrapping_mul(6_364_136_223_846_793_005), 1, 2, 140);
     }
 }
 
