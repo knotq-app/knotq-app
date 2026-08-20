@@ -119,6 +119,15 @@ pub fn record_workspace_snapshot(workspace_dir: &Path) -> Result<()> {
     Ok(())
 }
 
+/// Reclaims everything the manifest no longer reaches, synchronously.
+///
+/// The app sweeps in the background on its own cadence; this exists for tools
+/// and probes that need the sweep to have finished when they return.
+pub fn sweep_workspace_history_now(workspace_dir: &Path) -> Result<(usize, usize)> {
+    let report = gc::sweep(workspace_dir, Utc::now())?;
+    Ok((report.records_removed, report.blobs_removed))
+}
+
 pub fn list_workspace_snapshots(workspace_dir: &Path) -> Result<Vec<WorkspaceSnapshot>> {
     if !history_store_exists(workspace_dir) {
         return Ok(Vec::new());

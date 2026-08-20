@@ -23,6 +23,7 @@ pub use files::{
 };
 pub use knotq_history::{
     list_workspace_snapshots, record_workspace_snapshot, restore_workspace_snapshot,
+    sweep_workspace_history_now,
     WorkspaceSnapshot,
 };
 pub use knotq_model::{

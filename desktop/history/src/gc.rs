@@ -147,9 +147,9 @@ fn sweep_with_grace(
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-pub(crate) struct SweepReport {
-    pub(crate) records_removed: usize,
-    pub(crate) blobs_removed: usize,
+pub struct SweepReport {
+    pub records_removed: usize,
+    pub blobs_removed: usize,
 }
 
 /// Removes the files in `dir` that `keep` rejects, sparing any that were
