@@ -43,10 +43,30 @@ fn retired_crdt_state_path(workspace_path: &Path) -> PathBuf {
 
 pub fn load_crdt_state(workspace_path: &Path) -> Result<HashMap<DocumentId, Vec<u8>>> {
     let dir = crdt_state_dir(workspace_path);
-    if dir.is_dir() {
-        return load_from_dir(&dir);
+    if !dir.is_dir() {
+        return load_single_blob(&crdt_state_path(workspace_path));
     }
-    load_single_blob(&crdt_state_path(workspace_path))
+
+    let mut states = load_from_dir(&dir)?;
+    // The blob is retired only once the whole directory has been written, so
+    // finding it still under its own name means the migration did not finish —
+    // the device was killed between creating the directory and filling it, or an
+    // older build ran in between. Documents the directory already holds are the
+    // newer state and win; the rest would otherwise be silently dropped, and a
+    // document that comes back absent is rebuilt empty under a fresh identity.
+    let legacy_path = crdt_state_path(workspace_path);
+    if legacy_path.exists() {
+        match load_single_blob(&legacy_path) {
+            Ok(legacy) => {
+                for (document, bytes) in legacy {
+                    states.entry(document).or_insert(bytes);
+                }
+            }
+            // A corrupt blob must not cost the documents that did migrate.
+            Err(err) => eprintln!("unmigrated CRDT state blob is unreadable: {err:#}"),
+        }
+    }
+    Ok(states)
 }
 
 fn load_from_dir(dir: &Path) -> Result<HashMap<DocumentId, Vec<u8>>> {
@@ -65,8 +85,17 @@ fn load_from_dir(dir: &Path) -> Result<HashMap<DocumentId, Vec<u8>>> {
         else {
             continue;
         };
-        let bytes = fs::read(&path).with_context(|| format!("read {}", path.display()))?;
-        states.insert(document, bytes);
+        // One unreadable file must cost its own document and no other. Callers
+        // load this as `unwrap_or_default()`, so returning `Err` here would not
+        // read as "one document is damaged" but as "this device has no CRDT
+        // state at all" — every document rebuilt empty, and the account re-seeded
+        // from a throwaway identity.
+        match fs::read(&path) {
+            Ok(bytes) => {
+                states.insert(document, bytes);
+            }
+            Err(err) => eprintln!("skipping unreadable CRDT state {}: {err}", path.display()),
+        }
     }
     Ok(states)
 }
@@ -195,7 +224,10 @@ mod tests {
 
         save_crdt_state(&workspace_path, &loaded).unwrap();
 
-        assert!(!path.exists(), "the old blob must not keep shadowing the directory");
+        assert!(
+            !path.exists(),
+            "the old blob must not keep shadowing the directory"
+        );
         assert!(retired_crdt_state_path(&workspace_path).exists());
         let reloaded = load_crdt_state(&workspace_path).unwrap();
         assert_eq!(reloaded, loaded);
@@ -230,10 +262,15 @@ mod tests {
 
         for (i, doc) in docs.iter().enumerate() {
             if i == 3 {
-                assert_ne!(modified(doc), before[i], "the edited document must be rewritten");
+                assert_ne!(
+                    modified(doc),
+                    before[i],
+                    "the edited document must be rewritten"
+                );
             } else {
                 assert_eq!(
-                    modified(doc), before[i],
+                    modified(doc),
+                    before[i],
                     "an unchanged document must not be rewritten"
                 );
             }
