@@ -5,6 +5,7 @@ use std::{collections::BTreeMap, fs, path::Path, sync::atomic::AtomicU64};
 
 mod cadence;
 mod capture;
+mod gc;
 mod retention;
 mod store;
 mod support;
@@ -23,6 +24,7 @@ pub(crate) const STORE_VERSION: u32 = 1;
 pub(crate) const MANIFEST_FILE: &str = "manifest.json";
 pub(crate) const BLOB_DIR: &str = "blobs";
 pub(crate) const SNAPSHOT_DIR: &str = "snapshots";
+pub(crate) const GC_STATE_FILE: &str = "gc.json";
 const SNAPSHOT_REF_PREFIX: &str = "refs/knotq/snapshots";
 pub(crate) const TRACKED_PATHS: &[&str] = &[
     "workspace.json",

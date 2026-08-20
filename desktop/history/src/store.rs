@@ -3,12 +3,13 @@ use std::{
     collections::BTreeMap,
     fs,
     path::{Path, PathBuf},
+    time::SystemTime,
 };
 
 use crate::support::{temp_suffix, validate_blob_id, validate_relative_path, validate_snapshot_id};
 use crate::{
-    SnapshotEntryKind, SnapshotRecord, StoreManifest, BLOB_DIR, HISTORY_DIR, MANIFEST_FILE,
-    SNAPSHOT_DIR, STORE_DIR, STORE_VERSION,
+    SnapshotEntryKind, SnapshotRecord, StoreManifest, BLOB_DIR, GC_STATE_FILE, HISTORY_DIR,
+    MANIFEST_FILE, SNAPSHOT_DIR, STORE_DIR, STORE_VERSION,
 };
 
 pub(crate) fn ensure_history_store(workspace_dir: &Path) -> Result<()> {
@@ -42,8 +43,15 @@ fn store_dir(workspace_dir: &Path) -> PathBuf {
     history_dir(workspace_dir).join(STORE_DIR)
 }
 
-fn blob_dir(workspace_dir: &Path) -> PathBuf {
+pub(crate) fn blob_dir(workspace_dir: &Path) -> PathBuf {
     store_dir(workspace_dir).join(BLOB_DIR)
+}
+
+/// The sweep's own bookkeeping lives beside the manifest rather than inside it:
+/// the sweep runs on its own thread, and sharing a file with rotation would let
+/// one whole-file write clobber the other's.
+pub(crate) fn gc_state_path(workspace_dir: &Path) -> PathBuf {
+    store_dir(workspace_dir).join(GC_STATE_FILE)
 }
 
 pub(crate) fn snapshot_dir(workspace_dir: &Path) -> PathBuf {
@@ -58,6 +66,7 @@ pub(crate) fn store_blob(workspace_dir: &Path, blob: &str, bytes: &[u8]) -> Resu
     validate_blob_id(blob)?;
     let path = blob_path(workspace_dir, blob);
     if path.exists() {
+        freshen(&path);
         return Ok(());
     }
     let parent = path
@@ -68,6 +77,24 @@ pub(crate) fn store_blob(workspace_dir: &Path, blob: &str, bytes: &[u8]) -> Resu
     fs::write(&tmp, bytes).with_context(|| format!("write {}", tmp.display()))?;
     fs::rename(&tmp, &path).with_context(|| format!("install blob {}", path.display()))?;
     Ok(())
+}
+
+/// Marks an already-stored blob as still in use.
+///
+/// The sweep spares anything modified recently, which is what lets it run
+/// safely alongside snapshot recording. Without this, a blob that a new
+/// snapshot references but does not rewrite would keep the mtime of whenever it
+/// was first stored — so a sweep that read the manifest just before that
+/// snapshot landed could delete a blob the new record needs. `git` freshens
+/// existing loose objects for exactly this reason.
+///
+/// Best effort: a blob that cannot be freshened is still protected by the
+/// manifest for as long as a retained snapshot references it.
+fn freshen(path: &Path) {
+    let _ = fs::OpenOptions::new()
+        .write(true)
+        .open(path)
+        .and_then(|file| file.set_modified(SystemTime::now()));
 }
 
 pub(crate) fn blob_path(workspace_dir: &Path, blob: &str) -> PathBuf {

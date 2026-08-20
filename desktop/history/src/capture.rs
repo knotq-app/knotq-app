@@ -3,6 +3,7 @@ use chrono::{DateTime, SecondsFormat, Utc};
 use sha2::{Digest, Sha256};
 use std::{fs, io, path::Path};
 
+use crate::gc::sweep_in_background_if_due;
 use crate::retention::{retention_bucket, rotate_snapshots};
 use crate::store::{
     ensure_history_store, history_store_exists, read_manifest, read_snapshot_record, store_blob,
@@ -16,6 +17,9 @@ use crate::{
 
 pub(crate) fn record_workspace_snapshot_at(workspace_dir: &Path, now: DateTime<Utc>) -> Result<()> {
     ensure_history_store(workspace_dir)?;
+    // Rotation only rewrites which snapshots are *referenced*; the records and
+    // blobs it drops are reclaimed here. Runs at most hourly, on its own thread.
+    sweep_in_background_if_due(workspace_dir, now);
     let snapshot = build_snapshot_record(workspace_dir, now)?;
     if snapshot.entries.is_empty() {
         bail!("workspace history has no files to snapshot");
