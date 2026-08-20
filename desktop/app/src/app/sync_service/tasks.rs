@@ -382,6 +382,7 @@ async fn run_sync_attempt(
                         defaults: notification_defaults,
                         snapshot: notification_schedule,
                     });
+                crate::frame_log::count(&crate::frame_log::SYNC_RUNS);
                 app.sync_run_status = SyncRunStatus::Synced {
                     pending: remaining_pending,
                 };
@@ -413,6 +414,7 @@ async fn run_sync_attempt(
                         app.state
                             .replace_workspace_from_sync(workspace, crdt_states);
                     }
+                    crate::frame_log::count(&crate::frame_log::WORKSPACE_REPLACED);
                     app.scheme_scroll_restore_after_sync = scheme_scroll_restore;
                     app.daily_queue_scroll_restore_after_sync = daily_queue_scroll_restore;
                     app.service_bus.signal_save();

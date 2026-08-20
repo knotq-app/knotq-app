@@ -2,6 +2,7 @@
 
 mod app;
 mod assets;
+mod frame_log;
 mod notifications;
 mod theme_gpui;
 mod views;
@@ -55,6 +56,7 @@ const LEFT_PANEL_GAP: f32 = 8.0;
 const UPCOMING_W: f32 = 258.0;
 impl Render for KnotQApp {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        crate::frame_log::count(&crate::frame_log::RENDERS);
         if self._appearance_subscription.is_none() {
             self._appearance_subscription = Some(cx.observe_window_appearance(
                 window,

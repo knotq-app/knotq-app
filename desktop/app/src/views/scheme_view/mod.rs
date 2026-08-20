@@ -127,22 +127,44 @@ fn schedule_scroll_offset_restore(
     offset: Point<Pixels>,
     window: &mut Window,
 ) {
+    crate::frame_log::count(&crate::frame_log::SCROLL_RESTORES);
     window.on_next_frame(move |window, _cx| {
-        restore_scroll_offset(&scroll_handle, offset);
+        // The first pass runs before the restored content has been laid out, so
+        // `max_offset` may still clamp against a stale height; the second pass
+        // corrects that. Neither is worth a frame when the offset is already
+        // where it belongs, which is the case whenever a sync round trip
+        // changed nothing this view is showing.
+        if !restore_scroll_offset(&scroll_handle, offset) {
+            return;
+        }
+        crate::frame_log::count(&crate::frame_log::FORCED_REFRESHES);
         window.refresh();
 
         let scroll_handle = scroll_handle.clone();
         window.on_next_frame(move |window, _cx| {
-            restore_scroll_offset(&scroll_handle, offset);
-            window.refresh();
+            if restore_scroll_offset(&scroll_handle, offset) {
+                crate::frame_log::count(&crate::frame_log::FORCED_REFRESHES);
+                window.refresh();
+            }
         });
     });
 }
 
-fn restore_scroll_offset(scroll_handle: &ScrollHandle, offset: Point<Pixels>) {
+/// Puts the scroll offset back, reporting whether it actually had to move.
+///
+/// The caller forces a full window redraw after each pass, so a pass that
+/// changes nothing costs a frame for no reason — and a sync round trip arms
+/// this restore, which while typing means every round trip. Returning whether
+/// anything moved lets the common case cost no frames at all.
+fn restore_scroll_offset(scroll_handle: &ScrollHandle, offset: Point<Pixels>) -> bool {
     let max_y = scroll_handle.max_offset().height;
     let y = offset.y.clamp(-max_y, Pixels::ZERO);
-    scroll_handle.set_offset(point(offset.x, y));
+    let target = point(offset.x, y);
+    if scroll_handle.offset() == target {
+        return false;
+    }
+    scroll_handle.set_offset(target);
+    true
 }
 
 mod controls;
