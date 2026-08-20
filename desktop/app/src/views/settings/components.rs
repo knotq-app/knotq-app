@@ -57,7 +57,7 @@ pub(super) fn settings_header(t: UiTheme) -> gpui::AnyElement {
                 .text_size(px(17.0))
                 .font_weight(gpui::FontWeight::SEMIBOLD)
                 .text_color(token_hsla(t.text_primary))
-                .child("Settings"),
+                .child(knotq_l10n::t("menu.settings")),
         )
         .child(
             div()
@@ -376,7 +376,7 @@ pub(super) fn update_status_row(
         } => settings_action_row(
             SettingsActionRowArgs {
                 id: "auto-update-check",
-                title: "KnotQ is up to date".to_string(),
+                title: knotq_l10n::t("settings.updates.up_to_date").to_string(),
                 detail: format!(
                     "Latest: {version} - checked {}",
                     checked_time_label(checked_at)

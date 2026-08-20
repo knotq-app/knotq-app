@@ -23,8 +23,8 @@ use gpui_component::{
 };
 
 use crate::app::{
-    initial_window_bounds, load_or_default_settings, KnotQApp, View, DAILY_QUEUE_TITLE,
-    MIN_WINDOW_HEIGHT, MIN_WINDOW_WIDTH,
+    initial_window_bounds, load_or_default_settings, KnotQApp, View, MIN_WINDOW_HEIGHT,
+    MIN_WINDOW_WIDTH,
 };
 use crate::assets::AppAssets;
 use crate::theme_gpui::{token_hsla, token_rgba, Theme, FONT_UI};
@@ -124,13 +124,13 @@ impl Render for KnotQApp {
             .current_scheme()
             .map(|s| (s.id, self.scheme_display_name(s), s.color_index));
         let title = match view {
-            View::Union => "Calendar".to_string(),
-            View::DailyQueue => DAILY_QUEUE_TITLE.to_string(),
+            View::Union => knotq_l10n::t("menu.calendar").to_string(),
+            View::DailyQueue => knotq_l10n::t("menu.daily").to_string(),
             View::Scheme => current_scheme_title
                 .as_ref()
                 .map(|(_, name, _)| name.clone())
                 .unwrap_or_else(|| "Workspace".to_string()),
-            View::Settings => "Settings".to_string(),
+            View::Settings => knotq_l10n::t("menu.settings").to_string(),
         };
         let title_bar = self.render_title_bar(window, view, title, current_scheme_title, t, cx);
         let app_menu_bar = self.render_app_menu_bar(window, cx);
