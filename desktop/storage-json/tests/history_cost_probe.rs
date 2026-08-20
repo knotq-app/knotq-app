@@ -154,3 +154,43 @@ fn probe_crdt_state_save_split() {
     println!("encode (base64 + serde)    {:8.1} ms (median of 7)", median_ms(encode));
     println!("write_atomic + fsync       {:8.1} ms (median of 7)", median_ms(write));
 }
+
+/// What a save costs now that only the edited document's state is rewritten.
+#[test]
+#[ignore]
+fn probe_crdt_state_incremental_save() {
+    use knotq_storage_json::{load_crdt_state, save_crdt_state};
+
+    let dir = std::path::PathBuf::from(std::env::var("KNOTQ_PROBE_DIR").unwrap());
+    let path = dir.join("workspace.json");
+    let mut states = load_crdt_state(&path).unwrap();
+    let bytes: usize = states.values().map(|s| s.len()).sum();
+
+    // First save migrates the single blob into the directory.
+    let start = Instant::now();
+    save_crdt_state(&path, &states).unwrap();
+    let migrate = start.elapsed().as_secs_f64() * 1000.0;
+
+    let mut unchanged = Vec::new();
+    for _ in 0..7 {
+        let start = Instant::now();
+        save_crdt_state(&path, &states).unwrap();
+        unchanged.push(start.elapsed().as_secs_f64() * 1000.0);
+    }
+
+    let victim = *states.keys().next().unwrap();
+    let mut edited = Vec::new();
+    for i in 0..7u8 {
+        let mut bytes = states[&victim].clone();
+        bytes.push(i);
+        states.insert(victim, bytes);
+        let start = Instant::now();
+        save_crdt_state(&path, &states).unwrap();
+        edited.push(start.elapsed().as_secs_f64() * 1000.0);
+    }
+
+    println!("{} documents, {:.1} MB", states.len(), bytes as f64 / 1_048_576.0);
+    println!("first save (migration)     {migrate:8.1} ms");
+    println!("save, nothing changed      {:8.1} ms (median of 7)", median_ms(unchanged));
+    println!("save, one document edited  {:8.1} ms (median of 7)", median_ms(edited));
+}

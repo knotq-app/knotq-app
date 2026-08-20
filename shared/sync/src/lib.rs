@@ -100,6 +100,14 @@ pub const LOCAL_SYNC_STATE_FILE: &str = "sync-state.json";
 /// deterministic clientID) instead of rebuilding from plain data, so the Yjs
 /// identity survives restarts and the desktop UI↔background thread split.
 pub const LOCAL_CRDT_STATE_FILE: &str = "sync-crdt-state.json";
+/// Directory holding one file per document's `state_v1` bytes, which supersedes
+/// [`LOCAL_CRDT_STATE_FILE`]: a single blob had to be re-encoded and rewritten
+/// in full on every save, and a real workspace's is 11 MB.
+pub const LOCAL_CRDT_STATE_DIR: &str = "sync-crdt-state";
+/// Extension for the per-document files in [`LOCAL_CRDT_STATE_DIR`]. The bytes
+/// are stored raw — the single-blob form base64-encoded them only because it
+/// was JSON.
+pub const LOCAL_CRDT_STATE_EXT: &str = "ydoc";
 pub const MAX_SYNC_MEDIA_BYTES: usize = 3 * 1024 * 1024;
 
 /// Serializable container for persisted per-document CRDT `state_v1` bytes
