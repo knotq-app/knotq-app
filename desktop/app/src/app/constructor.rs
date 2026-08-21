@@ -6,7 +6,7 @@ use knotq_state::{daily_queue_default_window_start, AppState};
 use knotq_storage_json::{load_crdt_state, load_local_sync_state, workspace_path};
 
 use super::auto_update::{spawn_auto_update_task, AutoUpdateUiStatus};
-use super::bootstrap::{load_or_default_settings, load_or_seed};
+use super::bootstrap::{load_or_seed, load_settings_bootstrap};
 use super::services::{
     spawn_notification_task, spawn_save_task, spawn_timeline_task, AppServiceBus,
 };
@@ -22,7 +22,9 @@ impl KnotQApp {
         // Persist IDs generated while loading older scheme files before OS
         // notification actions depend on them.
         let initial_dirty = true;
-        let settings = load_or_default_settings();
+        let settings_bootstrap = load_settings_bootstrap();
+        let settings_save_blocked_reason = settings_bootstrap.save_blocked_reason;
+        let settings = settings_bootstrap.settings;
         let needs_onboarding = !settings.onboarding_completed;
         // Always start with the short tutorial. The sign-in / stay-local prompt is
         // surfaced only after the guide finishes (and skipped entirely if the user
@@ -190,6 +192,7 @@ impl KnotQApp {
             scheme_sessions: HashMap::new(),
             service_bus,
             workspace_save_blocked_reason,
+            settings_save_blocked_reason,
             workspace_save_error: None,
             notification_error: None,
             auto_update_status: AutoUpdateUiStatus::initial(),

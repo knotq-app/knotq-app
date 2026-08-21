@@ -62,9 +62,10 @@ pub use knotq_state::{
     EditorUndoKey, NavSnapshot, Selection, UndoEntry, View, DAILY_QUEUE_DEFAULT_WINDOW_DAYS,
 };
 use knotq_storage_json::{
-    load_app_settings, load_daily_queue_scheme, load_daily_queue_schemes_for_calendar_range,
-    load_workspace_with_options, save_workspace, save_workspace_incremental, settings_path,
-    workspace_path, AppSettings, WorkspaceLoadOptions,
+    load_daily_queue_scheme, load_daily_queue_schemes_for_calendar_range, load_settings_or_recover,
+    load_workspace_with_options, run_pending_upgrades, save_workspace, save_workspace_incremental,
+    settings_path, workspace_path, AppSettings, UpgradeReport, WorkspaceLoadOptions,
+    DATA_LAYOUT_VERSION,
 };
 
 use auto_update::{AutoUpdateSignal, AutoUpdateUiStatus};
@@ -705,6 +706,11 @@ pub struct KnotQApp {
     pub(crate) scheme_sessions: HashMap<SchemeId, SchemeSessionState>,
     pub(crate) service_bus: AppServiceBus,
     pub(crate) workspace_save_blocked_reason: Option<String>,
+    /// Set when `settings.json` must not be written this session — it was left
+    /// by a newer build, or it is unreadable and could not be moved aside.
+    /// Overwriting it would replace the only record of the sync account, the
+    /// linked Google accounts and every preference with this build's defaults.
+    pub(crate) settings_save_blocked_reason: Option<String>,
     /// Set when the background save task's most recent write attempt failed
     /// (disk full, permission denied, external drive gone, AV lock). The
     /// failed schemes are re-marked dirty and retried automatically after a

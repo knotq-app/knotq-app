@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<scheme id="1f6fb807-0c0b-494b-9d63-5bfbd44858fe" version="1">
+  <item id="90cf19a3-5c8a-4db9-a78a-a313c82a5705" marker="blank">
+    <text>Above the image</text>
+  </item>
+  <item id="280e0fc5-23b8-4761-bf49-ff4254b07523" marker="blank">
+    <image asset="7bf2683d-ce79-4337-b557-7dc7ac860b0e" format="png" width="1" height="1"/>
+  </item>
+  <item id="92cc3b6a-0abb-470f-827a-8eca9f518950" marker="blank">
+    <table>
+      <column id="6a8ca0f7-1a38-4bad-8c9b-fab0dbc06678" name="Task"/>
+      <column id="d0d9058a-ee1c-48d1-9766-dee0e7c891ec" name="Owner"/>
+      <row id="0729da0f-d907-4377-adbc-de4728688723">
+        <cell>
+          <item id="1e9a5a7d-21cd-4cb2-a5c0-1e6987712b0f" marker="blank">
+            <text>Ship it</text>
+          </item>
+        </cell>
+        <cell>
+          <item id="2457c0ed-0782-4725-9d8a-291c0969158a" marker="blank">
+            <text>me</text>
+          </item>
+        </cell>
+      </row>
+    </table>
+  </item>
+</scheme>

@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<scheme id="d8d82db6-8291-473f-99d2-fe144122bdf8" version="1">
+  <item id="88bbe283-f033-4499-bcad-21baf5b1fccf" marker="blank">
+    <text>A plain line</text>
+  </item>
+  <item id="aab6f0dc-f9c4-4015-af3f-508096fa071b" marker="bullet">
+    <text>A bullet</text>
+  </item>
+  <item id="592cbec7-d6f8-45d6-af7e-83dd0b0b054d" marker="numbered" indent="2">
+    <text>An indented numbered line</text>
+  </item>
+  <item id="8f4c29c2-769c-4c37-8116-22b6e95539e0" marker="checkbox">
+    <text>Done task</text>
+    <state>[{&quot;progress&quot;:-1,&quot;notification_offset_secs&quot;:900}]</state>
+  </item>
+  <item id="cd5ee0b2-b902-489a-a6b0-53ffcc7f9cb6" marker="blank">
+    <text>Markdown **bold**, __italic__, ==highlight==, ~~strike~~ and &lt;angle&gt; &amp; ampersand</text>
+  </item>
+  <item id="5047227d-034e-4648-bed6-ac1f38673634" marker="blank">
+    <text>Unicode: 日本語 — emoji 🧶 — quotes &quot;curly&quot; &apos;single&apos;</text>
+  </item>
+</scheme>

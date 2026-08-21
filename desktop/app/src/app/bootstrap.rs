@@ -1,15 +1,50 @@
 use super::*;
 use std::path::Path;
 
-pub fn load_or_default_settings() -> AppSettings {
-    let path = settings_path();
-    match load_app_settings(&path) {
-        Ok(settings) => settings,
-        Err(err) => {
-            eprintln!("settings load failed ({err:#}); using defaults");
-            AppSettings::default()
+/// Bring the data directory up to this build's format. Runs exactly once per
+/// process, before anything reads or writes user data — both entry points below
+/// call it, and either may come first.
+fn upgraded_data_directory() -> &'static UpgradeReport {
+    static REPORT: std::sync::OnceLock<UpgradeReport> = std::sync::OnceLock::new();
+    REPORT.get_or_init(|| {
+        let report = run_pending_upgrades(&workspace_path());
+        if let Some(line) = report.log_line() {
+            eprintln!("{line}");
         }
+        report
+    })
+}
+
+/// Set when the data directory belongs to a build newer than this one. Both the
+/// workspace and the settings then load read-only: this build cannot represent
+/// what the newer one wrote, so saving would quietly discard it.
+fn newer_build_reason() -> Option<String> {
+    upgraded_data_directory()
+        .written_by_newer_build
+        .map(|version| {
+            format!(
+                "this data directory was written by a newer version of KnotQ \
+                 (layout {version}, this build understands {DATA_LAYOUT_VERSION})"
+            )
+        })
+}
+
+pub(crate) struct SettingsBootstrapResult {
+    pub(crate) settings: AppSettings,
+    pub(crate) save_blocked_reason: Option<String>,
+}
+
+pub(crate) fn load_settings_bootstrap() -> SettingsBootstrapResult {
+    let path = settings_path();
+    let bootstrap = load_settings_or_recover(&path);
+    SettingsBootstrapResult {
+        settings: bootstrap.settings,
+        save_blocked_reason: bootstrap.save_blocked_reason.or_else(newer_build_reason),
     }
+}
+
+pub fn load_or_default_settings() -> AppSettings {
+    load_settings_bootstrap().settings
 }
 
 pub(crate) struct WorkspaceBootstrap {
@@ -20,7 +55,14 @@ pub(crate) struct WorkspaceBootstrap {
 pub fn load_or_seed() -> WorkspaceBootstrap {
     let path = workspace_path();
     let today = Local::now().date_naive();
-    load_or_seed_from_path(&path, today)
+    let mut bootstrap = load_or_seed_from_path(&path, today);
+    // A newer build's data directory blocks saving even when the workspace file
+    // itself parsed: the parts this build does not understand live elsewhere in
+    // the directory, and a save rewrites the lot.
+    if bootstrap.save_blocked_reason.is_none() {
+        bootstrap.save_blocked_reason = newer_build_reason();
+    }
+    bootstrap
 }
 
 fn load_or_seed_from_path(path: &Path, today: NaiveDate) -> WorkspaceBootstrap {

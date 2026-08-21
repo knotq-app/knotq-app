@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<scheme id="ae16e73b-3c18-4419-bb6a-fe905c121489" version="1">
+  <item id="9268b0ed-a6ec-4905-a7e0-a2603a2af0d4" marker="checkbox" start="2026-08-03T15:00:00Z" end="2026-08-03T16:00:00Z" available="2026-08-02T15:00:00Z" priority="2" rrule="FREQ=WEEKLY;BYDAY=MO,WE">
+    <text>Weekly review</text>
+  </item>
+  <item id="dbade6f8-de1b-473e-bfc9-3973aad66be0" marker="checkbox" end="2026-09-02T15:00:00Z">
+    <text>A deadline</text>
+  </item>
+</scheme>

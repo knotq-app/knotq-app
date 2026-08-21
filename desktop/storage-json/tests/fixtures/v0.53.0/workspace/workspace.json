@@ -1,0 +1,227 @@
+{
+  "version": 1,
+  "workspace": {
+    "id": "11bbcca8-b0fe-4735-bad5-4e22122032ab",
+    "sync": {
+      "id": "eddaa5a8-54ac-4717-84fd-809b38c5ccb3",
+      "kind": "personal_workspace",
+      "crdt": "yrs",
+      "access": {
+        "scope": "local"
+      }
+    },
+    "root": "528883a4-a439-8fc6-bc16-9aa005829f28",
+    "folders": {
+      "e7aaf301-9829-4f08-a493-6fbcc0486d48": {
+        "id": "e7aaf301-9829-4f08-a493-6fbcc0486d48",
+        "name": "Work",
+        "parent": "528883a4-a439-8fc6-bc16-9aa005829f28",
+        "children": [
+          {
+            "kind": "scheme",
+            "id": "09f707e1-f3c7-4766-9271-9845b14ffb18"
+          }
+        ],
+        "expanded": true
+      },
+      "528883a4-a439-8fc6-bc16-9aa005829f28": {
+        "id": "528883a4-a439-8fc6-bc16-9aa005829f28",
+        "name": "root",
+        "children": [
+          {
+            "kind": "scheme",
+            "id": "d8d82db6-8291-473f-99d2-fe144122bdf8"
+          },
+          {
+            "kind": "scheme",
+            "id": "ae16e73b-3c18-4419-bb6a-fe905c121489"
+          },
+          {
+            "kind": "scheme",
+            "id": "1f6fb807-0c0b-494b-9d63-5bfbd44858fe"
+          },
+          {
+            "kind": "folder",
+            "id": "e7aaf301-9829-4f08-a493-6fbcc0486d48"
+          }
+        ],
+        "expanded": true
+      }
+    },
+    "schemes": {
+      "1f6fb807-0c0b-494b-9d63-5bfbd44858fe": {
+        "id": "1f6fb807-0c0b-494b-9d63-5bfbd44858fe",
+        "name": "Media",
+        "color_index": 5,
+        "calendar_index": {}
+      },
+      "ae16e73b-3c18-4419-bb6a-fe905c121489": {
+        "id": "ae16e73b-3c18-4419-bb6a-fe905c121489",
+        "name": "Health",
+        "color_index": 3,
+        "calendar_index": {
+          "has_calendar_items": true,
+          "has_unfinished_items": true,
+          "months_with_calendar_items": [
+            {
+              "year": 2026,
+              "month": 8
+            },
+            {
+              "year": 2026,
+              "month": 9
+            }
+          ],
+          "months_with_unfinished_items": [
+            {
+              "year": 2026,
+              "month": 8
+            },
+            {
+              "year": 2026,
+              "month": 9
+            }
+          ],
+          "load_for_calendar_queries": true,
+          "load_for_unfinished_queries": true
+        }
+      },
+      "09f707e1-f3c7-4766-9271-9845b14ffb18": {
+        "id": "09f707e1-f3c7-4766-9271-9845b14ffb18",
+        "name": "Team calendar",
+        "color_index": 7,
+        "gsync": true,
+        "source": {
+          "kind": "imported_calendar",
+          "provider": "google",
+          "account_id": "acct-1",
+          "account_email": "user@example.com",
+          "calendar_id": "primary",
+          "sync_token": "tok-123",
+          "read_only": true,
+          "last_synced_at": "2026-08-03T15:00:00Z"
+        },
+        "calendar_index": {}
+      },
+      "d8d82db6-8291-473f-99d2-fe144122bdf8": {
+        "id": "d8d82db6-8291-473f-99d2-fe144122bdf8",
+        "name": "Notes",
+        "color_index": 0,
+        "calendar_index": {}
+      },
+      "6a4f1b8c-ca00-43d9-bcb0-0b2c47108af8": {
+        "id": "6a4f1b8c-ca00-43d9-bcb0-0b2c47108af8",
+        "name": "Old project",
+        "color_index": 1,
+        "calendar_index": {}
+      }
+    },
+    "scheme_sync": {
+      "09f707e1-f3c7-4766-9271-9845b14ffb18": {
+        "id": "d7016403-5da3-8adb-a52a-e9f6463956c2",
+        "kind": "scheme",
+        "crdt": "yrs",
+        "access": {
+          "scope": "local"
+        }
+      },
+      "d8d82db6-8291-473f-99d2-fe144122bdf8": {
+        "id": "1745d01d-12b2-873a-ac6f-810da854ff0a",
+        "kind": "scheme",
+        "crdt": "yrs",
+        "access": {
+          "scope": "local"
+        }
+      },
+      "1f6fb807-0c0b-494b-9d63-5bfbd44858fe": {
+        "id": "17c9a967-7bbb-82c6-b329-f103623ad72f",
+        "kind": "scheme",
+        "crdt": "yrs",
+        "access": {
+          "scope": "local"
+        }
+      },
+      "75fc2902-07cf-4a0d-8c00-a29d36007d67": {
+        "id": "d4b89787-b563-8fc2-a1bd-6f13809aa061",
+        "kind": "scheme",
+        "crdt": "yrs",
+        "access": {
+          "scope": "local"
+        }
+      },
+      "ae16e73b-3c18-4419-bb6a-fe905c121489": {
+        "id": "fe732598-09a9-88fa-a40d-6fbac102ec90",
+        "kind": "scheme",
+        "crdt": "yrs",
+        "access": {
+          "scope": "local"
+        }
+      },
+      "6a4f1b8c-ca00-43d9-bcb0-0b2c47108af8": {
+        "id": "3d40c2ad-613a-88a2-a9a4-9402d7fbe6c7",
+        "kind": "scheme",
+        "crdt": "yrs",
+        "access": {
+          "scope": "local"
+        }
+      },
+      "784b7616-2a7b-4f46-8542-355f425e3659": {
+        "id": "9c422118-ea2f-80da-a465-eb972b2bc962",
+        "kind": "scheme",
+        "crdt": "yrs",
+        "access": {
+          "scope": "local"
+        }
+      }
+    },
+    "folder_sync": {
+      "528883a4-a439-8fc6-bc16-9aa005829f28": {
+        "id": "4e840de1-369c-8caf-ae7c-41b7aa7d34a2",
+        "kind": "folder",
+        "crdt": "yrs",
+        "access": {
+          "scope": "local"
+        }
+      },
+      "e7aaf301-9829-4f08-a493-6fbcc0486d48": {
+        "id": "48dcd0cf-b966-8086-b8a2-3130cbd56657",
+        "kind": "folder",
+        "crdt": "yrs",
+        "access": {
+          "scope": "local"
+        }
+      }
+    },
+    "daily_queue": [
+      {
+        "date": "2026-08-19",
+        "scheme": {
+          "id": "75fc2902-07cf-4a0d-8c00-a29d36007d67",
+          "name": "2026-08-19",
+          "color_index": 0,
+          "calendar_index": {}
+        }
+      },
+      {
+        "date": "2026-08-20",
+        "scheme": {
+          "id": "784b7616-2a7b-4f46-8542-355f425e3659",
+          "name": "2026-08-20",
+          "color_index": 0,
+          "calendar_index": {
+            "has_unfinished_items": true
+          }
+        }
+      }
+    ],
+    "recently_deleted": [
+      "6a4f1b8c-ca00-43d9-bcb0-0b2c47108af8"
+    ],
+    "deleted_scheme_origins": {
+      "6a4f1b8c-ca00-43d9-bcb0-0b2c47108af8": {
+        "folder": "528883a4-a439-8fc6-bc16-9aa005829f28",
+        "position": 0
+      }
+    }
+  }
+}

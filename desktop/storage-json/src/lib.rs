@@ -9,6 +9,7 @@ mod scheme_xml;
 pub mod secrets;
 mod settings;
 mod sync_state;
+mod upgrade;
 
 use async_trait::async_trait;
 use chrono::NaiveDate;
@@ -23,8 +24,7 @@ pub use files::{
 };
 pub use knotq_history::{
     list_workspace_snapshots, record_workspace_snapshot, restore_workspace_snapshot,
-    sweep_workspace_history_now,
-    WorkspaceSnapshot,
+    sweep_workspace_history_now, WorkspaceSnapshot,
 };
 pub use knotq_model::{
     AppSettings, CalendarViewMode, CalendarWeekRange, NotificationDefaults, SavedWindowPosition,
@@ -35,10 +35,17 @@ pub use paths::{
     data_dir, image_asset_path, image_assets_dir, settings_path, workspace_dir, workspace_path,
 };
 pub use scheme_file::scheme_path_for_workspace;
-pub use settings::{load_app_settings, save_app_settings};
+pub use settings::{
+    load_app_settings, load_settings_or_recover, save_app_settings, SettingsBootstrap,
+    SettingsLoadError,
+};
 pub use sync_state::{
     load_local_sync_state, save_local_sync_state, save_pending_crdt_edits, sync_state_data_dir,
     sync_state_path,
+};
+pub use upgrade::{
+    data_layout_path, registered_migrations, run_pending_upgrades, DataLayoutRecord, DataPaths,
+    Migration, UpgradeReport, DATA_LAYOUT_VERSION,
 };
 
 #[derive(Clone, Debug)]

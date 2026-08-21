@@ -1,0 +1,5 @@
+# KnotQ local files
+.knotq-history/
+backups/
+*.tmp
+.DS_Store

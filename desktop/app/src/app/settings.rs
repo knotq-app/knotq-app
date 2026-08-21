@@ -153,6 +153,13 @@ impl KnotQApp {
             last_view: self.settings.last_view,
             last_scheme_id: self.settings.last_scheme_id,
         };
+        // The settings file on disk holds something this build cannot represent
+        // (see `settings_save_blocked_reason`); writing would replace it with a
+        // lossy copy, so the session keeps its changes in memory only.
+        if let Some(reason) = &self.settings_save_blocked_reason {
+            eprintln!("settings save skipped: {reason}");
+            return;
+        }
         if let Err(err) = save_app_settings(&settings_path(), &settings) {
             eprintln!("settings save failed: {err:#}");
         }

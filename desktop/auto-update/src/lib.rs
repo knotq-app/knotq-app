@@ -203,6 +203,12 @@ pub fn prepare_update(
         TargetKind::Windows => InstallStrategy::RunInstallerAndQuit,
     };
 
+    // Only now that the new download is on disk and its hash checks out: every
+    // previous version's download is dead weight, and nothing ever removed them.
+    // Observed at 560 MB of installers in one user's data directory — larger
+    // than everything they had actually written.
+    discard_superseded_downloads(updates_dir, &version_dir);
+
     Ok(StagedUpdate {
         version: update.version.clone(),
         tag_name: update.tag_name.clone(),
@@ -213,6 +219,30 @@ pub fn prepare_update(
         install_strategy,
         staged_at: Utc::now(),
     })
+}
+
+/// Remove every staged download except `keep`.
+///
+/// Deliberately after the download succeeds rather than before it: a failed
+/// download must not also cost the user the update they already have staged and
+/// verified. Best effort — a leftover directory is only wasted space, and a
+/// failure here must never fail an update.
+fn discard_superseded_downloads(updates_dir: &Path, keep: &Path) {
+    let Ok(entries) = fs::read_dir(updates_dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if !path.is_dir() || path == keep {
+            continue;
+        }
+        if let Err(err) = fs::remove_dir_all(&path) {
+            eprintln!(
+                "could not remove superseded update {}: {err}",
+                path.display()
+            );
+        }
+    }
 }
 
 pub fn install_staged_update(update: &StagedUpdate) -> Result<Option<PathBuf>> {
@@ -278,6 +308,46 @@ if ($install.ExitCode -eq 0 -and (Test-Path -LiteralPath $appExe)) {{
 mod tests {
     use super::*;
     use manifest::matching_asset_for;
+
+    /// Every update ever downloaded used to stay on disk forever. Nothing reads
+    /// a superseded one, and they are the largest files the app ever writes.
+    #[test]
+    fn preparing_an_update_discards_the_downloads_it_supersedes() {
+        let updates_dir = std::env::temp_dir().join(format!(
+            "knotq-updates-sweep-{}-{}",
+            std::process::id(),
+            chrono::Utc::now().timestamp_nanos_opt().unwrap_or_default()
+        ));
+        for version in ["0.50.0", "0.51.0", "0.52.0"] {
+            let dir = updates_dir.join(version);
+            fs::create_dir_all(&dir).unwrap();
+            fs::write(dir.join("KnotQ.dmg"), vec![0u8; 1024]).unwrap();
+        }
+        // Something that is not a version directory must be left alone.
+        fs::write(updates_dir.join("notes.txt"), b"keep me").unwrap();
+        let keep = updates_dir.join("0.53.0");
+        fs::create_dir_all(&keep).unwrap();
+        fs::write(keep.join("KnotQ.dmg"), b"the new one").unwrap();
+
+        discard_superseded_downloads(&updates_dir, &keep);
+
+        let remaining: Vec<String> = fs::read_dir(&updates_dir)
+            .unwrap()
+            .flatten()
+            .map(|entry| entry.file_name().to_string_lossy().to_string())
+            .collect();
+        assert!(remaining.contains(&"0.53.0".to_string()));
+        assert!(remaining.contains(&"notes.txt".to_string()));
+        for superseded in ["0.50.0", "0.51.0", "0.52.0"] {
+            assert!(
+                !remaining.contains(&superseded.to_string()),
+                "{superseded} was left behind: {remaining:?}"
+            );
+        }
+        assert_eq!(fs::read(keep.join("KnotQ.dmg")).unwrap(), b"the new one");
+
+        let _ = fs::remove_dir_all(&updates_dir);
+    }
 
     #[test]
     fn parses_v_prefixed_versions() {

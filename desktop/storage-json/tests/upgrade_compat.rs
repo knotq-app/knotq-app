@@ -14,7 +14,8 @@ use std::path::{Path, PathBuf};
 
 use knotq_model::{AppSettings, DocumentId, Item, NodeRef, ReplicaId, Scheme, Workspace};
 use knotq_storage_json::{
-    crdt_state_dir, crdt_state_path, load_app_settings, load_crdt_state, save_crdt_state,
+    crdt_state_dir, crdt_state_path, load_app_settings, load_crdt_state, load_local_sync_state,
+    load_settings_or_recover, save_app_settings, save_crdt_state, sync_state_path,
 };
 use knotq_sync::{PersistedCrdtState, WorkspaceCrdtDocuments};
 
@@ -274,6 +275,142 @@ fn settings_saved_before_the_upcoming_display_keys_load_with_defaults() {
     assert_eq!(loaded.upcoming_display, defaults);
     assert_eq!(loaded.theme_mode, knotq_model::ThemeMode::Dark);
     assert!(loaded.auto_update);
+
+    cleanup(&workspace_path);
+}
+
+/// A save that carries no documents is not a workspace with none — every
+/// workspace has at least its own document. It means the caller's CRDT store
+/// never came up, and sweeping the directory on the strength of it would delete
+/// the identity of every document the user has.
+#[test]
+fn a_save_with_no_documents_does_not_clear_the_ones_on_disk() {
+    let workspace_path = unique_workspace_path("knotq-upgrade-empty-save");
+    let first = DocumentId::new();
+    let second = DocumentId::new();
+    let states = HashMap::from([(first, vec![1u8, 2]), (second, vec![3u8, 4])]);
+    save_crdt_state(&workspace_path, &states).unwrap();
+
+    save_crdt_state(&workspace_path, &HashMap::<DocumentId, Vec<u8>>::new()).unwrap();
+
+    let loaded = load_crdt_state(&workspace_path).unwrap();
+    assert_eq!(
+        loaded, states,
+        "an empty save must leave the persisted documents alone"
+    );
+
+    cleanup(&workspace_path);
+}
+
+/// Rolling back to an older build, or a settings file from a future one landing
+/// in a synced folder. Its extra keys are meaningful and this build cannot write
+/// them, so the file must survive untouched and the session must not save.
+#[test]
+fn a_settings_file_from_a_newer_build_is_never_overwritten() {
+    let workspace_path = unique_workspace_path("knotq-upgrade-settings-newer");
+    let settings_path = workspace_path.parent().unwrap().join("settings.json");
+    let from_the_future = serde_json::json!({
+        "version": 9,
+        "settings": {
+            "theme_mode": "dark",
+            "sync_account": { "email": "user@example.com" },
+            "a_setting_this_build_has_never_heard_of": true
+        }
+    });
+    let raw = serde_json::to_string_pretty(&from_the_future).unwrap();
+    fs::write(&settings_path, &raw).unwrap();
+
+    let bootstrap = load_settings_or_recover(&settings_path);
+
+    assert!(
+        bootstrap.save_blocked_reason.is_some(),
+        "saving must be blocked, or the first save replaces the file with this \
+         build's defaults and the user is signed out"
+    );
+    assert!(bootstrap.quarantined.is_none());
+    assert_eq!(
+        fs::read_to_string(&settings_path).unwrap(),
+        raw,
+        "the file must not be touched"
+    );
+
+    cleanup(&workspace_path);
+}
+
+/// A settings file this build cannot parse is the only record of the sync
+/// account and every linked Google account. Starting from defaults is fine;
+/// destroying the evidence on the next save is not.
+#[test]
+fn an_unreadable_settings_file_is_kept_aside_rather_than_replaced() {
+    let workspace_path = unique_workspace_path("knotq-upgrade-settings-corrupt");
+    let settings_path = workspace_path.parent().unwrap().join("settings.json");
+    let corrupt = "{\"version\": 1, \"settings\": {\"theme_mo";
+    fs::write(&settings_path, corrupt).unwrap();
+
+    let bootstrap = load_settings_or_recover(&settings_path);
+
+    let kept = bootstrap
+        .quarantined
+        .expect("the unreadable file must be kept");
+    assert_eq!(
+        fs::read_to_string(&kept).unwrap(),
+        corrupt,
+        "the original bytes must be preserved for recovery"
+    );
+    assert!(
+        !settings_path.exists(),
+        "the unreadable file must be out of the way so this session can save"
+    );
+    assert!(
+        bootstrap.save_blocked_reason.is_none(),
+        "with the original safely aside, the app should be able to start over"
+    );
+
+    // And saving now works, rather than the install being wedged forever.
+    save_app_settings(&settings_path, &bootstrap.settings).unwrap();
+    assert!(load_app_settings(&settings_path).is_ok());
+
+    cleanup(&workspace_path);
+}
+
+/// `sync-state.json` is read as `unwrap_or_default()` everywhere, so a parse
+/// failure does not read as "unreadable" but as "this device has never synced":
+/// the pending queue is dropped and `local_sequence` restarts, which the server
+/// rejects as a duplicate. A file missing keys added later must still load.
+#[test]
+fn a_sync_state_file_missing_later_fields_still_loads() {
+    let workspace_path = unique_workspace_path("knotq-upgrade-sync-state");
+    let path = sync_state_path(&workspace_path);
+    fs::create_dir_all(path.parent().unwrap()).unwrap();
+    // The oldest shape: identity and one cursor, none of the fields added since.
+    let document = DocumentId::new();
+    fs::write(
+        &path,
+        serde_json::json!({
+            "workspace_id": uuid::Uuid::new_v4(),
+            "replica_id": uuid::Uuid::new_v4(),
+            "server_url": "https://api.knotq.com",
+            "document_cursors": {
+                document.to_string(): {
+                    "document": document.to_string(),
+                    "kind": "scheme",
+                    "last_pulled_sequence": 12
+                }
+            }
+        })
+        .to_string(),
+    )
+    .unwrap();
+
+    let state = load_local_sync_state(&workspace_path).unwrap();
+
+    assert!(state.is_configured(), "the device identity must survive");
+    assert_eq!(
+        state.document_cursors[&document].last_pulled_sequence, 12,
+        "cursors must survive, or every document is re-pulled from zero"
+    );
+    assert_eq!(state.document_cursors[&document].epoch, 0);
+    assert!(!state.reseed_all_documents);
 
     cleanup(&workspace_path);
 }
