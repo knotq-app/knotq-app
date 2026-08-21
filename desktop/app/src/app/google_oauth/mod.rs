@@ -122,23 +122,15 @@ pub(crate) struct GoogleCalendarApplyResult {
 }
 
 fn google_oauth_log(message: impl AsRef<str>) {
-    use std::io::Write;
-
-    let dir = data_dir();
-    let _ = std::fs::create_dir_all(&dir);
-    let path = dir.join(GOOGLE_OAUTH_LOG_FILE);
-    if let Ok(mut file) = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(path)
-    {
-        let _ = writeln!(
-            file,
+    knotq_storage_json::append_diagnostic_line(
+        &data_dir(),
+        GOOGLE_OAUTH_LOG_FILE,
+        &format!(
             "[{}] {}",
             Utc::now().format("%Y-%m-%dT%H:%M:%SZ"),
             message.as_ref()
-        );
-    }
+        ),
+    );
 }
 
 /// The "cancelled" sentinel message and the specific `access_denied` instance of

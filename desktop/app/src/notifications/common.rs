@@ -25,17 +25,11 @@ pub(crate) const NOTIFICATION_LOOKBACK_DAYS: i64 = 7;
 /// Keep notification diagnostics in the app data directory so sandboxed builds
 /// do not need temporary-directory write access outside the app container.
 pub fn notif_log(msg: &str) {
-    use std::io::Write;
-    let dir = data_dir();
-    let _ = std::fs::create_dir_all(&dir);
-    let path = dir.join("knotq-notif.log");
-    if let Ok(mut f) = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(path)
-    {
-        let _ = writeln!(f, "[{}] {}", Utc::now().format("%H:%M:%S"), msg);
-    }
+    knotq_storage_json::append_diagnostic_line(
+        &data_dir(),
+        "knotq-notif.log",
+        &format!("[{}] {}", Utc::now().format("%H:%M:%S"), msg),
+    );
 }
 
 pub(crate) fn base_schedule_policy() -> PlatformSchedulePolicy {
