@@ -1,0 +1,88 @@
+{
+  "workspace_id": "11bbcca8-b0fe-4735-bad5-4e22122032ab",
+  "replica_id": "0b8ef7c2-13a7-4f46-800d-b4326c9a1f8f",
+  "server_url": "https://api.knotq.com",
+  "document_cursors": {
+    "eddaa5a8-54ac-4717-84fd-809b38c5ccb3": {
+      "document": "eddaa5a8-54ac-4717-84fd-809b38c5ccb3",
+      "kind": "scheme",
+      "last_pulled_sequence": 2,
+      "last_pushed_sequence": 1,
+      "epoch": 0
+    },
+    "d4b89787-b563-8fc2-a1bd-6f13809aa061": {
+      "document": "d4b89787-b563-8fc2-a1bd-6f13809aa061",
+      "kind": "scheme",
+      "last_pulled_sequence": 1,
+      "last_pushed_sequence": 0,
+      "epoch": 0
+    },
+    "d7016403-5da3-8adb-a52a-e9f6463956c2": {
+      "document": "d7016403-5da3-8adb-a52a-e9f6463956c2",
+      "kind": "scheme",
+      "last_pulled_sequence": 6,
+      "last_pushed_sequence": 5,
+      "epoch": 0
+    },
+    "9c422118-ea2f-80da-a465-eb972b2bc962": {
+      "document": "9c422118-ea2f-80da-a465-eb972b2bc962",
+      "kind": "scheme",
+      "last_pulled_sequence": 4,
+      "last_pushed_sequence": 3,
+      "epoch": 0
+    },
+    "fe732598-09a9-88fa-a40d-6fbac102ec90": {
+      "document": "fe732598-09a9-88fa-a40d-6fbac102ec90",
+      "kind": "scheme",
+      "last_pulled_sequence": 7,
+      "last_pushed_sequence": 6,
+      "epoch": 0
+    },
+    "1745d01d-12b2-873a-ac6f-810da854ff0a": {
+      "document": "1745d01d-12b2-873a-ac6f-810da854ff0a",
+      "kind": "scheme",
+      "last_pulled_sequence": 3,
+      "last_pushed_sequence": 2,
+      "epoch": 0
+    },
+    "17c9a967-7bbb-82c6-b329-f103623ad72f": {
+      "document": "17c9a967-7bbb-82c6-b329-f103623ad72f",
+      "kind": "scheme",
+      "last_pulled_sequence": 5,
+      "last_pushed_sequence": 4,
+      "epoch": 0
+    },
+    "3d40c2ad-613a-88a2-a9a4-9402d7fbe6c7": {
+      "document": "3d40c2ad-613a-88a2-a9a4-9402d7fbe6c7",
+      "kind": "scheme",
+      "last_pulled_sequence": 8,
+      "last_pushed_sequence": 7,
+      "epoch": 0
+    }
+  },
+  "media_cursors": {
+    "image.png": {
+      "image_name": "image.png",
+      "document": "d4b89787-b563-8fc2-a1bd-6f13809aa061",
+      "byte_length": 68,
+      "sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+      "uploaded_at": "2026-08-19T09:00:00Z"
+    }
+  },
+  "pending": [
+    {
+      "operation_id": "01562cb2-b53a-4789-bee9-98671eb3bab0",
+      "workspace_id": "11bbcca8-b0fe-4735-bad5-4e22122032ab",
+      "replica_id": "0b8ef7c2-13a7-4f46-800d-b4326c9a1f8f",
+      "local_sequence": 41,
+      "created_at": "2026-08-19T09:30:00Z",
+      "document": "d4b89787-b563-8fc2-a1bd-6f13809aa061",
+      "kind": "scheme",
+      "update_v1": "AQIDBAU=",
+      "touched_items": [
+        "item-1"
+      ]
+    }
+  ],
+  "recovery_version": 0
+}

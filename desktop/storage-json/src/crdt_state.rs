@@ -37,7 +37,7 @@ pub fn crdt_state_dir(workspace_path: &Path) -> PathBuf {
 /// Kept rather than deleted: it is the only copy of the pre-migration state, and
 /// leaving it under its original name would let an older build load a snapshot
 /// that stops being updated the moment this one runs.
-fn retired_crdt_state_path(workspace_path: &Path) -> PathBuf {
+pub(crate) fn retired_crdt_state_path(workspace_path: &Path) -> PathBuf {
     sync_state_data_dir(workspace_path).join(format!("{LOCAL_CRDT_STATE_FILE}.migrated"))
 }
 
@@ -69,7 +69,7 @@ pub fn load_crdt_state(workspace_path: &Path) -> Result<HashMap<DocumentId, Vec<
     Ok(states)
 }
 
-fn load_from_dir(dir: &Path) -> Result<HashMap<DocumentId, Vec<u8>>> {
+pub(crate) fn load_from_dir(dir: &Path) -> Result<HashMap<DocumentId, Vec<u8>>> {
     let mut states = HashMap::new();
     for entry in fs::read_dir(dir).with_context(|| format!("read {}", dir.display()))? {
         let entry = entry.with_context(|| format!("read entry in {}", dir.display()))?;
@@ -100,7 +100,7 @@ fn load_from_dir(dir: &Path) -> Result<HashMap<DocumentId, Vec<u8>>> {
     Ok(states)
 }
 
-fn load_single_blob(path: &Path) -> Result<HashMap<DocumentId, Vec<u8>>> {
+pub(crate) fn load_single_blob(path: &Path) -> Result<HashMap<DocumentId, Vec<u8>>> {
     if !path.exists() {
         return Ok(HashMap::new());
     }
@@ -132,12 +132,28 @@ pub fn save_crdt_state<B: AsRef<[u8]>>(
         written.insert(name);
     }
 
+    // A save that carries no documents at all is not a workspace that has none —
+    // every workspace has at least its own document. It means the caller's CRDT
+    // store was never populated (a failed restore, a save racing startup), and
+    // sweeping on the strength of it would delete the identity of every document
+    // on disk: they would come back empty under fresh clientIDs and re-seed the
+    // account from nothing. Write nothing, remove nothing, keep the old state.
+    if states.is_empty() {
+        let on_disk = load_from_dir(&dir).map(|states| states.len()).unwrap_or(0);
+        if on_disk > 0 {
+            eprintln!(
+                "refusing to clear {on_disk} persisted CRDT document(s) for a save with no documents"
+            );
+            return Ok(());
+        }
+    }
+
     remove_stale_documents(&dir, &written)?;
     retire_single_blob(workspace_path);
     Ok(())
 }
 
-fn document_file_name(document: DocumentId) -> String {
+pub(crate) fn document_file_name(document: DocumentId) -> String {
     format!("{document}.{LOCAL_CRDT_STATE_EXT}")
 }
 
@@ -163,7 +179,7 @@ fn remove_stale_documents(dir: &Path, written: &HashSet<String>) -> Result<()> {
 
 /// Best effort: the directory is already durable, and failing to move the old
 /// blob aside is not a reason to fail a save.
-fn retire_single_blob(workspace_path: &Path) {
+pub(crate) fn retire_single_blob(workspace_path: &Path) {
     let legacy = crdt_state_path(workspace_path);
     if !legacy.exists() {
         return;

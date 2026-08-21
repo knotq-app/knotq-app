@@ -2,10 +2,20 @@ use anyhow::{anyhow, Context, Result};
 use knotq_model::AppSettings;
 use serde::{Deserialize, Serialize};
 use std::sync::Once;
-use std::{fs, path::Path};
+use std::{
+    fs,
+    path::{Path, PathBuf},
+};
 
 use crate::files::{write_atomic, SETTINGS_SCHEMA_VERSION};
 use crate::secrets::{self, GoogleSecret, SyncSecret};
+
+/// Just enough of the envelope to decide whether this build may read the rest.
+#[derive(Deserialize)]
+struct SettingsVersion {
+    #[serde(default)]
+    version: u32,
+}
 
 #[derive(Serialize, Deserialize)]
 struct SettingsEnvelope {
@@ -13,22 +23,155 @@ struct SettingsEnvelope {
     settings: AppSettings,
 }
 
+/// Why a settings file could not be loaded. The two cases call for opposite
+/// responses, which is the whole reason this is not a bare `anyhow::Error`:
+/// a file from a newer build must be left exactly as it is, while an unreadable
+/// one has to be moved out of the way before this build can save at all.
+#[derive(Debug)]
+pub enum SettingsLoadError {
+    /// Written by a build that knows a later schema. Its extra keys are
+    /// meaningful and this build would drop them, so it must not be rewritten.
+    TooNew { found: u32, supported: u32 },
+    /// Missing, unreadable, or not parseable as settings.
+    Unreadable(anyhow::Error),
+}
+
+impl std::fmt::Display for SettingsLoadError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::TooNew { found, supported } => write!(
+                f,
+                "settings.json was written by a newer version of KnotQ \
+                 (schema {found}, this build understands {supported})"
+            ),
+            Self::Unreadable(err) => write!(f, "{err:#}"),
+        }
+    }
+}
+
+impl From<SettingsLoadError> for anyhow::Error {
+    fn from(err: SettingsLoadError) -> Self {
+        match err {
+            SettingsLoadError::Unreadable(err) => err,
+            other => anyhow!("{other}"),
+        }
+    }
+}
+
+/// What startup should do about the settings file.
+pub struct SettingsBootstrap {
+    pub settings: AppSettings,
+    /// When set, this session must not write `settings.json`: the file on disk
+    /// holds something this build cannot represent, and saving would replace it
+    /// with a lossy version. The reason is meant to be shown and logged.
+    pub save_blocked_reason: Option<String>,
+    /// Where an unreadable file was moved, if one was.
+    pub quarantined: Option<PathBuf>,
+}
+
+/// Load the settings, recovering rather than resetting.
+///
+/// A settings file is small but it is the only record of *who this device is*:
+/// the sync account, the linked Google accounts, the window, the theme. The
+/// previous behaviour — return `Err`, let the caller fall back to
+/// `AppSettings::default()`, and then overwrite the file on the next save —
+/// turned any single unreadable byte into a silent sign-out with the evidence
+/// destroyed. Neither outcome here loses the original: a file from a newer build
+/// is left alone (and saving is blocked until that build runs again), and an
+/// unreadable one is moved aside where support can ask for it.
+pub fn load_settings_or_recover(path: &Path) -> SettingsBootstrap {
+    match load_settings_detailed(path) {
+        Ok(settings) => SettingsBootstrap {
+            settings,
+            save_blocked_reason: None,
+            quarantined: None,
+        },
+        Err(SettingsLoadError::TooNew { found, supported }) => {
+            let reason = SettingsLoadError::TooNew { found, supported }.to_string();
+            eprintln!("{reason}; running without saving settings");
+            SettingsBootstrap {
+                settings: AppSettings::default(),
+                save_blocked_reason: Some(reason),
+                quarantined: None,
+            }
+        }
+        Err(SettingsLoadError::Unreadable(err)) => match quarantine(path) {
+            Ok(moved) => {
+                eprintln!(
+                    "settings could not be read ({err:#}); the file was kept as {} and this \
+                     session starts from defaults",
+                    moved.display()
+                );
+                SettingsBootstrap {
+                    settings: AppSettings::default(),
+                    save_blocked_reason: None,
+                    quarantined: Some(moved),
+                }
+            }
+            // Could not move it aside, so we must not write over it either.
+            Err(move_err) => {
+                let reason = format!(
+                    "settings unreadable ({err:#}) and could not be set aside ({move_err:#})"
+                );
+                eprintln!("{reason}; running without saving settings");
+                SettingsBootstrap {
+                    settings: AppSettings::default(),
+                    save_blocked_reason: Some(reason),
+                    quarantined: None,
+                }
+            }
+        },
+    }
+}
+
+/// Rename the unreadable file to a timestamped sibling. Never deletes: the file
+/// is the user's only copy of their account link, and a later build (or a human)
+/// may still be able to read it.
+fn quarantine(path: &Path) -> Result<PathBuf> {
+    let stamp = chrono::Utc::now().format("%Y%m%dT%H%M%S");
+    let name = path
+        .file_name()
+        .map(|name| name.to_string_lossy().to_string())
+        .unwrap_or_else(|| "settings.json".to_string());
+    let moved = path.with_file_name(format!("{name}.unreadable-{stamp}"));
+    fs::rename(path, &moved)
+        .with_context(|| format!("move {} to {}", path.display(), moved.display()))?;
+    Ok(moved)
+}
+
 pub fn load_app_settings(path: &Path) -> Result<AppSettings> {
+    load_settings_detailed(path).map_err(anyhow::Error::from)
+}
+
+fn load_settings_detailed(path: &Path) -> std::result::Result<AppSettings, SettingsLoadError> {
     if !path.exists() {
         return Ok(AppSettings::default());
     }
-    let raw = fs::read_to_string(path).with_context(|| format!("read {}", path.display()))?;
+    let raw = fs::read_to_string(path)
+        .with_context(|| format!("read {}", path.display()))
+        .map_err(SettingsLoadError::Unreadable)?;
     if raw.trim().is_empty() {
         return Ok(AppSettings::default());
     }
-    let env: SettingsEnvelope = serde_json::from_str(&raw).context("parse settings.json")?;
-    if env.version != SETTINGS_SCHEMA_VERSION {
-        return Err(anyhow!(
-            "unsupported settings schema version {}, expected {}",
-            env.version,
-            SETTINGS_SCHEMA_VERSION
-        ));
+    // The version has to be read *before* the body: a file from a newer build is
+    // expected to hold a body this one cannot deserialize, and parsing first
+    // would report the most important case — do not touch this file — as
+    // ordinary corruption, and move the user's account link out of the way.
+    let probe: SettingsVersion = serde_json::from_str(&raw)
+        .context("parse settings.json")
+        .map_err(SettingsLoadError::Unreadable)?;
+    if probe.version > SETTINGS_SCHEMA_VERSION {
+        return Err(SettingsLoadError::TooNew {
+            found: probe.version,
+            supported: SETTINGS_SCHEMA_VERSION,
+        });
     }
+    // An older file is expected and fine: every field carries `#[serde(default)]`,
+    // so keys added since are filled with the defaults the feature shipped with —
+    // `tests/upgrade_from_release.rs` holds that line against real released files.
+    let env: SettingsEnvelope = serde_json::from_str(&raw)
+        .context("parse settings.json")
+        .map_err(SettingsLoadError::Unreadable)?;
     let mut settings = env.settings;
     rehydrate_from_keychain(&mut settings);
     Ok(settings)
