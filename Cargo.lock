@@ -3304,6 +3304,7 @@ dependencies = [
  "chrono",
  "knotq-commands",
  "knotq-index",
+ "knotq-l10n",
  "knotq-model",
  "knotq-notifications",
  "knotq-rrule",
