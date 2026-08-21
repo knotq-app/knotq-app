@@ -2,6 +2,7 @@ use std::collections::HashSet;
 
 use chrono::{DateTime, Datelike, Duration, Local, LocalResult, NaiveDate, TimeZone, Utc};
 use knotq_commands::Command;
+use knotq_l10n::t;
 use knotq_model::{
     daily_queue_displaced_item_id, DocumentId, Item, ItemId, ItemMarker, NodeRef, Scheme, SchemeId,
     SyncDocumentKind, SyncDocumentMeta, Workspace,
@@ -165,6 +166,19 @@ pub fn make_default_workspace() -> Workspace {
     make_default_workspace_for_date(Local::now().date_naive())
 }
 
+/// The workspace a brand-new install opens with.
+///
+/// Every line comes from the `starter.*` catalog keys, so it is seeded in the
+/// user's language — this is written to disk once, as their data, and never
+/// re-translated afterwards (renaming a scheme or editing a line has to survive,
+/// and a later language switch must not rewrite what they have since changed).
+/// `l10n/en.json` holds the English; `state/tests/starter_localization.rs` holds
+/// every locale to being complete.
+///
+/// The daily schemes' *names* stay `Daily <date>` in every language on purpose:
+/// that string is a canonical stored value, not display text. Both shells
+/// compare a daily scheme's name against it to tell an untouched day from one
+/// the user renamed, and render a localized label instead of the stored name.
 pub fn make_default_workspace_for_date(today: NaiveDate) -> Workspace {
     let mut workspace = Workspace::new();
     insert_root_scheme(
@@ -192,11 +206,11 @@ pub fn make_default_workspace_for_date(today: NaiveDate) -> Workspace {
     past_daily.items = vec![
         fixed_item(
             "00000000-0000-8000-8000-000000000402",
-            "Past daily pages stay available here",
+            t("starter.daily.past.available"),
         ),
         fixed_item(
             "00000000-0000-8000-8000-000000000403",
-            "Completed work stays behind as a record",
+            t("starter.daily.past.completed"),
         )
         .with_marker(ItemMarker::Checkbox)
         .done(),
@@ -236,62 +250,77 @@ fn insert_root_scheme(workspace: &mut Workspace, scheme: Scheme, sync_document_i
 }
 
 fn make_start_here_scheme(today: NaiveDate) -> Scheme {
-    let mut scheme = Scheme::new("Coursework", 0);
+    let mut scheme = Scheme::new(t("starter.coursework.name"), 0);
     scheme.id = fixed_scheme_id("00000000-0000-8000-8000-000000000101");
     scheme.items = vec![
-        fixed_item("00000000-0000-8000-8000-000000001003", "### Thesis"),
+        fixed_item(
+            "00000000-0000-8000-8000-000000001003",
+            t("starter.coursework.heading_thesis"),
+        ),
         fixed_item(
             "00000000-0000-8000-8000-000000001004",
-            "==Argument:== compare economic pressure and *public trust*",
+            t("starter.coursework.argument"),
         )
         .with_marker(ItemMarker::Bullet),
         // The one intentionally-incomplete dated item: an overdue assignment (due
         // yesterday), so new users can see what "overdue" looks like. Past-dated, so
         // it never schedules a notification.
-        fixed_item("00000000-0000-8000-8000-000000001005", "Final draft")
-            .with_marker(ItemMarker::Checkbox)
-            .with_end(local_dt(today - Duration::days(1), 17, 0)),
+        fixed_item(
+            "00000000-0000-8000-8000-000000001005",
+            t("starter.coursework.final_draft"),
+        )
+        .with_marker(ItemMarker::Checkbox)
+        .with_end(local_dt(today - Duration::days(1), 17, 0)),
         fixed_item(
             "00000000-0000-8000-8000-000000001006",
-            "Finish source notes",
+            t("starter.coursework.source_notes"),
         )
         .with_marker(ItemMarker::Checkbox)
         .done(),
         fixed_item(
             "00000000-0000-8000-8000-000000001007",
-            "Add two primary quotes from chapter 4",
+            t("starter.coursework.primary_quotes"),
         )
         .with_marker(ItemMarker::Checkbox)
         .with_indent(1),
-        fixed_item("00000000-0000-8000-8000-000000001008", "Citation question")
-            .with_marker(ItemMarker::Checkbox)
-            .with_start(local_dt(today + Duration::days(1), 15, 30))
-            .done(),
+        fixed_item(
+            "00000000-0000-8000-8000-000000001008",
+            t("starter.coursework.citation_question"),
+        )
+        .with_marker(ItemMarker::Checkbox)
+        .with_start(local_dt(today + Duration::days(1), 15, 30))
+        .done(),
         fixed_item(
             "00000000-0000-8000-8000-000000001009",
-            "Old outline moved into final draft",
+            t("starter.coursework.old_outline"),
         )
         .with_marker(ItemMarker::Bullet)
         .with_indent(1),
-        fixed_item("00000000-0000-8000-8000-000000001010", "### Exam Prep"),
+        fixed_item(
+            "00000000-0000-8000-8000-000000001010",
+            t("starter.coursework.heading_exam_prep"),
+        ),
         fixed_item(
             "00000000-0000-8000-8000-000000001011",
-            "Review **weeks 3-4** lecture notes",
+            t("starter.coursework.lecture_notes"),
         )
         .with_marker(ItemMarker::Checkbox),
         fixed_item(
             "00000000-0000-8000-8000-000000001012",
-            "Make flashcards for *key terms*",
+            t("starter.coursework.flashcards"),
         )
         .with_marker(ItemMarker::Checkbox),
-        fixed_item("00000000-0000-8000-8000-000000001013", "Study block")
-            .with_marker(ItemMarker::Checkbox)
-            .with_start(local_dt(today + Duration::days(1), 19, 0))
-            .with_end(local_dt(today + Duration::days(1), 20, 30))
-            .done(),
+        fixed_item(
+            "00000000-0000-8000-8000-000000001013",
+            t("starter.coursework.study_block"),
+        )
+        .with_marker(ItemMarker::Checkbox)
+        .with_start(local_dt(today + Duration::days(1), 19, 0))
+        .with_end(local_dt(today + Duration::days(1), 20, 30))
+        .done(),
         fixed_item(
             "00000000-0000-8000-8000-000000001014",
-            "Questions for office hours",
+            t("starter.coursework.office_hours"),
         )
         .with_marker(ItemMarker::Bullet)
         .with_indent(1),
@@ -300,52 +329,64 @@ fn make_start_here_scheme(today: NaiveDate) -> Scheme {
 }
 
 fn make_scheduling_scheme(today: NaiveDate) -> Scheme {
-    let mut scheme = Scheme::new("Scheduling", 5);
+    let mut scheme = Scheme::new(t("starter.scheduling.name"), 5);
     scheme.id = fixed_scheme_id("00000000-0000-8000-8000-000000000102");
     scheme.items = vec![
         fixed_item(
             "00000000-0000-8000-8000-000000002002",
-            "### Calendar shapes",
+            t("starter.scheduling.heading_shapes"),
         ),
         fixed_item(
             "00000000-0000-8000-8000-000000002003",
-            "**Events** have a start and end",
+            t("starter.scheduling.events"),
         )
         .with_marker(ItemMarker::Bullet),
-        fixed_item("00000000-0000-8000-8000-000000002004", "Focus block")
-            .with_marker(ItemMarker::Checkbox)
-            .with_start(local_dt(today, 10, 0))
-            .with_end(local_dt(today, 11, 0))
-            .done(),
+        fixed_item(
+            "00000000-0000-8000-8000-000000002004",
+            t("starter.scheduling.focus_block"),
+        )
+        .with_marker(ItemMarker::Checkbox)
+        .with_start(local_dt(today, 10, 0))
+        .with_end(local_dt(today, 11, 0))
+        .done(),
         fixed_item(
             "00000000-0000-8000-8000-000000002005",
-            "**Assignments** have a deadline",
+            t("starter.scheduling.assignments"),
         )
         .with_marker(ItemMarker::Bullet),
-        fixed_item("00000000-0000-8000-8000-000000002006", "First draft")
-            .with_marker(ItemMarker::Checkbox)
-            .with_end(local_dt(today + Duration::days(1), 17, 0))
-            .done(),
+        fixed_item(
+            "00000000-0000-8000-8000-000000002006",
+            t("starter.scheduling.first_draft"),
+        )
+        .with_marker(ItemMarker::Checkbox)
+        .with_end(local_dt(today + Duration::days(1), 17, 0))
+        .done(),
         fixed_item(
             "00000000-0000-8000-8000-000000002007",
-            "**Reminders** happen at one time",
+            t("starter.scheduling.reminders"),
         )
         .with_marker(ItemMarker::Bullet),
-        fixed_item("00000000-0000-8000-8000-000000002008", "Team message")
-            .with_marker(ItemMarker::Checkbox)
-            .with_start(local_dt(today, 16, 0))
-            .done(),
+        fixed_item(
+            "00000000-0000-8000-8000-000000002008",
+            t("starter.scheduling.team_message"),
+        )
+        .with_marker(ItemMarker::Checkbox)
+        .with_start(local_dt(today, 16, 0))
+        .done(),
         fixed_item(
             "00000000-0000-8000-8000-000000002009",
-            "### Repeating habits",
+            t("starter.scheduling.heading_habits"),
         ),
-        fixed_item("00000000-0000-8000-8000-000000002010", "Morning review")
-            .with_marker(ItemMarker::Checkbox)
-            .with_start(local_dt(today, 8, 30))
-            .done(),
+        fixed_item(
+            "00000000-0000-8000-8000-000000002010",
+            t("starter.scheduling.morning_review"),
+        )
+        .with_marker(ItemMarker::Checkbox)
+        .with_start(local_dt(today, 8, 30))
+        .done(),
         fixed_item(
             "00000000-0000-8000-8000-000000002011",
-            "Backlog: choose next experiment",
+            t("starter.scheduling.backlog"),
         )
         .with_marker(ItemMarker::Checkbox),
     ];
@@ -353,53 +394,68 @@ fn make_scheduling_scheme(today: NaiveDate) -> Scheme {
 }
 
 fn make_projects_scheme(today: NaiveDate) -> Scheme {
-    let mut scheme = Scheme::new("Projects", 3);
+    let mut scheme = Scheme::new(t("starter.projects.name"), 3);
     scheme.id = fixed_scheme_id("00000000-0000-8000-8000-000000000103");
     scheme.items = vec![
-        fixed_item("00000000-0000-8000-8000-000000003001", "### Launch Plan"),
+        fixed_item(
+            "00000000-0000-8000-8000-000000003001",
+            t("starter.projects.heading_launch"),
+        ),
         fixed_item(
             "00000000-0000-8000-8000-000000003003",
-            "Make the first screen feel **clear**, *fast*, and alive",
+            t("starter.projects.first_screen"),
         )
         .with_marker(ItemMarker::Bullet),
-        fixed_item("00000000-0000-8000-8000-000000003004", "Draft the outline")
-            .with_marker(ItemMarker::Checkbox)
-            .done(),
-        fixed_item("00000000-0000-8000-8000-000000003005", "Open questions")
-            .with_marker(ItemMarker::Checkbox)
-            .with_end(local_dt(today + Duration::days(2), 12, 0))
-            .done(),
-        fixed_item("00000000-0000-8000-8000-000000003006", "Work session")
-            .with_marker(ItemMarker::Checkbox)
-            .with_start(local_dt(today + Duration::days(1), 14, 0))
-            .with_end(local_dt(today + Duration::days(1), 15, 0))
-            .done(),
+        fixed_item(
+            "00000000-0000-8000-8000-000000003004",
+            t("starter.projects.draft_outline"),
+        )
+        .with_marker(ItemMarker::Checkbox)
+        .done(),
+        fixed_item(
+            "00000000-0000-8000-8000-000000003005",
+            t("starter.projects.open_questions"),
+        )
+        .with_marker(ItemMarker::Checkbox)
+        .with_end(local_dt(today + Duration::days(2), 12, 0))
+        .done(),
+        fixed_item(
+            "00000000-0000-8000-8000-000000003006",
+            t("starter.projects.work_session"),
+        )
+        .with_marker(ItemMarker::Checkbox)
+        .with_start(local_dt(today + Duration::days(1), 14, 0))
+        .with_end(local_dt(today + Duration::days(1), 15, 0))
+        .done(),
         fixed_item(
             "00000000-0000-8000-8000-000000003007",
-            "Nested notes keep context close",
+            t("starter.projects.nested_notes"),
         )
         .with_marker(ItemMarker::Bullet)
         .with_indent(1),
         fixed_item(
             "00000000-0000-8000-8000-000000003008",
-            "Risk: ==too much process==; keep the path light",
+            t("starter.projects.risk"),
         )
         .with_marker(ItemMarker::Bullet)
         .with_indent(1),
-        fixed_item("00000000-0000-8000-8000-000000003009", "### Design polish"),
+        fixed_item(
+            "00000000-0000-8000-8000-000000003009",
+            t("starter.projects.heading_polish"),
+        ),
         fixed_item(
             "00000000-0000-8000-8000-000000003011",
-            "Find the moment that matters",
+            t("starter.projects.moment"),
         )
         .with_marker(ItemMarker::Checkbox),
         fixed_item(
             "00000000-0000-8000-8000-000000003012",
-            "Cut rough copy into **sharper labels**",
+            t("starter.projects.sharper_labels"),
         )
         .with_marker(ItemMarker::Checkbox),
         fixed_item(
             "00000000-0000-8000-8000-000000003013",
-            "Ship a tiny, beautiful default workspace",
+            t("starter.projects.tiny_workspace"),
         )
         .with_marker(ItemMarker::Checkbox),
     ];
@@ -408,54 +464,60 @@ fn make_projects_scheme(today: NaiveDate) -> Scheme {
 
 fn make_daily_seed_items() -> Vec<Item> {
     vec![
-        fixed_item("00000000-0000-8000-8000-000000004002", "Make coffee")
-            .with_marker(ItemMarker::Checkbox)
-            .done(),
+        fixed_item(
+            "00000000-0000-8000-8000-000000004002",
+            t("starter.daily.coffee"),
+        )
+        .with_marker(ItemMarker::Checkbox)
+        .done(),
         fixed_item(
             "00000000-0000-8000-8000-000000004003",
-            "Review today's calendar",
+            t("starter.daily.review_calendar"),
         )
         .with_marker(ItemMarker::Checkbox),
-        fixed_item("00000000-0000-8000-8000-000000004004", "Write the next draft")
-            .with_marker(ItemMarker::Checkbox),
+        fixed_item(
+            "00000000-0000-8000-8000-000000004004",
+            t("starter.daily.next_draft"),
+        )
+        .with_marker(ItemMarker::Checkbox),
         fixed_item(
             "00000000-0000-8000-8000-000000004005",
-            "Send one **thoughtful** follow-up",
+            t("starter.daily.follow_up"),
         )
         .with_marker(ItemMarker::Checkbox),
         fixed_item("00000000-0000-8000-8000-000000004006", ""),
         fixed_item(
             "00000000-0000-8000-8000-000000004007",
-            "### Daily Recommendations (My workflow)",
+            t("starter.daily.heading_recommendations"),
         ),
         fixed_item(
             "00000000-0000-8000-8000-000000004011",
-            "Write an optimistic list of *concrete, small* tasks at the start of each day and check them as you progress",
+            t("starter.daily.optimistic_list"),
         )
         .with_marker(ItemMarker::Numbered)
         .with_indent(1),
         fixed_item(
             "00000000-0000-8000-8000-000000004008",
-            "The point is that **you never have to make a decision about what to do next**",
+            t("starter.daily.no_decision"),
         )
         .with_marker(ItemMarker::Numbered)
         .with_indent(1),
         fixed_item(
             "00000000-0000-8000-8000-000000004009",
-            "When you finish a task the next one is right there",
+            t("starter.daily.next_one_there"),
         )
         .with_marker(ItemMarker::Bullet)
         .with_indent(2),
         fixed_item(
             "00000000-0000-8000-8000-000000004010",
-            "KnotQ can carry over incomplete items to the next day; completed work stays behind",
+            t("starter.daily.carry_over"),
         )
         .with_marker(ItemMarker::Numbered)
         .with_indent(1),
         fixed_item("00000000-0000-8000-8000-000000004013", ""),
         fixed_item(
             "00000000-0000-8000-8000-000000004012",
-            "Before KnotQ, I found myself in the paradoxical state of having so many things I needed to get done yet not doing anything because everything was such a large task. Breaking these into actionable tasks daily helped me a lot.",
+            t("starter.daily.personal_note"),
         )
         .with_indent(1),
     ]

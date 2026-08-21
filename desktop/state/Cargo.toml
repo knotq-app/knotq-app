@@ -8,6 +8,7 @@ anyhow = { workspace = true }
 chrono = { workspace = true }
 knotq-commands = { workspace = true }
 knotq-index = { workspace = true }
+knotq-l10n = { workspace = true }
 knotq-model = { workspace = true }
 knotq-notifications = { workspace = true }
 knotq-rrule = { workspace = true }
