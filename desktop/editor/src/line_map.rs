@@ -256,6 +256,13 @@ impl LineMap {
         }
     }
 
+    /// Hand out the current shaped lines, leaving the map empty. The caller
+    /// (relayout) reuses the ones whose inputs did not change and puts a full
+    /// set back via `replace_lines`.
+    pub fn take_lines(&mut self) -> Vec<SchemeItemLine> {
+        std::mem::take(&mut self.lines)
+    }
+
     pub fn replace_lines(&mut self, lines: Vec<SchemeItemLine>) {
         self.lines = lines;
     }
