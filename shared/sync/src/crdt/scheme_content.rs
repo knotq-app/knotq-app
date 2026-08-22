@@ -24,6 +24,13 @@ struct StoredItemsShadow {
     /// back to reading the document.
     ids: Vec<ItemId>,
     items: HashMap<ItemId, StoredItem>,
+    /// The fractional position assigned to each id in `ids`, in the same order.
+    ///
+    /// A shadow is only valid while nothing has touched the document since our
+    /// last pass, and it is only reused when the scheme still holds exactly the
+    /// same items in the same order — so the positions that pass computed are
+    /// still the right ones, and recomputing them is pure repetition.
+    positions: Vec<String>,
 }
 
 pub struct YrsSchemeDocument {
@@ -247,8 +254,16 @@ impl YrsSchemeDocument {
 
         // Snapshot what is currently stored so we can reuse positions and skip
         // unchanged entries — or take the shadow's copy of that same read-back.
+        // `Some` when the shadow was reusable, carrying the positions that pass
+        // computed. Everything derived purely from (document, item set, order)
+        // is then already known and does not need recomputing.
+        let mut cached_positions: Option<Vec<String>> = None;
+        let swept_by_previous_pass = reusable_shadow.is_some();
         let mut stored: HashMap<ItemId, StoredItem> = match reusable_shadow {
-            Some(shadow) => shadow.items,
+            Some(shadow) => {
+                cached_positions = Some(shadow.positions);
+                shadow.items
+            }
             None => {
                 let stored_keys = items_by_id
                     .keys(&txn)
@@ -301,6 +316,9 @@ impl YrsSchemeDocument {
         // therefore skips nothing, the filter rejects every candidate, and the
         // search walks the entire remaining tail per item — the quadratic that
         // made the position pass 248ms of a 4,000-item build.
+        let positions: Vec<String> = if let Some(cached) = cached_positions {
+            cached
+        } else {
         let len = desired.len();
         let mut next_stored_any = vec![len; len + 1];
         let mut next_stored_positioned = vec![len; len + 1];
@@ -313,9 +331,9 @@ impl YrsSchemeDocument {
             };
         }
 
-        let mut positions: Vec<String> = Vec::with_capacity(desired.len());
+        let mut computed: Vec<String> = Vec::with_capacity(desired.len());
         for (idx, id) in desired.iter().enumerate() {
-            let prev = positions.last().cloned();
+            let prev = computed.last().cloned();
             // A skeleton-created item has no real position yet (read back as ""); treat
             // an empty position as absent so a fresh fractional key is minted.
             let existing = stored
@@ -352,21 +370,33 @@ impl YrsSchemeDocument {
                 }
                 crate::fractional::between(prev.as_deref(), upper.as_deref())
             };
-            positions.push(position);
+            computed.push(position);
         }
+            computed
+        };
 
-        let retained = desired.iter().copied().collect::<HashSet<_>>();
-        // The doc's keys are strings; an entry is stale when it does not parse
-        // as an item id at all, or parses to one the scheme no longer holds.
-        let stale_keys = items_by_id
-            .keys(&txn)
-            .filter(|key| {
-                key.parse::<uuid::Uuid>()
-                    .map(|parsed| !retained.contains(&ItemId(parsed)))
-                    .unwrap_or(true)
-            })
-            .map(str::to_string)
-            .collect::<Vec<_>>();
+        // Sweeping stale entries means walking every key the document holds and
+        // parsing it. When the shadow was reusable that is pure repetition: the
+        // shadow is invalidated by ANY update to the document, so nothing has
+        // touched it since our last pass, and that pass already swept it against
+        // this same item set. Skip it.
+        let stale_keys: Vec<String> = if swept_by_previous_pass {
+            Vec::new()
+        } else {
+            let retained = desired.iter().copied().collect::<HashSet<_>>();
+            // The doc's keys are strings; an entry is stale when it does not
+            // parse as an item id at all, or parses to one the scheme no longer
+            // holds.
+            items_by_id
+                .keys(&txn)
+                .filter(|key| {
+                    key.parse::<uuid::Uuid>()
+                        .map(|parsed| !retained.contains(&ItemId(parsed)))
+                        .unwrap_or(true)
+                })
+                .map(str::to_string)
+                .collect()
+        };
         for key in stale_keys {
             let Some(item_map) = item_map_ref(&items_by_id, &txn, &key) else {
                 continue;
@@ -543,6 +573,7 @@ impl YrsSchemeDocument {
         let shadow = StoredItemsShadow {
             ids: desired_ids,
             items: stored,
+            positions,
         };
         *self.shadow.lock().unwrap_or_else(|err| err.into_inner()) = Some(shadow);
         self.shadow_valid.store(true, Ordering::Release);
