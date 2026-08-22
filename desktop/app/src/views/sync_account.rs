@@ -603,6 +603,9 @@ fn manage_account_menu(
         .flex()
         .flex_col()
         .gap(px(2.0))
+        // See the settings dropdown: without this the press that picks a row
+        // also lands on whatever the open menu is covering.
+        .occlude()
         .children(rows)
         .into_any_element()
 }
