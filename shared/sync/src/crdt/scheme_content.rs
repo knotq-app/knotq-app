@@ -448,8 +448,30 @@ impl YrsSchemeDocument {
         // so a content edit never recreates (and clobbers) the collaborative Text.
         for (item, position) in scheme.items.iter().zip(&positions) {
             let id = item.id;
-            let next_snapshot = item_snapshot_json(item)?;
             let prev = stored.get(&id);
+
+            // The cheapest possible "nothing changed": compare the item against
+            // the exact one we last wrote. No allocation, no serialization, no
+            // document access. The snapshot JSON and the normalized content are
+            // both pure functions of the `Item`, so equal items cannot differ in
+            // either — position, tombstone and text-presence are the only other
+            // things the slow path would look at, and they are checked here too.
+            //
+            // This is the difference between a keystroke costing O(items) real
+            // work and O(items) pointer comparisons: `item_snapshot_json` CLONES
+            // the item (text included) and serializes it, and it ran for every
+            // item in the scheme on every keypress.
+            if let Some(stored_item) = prev {
+                if stored_item.has_text
+                    && !stored_item.deleted
+                    && stored_item.position == *position
+                    && stored_item.item.as_ref() == Some(item)
+                {
+                    continue;
+                }
+            }
+
+            let next_snapshot = item_snapshot_json(item)?;
             // Nothing to write? Then don't touch the document at all.
             //
             // A keystroke changes ONE item, but this loop runs over every item
@@ -479,6 +501,15 @@ impl YrsSchemeDocument {
                     if stored_item.content == new_content
                         && stored_item.content_shadow.as_deref() == Some(new_content.as_slice())
                     {
+                        // Nothing to write — and now we know the exact `Item`
+                        // this entry corresponds to, so record it. Entries read
+                        // back out of the document arrive without one, and until
+                        // one is attached every pass has to clone-and-serialize
+                        // the item just to reach this same conclusion. Paying it
+                        // once here makes every later keystroke a comparison.
+                        if let Some(entry) = stored.get_mut(&id) {
+                            entry.item = Some(item.clone());
+                        }
                         continue;
                     }
                 }
@@ -554,6 +585,7 @@ impl YrsSchemeDocument {
                     StoredItem {
                         position: position.clone(),
                         snapshot_json: next_snapshot,
+                        item: Some(item.clone()),
                         // Every branch that marks an item touched either writes
                         // its Text or leaves an existing one in place, so the
                         // entry always carries one by the time we get here.
@@ -668,6 +700,17 @@ impl YrsSchemeDocument {
 /// map (its `text` is a Text type, not a scalar serde can read).
 pub(crate) struct StoredItem {
     position: String,
+    /// The exact `Item` this entry was last written from, when we wrote it.
+    ///
+    /// `None` for an entry read back out of the document, where only the
+    /// serialized form exists. When it is `Some`, comparing the incoming item
+    /// against it settles "does this need writing?" with no allocation at all:
+    /// the snapshot JSON and the normalized content are both pure functions of
+    /// the `Item`, so equal items cannot differ in either. That matters because
+    /// the alternative — which is what the code did — was to CLONE every item
+    /// (text included) and serialize it to JSON just to compare, for every item
+    /// in the scheme, on every keystroke.
+    item: Option<Item>,
     snapshot_json: String,
     /// Whether the stored entry actually carries a Text. An entry that lost its
     /// Text needs repairing even when every other field matches, so the
@@ -735,6 +778,9 @@ pub(crate) fn read_stored_item(item_map: &MapRef, txn: &impl ReadTxn) -> StoredI
     StoredItem {
         position: str_field("position"),
         snapshot_json: str_field("snapshot_json"),
+        // Read back out of the document, so the originating `Item` is not
+        // available; the JSON comparison is the fallback.
+        item: None,
         has_text,
         content: reconcile_content_shadow(content, content_shadow.as_deref()),
         content_shadow,
