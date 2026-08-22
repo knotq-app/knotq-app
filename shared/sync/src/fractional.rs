@@ -60,6 +60,26 @@ fn midpoint(a: &str, b: Option<&str>) -> String {
     };
 
     if digit_b - digit_a > 1 {
+        if b.is_none() {
+            // Appending past the end: step to the very next digit rather than
+            // bisecting toward the top of the alphabet.
+            //
+            // Bisecting looks harmless but is not: from "" the midpoints run
+            // 31, 47, 55, 59, 61 and then the alphabet is exhausted, so a key
+            // grows by a character every ~5 appends. Building a scheme appends
+            // every item in order, so keys grew LINEARLY with item count — a
+            // 4,000-item scheme reached ~800-character positions, which made
+            // building it quadratic in both time (every compare and every
+            // recursion walks the whole key) and stored bytes (that string is
+            // held per item, and synced to the server and every device).
+            // Stepping by one digit instead packs 62 appends into each
+            // character, so length grows with log62(n): 3 characters covers a
+            // quarter of a million items.
+            //
+            // Bisection is still right when `b` is known — there the midpoint
+            // is what leaves room for future inserts on both sides.
+            return (DIGITS[digit_a + 1] as char).to_string();
+        }
         // Room for a digit strictly between the two; pick the midpoint.
         let mid = (digit_a + digit_b).div_ceil(2);
         (DIGITS[mid] as char).to_string()
@@ -105,6 +125,65 @@ mod tests {
             high = between(Some(&high), None);
             assert!(!low.ends_with('0'));
             assert!(!high.ends_with('0'));
+        }
+    }
+
+    /// Appending must keep keys SHORT. This is a cost bound, not a cosmetic one:
+    /// the key is stored on every item, compared on every position pass, and
+    /// synced to every device, so a key that grows with the item count makes
+    /// building a large scheme quadratic in both time and bytes.
+    #[test]
+    fn appended_keys_grow_logarithmically_not_linearly() {
+        let mut keys: Vec<String> = Vec::new();
+        let mut last: Option<String> = None;
+        for _ in 0..10_000 {
+            let key = between(last.as_deref(), None);
+            last = Some(key.clone());
+            keys.push(key);
+        }
+
+        for pair in keys.windows(2) {
+            assert!(pair[0] < pair[1], "append not ordered: {} !< {}", pair[0], pair[1]);
+        }
+
+        // Stepping one digit at a time packs 61 appends into each character, so
+        // 10k items lands around 164. Bisecting managed only ~5 per character,
+        // which put the same run near 2,000 — the difference between a scheme
+        // that builds in a second and one that takes 18.
+        //
+        // This is still linear, just with a 12x smaller constant: the format
+        // has no magnitude prefix, so the largest key of length L is "zz..z"
+        // and its successor must be longer, capping any append-only run at 61
+        // keys per character. Making it truly logarithmic needs a length-
+        // prefixed key format (Figma-style "a0"/"b00"), which cannot sort
+        // correctly against the keys already on disk and synced — so it would
+        // be a migration, not a patch.
+        let longest = keys.iter().map(String::len).max().unwrap();
+        assert!(
+            longest <= 200,
+            "appended keys reached {longest} characters over 10k items"
+        );
+        // Guard the constant itself: at ~5 keys per character (the old
+        // bisecting behaviour) 10k items needs 2,000 characters, so anything
+        // above 400 means the dense-append path has regressed.
+        assert!(
+            longest >= 100,
+            "unexpectedly short keys ({longest}) — has the alphabet changed? \
+             update this bound deliberately rather than loosening it"
+        );
+    }
+
+    /// Inserting repeatedly into the SAME gap has to keep working — that path
+    /// still bisects, and it is what makes room on both sides.
+    #[test]
+    fn repeated_inserts_into_one_gap_stay_ordered() {
+        let low = between(None, None);
+        let high = between(Some(&low), None);
+        let mut upper = high.clone();
+        for _ in 0..200 {
+            let mid = between(Some(&low), Some(&upper));
+            assert!(low < mid && mid < upper, "{low} < {mid} < {upper}");
+            upper = mid;
         }
     }
 

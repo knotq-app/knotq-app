@@ -153,12 +153,33 @@ impl YrsSchemeDocument {
                 .filter(|id| item_map_ref(&items_by_id, &txn, id).is_none())
                 .collect()
         };
-        for item_id in missing {
-            let skeleton = build_item_skeleton_update(self.id, &item_id);
-            self.doc
-                .transact_mut()
-                .apply_update(Update::decode_v1(&skeleton)?)?;
+        if missing.is_empty() {
+            return Ok(());
         }
+        // ONE transaction for the whole batch. Each skeleton is still its own
+        // update carrying its own id-derived clientID — which is what makes two
+        // devices creating the same item dedupe rather than clobber — so this
+        // changes only where the transaction boundaries fall, not what is
+        // written or under whose identity.
+        //
+        // A transaction per item made building a scheme quadratic: committing
+        // one does bookkeeping proportional to the whole document, so item n
+        // paid for the n-1 already there. Building a 4,000-item scheme spent
+        // ~950ms here against ~5ms of actual yrs work, and a 5,000-item scheme
+        // took 18 SECONDS at startup.
+        //
+        // Merging the skeletons into ONE update before applying goes further:
+        // each `apply_update` integrates against the whole document, so even
+        // inside a single transaction n applies stayed quadratic. One merged
+        // update is one integration pass.
+        let skeletons: Vec<Vec<u8>> = missing
+            .iter()
+            .map(|item_id| build_item_skeleton_update(self.id, item_id))
+            .collect();
+        let merged = yrs::merge_updates_v1(&skeletons)?;
+        self.doc
+            .transact_mut()
+            .apply_update(Update::decode_v1(&merged)?)?;
         Ok(())
     }
 
@@ -246,6 +267,44 @@ impl YrsSchemeDocument {
         // duplicate-id wedge. Keep an existing position whenever it still sorts
         // after the previous item; otherwise mint a fresh key between neighbors.
         let desired = &desired_ids;
+        // Index of the next item at or after `i` that already has a stored
+        // position, or `desired.len()` when there is none.
+        //
+        // Without this, minting a key scanned the whole remaining tail looking
+        // for an upper bound, and for a scheme being built for the FIRST time
+        // (nothing stored, so the scan never finds anything) that is a full
+        // tail walk per item — O(n²). It cost 18s to build one 5,000-item
+        // scheme; the same 50,000 items spread over 500 schemes took 1.7s,
+        // which is what gave the quadratic away. The jump table keeps the exact
+        // same search — first stored candidate, in order, that sorts after
+        // `prev` — while skipping the items that could never have answered it.
+        // Two jump tables, because "can be an upper bound" depends on `prev`:
+        //
+        //  - `prev` is None only for the very first item, and there ANY stored
+        //    entry qualifies — including one whose position is still empty,
+        //    which the original search accepted. That needs plain membership.
+        //  - For every later item `prev` is a non-empty key, and `"" > prev` is
+        //    false, so a stored-but-empty position can never qualify. Those are
+        //    exactly the entries to skip.
+        //
+        // Skipping them is the whole point: `ensure_item_skeletons` has just
+        // created a container for every item, so on a fresh scheme EVERY id is
+        // in `stored` with an empty position. A table keyed on membership alone
+        // therefore skips nothing, the filter rejects every candidate, and the
+        // search walks the entire remaining tail per item — the quadratic that
+        // made the position pass 248ms of a 4,000-item build.
+        let len = desired.len();
+        let mut next_stored_any = vec![len; len + 1];
+        let mut next_stored_positioned = vec![len; len + 1];
+        for i in (0..len).rev() {
+            let entry = stored.get(&desired[i]);
+            next_stored_any[i] = if entry.is_some() { i } else { next_stored_any[i + 1] };
+            next_stored_positioned[i] = match entry {
+                Some(entry) if !entry.position.is_empty() => i,
+                _ => next_stored_positioned[i + 1],
+            };
+        }
+
         let mut positions: Vec<String> = Vec::with_capacity(desired.len());
         for (idx, id) in desired.iter().enumerate() {
             let prev = positions.last().cloned();
@@ -263,14 +322,26 @@ impl YrsSchemeDocument {
             let position = if keep {
                 existing.unwrap()
             } else {
-                let upper = desired[idx + 1..].iter().find_map(|next_id| {
-                    stored
-                        .get(next_id)
+                let mut upper = None;
+                // With no `prev`, the first stored entry of any kind wins; with
+                // one, only entries that actually carry a position can.
+                let (mut cursor, jumps) = match prev.as_deref() {
+                    None => (next_stored_any[idx + 1], &next_stored_any),
+                    Some(_) => (next_stored_positioned[idx + 1], &next_stored_positioned),
+                };
+                while cursor < len {
+                    let candidate = stored
+                        .get(&desired[cursor])
                         .map(|entry| entry.position.clone())
                         .filter(|candidate| {
                             prev.as_deref().is_none_or(|prev| candidate.as_str() > prev)
-                        })
-                });
+                        });
+                    if candidate.is_some() {
+                        upper = candidate;
+                        break;
+                    }
+                    cursor = jumps[cursor + 1];
+                }
                 crate::fractional::between(prev.as_deref(), upper.as_deref())
             };
             positions.push(position);
