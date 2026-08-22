@@ -75,6 +75,14 @@ impl SchemeEditor {
         let mut wrapped = Vec::new();
         let mut new_table_layouts = HashMap::new();
         self.last_active_rows = self.active_preview_rows();
+        // Rows shaped by the PREVIOUS relayout, and the lines they produced. A
+        // row whose shaping inputs are unchanged is cloned instead of reshaped —
+        // typing one character used to re-run font shaping for every line in the
+        // scheme.
+        let previous = super::shape_cache::PreviousShapes::new(
+            self.shape_cache.begin(self.rows.len(), &font),
+            self.line_map.take_lines(),
+        );
 
         for (row, line) in self.text_lines().into_iter().enumerate() {
             let path = self.rows.get(row).map(|row| row.path).unwrap_or_default();
@@ -179,6 +187,31 @@ impl SchemeEditor {
             } else {
                 &font
             };
+            // A table row's width comes from its anchor's computed grid, which
+            // depends on other rows, so its key is not self-contained; those
+            // always reshape (recorded as `None`).
+            let shape_key = (!is_cell && !is_anchor).then(|| {
+                super::shape_cache::LineShapeKey::new(
+                    line.clone(),
+                    text_width,
+                    hidden_prefix.len(),
+                    is_done,
+                    reveal,
+                    path.is_header_cell(),
+                    color,
+                    annotation.as_ref().map(|a| a.text.to_string()),
+                    media_height,
+                    line_height,
+                )
+            });
+            if let Some(reused) = shape_key
+                .as_ref()
+                .and_then(|key| previous.reuse(row, key))
+            {
+                wrapped.push(reused.clone());
+                self.shape_cache.record(shape_key);
+                continue;
+            }
             let (shaped_text, runs, collapsed) = self.build_line_layout(LineLayoutInput {
                 font: line_font,
                 hidden_prefix,
@@ -236,6 +269,7 @@ impl SchemeEditor {
                 .in_grid(is_cell)
                 .with_layout_mapping(hidden_prefix.len(), collapsed, line.len()),
             );
+            self.shape_cache.record(shape_key);
         }
 
         self.line_map.replace_lines(wrapped);

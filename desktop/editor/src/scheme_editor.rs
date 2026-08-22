@@ -46,6 +46,7 @@ mod painting;
 mod render;
 mod scrolling;
 mod selection;
+mod shape_cache;
 mod state;
 mod table;
 mod text_edit;
@@ -278,6 +279,8 @@ pub struct SchemeEditor {
     selection: TextSelection,
     marked_range: Option<Range<usize>>,
     is_selecting: bool,
+    /// Shaped-line reuse across relayouts; see `shape_cache`.
+    shape_cache: shape_cache::ShapeCache,
     editor_focused: bool,
     mouse_selection_mode: Option<MouseSelectionMode>,
     mouse_selection_origin: Option<Point<Pixels>>,

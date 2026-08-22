@@ -43,6 +43,7 @@ impl SchemeEditor {
             selection: initial_selection,
             marked_range: None,
             is_selecting: false,
+            shape_cache: Default::default(),
             editor_focused: false,
             mouse_selection_mode: None,
             mouse_selection_origin: None,
