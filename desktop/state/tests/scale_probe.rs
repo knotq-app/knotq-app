@@ -290,3 +290,29 @@ fn probe_keystroke_breakdown() {
     let each = keystroke_ms(&mut state, &workspace, 5);
     println!("mean keystroke: {each:.3}ms");
 }
+
+/// Is the residual per-keystroke cost the per-item comparison (which touches
+/// each item's text) or something else? Same item count, different text length.
+#[test]
+#[ignore = "measurement; run with --ignored --nocapture"]
+fn probe_keystroke_vs_text_length() {
+    println!();
+    println!("{:>7} {:>10} | {:>12} {:>14}", "items", "text len", "keystroke", "per item (us)");
+    for &(items, text_len) in &[
+        (5_000usize, 10usize),
+        (5_000, 80),
+        (5_000, 400),
+        (500, 80),
+        (1_000, 80),
+        (2_000, 80),
+    ] {
+        let workspace = synthetic_workspace(1, items, text_len);
+        let mut state = state_for(&workspace);
+        let _ = keystroke_ms(&mut state, &workspace, 3);
+        let each = keystroke_ms(&mut state, &workspace, 20);
+        println!(
+            "{items:>7} {text_len:>10} | {each:>10.3}ms {:>12.3}",
+            each * 1000.0 / items as f64
+        );
+    }
+}
