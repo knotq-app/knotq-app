@@ -24,6 +24,13 @@ struct StoredItemsShadow {
     /// back to reading the document.
     ids: Vec<ItemId>,
     items: HashMap<ItemId, StoredItem>,
+    /// The fractional position assigned to each id in `ids`, in the same order.
+    ///
+    /// A shadow is only valid while nothing has touched the document since our
+    /// last pass, and it is only reused when the scheme still holds exactly the
+    /// same items in the same order — so the positions that pass computed are
+    /// still the right ones, and recomputing them is pure repetition.
+    positions: Vec<String>,
 }
 
 pub struct YrsSchemeDocument {
@@ -247,8 +254,16 @@ impl YrsSchemeDocument {
 
         // Snapshot what is currently stored so we can reuse positions and skip
         // unchanged entries — or take the shadow's copy of that same read-back.
+        // `Some` when the shadow was reusable, carrying the positions that pass
+        // computed. Everything derived purely from (document, item set, order)
+        // is then already known and does not need recomputing.
+        let mut cached_positions: Option<Vec<String>> = None;
+        let swept_by_previous_pass = reusable_shadow.is_some();
         let mut stored: HashMap<ItemId, StoredItem> = match reusable_shadow {
-            Some(shadow) => shadow.items,
+            Some(shadow) => {
+                cached_positions = Some(shadow.positions);
+                shadow.items
+            }
             None => {
                 let stored_keys = items_by_id
                     .keys(&txn)
@@ -301,6 +316,9 @@ impl YrsSchemeDocument {
         // therefore skips nothing, the filter rejects every candidate, and the
         // search walks the entire remaining tail per item — the quadratic that
         // made the position pass 248ms of a 4,000-item build.
+        let positions: Vec<String> = if let Some(cached) = cached_positions {
+            cached
+        } else {
         let len = desired.len();
         let mut next_stored_any = vec![len; len + 1];
         let mut next_stored_positioned = vec![len; len + 1];
@@ -313,9 +331,9 @@ impl YrsSchemeDocument {
             };
         }
 
-        let mut positions: Vec<String> = Vec::with_capacity(desired.len());
+        let mut computed: Vec<String> = Vec::with_capacity(desired.len());
         for (idx, id) in desired.iter().enumerate() {
-            let prev = positions.last().cloned();
+            let prev = computed.last().cloned();
             // A skeleton-created item has no real position yet (read back as ""); treat
             // an empty position as absent so a fresh fractional key is minted.
             let existing = stored
@@ -352,21 +370,33 @@ impl YrsSchemeDocument {
                 }
                 crate::fractional::between(prev.as_deref(), upper.as_deref())
             };
-            positions.push(position);
+            computed.push(position);
         }
+            computed
+        };
 
-        let retained = desired.iter().copied().collect::<HashSet<_>>();
-        // The doc's keys are strings; an entry is stale when it does not parse
-        // as an item id at all, or parses to one the scheme no longer holds.
-        let stale_keys = items_by_id
-            .keys(&txn)
-            .filter(|key| {
-                key.parse::<uuid::Uuid>()
-                    .map(|parsed| !retained.contains(&ItemId(parsed)))
-                    .unwrap_or(true)
-            })
-            .map(str::to_string)
-            .collect::<Vec<_>>();
+        // Sweeping stale entries means walking every key the document holds and
+        // parsing it. When the shadow was reusable that is pure repetition: the
+        // shadow is invalidated by ANY update to the document, so nothing has
+        // touched it since our last pass, and that pass already swept it against
+        // this same item set. Skip it.
+        let stale_keys: Vec<String> = if swept_by_previous_pass {
+            Vec::new()
+        } else {
+            let retained = desired.iter().copied().collect::<HashSet<_>>();
+            // The doc's keys are strings; an entry is stale when it does not
+            // parse as an item id at all, or parses to one the scheme no longer
+            // holds.
+            items_by_id
+                .keys(&txn)
+                .filter(|key| {
+                    key.parse::<uuid::Uuid>()
+                        .map(|parsed| !retained.contains(&ItemId(parsed)))
+                        .unwrap_or(true)
+                })
+                .map(str::to_string)
+                .collect()
+        };
         for key in stale_keys {
             let Some(item_map) = item_map_ref(&items_by_id, &txn, &key) else {
                 continue;
@@ -418,8 +448,30 @@ impl YrsSchemeDocument {
         // so a content edit never recreates (and clobbers) the collaborative Text.
         for (item, position) in scheme.items.iter().zip(&positions) {
             let id = item.id;
-            let next_snapshot = item_snapshot_json(item)?;
             let prev = stored.get(&id);
+
+            // The cheapest possible "nothing changed": compare the item against
+            // the exact one we last wrote. No allocation, no serialization, no
+            // document access. The snapshot JSON and the normalized content are
+            // both pure functions of the `Item`, so equal items cannot differ in
+            // either — position, tombstone and text-presence are the only other
+            // things the slow path would look at, and they are checked here too.
+            //
+            // This is the difference between a keystroke costing O(items) real
+            // work and O(items) pointer comparisons: `item_snapshot_json` CLONES
+            // the item (text included) and serializes it, and it ran for every
+            // item in the scheme on every keypress.
+            if let Some(stored_item) = prev {
+                if stored_item.has_text
+                    && !stored_item.deleted
+                    && stored_item.position == *position
+                    && stored_item.item.as_ref() == Some(item)
+                {
+                    continue;
+                }
+            }
+
+            let next_snapshot = item_snapshot_json(item)?;
             // Nothing to write? Then don't touch the document at all.
             //
             // A keystroke changes ONE item, but this loop runs over every item
@@ -449,6 +501,15 @@ impl YrsSchemeDocument {
                     if stored_item.content == new_content
                         && stored_item.content_shadow.as_deref() == Some(new_content.as_slice())
                     {
+                        // Nothing to write — and now we know the exact `Item`
+                        // this entry corresponds to, so record it. Entries read
+                        // back out of the document arrive without one, and until
+                        // one is attached every pass has to clone-and-serialize
+                        // the item just to reach this same conclusion. Paying it
+                        // once here makes every later keystroke a comparison.
+                        if let Some(entry) = stored.get_mut(&id) {
+                            entry.item = Some(item.clone());
+                        }
                         continue;
                     }
                 }
@@ -524,6 +585,7 @@ impl YrsSchemeDocument {
                     StoredItem {
                         position: position.clone(),
                         snapshot_json: next_snapshot,
+                        item: Some(item.clone()),
                         // Every branch that marks an item touched either writes
                         // its Text or leaves an existing one in place, so the
                         // entry always carries one by the time we get here.
@@ -543,6 +605,7 @@ impl YrsSchemeDocument {
         let shadow = StoredItemsShadow {
             ids: desired_ids,
             items: stored,
+            positions,
         };
         *self.shadow.lock().unwrap_or_else(|err| err.into_inner()) = Some(shadow);
         self.shadow_valid.store(true, Ordering::Release);
@@ -637,6 +700,17 @@ impl YrsSchemeDocument {
 /// map (its `text` is a Text type, not a scalar serde can read).
 pub(crate) struct StoredItem {
     position: String,
+    /// The exact `Item` this entry was last written from, when we wrote it.
+    ///
+    /// `None` for an entry read back out of the document, where only the
+    /// serialized form exists. When it is `Some`, comparing the incoming item
+    /// against it settles "does this need writing?" with no allocation at all:
+    /// the snapshot JSON and the normalized content are both pure functions of
+    /// the `Item`, so equal items cannot differ in either. That matters because
+    /// the alternative — which is what the code did — was to CLONE every item
+    /// (text included) and serialize it to JSON just to compare, for every item
+    /// in the scheme, on every keystroke.
+    item: Option<Item>,
     snapshot_json: String,
     /// Whether the stored entry actually carries a Text. An entry that lost its
     /// Text needs repairing even when every other field matches, so the
@@ -704,6 +778,9 @@ pub(crate) fn read_stored_item(item_map: &MapRef, txn: &impl ReadTxn) -> StoredI
     StoredItem {
         position: str_field("position"),
         snapshot_json: str_field("snapshot_json"),
+        // Read back out of the document, so the originating `Item` is not
+        // available; the JSON comparison is the fallback.
+        item: None,
         has_text,
         content: reconcile_content_shadow(content, content_shadow.as_deref()),
         content_shadow,
