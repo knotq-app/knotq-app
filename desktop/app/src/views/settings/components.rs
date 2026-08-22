@@ -256,6 +256,13 @@ where
                             .flex()
                             .flex_col()
                             .gap(px(2.0))
+                            // Block the press from also reaching whatever the
+                            // open panel is covering. Without this the
+                            // mouse-DOWN that picks an option lands on the
+                            // element behind it as well — a click is delivered
+                            // on mouse-up, but the caret move or row selection
+                            // underneath has already happened by then.
+                            .occlude()
                             .children(option_rows),
                     ))
                 }),

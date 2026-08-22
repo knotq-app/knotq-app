@@ -389,6 +389,39 @@ impl YrsSchemeDocument {
             let item_id = item.id.to_string();
             let next_snapshot = item_snapshot_json(item)?;
             let prev = stored.get(&item_id);
+            // Nothing to write? Then don't touch the document at all.
+            //
+            // A keystroke changes ONE item, but this loop runs over every item
+            // in the scheme, and the two Yjs lookups below (`item_map_ref` plus
+            // `item_text_ref`) were paid for all of them — 5.1ms of a 9ms
+            // keystroke on a 5,000-item scheme, of which only 0.66ms was the
+            // snapshot JSON. `stored` already describes exactly what the
+            // document holds, so when every field an unchanged item would be
+            // compared on matches, the slow path below is provably a no-op.
+            //
+            // `has_text` is part of the test on purpose: an entry that lost its
+            // Text is repaired by the `None` arm below, and that repair must
+            // still happen even though every other field matches.
+            if let Some(stored_item) = prev {
+                // Cheap scalar fields first; the content comparison allocates,
+                // so it only runs once those have already agreed. The content
+                // test is deliberately the SAME expression the slow path uses
+                // rather than a bespoke cheaper one — a comparison that drifted
+                // from `normalize_inline_content` would skip a write that was
+                // actually needed, which is silent data loss.
+                if stored_item.has_text
+                    && !stored_item.deleted
+                    && stored_item.position == *position
+                    && stored_item.snapshot_json == next_snapshot
+                {
+                    let new_content = normalize_inline_content(&item.content.to_inlines());
+                    if stored_item.content == new_content
+                        && stored_item.content_shadow.as_deref() == Some(new_content.as_slice())
+                    {
+                        continue;
+                    }
+                }
+            }
             match item_map_ref(&items_by_id, &txn, &item_id) {
                 None => {
                     touched.insert(item_id.clone());
@@ -456,6 +489,10 @@ impl YrsSchemeDocument {
                     StoredItem {
                         position: position.clone(),
                         snapshot_json: next_snapshot,
+                        // Every branch that marks an item touched either writes
+                        // its Text or leaves an existing one in place, so the
+                        // entry always carries one by the time we get here.
+                        has_text: true,
                         content_shadow: Some(content.clone()),
                         content,
                         deleted: false,
@@ -566,6 +603,10 @@ impl YrsSchemeDocument {
 pub(crate) struct StoredItem {
     position: String,
     snapshot_json: String,
+    /// Whether the stored entry actually carries a Text. An entry that lost its
+    /// Text needs repairing even when every other field matches, so the
+    /// unchanged-item fast path in `replace_scheme` must not fire without this.
+    has_text: bool,
     content: Vec<Inline>,
     content_shadow: Option<Vec<Inline>>,
     /// Soft-delete tombstone. A removed item keeps its (valid) map with `deleted=true`
@@ -620,12 +661,15 @@ pub(crate) fn read_stored_item(item_map: &MapRef, txn: &impl ReadTxn) -> StoredI
             .unwrap_or_default()
     };
     let content_shadow = serde_json::from_str::<Vec<Inline>>(&str_field("content_json")).ok();
-    let content = item_text_ref(item_map, txn)
+    let text_ref = item_text_ref(item_map, txn);
+    let has_text = text_ref.is_some();
+    let content = text_ref
         .map(|text| read_text_content(&text, txn))
         .unwrap_or_default();
     StoredItem {
         position: str_field("position"),
         snapshot_json: str_field("snapshot_json"),
+        has_text,
         content: reconcile_content_shadow(content, content_shadow.as_deref()),
         content_shadow,
         deleted: item_map
