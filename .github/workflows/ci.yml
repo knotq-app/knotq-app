@@ -90,6 +90,29 @@ jobs:
       - name: Test workspace
         run: cargo test --workspace
 
+  perf-budget:
+    name: Performance budget
+    runs-on: ubuntu-24.04
+    # Release: the wall-clock ceilings only mean anything optimized, and the
+    # shape assertions are ratios so they hold either way. `KNOTQ_PERF_BUDGET`
+    # switches the ceilings on; without it only the shape tests run (which is
+    # what happens inside `cargo test --workspace` on the other jobs).
+    env:
+      KNOTQ_PERF_BUDGET: 1
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        continue-on-error: true
+        with:
+          key: perf-budget
+
+      - name: Enforce performance budgets
+        run: cargo test -p knotq-state --test perf_budget --release -- --nocapture
+
   sync-fuzz:
     name: Deep sync fuzz
     runs-on: ubuntu-24.04
