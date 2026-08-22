@@ -287,10 +287,17 @@ async fn run_sync_attempt(
             app.state.sync_store_from_workspace();
             let pending = app.state.pending_crdt_edits();
             let crdt_states = app.state.crdt_document_states();
+            let indicator_before = app.sync_indicator();
             app.sync_run_status = SyncRunStatus::Running {
                 pending: pending.len(),
             };
-            _cx.notify();
+            // Entering `Running` usually leaves the pill exactly as it was —
+            // with edits pending it already reads as working. Only repaint when
+            // it truly changes, or when a surface that shows the raw run state
+            // is on screen (the popover, and the Settings sync card).
+            if app.shows_live_sync_detail() || app.sync_indicator() != indicator_before {
+                _cx.notify();
+            }
             // Computing the notification schedule (recurrence expansion +
             // per-occurrence hashing) is the heaviest step of building this snapshot,
             // so it runs on the background sync thread, never on main. Beyond that,
@@ -383,6 +390,11 @@ async fn run_sync_attempt(
                         snapshot: notification_schedule,
                     });
                 crate::frame_log::count(&crate::frame_log::SYNC_RUNS);
+                // What the title bar looked like before this run landed. A run
+                // that changes neither this nor the workspace has nothing to
+                // repaint (see the notify at the end of this closure).
+                let indicator_before = app.sync_indicator();
+                let mut workspace_visibly_changed = false;
                 app.sync_run_status = SyncRunStatus::Synced {
                     pending: remaining_pending,
                 };
@@ -410,16 +422,29 @@ async fn run_sync_attempt(
                         && app
                             .state
                             .merge_workspace_from_sync(&workspace, &crdt_states);
-                    if !merged {
+                    // The merge path only runs with local edits in flight — the
+                    // user is mid-keystroke, so treat it as changed. The replace
+                    // path reports whether the run moved anything the UI shows;
+                    // most runs while typing are the pusher's own document
+                    // echoing back and move nothing.
+                    let workspace_changed = if merged {
+                        true
+                    } else {
                         app.state
-                            .replace_workspace_from_sync(workspace, crdt_states);
-                    }
+                            .replace_workspace_from_sync(workspace, crdt_states)
+                    };
                     crate::frame_log::count(&crate::frame_log::WORKSPACE_REPLACED);
-                    app.scheme_scroll_restore_after_sync = scheme_scroll_restore;
-                    app.daily_queue_scroll_restore_after_sync = daily_queue_scroll_restore;
+                    // The CRDT documents advanced even on an echo, so the save
+                    // signal is unconditional; the rest only matters when the
+                    // content actually moved.
                     app.service_bus.signal_save();
-                    app.service_bus.signal_notifications();
-                    app.service_bus.signal_timeline();
+                    if workspace_changed {
+                        workspace_visibly_changed = true;
+                        app.scheme_scroll_restore_after_sync = scheme_scroll_restore;
+                        app.daily_queue_scroll_restore_after_sync = daily_queue_scroll_restore;
+                        app.service_bus.signal_notifications();
+                        app.service_bus.signal_timeline();
+                    }
                 }
                 if media_downloaded {
                     // Drop cached load failures so freshly downloaded assets are
@@ -443,7 +468,20 @@ async fn run_sync_attempt(
                     }
                     app.service_bus.signal_timeline();
                 }
-                cx.notify();
+                // Repaint only when this run actually changed something on
+                // screen. A sync round trip that moved no content and left the
+                // title-bar pill in the same state has nothing to show, and
+                // repainting anyway is what starves key events while typing:
+                // the pill is the only thing a bare status update can alter,
+                // and `last_synced_at` is never rendered here at all. The
+                // popover is exempt because it does show live run detail.
+                if workspace_visibly_changed
+                    || media_downloaded
+                    || app.shows_live_sync_detail()
+                    || app.sync_indicator() != indicator_before
+                {
+                    cx.notify();
+                }
             });
             AttemptOutcome::Done
         }

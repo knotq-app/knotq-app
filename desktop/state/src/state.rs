@@ -461,11 +461,30 @@ impl AppState {
         true
     }
 
+    /// Adopt a sync run's merged workspace, reporting whether it differs at all
+    /// from what the UI is already showing.
+    ///
+    /// A `false` return means this run was a no-op for the user: the caller can
+    /// then skip the scroll restore, the dependent service work, and the repaint
+    /// it would otherwise force. That is the common case rather than a rare one —
+    /// a push leaves the pull cursor one behind the server, so the *next* pull
+    /// hands the pusher its own just-pushed document straight back. While typing
+    /// over a live socket that self-echo lands continuously, and repainting the
+    /// whole window for it is what pins the main thread in `nextDrawable`
+    /// instead of servicing key events.
     pub fn replace_workspace_from_sync<B: AsRef<[u8]>>(
         &mut self,
         workspace: Workspace,
         crdt_states: HashMap<DocumentId, B>,
-    ) {
+    ) -> bool {
+        // Everything the UI renders, compared before anything is mutated.
+        // `schemes` covers item content plus per-scheme metadata (name, colour,
+        // source); `clone_without_schemes` covers the rest of the workspace and
+        // is exhaustively destructured, so a field added later is compared here
+        // instead of being silently dropped from the check.
+        let visible_change = self.workspace.schemes != workspace.schemes
+            || self.workspace.clone_without_schemes() != workspace.clone_without_schemes();
+
         // Work out which schemes this sync run actually changed by diffing the
         // incoming content against the current one. The replace path runs only
         // when there are no in-flight local edits, so any item-content difference
@@ -521,5 +540,7 @@ impl AppState {
         {
             self.recurrence_undo_group = None;
         }
+
+        visible_change
     }
 }
