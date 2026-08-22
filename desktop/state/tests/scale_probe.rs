@@ -275,3 +275,18 @@ fn probe_construction_breakdown() {
         );
     }
 }
+
+
+/// Where a single keystroke's time goes in a large scheme.
+#[test]
+#[ignore = "measurement; run with --ignored --nocapture"]
+fn probe_keystroke_breakdown() {
+    let workspace = synthetic_workspace(1, 5_000, 80);
+    let mut state = state_for(&workspace);
+    // Warm: the first edit pays one-off setup.
+    let _ = keystroke_ms(&mut state, &workspace, 3);
+    println!();
+    println!("--- 5 keystrokes on a 5,000-item scheme ---");
+    let each = keystroke_ms(&mut state, &workspace, 5);
+    println!("mean keystroke: {each:.3}ms");
+}
