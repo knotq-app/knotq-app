@@ -970,6 +970,17 @@ impl WorkspaceCrdtDocuments {
         outcome
     }
 
+    /// [`Self::materialize_workspace`] for diagnostics: rebuilding the workspace
+    /// straight from the CRDT and comparing it against what is on disk is how you
+    /// check a data directory is intact, and that is worth being able to do from
+    /// outside this crate.
+    pub fn materialized_workspace_for_diagnostics(
+        &self,
+        current: &Workspace,
+    ) -> anyhow::Result<Workspace> {
+        self.materialize_workspace(current)
+    }
+
     /// Rebuild the workspace from the CRDT documents, using `current` only for
     /// state the documents do not carry (a scheme with no local document, and
     /// the local-only calendar sync token).

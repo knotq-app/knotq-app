@@ -22,8 +22,8 @@ struct StoredItemsShadow {
     /// The item ids, in document order, that this shadow describes. A scheme
     /// whose items were added, removed or reordered does not match and falls
     /// back to reading the document.
-    ids: Vec<String>,
-    items: HashMap<String, StoredItem>,
+    ids: Vec<ItemId>,
+    items: HashMap<ItemId, StoredItem>,
 }
 
 pub struct YrsSchemeDocument {
@@ -188,11 +188,13 @@ impl YrsSchemeDocument {
     /// tombstoned) — i.e. the items the resulting update touches.
     pub fn replace_scheme(&self, scheme: &Scheme) -> anyhow::Result<HashSet<String>> {
         let mut touched: HashSet<String> = HashSet::new();
-        let desired_ids = scheme
-            .items
-            .iter()
-            .map(|item| item.id.to_string())
-            .collect::<Vec<_>>();
+        // Keyed by `ItemId` (16 bytes, Copy) rather than its 36-character
+        // string form. Every item in the scheme flows through this list, the
+        // shadow comparison, the `retained` set and a map lookup on EVERY
+        // keystroke — as strings that was ~20,000 allocations and a pile of
+        // 36-byte hashes per keypress, for a scheme the user is only editing
+        // one line of.
+        let desired_ids = scheme.items.iter().map(|item| item.id).collect::<Vec<_>>();
         // Reuse the previous read-back when nothing but this device's own writes
         // has happened since, and the scheme still holds exactly the same items in
         // the same order. Anything else — a remote update, an item added, removed
@@ -245,7 +247,7 @@ impl YrsSchemeDocument {
 
         // Snapshot what is currently stored so we can reuse positions and skip
         // unchanged entries — or take the shadow's copy of that same read-back.
-        let mut stored: HashMap<String, StoredItem> = match reusable_shadow {
+        let mut stored: HashMap<ItemId, StoredItem> = match reusable_shadow {
             Some(shadow) => shadow.items,
             None => {
                 let stored_keys = items_by_id
@@ -254,8 +256,14 @@ impl YrsSchemeDocument {
                     .collect::<Vec<_>>();
                 let mut stored = HashMap::new();
                 for key in stored_keys {
+                    // A key that is not a well-formed item id cannot correspond
+                    // to any item in the scheme, so it can only be a stale entry
+                    // — the sweep below removes it by its raw string key.
+                    let Ok(parsed) = key.parse::<uuid::Uuid>() else {
+                        continue;
+                    };
                     if let Some(item_map) = item_map_ref(&items_by_id, &txn, &key) {
-                        stored.insert(key, read_stored_item(&item_map, &txn));
+                        stored.insert(ItemId(parsed), read_stored_item(&item_map, &txn));
                     }
                 }
                 stored
@@ -347,22 +355,45 @@ impl YrsSchemeDocument {
             positions.push(position);
         }
 
-        let retained = desired.iter().cloned().collect::<HashSet<_>>();
+        let retained = desired.iter().copied().collect::<HashSet<_>>();
+        // The doc's keys are strings; an entry is stale when it does not parse
+        // as an item id at all, or parses to one the scheme no longer holds.
         let stale_keys = items_by_id
             .keys(&txn)
-            .filter(|key| !retained.contains(*key))
+            .filter(|key| {
+                key.parse::<uuid::Uuid>()
+                    .map(|parsed| !retained.contains(&ItemId(parsed)))
+                    .unwrap_or(true)
+            })
             .map(str::to_string)
             .collect::<Vec<_>>();
         for key in stale_keys {
             let Some(item_map) = item_map_ref(&items_by_id, &txn, &key) else {
                 continue;
             };
-            touched.insert(key.clone());
             let has_schema = item_map
                 .get_as::<_, Option<String>>(&txn, "schema")
                 .ok()
                 .flatten()
                 .is_some();
+            // An entry that is ALREADY tombstoned needs nothing. Re-writing
+            // `deleted = true` is not free: Yjs records a fresh last-writer-wins
+            // entry every time, so the tombstone was rewritten on every pass —
+            // i.e. on every keystroke in the scheme — and each rewrite is bytes
+            // pushed to the server and kept in the document's history forever. A
+            // scheme the user has deleted lines from paid that for each of them,
+            // permanently. It also reported the item as touched, which is wrong:
+            // this pass changed nothing about it.
+            if has_schema
+                && item_map
+                    .get_as::<_, Option<bool>>(&txn, "deleted")
+                    .ok()
+                    .flatten()
+                    .unwrap_or(false)
+            {
+                continue;
+            }
+            touched.insert(key.clone());
             if has_schema {
                 // A valid item the user removed → tombstone (soft-delete). A hard remove
                 // concurrent with another replica's edit detaches the map and loses
@@ -386,9 +417,9 @@ impl YrsSchemeDocument {
         //   - metadata changed  -> rewrite the scalar fields + metadata blob only
         // so a content edit never recreates (and clobbers) the collaborative Text.
         for (item, position) in scheme.items.iter().zip(&positions) {
-            let item_id = item.id.to_string();
+            let id = item.id;
             let next_snapshot = item_snapshot_json(item)?;
-            let prev = stored.get(&item_id);
+            let prev = stored.get(&id);
             // Nothing to write? Then don't touch the document at all.
             //
             // A keystroke changes ONE item, but this loop runs over every item
@@ -422,6 +453,10 @@ impl YrsSchemeDocument {
                     }
                 }
             }
+            // Only a changed item gets this far, so the id's string form (which
+            // is what the document is keyed by) is allocated here rather than
+            // for every item in the scheme.
+            let item_id = id.to_string();
             match item_map_ref(&items_by_id, &txn, &item_id) {
                 None => {
                     touched.insert(item_id.clone());
@@ -485,7 +520,7 @@ impl YrsSchemeDocument {
             if touched.contains(&item_id) {
                 let content = normalize_inline_content(&item.content.to_inlines());
                 stored.insert(
-                    item_id,
+                    id,
                     StoredItem {
                         position: position.clone(),
                         snapshot_json: next_snapshot,
