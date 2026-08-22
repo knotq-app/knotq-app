@@ -138,6 +138,17 @@ impl TestDevice {
 
     /// Number of items (lines) in the first scheme named `name`, or `None` if absent.
     /// `Some(0)` distinguishes "present but content doc missing" from `None`.
+    /// Persisted byte size of a scheme's CRDT document. Used to check that an
+    /// operation does not grow the document more than the edit itself warrants.
+    pub fn scheme_state_len(&self, scheme_id: SchemeId) -> usize {
+        self.workspace
+            .scheme_sync
+            .get(&scheme_id)
+            .and_then(|meta| self.crdt_states.get(&meta.id))
+            .map(|bytes| bytes.len())
+            .unwrap_or(0)
+    }
+
     pub fn scheme_line_count(&self, name: &str) -> Option<usize> {
         self.workspace
             .schemes
