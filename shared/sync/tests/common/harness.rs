@@ -433,6 +433,11 @@ impl Harness {
         self.require_in_memory_server().document_count()
     }
 
+    /// The server's `(seq, epoch)` head for one document. In-memory only.
+    pub fn server_document_head(&self, document: DocumentId) -> Option<(u64, u64)> {
+        self.require_in_memory_server().document_head(document)
+    }
+
     /// In-memory only.
     pub fn server_media_asset_count(&self) -> usize {
         self.require_in_memory_server().media_asset_count()

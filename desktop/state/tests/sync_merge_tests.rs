@@ -382,3 +382,72 @@ fn merge_rejects_result_with_different_workspace_identity() {
         "a result with a different workspace document identity must fall back to the replace path"
     );
 }
+
+/// Simulate the background half of a sync run that pulled the pushing device's
+/// OWN document back — the self-echo. A push leaves the pull cursor one behind
+/// the server, so the next pull returns the document the pusher just sent. The
+/// CRDT states advance (they are re-encoded by the run) but no content moves.
+fn simulated_sync_run_echo(
+    snapshot_workspace: &Workspace,
+    snapshot_states: &HashMap<DocumentId, std::sync::Arc<[u8]>>,
+    scheme_id: SchemeId,
+) -> (Workspace, HashMap<DocumentId, std::sync::Arc<[u8]>>) {
+    let other_device = ReplicaId::new();
+    let mut run_docs =
+        WorkspaceCrdtDocuments::from_states(snapshot_workspace, other_device, snapshot_states)
+            .unwrap();
+    let result_workspace = snapshot_workspace.clone();
+    // Re-encode the scheme exactly as it stands: this is what landing our own
+    // echoed-back document does — a document write with no content change.
+    let outcome = run_docs.sync_changes(
+        &result_workspace,
+        &WorkspaceCrdtChangeSet::default().touch_scheme(scheme_id),
+    );
+    assert!(outcome.is_ok(), "{:?}", outcome.errors);
+    (result_workspace, run_docs.document_states())
+}
+
+/// The repaint-storm guard. A sync run that lands no content change must say so,
+/// because the caller uses that answer to skip the scroll restore and the full
+/// window repaint. Typing over a live socket makes this the common case, and
+/// repainting for it is what starves key events.
+#[test]
+fn replace_from_sync_reports_no_change_for_a_self_echo() {
+    let (mut state, scheme_id) = app_state_with_scheme("Plans");
+    let before = state.workspace.clone();
+
+    let snapshot = state.workspace.clone();
+    let snapshot_states = state.crdt_document_states();
+    let (result, result_states) = simulated_sync_run_echo(&snapshot, &snapshot_states, scheme_id);
+
+    assert!(
+        !state.replace_workspace_from_sync(result, result_states),
+        "a sync run that changed nothing must not report a visible change"
+    );
+    assert_eq!(
+        state.workspace.schemes, before.schemes,
+        "the echo must leave the workspace exactly as it was"
+    );
+}
+
+/// The other half of the guard: a run that really did bring remote content must
+/// still report a change, or the UI would never repaint for a peer's edit.
+#[test]
+fn replace_from_sync_reports_a_change_for_real_remote_content() {
+    let (mut state, scheme_id) = app_state_with_scheme("Plans");
+    let item = Item::new("original");
+    let item_id = item.id;
+    state.workspace.schemes.get_mut(&scheme_id).unwrap().items = vec![item];
+    state.sync_store_from_workspace();
+
+    let snapshot = state.workspace.clone();
+    let snapshot_states = state.crdt_document_states();
+    let (result, result_states) =
+        simulated_sync_run_edit_item(&snapshot, &snapshot_states, scheme_id, 0, "from-peer");
+
+    assert!(
+        state.replace_workspace_from_sync(result, result_states),
+        "a sync run carrying a peer's edit must report a visible change"
+    );
+    assert_eq!(item_text(&state, scheme_id, item_id), "from-peer");
+}
