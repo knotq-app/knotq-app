@@ -25,7 +25,7 @@ use sha2::{Digest, Sha256};
 use yrs::updates::{decoder::Decode, encoder::Encode};
 use yrs::{
     Any, ClientID, Doc, Map, MapPrelim, MapRef, OffsetKind, Options, Out, ReadTxn, StateVector,
-    Text, TextPrelim, TextRef, Transact, TransactionMut, Update,
+    Text, TextPrelim, TextRef, Transact, TransactionMut, Update, WriteTxn,
 };
 
 use crate::{CrdtDocumentUpdate, StoredCrdtUpdate};
