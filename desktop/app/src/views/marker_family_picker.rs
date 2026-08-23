@@ -15,6 +15,9 @@ use crate::theme_gpui::{token_hsla, token_rgba, Theme};
 
 const PICKER_WIDTH: f32 = 188.0;
 const ROW_HEIGHT: f32 = 28.0;
+/// Room for the widest preview a family can produce: three glyphs separated by
+/// spaces at 12px. Sized so the preview never wraps inside a `ROW_HEIGHT` row.
+const PREVIEW_WIDTH: f32 = 48.0;
 
 /// What a family is called in the picker. `Inherit` is described by what it
 /// does — following the indent — rather than by a glyph name, because that is
@@ -169,8 +172,16 @@ impl KnotQApp {
                 cx.notify();
             }))
             .child(
+                // Wide enough for the longest preview a family can produce —
+                // three glyphs and two separators. At 20px a three-glyph
+                // sequence wrapped inside the row, stacking the glyphs
+                // vertically and spilling out of the card; the families whose
+                // preview collapses to a single glyph hid it. `flex_none` keeps
+                // the row's `gap`/`truncate` on the label from squeezing it
+                // back down to the wrapping width.
                 div()
-                    .w(px(20.0))
+                    .w(px(PREVIEW_WIDTH))
+                    .flex_none()
                     .text_size(px(12.0))
                     .text_color(token_hsla(t.text_dim))
                     .child(family_preview(family, marker)),
