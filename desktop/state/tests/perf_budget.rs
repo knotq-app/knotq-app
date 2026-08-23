@@ -79,10 +79,24 @@ fn state_of(workspace: &Workspace) -> AppState {
 
 /// Milliseconds to build one scheme's CRDT from scratch.
 fn crdt_build_ms(items: usize) -> f64 {
-    let workspace = workspace_of(1, items, 80);
-    let start = Instant::now();
-    let _ = WorkspaceCrdtDocuments::try_new(&workspace).expect("build crdt");
-    ms(start)
+    build_ms(1, items)
+}
+
+/// The fastest of three builds of `schemes` x `items_per_scheme`.
+///
+/// A ratio between two timings only means anything if neither run was
+/// preempted, and on a shared CI runner some run always is. The minimum is the
+/// one that came closest to having the machine to itself; a single sample is
+/// whatever the scheduler happened to allow.
+fn build_ms(schemes: usize, items_per_scheme: usize) -> f64 {
+    (0..3)
+        .map(|_| {
+            let workspace = workspace_of(schemes, items_per_scheme, 80);
+            let start = Instant::now();
+            let _ = WorkspaceCrdtDocuments::try_new(&workspace).expect("build crdt");
+            ms(start)
+        })
+        .fold(f64::INFINITY, f64::min)
 }
 
 /// Mean milliseconds for one keystroke in the largest scheme of `workspace`.
@@ -127,19 +141,26 @@ fn keystroke_ms(state: &mut AppState, workspace: &Workspace, runs: usize) -> f64
 /// It was quadratic: 4x the items cost ~16x, so one 5,000-item scheme took 18
 /// SECONDS. Three separate causes (a transaction per item, a tail scan per
 /// item, and fractional keys that grew linearly on append).
+///
+/// Both sides build the SAME 4,000 items, differing only in how many schemes
+/// they are spread over, so scheme *size* is the only variable and linear means
+/// the two timings are EQUAL. Comparing 1,000 items against 4,000 and calling
+/// linear "under 8x" was really comparing two different amounts of work behind
+/// a fudge factor, and it duly flaked on a Linux runner.
 #[test]
 fn crdt_build_stays_linear_in_item_count() {
-    let small = crdt_build_ms(1_000).max(0.001);
-    let large = crdt_build_ms(4_000);
+    let spread = build_ms(4, 1_000).max(0.001);
+    let concentrated = build_ms(1, 4_000);
 
-    // 4x the items. Linear would be ~4x the time; the quadratic was ~16x.
-    // Allow 8x: comfortably above linear-with-overhead, comfortably below
-    // quadratic.
+    // Equal item counts, so a linear build makes these equal; 3x absorbs the
+    // per-scheme overhead the spread side pays four times over. The quadratic
+    // this replaced made the concentrated side ~4x slower.
     assert!(
-        large < small * 8.0,
-        "CRDT build looks superlinear: {small:.1}ms for 1,000 items vs \
-         {large:.1}ms for 4,000 (4x the items, {:.1}x the time)",
-        large / small
+        concentrated < spread * 3.0,
+        "CRDT build is superlinear in scheme size: {spread:.1}ms for 4 schemes of 1,000 \
+         items vs {concentrated:.1}ms for 1 scheme of 4,000 (same 4,000 items, \
+         {:.1}x the time)",
+        concentrated / spread
     );
 }
 
