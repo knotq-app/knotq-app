@@ -67,6 +67,7 @@ fn touched(cmd: &Command) -> Touched {
         | Command::ReplaceItem { scheme, .. }
         | Command::SetItemIndent { scheme, .. }
         | Command::SetItemMarker { scheme, .. }
+        | Command::SetItemMarkerFamily { scheme, .. }
         | Command::SetItemDate { scheme, .. }
         | Command::SetItemRecurrence { scheme, .. }
         | Command::SetItemPriority { scheme, .. }

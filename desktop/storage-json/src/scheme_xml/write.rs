@@ -152,7 +152,7 @@ fn write_table<W: Write>(writer: &mut Writer<W>, table: &Table) -> Result<()> {
 
 fn push_item_attrs(el: &mut BytesStart, item: &Item) {
     el.push_attribute(("id", item.id.to_string().as_str()));
-    el.push_attribute(("marker", item.marker.as_str()));
+    el.push_attribute(("marker", item.marker_token().as_str()));
     if item.indent != 0 {
         el.push_attribute(("indent", item.indent.to_string().as_str()));
     }

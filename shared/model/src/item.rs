@@ -19,6 +19,17 @@ pub struct Item {
     pub content: ItemContent,
     #[serde(default, skip_serializing_if = "is_default_marker")]
     pub marker: ItemMarker,
+    /// Which glyphs this line's bullet or number is drawn from.
+    ///
+    /// Separate from [`ItemMarker`] because the marker decides *behaviour* — a
+    /// checkbox can be completed, a number participates in an ordinal sequence —
+    /// while the family only decides how it looks. Serialized into the marker
+    /// string as `bullet.disc` / `numbered.roman` on disk, which a build that
+    /// predates families reads as plain `bullet` / `numbered` (see
+    /// `marker_base`), so an old build shows the default glyph rather than
+    /// failing to open the file.
+    #[serde(default, skip_serializing_if = "MarkerFamily::is_standard")]
+    pub marker_family: MarkerFamily,
     #[serde(default, skip_serializing_if = "is_zero_u8")]
     pub indent: u8,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -191,6 +202,7 @@ impl Item {
             id: crate::ItemId::new(),
             content: ItemContent::Text { text },
             marker: ItemMarker::Blank,
+            marker_family: MarkerFamily::Standard,
             indent: 0,
             start: None,
             end: None,
@@ -244,6 +256,21 @@ impl Item {
     /// is the value most non-editor consumers want.
     pub fn text(&self) -> String {
         self.content.as_text().unwrap_or("").to_string()
+    }
+
+    /// The marker as it is written to disk, carrying the family as a suffix
+    /// (`bullet.disc`). A build that predates families parses this back to the
+    /// base marker, so the line still opens — it just shows the default glyph.
+    pub fn marker_token(&self) -> String {
+        match self
+            .marker_family
+            .is_valid_for(self.marker)
+            .then(|| self.marker_family.as_suffix())
+            .flatten()
+        {
+            Some(suffix) => format!("{}.{}", self.marker.as_str(), suffix),
+            None => self.marker.as_str().to_string(),
+        }
     }
 
     /// True when the line is an empty text line (no text, no image/table).
@@ -449,6 +476,222 @@ impl<'de> Deserialize<'de> for ItemMarker {
     }
 }
 
+/// The concrete thing drawn for a marker at one indent depth.
+///
+/// Separate from [`MarkerFamily`] because a family is a *sequence*: it says
+/// which glyph appears at depth 0, depth 1, and so on. This is one entry in
+/// that sequence.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub enum MarkerGlyph {
+    Disc,
+    Circle,
+    Square,
+    Dash,
+    Decimal,
+    LowerAlpha,
+    UpperAlpha,
+    LowerRoman,
+    UpperRoman,
+}
+
+impl MarkerGlyph {
+    /// Render `ordinal` (1-based) for a numbered glyph. Bullet glyphs have no
+    /// ordinal and fall back to the plain number, which is never drawn.
+    pub fn ordinal_label(self, ordinal: usize) -> String {
+        match self {
+            Self::LowerAlpha => alphabetic_ordinal(ordinal, false),
+            Self::UpperAlpha => alphabetic_ordinal(ordinal, true),
+            Self::LowerRoman => roman_ordinal(ordinal, false),
+            Self::UpperRoman => roman_ordinal(ordinal, true),
+            _ => ordinal.to_string(),
+        }
+    }
+}
+
+/// A named sequence of marker glyphs, indexed by indent depth.
+///
+/// EVERY family varies with depth — that is the point of a family. `Standard`
+/// is the historical look (disc, then hollow circle, then square as you nest);
+/// the others walk a different sequence, so nesting stays legible whichever one
+/// you pick. A family that shows the same glyph at every depth is expressed as
+/// a one-entry sequence rather than as a special case.
+#[derive(Clone, Copy, Debug, Default, Eq, Hash, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MarkerFamily {
+    /// The default look: what every existing line already has.
+    #[default]
+    Standard,
+    // ── bullet families ────────────────────────────────────────────────
+    /// A filled disc at every depth.
+    Discs,
+    /// A hollow ring at every depth.
+    Rings,
+    /// A small square at every depth.
+    Squares,
+    /// A dash at every depth — the plainest option, closest to plain text.
+    Dashes,
+    /// Alternates filled and hollow, which separates adjacent levels more
+    /// strongly than a size change does.
+    Alternating,
+    // ── numbered families ──────────────────────────────────────────────
+    /// `1.` at every depth.
+    Decimal,
+    /// Lower-case letters at every depth.
+    Alpha,
+    /// Lower-case roman numerals at every depth.
+    Roman,
+    /// The classic outline sequence: `I.` `A.` `1.` `a.` `i.`
+    Outline,
+}
+
+impl MarkerFamily {
+    pub fn is_standard(&self) -> bool {
+        matches!(self, Self::Standard)
+    }
+
+    /// The suffix used in the serialized marker string (`bullet.rings`).
+    pub const fn as_suffix(self) -> Option<&'static str> {
+        match self {
+            Self::Standard => None,
+            Self::Discs => Some("discs"),
+            Self::Rings => Some("rings"),
+            Self::Squares => Some("squares"),
+            Self::Dashes => Some("dashes"),
+            Self::Alternating => Some("alternating"),
+            Self::Decimal => Some("decimal"),
+            Self::Alpha => Some("alpha"),
+            Self::Roman => Some("roman"),
+            Self::Outline => Some("outline"),
+        }
+    }
+
+    /// Parse a marker suffix. An unknown suffix is `Standard` rather than an
+    /// error: a NEWER build may write a family this one has never heard of, and
+    /// falling back to the default look shows something sensible instead of
+    /// refusing the line.
+    pub fn from_suffix(suffix: &str) -> Self {
+        match suffix {
+            "discs" => Self::Discs,
+            "rings" => Self::Rings,
+            "squares" => Self::Squares,
+            "dashes" => Self::Dashes,
+            "alternating" => Self::Alternating,
+            "decimal" => Self::Decimal,
+            "alpha" => Self::Alpha,
+            "roman" => Self::Roman,
+            "outline" => Self::Outline,
+            _ => Self::Standard,
+        }
+    }
+
+    /// The families offered for `marker`, in the order a picker shows them.
+    pub fn choices_for(marker: ItemMarker) -> &'static [MarkerFamily] {
+        match marker {
+            ItemMarker::Bullet => &[
+                Self::Standard,
+                Self::Discs,
+                Self::Rings,
+                Self::Squares,
+                Self::Dashes,
+                Self::Alternating,
+            ],
+            ItemMarker::Numbered => &[
+                Self::Standard,
+                Self::Decimal,
+                Self::Alpha,
+                Self::Roman,
+                Self::Outline,
+            ],
+            ItemMarker::Blank | ItemMarker::Checkbox => &[],
+        }
+    }
+
+    pub fn is_valid_for(self, marker: ItemMarker) -> bool {
+        self.is_standard() || Self::choices_for(marker).contains(&self)
+    }
+
+    /// The glyph this family shows at `depth`.
+    ///
+    /// Depth wraps around the sequence, so nesting deeper than the sequence is
+    /// long keeps cycling rather than running out of glyphs.
+    pub fn glyph_at(self, marker: ItemMarker, depth: u8) -> MarkerGlyph {
+        let sequence: &[MarkerGlyph] = match (marker, self) {
+            (ItemMarker::Numbered, Self::Standard) => &[
+                MarkerGlyph::Decimal,
+                MarkerGlyph::LowerAlpha,
+                MarkerGlyph::LowerRoman,
+            ],
+            (ItemMarker::Numbered, Self::Decimal) => &[MarkerGlyph::Decimal],
+            (ItemMarker::Numbered, Self::Alpha) => &[MarkerGlyph::LowerAlpha],
+            (ItemMarker::Numbered, Self::Roman) => &[MarkerGlyph::LowerRoman],
+            (ItemMarker::Numbered, Self::Outline) => &[
+                MarkerGlyph::UpperRoman,
+                MarkerGlyph::UpperAlpha,
+                MarkerGlyph::Decimal,
+                MarkerGlyph::LowerAlpha,
+                MarkerGlyph::LowerRoman,
+            ],
+            // A numbered line given a bullet family (or vice versa) falls back
+            // to that marker's standard sequence rather than drawing nothing.
+            (ItemMarker::Numbered, _) => &[
+                MarkerGlyph::Decimal,
+                MarkerGlyph::LowerAlpha,
+                MarkerGlyph::LowerRoman,
+            ],
+            (_, Self::Discs) => &[MarkerGlyph::Disc],
+            (_, Self::Rings) => &[MarkerGlyph::Circle],
+            (_, Self::Squares) => &[MarkerGlyph::Square],
+            (_, Self::Dashes) => &[MarkerGlyph::Dash],
+            (_, Self::Alternating) => &[MarkerGlyph::Disc, MarkerGlyph::Circle],
+            // Bullet standard, and any numbered family on a bullet line.
+            _ => &[MarkerGlyph::Disc, MarkerGlyph::Circle, MarkerGlyph::Square],
+        };
+        sequence[depth as usize % sequence.len()]
+    }
+}
+
+
+/// 1 -> a, 26 -> z, 27 -> aa, in the spreadsheet-column style. Zero is not a
+/// valid ordinal, so it falls back to the number rather than an empty label.
+fn alphabetic_ordinal(ordinal: usize, upper: bool) -> String {
+    if ordinal == 0 {
+        return "0".to_string();
+    }
+    let base = if upper { b'A' } else { b'a' };
+    let mut n = ordinal;
+    let mut out = Vec::new();
+    while n > 0 {
+        let rem = (n - 1) % 26;
+        out.push(base + rem as u8);
+        n = (n - 1) / 26;
+    }
+    out.reverse();
+    String::from_utf8(out).unwrap_or_else(|_| ordinal.to_string())
+}
+
+/// Roman numerals. Beyond the classical range the numeral would be absurdly
+/// long, so past 3,999 it falls back to the decimal form rather than emitting
+/// a wall of `M`s.
+fn roman_ordinal(ordinal: usize, upper: bool) -> String {
+    if ordinal == 0 || ordinal > 3_999 {
+        return ordinal.to_string();
+    }
+    const TABLE: [(usize, &str); 13] = [
+        (1000, "m"), (900, "cm"), (500, "d"), (400, "cd"), (100, "c"),
+        (90, "xc"), (50, "l"), (40, "xl"), (10, "x"), (9, "ix"),
+        (5, "v"), (4, "iv"), (1, "i"),
+    ];
+    let mut n = ordinal;
+    let mut out = String::new();
+    for (value, numeral) in TABLE {
+        while n >= value {
+            out.push_str(numeral);
+            n -= value;
+        }
+    }
+    if upper { out.to_uppercase() } else { out }
+}
+
 fn marker_base(value: &str) -> Option<&str> {
     match value.split_once('.') {
         Some((base, subtype)) if !base.is_empty() && !subtype.is_empty() => Some(base),
@@ -611,5 +854,177 @@ mod tests {
         ] {
             assert!(serde_json::from_str::<ItemMarker>(raw).is_err());
         }
+    }
+}
+
+#[cfg(test)]
+mod marker_family_tests {
+    use super::*;
+
+    /// The point of a family: it is a SEQUENCE indexed by depth, not one glyph.
+    /// The standard bullet sequence is the historical look.
+    #[test]
+    fn the_standard_family_walks_a_sequence_by_depth() {
+        let b = ItemMarker::Bullet;
+        assert_eq!(MarkerFamily::Standard.glyph_at(b, 0), MarkerGlyph::Disc);
+        assert_eq!(MarkerFamily::Standard.glyph_at(b, 1), MarkerGlyph::Circle);
+        assert_eq!(MarkerFamily::Standard.glyph_at(b, 2), MarkerGlyph::Square);
+        // Wraps rather than running out.
+        assert_eq!(MarkerFamily::Standard.glyph_at(b, 3), MarkerGlyph::Disc);
+    }
+
+    /// Every family is depth-indexed — a different family walks a DIFFERENT
+    /// sequence over the same depths, which is what distinguishes them.
+    #[test]
+    fn different_families_differ_at_the_same_depth() {
+        let n = ItemMarker::Numbered;
+        let depths = [0u8, 1, 2];
+        let standard: Vec<_> = depths
+            .iter()
+            .map(|d| MarkerFamily::Standard.glyph_at(n, *d))
+            .collect();
+        let outline: Vec<_> = depths
+            .iter()
+            .map(|d| MarkerFamily::Outline.glyph_at(n, *d))
+            .collect();
+        assert_eq!(
+            standard,
+            vec![
+                MarkerGlyph::Decimal,
+                MarkerGlyph::LowerAlpha,
+                MarkerGlyph::LowerRoman
+            ]
+        );
+        assert_eq!(
+            outline,
+            vec![
+                MarkerGlyph::UpperRoman,
+                MarkerGlyph::UpperAlpha,
+                MarkerGlyph::Decimal
+            ]
+        );
+        assert_ne!(standard, outline);
+    }
+
+    /// A single-glyph family is just a one-entry sequence: same glyph at every
+    /// depth, no special case in the code.
+    #[test]
+    fn a_single_glyph_family_is_constant_across_depths() {
+        for depth in 0..6 {
+            assert_eq!(
+                MarkerFamily::Rings.glyph_at(ItemMarker::Bullet, depth),
+                MarkerGlyph::Circle
+            );
+            assert_eq!(
+                MarkerFamily::Roman.glyph_at(ItemMarker::Numbered, depth),
+                MarkerGlyph::LowerRoman
+            );
+        }
+    }
+
+    /// Alternating exists to separate adjacent levels more strongly than a size
+    /// change does, so it must actually alternate.
+    #[test]
+    fn alternating_flips_between_adjacent_depths() {
+        let b = ItemMarker::Bullet;
+        assert_eq!(MarkerFamily::Alternating.glyph_at(b, 0), MarkerGlyph::Disc);
+        assert_eq!(MarkerFamily::Alternating.glyph_at(b, 1), MarkerGlyph::Circle);
+        assert_eq!(MarkerFamily::Alternating.glyph_at(b, 2), MarkerGlyph::Disc);
+    }
+
+    #[test]
+    fn ordinals_render_in_their_glyph() {
+        assert_eq!(MarkerGlyph::Decimal.ordinal_label(7), "7");
+        assert_eq!(MarkerGlyph::LowerAlpha.ordinal_label(1), "a");
+        assert_eq!(MarkerGlyph::LowerAlpha.ordinal_label(26), "z");
+        assert_eq!(MarkerGlyph::LowerAlpha.ordinal_label(27), "aa");
+        assert_eq!(MarkerGlyph::UpperAlpha.ordinal_label(28), "AB");
+        assert_eq!(MarkerGlyph::LowerRoman.ordinal_label(4), "iv");
+        assert_eq!(MarkerGlyph::UpperRoman.ordinal_label(2026), "MMXXVI");
+    }
+
+    /// A numeral nobody could read is worse than a number.
+    #[test]
+    fn absurd_ordinals_fall_back_to_digits() {
+        assert_eq!(MarkerGlyph::UpperRoman.ordinal_label(4_000), "4000");
+        assert_eq!(MarkerGlyph::LowerRoman.ordinal_label(0), "0");
+        assert_eq!(MarkerGlyph::LowerAlpha.ordinal_label(0), "0");
+    }
+
+    /// A bullet line must never be left with nothing to draw, even if it somehow
+    /// carries a numbered family.
+    #[test]
+    fn a_mismatched_family_still_draws_something_sensible() {
+        assert_eq!(
+            MarkerFamily::Roman.glyph_at(ItemMarker::Bullet, 0),
+            MarkerGlyph::Disc
+        );
+        assert_eq!(
+            MarkerFamily::Rings.glyph_at(ItemMarker::Numbered, 0),
+            MarkerGlyph::Decimal
+        );
+    }
+
+    #[test]
+    fn families_are_scoped_to_their_marker() {
+        assert!(MarkerFamily::Squares.is_valid_for(ItemMarker::Bullet));
+        assert!(!MarkerFamily::Squares.is_valid_for(ItemMarker::Numbered));
+        assert!(MarkerFamily::Roman.is_valid_for(ItemMarker::Numbered));
+        assert!(!MarkerFamily::Roman.is_valid_for(ItemMarker::Bullet));
+        assert!(MarkerFamily::Standard.is_valid_for(ItemMarker::Checkbox));
+    }
+
+    /// A family that could be written but not read back would silently reset on
+    /// the next load.
+    #[test]
+    fn every_family_round_trips_through_its_suffix() {
+        for marker in [ItemMarker::Bullet, ItemMarker::Numbered] {
+            for family in MarkerFamily::choices_for(marker) {
+                match family.as_suffix() {
+                    None => assert!(family.is_standard()),
+                    Some(suffix) => assert_eq!(
+                        MarkerFamily::from_suffix(suffix),
+                        *family,
+                        "family {family:?} did not survive its suffix {suffix:?}"
+                    ),
+                }
+            }
+        }
+    }
+
+    /// A family written by a NEWER build must not break this one.
+    #[test]
+    fn an_unknown_family_falls_back_to_standard() {
+        assert_eq!(
+            MarkerFamily::from_suffix("holographic"),
+            MarkerFamily::Standard
+        );
+        assert_eq!(MarkerFamily::from_suffix(""), MarkerFamily::Standard);
+    }
+
+    /// A workspace that never uses families must serialize byte-identically to
+    /// one written before families existed.
+    #[test]
+    fn the_default_family_is_not_serialized() {
+        let plain = Item::new("hello");
+        let json = serde_json::to_string(&plain).unwrap();
+        assert!(
+            !json.contains("marker_family"),
+            "default family leaked into output: {json}"
+        );
+
+        let mut fancy = Item::new("hello");
+        fancy.marker = ItemMarker::Bullet;
+        fancy.marker_family = MarkerFamily::Squares;
+        let json = serde_json::to_string(&fancy).unwrap();
+        assert!(json.contains("squares"), "family missing from output: {json}");
+    }
+
+    #[test]
+    fn items_without_a_family_load_as_standard() {
+        let old = r#"{"id":"00000000-0000-4000-8000-000000000001","marker":"bullet"}"#;
+        let item: Item = serde_json::from_str(old).unwrap();
+        assert_eq!(item.marker, ItemMarker::Bullet);
+        assert_eq!(item.marker_family, MarkerFamily::Standard);
     }
 }

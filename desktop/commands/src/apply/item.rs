@@ -1,4 +1,4 @@
-use knotq_model::{Item, ItemId, ItemMarker, OccurrenceId, Recurrence, SchemeId, Workspace};
+use knotq_model::{MarkerFamily, Item, ItemId, ItemMarker, OccurrenceId, Recurrence, SchemeId, Workspace};
 
 use crate::invariants::CommandError;
 use crate::{ChangeSet, Command, CommandReceipt, DateKind};
@@ -27,6 +27,11 @@ pub(crate) fn apply_item(
             item,
             marker,
         } => set_item_marker(workspace, scheme, item, marker),
+        Command::SetItemMarkerFamily {
+            scheme,
+            item,
+            family,
+        } => set_item_marker_family(workspace, scheme, item, family),
         Command::SetItemDate {
             scheme,
             item,
@@ -150,6 +155,28 @@ fn set_item_marker(
     let prev = item_ref.clone();
     item_ref.marker = marker;
     item_ref.enforce_marker_constraints();
+    Ok(CommandReceipt {
+        inverse: Command::ReplaceItem { scheme, item: prev },
+        touched: ChangeSet::default().touched_scheme(scheme),
+    })
+}
+
+/// Only a family that suits the line's marker is stored; anything else falls
+/// back to the depth-following default rather than leaving a bullet line
+/// holding a numeral family it cannot draw.
+fn set_item_marker_family(
+    workspace: &mut Workspace,
+    scheme: SchemeId,
+    item: ItemId,
+    family: MarkerFamily,
+) -> Result<CommandReceipt, CommandError> {
+    let item_ref = item_mut(workspace, scheme, item)?;
+    let prev = item_ref.clone();
+    item_ref.marker_family = if family.is_valid_for(item_ref.marker) {
+        family
+    } else {
+        MarkerFamily::Standard
+    };
     Ok(CommandReceipt {
         inverse: Command::ReplaceItem { scheme, item: prev },
         touched: ChangeSet::default().touched_scheme(scheme),

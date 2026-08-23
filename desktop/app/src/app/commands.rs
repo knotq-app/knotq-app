@@ -36,6 +36,7 @@ pub(super) fn primary_cursor_item(cmd: &Command) -> Option<(SchemeId, ItemId)> {
         Command::UpdateItemText { scheme, item, .. }
         | Command::SetItemIndent { scheme, item, .. }
         | Command::SetItemMarker { scheme, item, .. }
+        | Command::SetItemMarkerFamily { scheme, item, .. }
         | Command::SetItemDate { scheme, item, .. }
         | Command::SetItemRecurrence { scheme, item, .. }
         | Command::SetItemPriority { scheme, item, .. }
@@ -152,7 +153,11 @@ fn service_signals_for_command(cmd: &Command, workspace: &Workspace) -> Workspac
         | Command::SetSchemeColor { .. }
         | Command::SetFolderExpanded { .. }
         | Command::RenameFolder { .. }
-        | Command::MoveNode { .. } => WorkspaceServiceSignals {
+        | Command::MoveNode { .. }
+        // Appearance only: which glyph a bullet draws from cannot change
+        // whether the line schedules a notification or completes in the
+        // timeline.
+        | Command::SetItemMarkerFamily { .. } => WorkspaceServiceSignals {
             notifications: NotificationServiceSignal::None,
             timeline: false,
         },

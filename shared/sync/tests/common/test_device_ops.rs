@@ -81,6 +81,21 @@ impl TestDevice {
         self.record_changes(WorkspaceCrdtChangeSet::default().workspace());
     }
 
+    /// Give a line an explicit marker and family, the way the toolbar override
+    /// does. Content-document change: the family rides in the item snapshot.
+    pub fn set_marker_family(
+        &mut self,
+        scheme_id: SchemeId,
+        index: usize,
+        marker: knotq_model::ItemMarker,
+        family: knotq_model::MarkerFamily,
+    ) {
+        let item = &mut self.scheme_mut(scheme_id).items[index];
+        item.marker = marker;
+        item.marker_family = family;
+        self.record_changes(WorkspaceCrdtChangeSet::default().touch_scheme(scheme_id));
+    }
+
     pub fn set_scheme_color(&mut self, scheme_id: SchemeId, color_index: u8) {
         self.scheme_mut(scheme_id).color_index = color_index;
         // The palette index lives in the workspace document's node payload.

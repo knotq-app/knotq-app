@@ -33,6 +33,40 @@ pub(super) fn toolbar_glyph_button(
         .into_any_element()
 }
 
+/// A glyph button that also reports its mouse-down, so the caller can tell a
+/// tap from a press-and-hold. The editor is still refocused on press, exactly
+/// as [`toolbar_glyph_button`] does — a toolbar button must never steal focus
+/// from the line being edited.
+#[allow(clippy::too_many_arguments)]
+pub(super) fn toolbar_glyph_button_with_press(
+    id: &'static str,
+    active: bool,
+    glyph: ToolbarGlyph,
+    c: Theme,
+    tooltip: &'static str,
+    editor: Entity<SchemeEditor>,
+    on_press: impl Fn(&gpui::MouseDownEvent, &mut Window, &mut App) + 'static,
+    listener: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
+) -> gpui::AnyElement {
+    let refocus = toolbar_refocus_listener(editor);
+    div()
+        .id(id)
+        .w(px(24.0))
+        .h(px(23.0))
+        .flex()
+        .items_center()
+        .justify_center()
+        .cursor_pointer()
+        .on_mouse_down(MouseButton::Left, move |event, window, cx| {
+            refocus(event, window, cx);
+            on_press(event, window, cx);
+        })
+        .on_click(listener)
+        .tooltip(move |window, cx| Tooltip::new(tooltip).build(window, cx))
+        .child(toolbar_glyph(glyph, active, c))
+        .into_any_element()
+}
+
 pub(super) fn toolbar_bold_button(
     active: bool,
     c: Theme,

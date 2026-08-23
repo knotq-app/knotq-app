@@ -24,6 +24,7 @@ pub mod scheme_view;
 pub mod search;
 pub mod settings;
 pub mod sidebar;
+pub mod marker_family_picker;
 #[cfg(feature = "accounts")]
 pub mod sync_account;
 #[cfg(not(feature = "accounts"))]
