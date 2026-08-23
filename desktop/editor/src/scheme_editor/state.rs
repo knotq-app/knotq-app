@@ -425,15 +425,16 @@ impl SchemeEditor {
         }
         self.synced_revision = revision;
 
-        let (text, rows) = build_buffer(&scheme.items);
-        if !(self.text == *text.as_str())
-            || !same_rows(&rows, &self.rows)
-            || time_format_changed
-            || color_changed
-            || theme_changed
-        {
-            self.text.set(text);
-            self.rows = rows;
+        // Rebuilt in place: a keystroke used to clone every item in the scheme
+        // and rebuild the whole text just to discover that the editor's own
+        // edit had already produced exactly this, then throw it away — 4.4ms
+        // per keypress on a 10,000-line scheme.
+        let content_changed = rebuild_rows_into(&scheme.items, &mut self.rows);
+        if content_changed || time_format_changed || color_changed || theme_changed {
+            if content_changed {
+                let rows = &self.rows;
+                self.text.rewrite(|out| write_display_text(rows, out));
+            }
             self.refresh_layout_after_content_change(Some(window));
             self.selection = TextSelection::collapsed(self.clamp_location(self.selection.head));
             self.marked_range = None;

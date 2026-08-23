@@ -63,21 +63,35 @@ pub(in crate::scheme_editor) fn top_level_index_for_flat_row(
     None
 }
 
+/// Whether two row lists render identically. The rebuild decides this row by
+/// row as it goes (see [`same_item`]); this is the whole-list form the tests
+/// state the property with.
+#[cfg(test)]
 pub(in crate::scheme_editor) fn same_rows(a: &[EditorRow], b: &[EditorRow]) -> bool {
     a.len() == b.len()
-        && a.iter().zip(b).all(|(a, b)| {
-            a.item.id == b.item.id
-                && a.path == b.path
-                && a.item.content == b.item.content
-                && a.item.marker == b.item.marker
-                && a.item.indent == b.item.indent
-                && a.item.start == b.item.start
-                && a.item.end == b.item.end
-                && a.item.available == b.item.available
-                && a.item.repeats == b.item.repeats
-                && a.item.priority == b.item.priority
-                && same_item_state(&a.item, &b.item)
-        })
+        && a.iter()
+            .zip(b)
+            .all(|(a, b)| a.path == b.path && same_item(&a.item, &b.item))
+}
+
+/// Whether two items would produce the same row: every field the editor
+/// renders from, and nothing else.
+///
+/// `rebuild_rows_into` uses this to decide a row can be left alone. A rebuild
+/// that thought a row unchanged when it was not would leave the editor showing
+/// something the model does not say, so there is one definition of "the same
+/// row" and both the rebuild and the tests go through it.
+pub(in crate::scheme_editor) fn same_item(a: &Item, b: &Item) -> bool {
+    a.id == b.id
+        && a.content == b.content
+        && a.marker == b.marker
+        && a.indent == b.indent
+        && a.start == b.start
+        && a.end == b.end
+        && a.available == b.available
+        && a.repeats == b.repeats
+        && a.priority == b.priority
+        && same_item_state(a, b)
 }
 
 fn same_item_state(a: &Item, b: &Item) -> bool {

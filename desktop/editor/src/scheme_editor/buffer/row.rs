@@ -80,6 +80,7 @@ pub(in crate::scheme_editor) struct EditorRow {
 }
 
 impl EditorRow {
+    #[cfg(test)]
     pub(in crate::scheme_editor) fn doc(item: Item) -> Self {
         Self {
             item,
