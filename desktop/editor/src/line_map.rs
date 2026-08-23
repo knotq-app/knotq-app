@@ -639,61 +639,92 @@ mod tests {
 
     /// Finding the visible rows must not depend on how long the document is —
     /// that is the whole reason it is a search and not a walk.
+    ///
+    /// Both sides perform the same 20,000 searches, so only the document size
+    /// differs. See [`fastest`] for why this takes a minimum rather than a
+    /// single sample.
     #[test]
     fn finding_the_visible_rows_does_not_scale_with_the_document() {
-        fn sweep(rows: usize) -> std::time::Duration {
+        fn searches(rows: usize) -> std::time::Duration {
             let map = map_of(&vec![10.0; rows]);
-            let start = std::time::Instant::now();
-            for offset in 0..2_000 {
-                let top = px(offset as f32);
-                std::hint::black_box(map.rows_intersecting(top..top + px(500.0)));
-            }
-            start.elapsed()
+            fastest(5, || {
+                for offset in 0..20_000 {
+                    let top = px(offset as f32);
+                    std::hint::black_box(map.rows_intersecting(top..top + px(500.0)));
+                }
+            })
         }
 
-        sweep(4_000);
-        let small = sweep(1_000).max(std::time::Duration::from_nanos(1));
-        let large = sweep(64_000);
+        let small = searches(1_000).max(std::time::Duration::from_nanos(1));
+        let large = searches(64_000);
 
-        // 64x the rows. A binary search costs ~1.6x (log2 64 = 6 more steps on
-        // ~10); a walk would cost ~64x.
+        // Equal work. A binary search costs ~1.6x more per search over 64x the
+        // rows (six extra steps on about ten); a walk would cost ~64x.
         assert!(
             large < small * 8,
-            "finding visible rows looks linear: {small:?} for 1,000 rows vs {large:?} for 64,000"
+            "finding visible rows scales with the document: {small:?} over 1,000 rows \
+             vs {large:?} over 64,000, for the same 20,000 searches"
         );
     }
 
-    /// Asking every row for its y must stay linear in the row count.
+    /// Asking a row for its y must cost the same whatever the document's size.
     ///
     /// Summing the rows above on demand made this O(rows) per row, so painting
     /// a document was quadratic in its line count — ~10% of a frame at 2,000
-    /// lines and growing with the square. A ratio, not a wall clock, so it
-    /// means the same thing on a debug build and a loaded CI runner.
+    /// lines and growing with the square.
+    ///
+    /// Both sides do the SAME NUMBER of lookups, so a constant-time lookup
+    /// makes them equal and only the document size differs. That is what makes
+    /// the bound meaningful: an earlier version compared 1,000 rows against
+    /// 8,000 and called linear "under 24x", which is a fudge factor hiding the
+    /// fact that it was really measuring two different amounts of work — and it
+    /// duly flaked on a macOS runner (20µs vs 635µs).
     #[test]
-    fn asking_every_row_for_its_y_stays_linear() {
-        fn sweep(rows: usize) -> std::time::Duration {
+    fn a_row_y_lookup_costs_the_same_at_any_document_size() {
+        fn lookups(rows: usize, passes: usize) -> std::time::Duration {
             let map = map_of(&vec![10.0; rows]);
-            let start = std::time::Instant::now();
-            let mut total = px(0.0);
-            for row in 0..rows {
-                total += map.y_range(row..row + 1).start;
-            }
-            std::hint::black_box(total);
-            start.elapsed()
+            fastest(5, || {
+                let mut total = px(0.0);
+                for _ in 0..passes {
+                    for row in 0..rows {
+                        total += map.y_range(row..row + 1).start;
+                    }
+                }
+                std::hint::black_box(total);
+            })
         }
 
-        // Warm the allocator and the branch predictor so the first measurement
-        // is not the one paying for them.
-        sweep(4_000);
-        let small = sweep(1_000).max(std::time::Duration::from_nanos(1));
-        let large = sweep(8_000);
+        // 64,000 lookups either way.
+        let small = lookups(1_000, 64).max(std::time::Duration::from_nanos(1));
+        let large = lookups(64_000, 1);
 
-        // 8x the rows. Linear is ~8x; the quadratic was ~64x. 24x leaves room
-        // for a noisy runner while still failing loudly on a return of the
-        // per-row sum.
+        // Equal work, so a prefix sum makes these roughly equal; the 64,000-row
+        // array has worse locality, hence the headroom. The per-row sum this
+        // replaced would make `large` ~64x slower.
         assert!(
-            large < small * 24,
-            "y lookups look superlinear: {small:?} for 1,000 rows vs {large:?} for 8,000"
+            large < small * 8,
+            "a row's y lookup scales with the document: {small:?} for 64,000 lookups \
+             over 1,000 rows vs {large:?} for the same 64,000 over 64,000 rows"
         );
+    }
+
+    /// The shortest of `trials` runs of `run`.
+    ///
+    /// A ratio between two timings only means anything if neither run was
+    /// preempted, and on a shared CI runner some run always is. The minimum is
+    /// the one that came closest to having the machine to itself; a mean is
+    /// dragged around by whatever else was running.
+    fn fastest(trials: usize, mut run: impl FnMut()) -> std::time::Duration {
+        // Warm the allocator and the branch predictor first, so the timed runs
+        // are not the ones paying for them.
+        run();
+        (0..trials)
+            .map(|_| {
+                let start = std::time::Instant::now();
+                run();
+                start.elapsed()
+            })
+            .min()
+            .unwrap_or_default()
     }
 }
