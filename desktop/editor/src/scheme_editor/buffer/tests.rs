@@ -1,3 +1,5 @@
+    use std::borrow::Cow;
+
     use super::*;
     use knotq_model::{ImageAssetFormat, ImageInline, Inline, ItemMarker, Table};
     use uuid::Uuid;
@@ -9,6 +11,64 @@
         assert_eq!(text, "child");
         assert_eq!(rows[0].item.indent, 2);
         assert_eq!(clean_line_text("\t    child"), "child");
+    }
+
+    /// `clean_line_text` now returns `Cow<str>`, borrowing when there is
+    /// nothing to strip instead of always allocating. Pin the output against
+    /// what the old always-allocating `.replace(...)`-based implementation
+    /// produced, across the cases that exercise each independent behavior:
+    /// nothing to strip (borrows), a table/image sentinel to drop, markdown
+    /// marker characters (which are plain text to this function — it must
+    /// leave them alone), an empty line, and multi-byte UTF-8 (byte-level
+    /// string ops must not split a codepoint).
+    #[test]
+    fn clean_line_text_matches_the_old_always_allocating_behavior() {
+        let cases = [
+            ("plain text, nothing to strip", "plain text, nothing to strip"),
+            (
+                "before\u{fffc}after",
+                // TABLE_OBJECT_CHAR is stripped, not replaced with anything.
+                "beforeafter",
+            ),
+            ("**bold** and _em_ and ==mark==", "**bold** and _em_ and ==mark=="),
+            ("", ""),
+            ("héllo 🙂 wörld", "héllo 🙂 wörld"),
+        ];
+        for (input, expected) in cases {
+            assert_eq!(clean_line_text(input), expected, "input: {input:?}");
+        }
+
+        // Leading whitespace/tabs are trimmed and inner tabs become spaces —
+        // covered separately since it's the one case that both allocates and
+        // changes the string.
+        assert_eq!(clean_line_text("\t  inner\ttab"), "inner tab");
+    }
+
+    /// The borrowing fast path must actually borrow (no allocation) when
+    /// there's nothing to strip, and must actually allocate when there is —
+    /// the whole point of returning `Cow`. Leading whitespace is trimmed by
+    /// slicing (`trim_start_matches`), which is itself allocation-free, so
+    /// only an *inner* tab or a table/image sentinel forces an allocation.
+    #[test]
+    fn clean_line_text_borrows_only_when_nothing_needs_stripping() {
+        let plain = "plain text";
+        assert!(matches!(clean_line_text(plain), Cow::Borrowed(_)));
+
+        // Leading spaces/tabs are trimmed by slicing — no allocation.
+        let with_leading_whitespace = "\t  leading only";
+        assert!(matches!(
+            clean_line_text(with_leading_whitespace),
+            Cow::Borrowed(_)
+        ));
+
+        // An inner tab must become a space, which requires allocating.
+        let with_inner_tab = "inner\ttab";
+        assert!(matches!(clean_line_text(with_inner_tab), Cow::Owned(_)));
+
+        let with_table_object = "a\u{fffc}b";
+        assert!(matches!(clean_line_text(with_table_object), Cow::Owned(_)));
+
+        assert!(matches!(clean_line_text(""), Cow::Borrowed(_)));
     }
 
     #[test]

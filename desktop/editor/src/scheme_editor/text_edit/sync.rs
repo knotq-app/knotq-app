@@ -1,3 +1,5 @@
+use std::borrow::Cow;
+
 use super::super::*;
 
 use super::rebuild_tabled_rows_after_text_change;
@@ -99,14 +101,23 @@ impl SchemeEditor {
             return;
         }
 
-        let old_text_lines: Vec<String> = self
+        // `row.item.text()` allocates a fresh String per row, and the old
+        // `clean_line_text`/`clean_display_line_text` unconditionally
+        // allocated again on top of that via `.replace(...)` — on a
+        // 10,000-line scheme that was ~20,000 allocations on every
+        // keystroke. Reading the text straight out of `ItemContent` avoids
+        // the first allocation, and `clean_line_text` now only allocates for
+        // a line that actually needs cleaning (leading whitespace/tabs, or a
+        // table/image sentinel) — nearly none do.
+        let old_text_lines: Vec<Cow<'_, str>> = self
             .rows
             .iter()
-            .map(|row| clean_line_text(&row.item.text()))
+            .map(|row| clean_line_text(row.item.content.as_text().unwrap_or("")))
             .collect();
-        let new_text_lines: Vec<String> = new_text.split('\n').map(clean_line_text).collect();
-        let old_refs: Vec<&str> = old_text_lines.iter().map(String::as_str).collect();
-        let new_refs: Vec<&str> = new_text_lines.iter().map(String::as_str).collect();
+        let new_text_lines: Vec<Cow<'_, str>> =
+            new_text.split('\n').map(clean_line_text).collect();
+        let old_refs: Vec<&str> = old_text_lines.iter().map(|line| line.as_ref()).collect();
+        let new_refs: Vec<&str> = new_text_lines.iter().map(|line| line.as_ref()).collect();
         let change = line_change(&old_refs, &new_refs);
 
         let prefix = change.prefix;
@@ -150,7 +161,7 @@ impl SchemeEditor {
                         commands.push(Command::UpdateItemText {
                             scheme: self.scheme_id,
                             item: item.id,
-                            text,
+                            text: text.into_owned(),
                         });
                     }
                 } else {
@@ -182,8 +193,10 @@ impl SchemeEditor {
             let line_count = new_changed.min(new_text_lines.len().saturating_sub(first_new));
             for i in 0..line_count {
                 let insert_at = insert_start + i;
-                let new_item =
-                    item_for_inserted_line(new_text_lines[first_new + i].clone(), Some(hint.style));
+                let new_item = item_for_inserted_line(
+                    new_text_lines[first_new + i].to_string(),
+                    Some(hint.style),
+                );
                 items.insert(insert_at, new_item.clone());
                 commands.push(Command::InsertItem {
                     scheme: self.scheme_id,
@@ -208,7 +221,7 @@ impl SchemeEditor {
                 } else {
                     None
                 };
-                let new_item = item_for_inserted_line(line.clone(), style);
+                let new_item = item_for_inserted_line(line.to_string(), style);
                 items.insert(insert_at, new_item.clone());
                 commands.push(Command::InsertItem {
                     scheme: self.scheme_id,
@@ -247,7 +260,10 @@ impl SchemeEditor {
     ) {
         let old_rows = self.rows.clone();
         let old_lines: Vec<String> = old_rows.iter().map(display_line_for_row).collect();
-        let new_lines: Vec<String> = new_text.split('\n').map(clean_display_line_text).collect();
+        let new_lines: Vec<String> = new_text
+            .split('\n')
+            .map(|line| clean_display_line_text(line).into_owned())
+            .collect();
         let old_refs: Vec<&str> = old_lines.iter().map(String::as_str).collect();
         let new_refs: Vec<&str> = new_lines.iter().map(String::as_str).collect();
         let change = line_change(&old_refs, &new_refs);
