@@ -42,21 +42,43 @@ use crate::{CrdtDocumentUpdate, StoredCrdtUpdate};
 /// observer needs no retained `Subscription` (it lives and dies with the document),
 /// keeping the document wrapper trivially constructible.
 pub(crate) struct EncodeCache {
-    dirty: Arc<AtomicBool>,
+    inner: Arc<EncodeCacheState>,
+}
+
+/// The cache's mutable half, held behind an `Arc` so a [`DocumentStateHandle`]
+/// can share it with a background thread. Without that, encoding a document's
+/// state could only happen wherever the document lives — the UI thread.
+#[derive(Default)]
+struct EncodeCacheState {
+    dirty: AtomicBool,
     bytes: Mutex<Option<Arc<[u8]>>>,
 }
 
 impl EncodeCache {
     /// Install the dirty-tracking observer on `doc` and return a fresh (dirty) cache.
     pub(crate) fn new(doc: &Doc) -> Self {
-        let dirty = Arc::new(AtomicBool::new(true));
-        let flag = Arc::clone(&dirty);
-        let _ = doc.observe_update_v1_with("knotq_encode_cache", move |_txn, _evt| {
-            flag.store(true, std::sync::atomic::Ordering::Relaxed);
-        });
-        Self {
-            dirty,
+        let inner = Arc::new(EncodeCacheState {
+            dirty: AtomicBool::new(true),
             bytes: Mutex::new(None),
+        });
+        let flag = Arc::clone(&inner);
+        let _ = doc.observe_update_v1_with("knotq_encode_cache", move |_txn, _evt| {
+            flag.dirty.store(true, std::sync::atomic::Ordering::Relaxed);
+        });
+        Self { inner }
+    }
+
+    /// A handle that can produce this document's state from another thread.
+    ///
+    /// The `Doc` is `#[repr(transparent)]` over a shared, lock-guarded store, so
+    /// cloning one is a handle clone rather than a copy of the document, and
+    /// yrs declares it `Send + Sync`. The handle shares this cache, so a
+    /// background encode also serves — and refreshes — what the UI thread would
+    /// have computed.
+    pub(crate) fn handle(&self, doc: &Doc) -> DocumentStateHandle {
+        DocumentStateHandle {
+            doc: doc.clone(),
+            cache: Arc::clone(&self.inner),
         }
     }
 
@@ -74,6 +96,12 @@ impl EncodeCache {
     /// that only pass the bytes along take the `Arc`; the ones that need an
     /// owned `Vec` (wire updates) still call [`Self::get`].
     pub(crate) fn get_shared(&self, encode: impl FnOnce() -> Vec<u8>) -> Arc<[u8]> {
+        self.inner.get_shared(encode)
+    }
+}
+
+impl EncodeCacheState {
+    fn get_shared(&self, encode: impl FnOnce() -> Vec<u8>) -> Arc<[u8]> {
         // Clear dirty up front: a change racing in during `encode` re-sets it, so the
         // next call recomputes rather than serving a stale cache.
         if !self.dirty.swap(false, std::sync::atomic::Ordering::AcqRel) {
@@ -89,6 +117,30 @@ impl EncodeCache {
         let bytes: Arc<[u8]> = Arc::from(encode());
         *self.bytes.lock().unwrap_or_else(|e| e.into_inner()) = Some(Arc::clone(&bytes));
         bytes
+    }
+}
+
+/// Produces one document's persisted state without needing the document's
+/// owner, so the save path can encode on a background thread instead of on the
+/// UI thread — where serializing a large scheme was an ~8 ms stall every time a
+/// save came due.
+///
+/// The state it produces is read at the moment [`Self::encode`] runs, which may
+/// be marginally later than the workspace snapshot it is saved alongside. The
+/// two writes were never atomic with respect to each other anyway (a crash
+/// between them already skews either way), and the skew this adds is a few
+/// milliseconds of edits against a window that was already the whole write.
+pub struct DocumentStateHandle {
+    doc: Doc,
+    cache: Arc<EncodeCacheState>,
+}
+
+impl DocumentStateHandle {
+    /// The document's full state, re-encoding only if it changed since the last
+    /// call — from either thread, since the cache is shared with its document.
+    pub fn encode(&self) -> Arc<[u8]> {
+        self.cache
+            .get_shared(|| self.doc.transact().encode_diff_v1(&StateVector::default()))
     }
 }
 
@@ -407,6 +459,22 @@ impl WorkspaceCrdtDocuments {
         out.insert(self.workspace.id, self.workspace.encode_state_shared_v1());
         for doc in self.schemes.values() {
             out.insert(doc.id, doc.encode_state_shared_v1());
+        }
+        out
+    }
+
+    /// The same states, but as handles that encode on demand — so the caller can
+    /// do the encoding somewhere other than here.
+    ///
+    /// Collecting these is cheap whatever the workspace holds: each is a shared
+    /// handle to a document and its cache, not the document's bytes. Encoding a
+    /// large scheme is several milliseconds, and [`Self::document_states`] does
+    /// it on whichever thread owns the documents — the UI thread, on every save.
+    pub fn document_state_handles(&self) -> HashMap<DocumentId, DocumentStateHandle> {
+        let mut out = HashMap::with_capacity(self.schemes.len() + 1);
+        out.insert(self.workspace.id, self.workspace.state_handle());
+        for doc in self.schemes.values() {
+            out.insert(doc.id, doc.state_handle());
         }
         out
     }

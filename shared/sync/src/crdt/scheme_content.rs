@@ -120,6 +120,11 @@ impl YrsSchemeDocument {
             .get_shared(|| self.doc.transact().encode_diff_v1(&StateVector::default()))
     }
 
+    /// A handle that produces the same state from another thread.
+    pub(crate) fn state_handle(&self) -> DocumentStateHandle {
+        self.encode_cache.handle(&self.doc)
+    }
+
     pub fn from_scheme(id: DocumentId, scheme: &Scheme) -> anyhow::Result<Self> {
         let this = Self::new(id);
         this.replace_scheme(scheme)?;

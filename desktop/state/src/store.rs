@@ -11,8 +11,8 @@ use knotq_model::{
     DocumentId, OperationId, ReplicaId, SchemeId, SyncDocumentKind, Workspace, WorkspaceId,
 };
 use knotq_sync::{
-    validate_crdt_update_sequence, CrdtDocumentUpdate, PendingCrdtEdit, StoredCrdtUpdate,
-    WorkspaceCrdtChangeSet, WorkspaceCrdtDocuments,
+    validate_crdt_update_sequence, CrdtDocumentUpdate, DocumentStateHandle, PendingCrdtEdit,
+    StoredCrdtUpdate, WorkspaceCrdtChangeSet, WorkspaceCrdtDocuments,
 };
 use serde::{Deserialize, Serialize};
 
@@ -104,6 +104,12 @@ impl WorkspaceStore {
     /// seed the background sync's CRDT from this device's latest local edits.
     pub fn crdt_document_states(&self) -> HashMap<DocumentId, Arc<[u8]>> {
         self.crdt.document_states()
+    }
+
+    /// The same snapshot as handles that encode on demand, so a caller that is
+    /// about to hand the bytes to a background task can do the encoding there.
+    pub fn crdt_document_state_handles(&self) -> HashMap<DocumentId, DocumentStateHandle> {
+        self.crdt.document_state_handles()
     }
 
     pub fn workspace(&self) -> &Workspace {

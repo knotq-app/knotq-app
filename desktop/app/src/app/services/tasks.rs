@@ -36,25 +36,38 @@ pub(crate) fn spawn_save_task(
                             return None;
                         }
                         let pending_crdt_edits = app.state.pending_crdt_edits();
-                        let crdt_states = app.state.crdt_document_states();
+                        // Handles, not bytes. Serializing a large scheme's CRDT
+                        // is several milliseconds and this block runs on the UI
+                        // thread, so it used to drop a frame every time a save
+                        // came due while typing. Collecting handles is cheap
+                        // whatever the workspace holds; the encoding happens in
+                        // the background task below.
+                        let crdt_state_handles = app.state.crdt_document_state_handles();
                         let dirty_ids = std::mem::take(&mut app.state.dirty_schemes);
                         app.state.index_dirty = false;
                         Some((
                             app.workspace.clone(),
                             dirty_ids,
                             pending_crdt_edits,
-                            crdt_states,
+                            crdt_state_handles,
                         ))
                     })
                     .ok()
                     .flatten();
 
-                if let Some((ws, dirty_ids, pending_crdt_edits, crdt_states)) = snapshot {
+                if let Some((ws, dirty_ids, pending_crdt_edits, crdt_state_handles)) = snapshot {
                     let path = workspace_path();
                     let retry_ids = dirty_ids.clone();
                     let result = cx
                         .background_executor()
                         .spawn(async move {
+                            // Encode here rather than on the UI thread. The
+                            // documents are shared, lock-guarded handles, so
+                            // this reads them wherever they live.
+                            let crdt_states: HashMap<_, _> = crdt_state_handles
+                                .into_iter()
+                                .map(|(document, handle)| (document, handle.encode()))
+                                .collect();
                             let result = if dirty_ids.is_empty() {
                                 save_workspace(&path, &ws)
                             } else {
