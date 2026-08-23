@@ -54,6 +54,10 @@ pub(crate) struct YrsJsonDocument {
     pub(crate) kind: SyncDocumentKind,
     doc: Doc,
     encode_cache: EncodeCache,
+    /// Collects the bytes of the transactions `replace_snapshot` commits, so an
+    /// ordinary edit emits the change itself rather than a diff recomputed by
+    /// walking the whole document. See `update_capture`.
+    capture: UpdateCapture,
 }
 
 impl YrsJsonDocument {
@@ -76,11 +80,13 @@ impl YrsJsonDocument {
         // a folder) merge additively instead of resolving as whole-document LWW.
         WorkspaceMaps::get(&doc);
         let encode_cache = EncodeCache::new(&doc);
+        let capture = UpdateCapture::install(&doc);
         Self {
             id,
             kind,
             doc,
             encode_cache,
+            capture,
         }
     }
 
@@ -92,11 +98,13 @@ impl YrsJsonDocument {
         let doc = Doc::with_options(yrs_doc_options(id, client_id, OffsetKind::Bytes));
         WorkspaceMaps::get(&doc);
         let encode_cache = EncodeCache::new(&doc);
+        let capture = UpdateCapture::install(&doc);
         Self {
             id,
             kind,
             doc,
             encode_cache,
+            capture,
         }
     }
 
@@ -156,17 +164,26 @@ impl YrsJsonDocument {
         snapshot: &WorkspaceDocumentSnapshot,
         force: bool,
     ) -> anyhow::Result<Option<CrdtDocumentUpdate>> {
-        let before = self.doc.transact().state_vector();
+        // `force` deliberately re-emits the WHOLE document, so it never uses
+        // what the write produced; an ordinary edit takes the delta from the
+        // writes themselves rather than diffing the document afterwards (see
+        // `update_capture`).
+        let delta = if force {
+            Delta::Diff(StateVector::default())
+        } else {
+            match self.capture.arm() {
+                Some(guard) => Delta::Captured(guard),
+                None => Delta::Diff(self.doc.transact().state_vector()),
+            }
+        };
         let changed = self.replace_snapshot(snapshot)?;
         if !changed && !force {
             return Ok(None);
         }
-        let base = if force {
-            StateVector::default()
-        } else {
-            before
+        let update_v1 = match delta {
+            Delta::Captured(guard) => guard.finish()?,
+            Delta::Diff(base) => self.doc.transact().encode_diff_v1(&base),
         };
-        let update_v1 = self.doc.transact().encode_diff_v1(&base);
         if update_v1_is_empty(&update_v1) {
             return Ok(None);
         }
@@ -389,6 +406,20 @@ impl YrsJsonDocument {
         let before = txn.snapshot();
         txn.apply_update(Update::decode_v1(update)?)?;
         Ok(txn.snapshot() != before)
+    }
+
+    /// Whether this document has ever been written or restored, as opposed to
+    /// being the bare set of empty root maps a constructor leaves behind.
+    ///
+    /// `meta.id` is the marker: every path that seeds a workspace document
+    /// writes it, and nothing removes it.
+    pub(crate) fn is_seeded(&self) -> bool {
+        let meta = self.doc.get_or_insert_map("meta");
+        let txn = self.doc.transact();
+        meta.get_as::<_, Option<String>>(&txn, "id")
+            .ok()
+            .flatten()
+            .is_some()
     }
 
     pub(crate) fn validate(&self) -> anyhow::Result<()> {
