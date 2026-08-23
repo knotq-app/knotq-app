@@ -228,9 +228,16 @@ impl YrsSchemeDocument {
         if reusable_shadow.is_none() {
             self.ensure_item_skeletons(scheme)?;
         }
-        let metadata = self.doc.get_or_insert_map("scheme_file");
-        let items_by_id = self.doc.get_or_insert_map("items_by_id");
+        // Taken from inside the transaction, not from the document.
+        // `Doc::get_or_insert_map` opens AND COMMITS a transaction of its own
+        // just to hand back a root handle, and committing one costs a state
+        // vector and a delete set over the whole document. Two of those ran
+        // before the real transaction on every keystroke; the maps have existed
+        // since the document was constructed (`init_scheme_maps`), so this is a
+        // lookup that was paying for a write.
         let mut txn = self.doc.transact_mut();
+        let metadata = txn.get_or_insert_map("scheme_file");
+        let items_by_id = txn.get_or_insert_map("items_by_id");
 
         if metadata
             .get_as::<_, Option<String>>(&txn, "schema")
