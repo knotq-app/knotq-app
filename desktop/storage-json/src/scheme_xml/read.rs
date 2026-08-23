@@ -167,7 +167,10 @@ fn parse_item_attrs(e: &BytesStart) -> Result<Item> {
         let value = attr.unescape_value().context("unescape item attribute")?;
         match attr.key.as_ref() {
             b"id" => item.id = value.parse::<ItemId>().context("parse item id")?,
-            b"marker" => item.marker = parse_marker(&value)?,
+            b"marker" => {
+                item.marker = parse_marker(&value)?;
+                item.marker_family = parse_marker_family(&value);
+            }
             b"indent" => item.indent = value.parse::<u8>().context("parse indent")?,
             b"start" => item.start = Some(parse_datetime(&value).context("parse start")?),
             b"end" => item.end = Some(parse_datetime(&value).context("parse end")?),
@@ -245,6 +248,18 @@ fn parse_row_id(e: &BytesStart) -> knotq_model::RowId {
 
 pub(super) fn parse_marker(value: &str) -> Result<ItemMarker> {
     ItemMarker::parse(value).map_err(|err| anyhow!(err))
+}
+
+/// The family half of a marker token (`bullet.disc` -> `Disc`).
+///
+/// A token with no suffix, or one this build does not recognise, is the
+/// depth-following default — a newer build's family must not stop the line
+/// loading.
+pub(super) fn parse_marker_family(value: &str) -> knotq_model::MarkerFamily {
+    match value.split_once('.') {
+        Some((_, suffix)) => knotq_model::MarkerFamily::from_suffix(suffix),
+        None => knotq_model::MarkerFamily::Standard,
+    }
 }
 
 /// Read character data up to `</end_name>`, concatenating text segments.

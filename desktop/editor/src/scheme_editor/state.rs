@@ -251,6 +251,64 @@ impl SchemeEditor {
         self.emit_commands(commands, cx);
     }
 
+    /// Override which glyphs the selected lines' markers draw from.
+    ///
+    /// Only applied to lines the family suits — a numbered family on a bullet
+    /// line has nothing to draw — so a multi-line selection of mixed markers
+    /// changes the ones it can and leaves the rest alone rather than doing
+    /// nothing or doing something wrong.
+    pub fn set_marker_family_for_selection(
+        &mut self,
+        family: knotq_model::MarkerFamily,
+        cx: &mut Context<Self>,
+    ) {
+        if self.read_only {
+            return;
+        }
+        let (start_row, end_row) = self.selected_row_range();
+        let mut commands = Vec::new();
+        for row in start_row..=end_row {
+            let Some(editor_row) = self.rows.get_mut(row) else {
+                continue;
+            };
+            if !family.is_valid_for(editor_row.item.marker) {
+                continue;
+            }
+            if editor_row.item.marker_family == family {
+                continue;
+            }
+            editor_row.item.marker_family = family;
+            commands.push(Command::SetItemMarkerFamily {
+                scheme: self.scheme_id,
+                item: editor_row.item.id,
+                family,
+            });
+        }
+        self.refresh_layout_after_content_change(None);
+        self.emit_commands(commands, cx);
+    }
+
+    /// The family shown as active in the picker: the one every selected line
+    /// that could carry a family agrees on, or the default when they differ.
+    pub fn selection_marker_family(&self) -> knotq_model::MarkerFamily {
+        let (start_row, end_row) = self.selected_row_range();
+        let mut found: Option<knotq_model::MarkerFamily> = None;
+        for row in start_row..=end_row {
+            let Some(editor_row) = self.rows.get(row) else {
+                continue;
+            };
+            if knotq_model::MarkerFamily::choices_for(editor_row.item.marker).is_empty() {
+                continue;
+            }
+            match found {
+                None => found = Some(editor_row.item.marker_family),
+                Some(existing) if existing == editor_row.item.marker_family => {}
+                Some(_) => return knotq_model::MarkerFamily::Standard,
+            }
+        }
+        found.unwrap_or(knotq_model::MarkerFamily::Standard)
+    }
+
     pub fn toggle_start_date_from_toolbar(&mut self, cx: &mut Context<Self>) {
         if self.read_only {
             return;

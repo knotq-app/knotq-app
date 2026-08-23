@@ -34,21 +34,24 @@ impl SchemeEditor {
         match row.item.marker {
             ItemMarker::Blank => {}
             ItemMarker::Bullet => {
-                let bullet = px(4.0);
-                let bullet_bounds = Bounds::new(
-                    point(
-                        checkbox_bounds.left() + (checkbox_bounds.size.width - bullet) / 2.0,
-                        checkbox_bounds.top() + (checkbox_bounds.size.height - bullet) / 2.0,
-                    ),
-                    size(bullet, bullet),
-                );
-                window.paint_quad(fill(bullet_bounds, annotation_color));
+                // The glyph comes from the line's family, which by default
+                // follows its indent depth — so nesting reads clearly without
+                // the user choosing anything.
+                let glyph = row
+                    .item
+                    .marker_family
+                    .glyph_at(ItemMarker::Bullet, row.item.indent);
+                paint_bullet_glyph(glyph, checkbox_bounds, annotation_color, window);
             }
             ItemMarker::Numbered => {
                 if let Some(number) = numbered_marker_ordinal(&self.rows, row_ix) {
+                    let glyph = row
+                        .item
+                        .marker_family
+                        .glyph_at(ItemMarker::Numbered, row.item.indent);
                     self.paint_numbered_marker(
                         NumberedMarkerPaint {
-                            label: &format!("{number}."),
+                            label: &format!("{}.", glyph.ordinal_label(number)),
                             text_left,
                             y: line_origin.y,
                             line_height,
@@ -371,5 +374,76 @@ impl SchemeEditor {
 
     fn annotation_bar_x(&self, checkbox_bounds: Bounds<Pixels>) -> Pixels {
         checkbox_bounds.left() - px(ANNOTATION_BAR_GAP + INDENT_GUIDE_X_SHIFT)
+    }
+}
+
+/// Draw the bullet glyph for `family` inside `bounds`.
+///
+/// The shapes deliberately differ in more than size — a filled disc, a ring, a
+/// square and a dash stay distinguishable at 4px and in a screenshot, which
+/// three sizes of the same dot would not.
+fn paint_bullet_glyph(
+    glyph: knotq_model::MarkerGlyph,
+    bounds: Bounds<Pixels>,
+    color: gpui::Hsla,
+    window: &mut Window,
+) {
+    use knotq_model::MarkerGlyph;
+
+    let centered = |glyph: Pixels| {
+        Bounds::new(
+            point(
+                bounds.left() + (bounds.size.width - glyph) / 2.0,
+                bounds.top() + (bounds.size.height - glyph) / 2.0,
+            ),
+            size(glyph, glyph),
+        )
+    };
+
+    match glyph {
+        // A hollow ring: same footprint as the disc, drawn as a border so it
+        // reads as "one level in" rather than "smaller".
+        MarkerGlyph::Circle => {
+            let glyph = px(6.0);
+            let ring = centered(glyph);
+            window.paint_quad(quad(
+                ring,
+                glyph / 2.0,
+                gpui::transparent_black(),
+                px(1.0),
+                color,
+                BorderStyle::default(),
+            ));
+        }
+        MarkerGlyph::Square => {
+            window.paint_quad(fill(centered(px(4.0)), color));
+        }
+        MarkerGlyph::Dash => {
+            let width = px(6.0);
+            let thickness = px(1.5);
+            window.paint_quad(fill(
+                Bounds::new(
+                    point(
+                        bounds.left() + (bounds.size.width - width) / 2.0,
+                        bounds.top() + (bounds.size.height - thickness) / 2.0,
+                    ),
+                    size(width, thickness),
+                ),
+                color,
+            ));
+        }
+        // Disc, and the numbered glyphs (which `glyph_at` does not produce for
+        // a bullet line, but which cost nothing to tolerate).
+        _ => {
+            let glyph = px(4.0);
+            window.paint_quad(quad(
+                centered(glyph),
+                glyph / 2.0,
+                color,
+                px(0.0),
+                gpui::transparent_black(),
+                BorderStyle::default(),
+            ));
+        }
     }
 }

@@ -104,6 +104,57 @@ mod tests {
         assert!(decoded.items[0].is_content_empty());
     }
 
+    /// A family chosen by the user must survive a save/load cycle, and must be
+    /// written into the SAME `marker` attribute an older build already knows how
+    /// to strip — that is what keeps the file openable by a build that predates
+    /// families.
+    #[test]
+    fn marker_families_round_trip_through_the_marker_attribute() {
+        use knotq_model::MarkerFamily;
+
+        let mut scheme = Scheme::new("Families", 0);
+        let mut square = Item::new("square bullet");
+        square.marker = ItemMarker::Bullet;
+        square.marker_family = MarkerFamily::Squares;
+        let mut roman = Item::new("roman number");
+        roman.marker = ItemMarker::Numbered;
+        roman.marker_family = MarkerFamily::Roman;
+        let plain = Item::new("plain");
+        scheme.items = vec![square, roman, plain];
+
+        let xml = encode_scheme_xml(&scheme).expect("write");
+        assert!(xml.contains("bullet.squares"), "{xml}");
+        assert!(xml.contains("numbered.roman"), "{xml}");
+
+        let back = decode_scheme_xml(&xml, Path::new("F.knotq"), scheme.id).expect("read");
+        assert_eq!(back.items[0].marker, ItemMarker::Bullet);
+        assert_eq!(back.items[0].marker_family, MarkerFamily::Squares);
+        assert_eq!(back.items[1].marker, ItemMarker::Numbered);
+        assert_eq!(back.items[1].marker_family, MarkerFamily::Roman);
+        // An untouched line stays on the default and writes no suffix.
+        assert_eq!(back.items[2].marker_family, MarkerFamily::Standard);
+    }
+
+    /// A file written by a NEWER build, using a family this one has never heard
+    /// of, must still open — on the default glyph rather than not at all.
+    #[test]
+    fn an_unknown_family_from_a_newer_build_still_loads() {
+        use knotq_model::MarkerFamily;
+
+        let mut scheme = Scheme::new("Future", 0);
+        let mut item = Item::new("from the future");
+        item.marker = ItemMarker::Bullet;
+        scheme.items = vec![item];
+        let xml = encode_scheme_xml(&scheme)
+            .expect("write")
+            .replace("marker=\"bullet\"", "marker=\"bullet.holographic\"");
+
+        let back = decode_scheme_xml(&xml, Path::new("F.knotq"), scheme.id)
+            .expect("a future family must not fail the read");
+        assert_eq!(back.items[0].marker, ItemMarker::Bullet);
+        assert_eq!(back.items[0].marker_family, MarkerFamily::Standard);
+    }
+
     #[test]
     fn dotted_marker_subtypes_decode_as_base_markers() {
         assert_eq!(parse_marker("bullet.disc").unwrap(), ItemMarker::Bullet);

@@ -653,6 +653,15 @@ pub struct KnotQApp {
     /// Anchor for the title-bar sync status popover; `Some` while it is open.
     #[cfg(feature = "accounts")]
     pub sync_status_popover: Option<Point<Pixels>>,
+    /// Open marker-family picker: which marker it is for, and where to anchor
+    /// it. Opened by holding one of the bullet/number toolbar buttons.
+    pub marker_family_picker: Option<(knotq_model::ItemMarker, Point<Pixels>)>,
+    /// When a marker toolbar button was pressed, so releasing it can tell a tap
+    /// (set the marker) from a hold (offer the glyph family).
+    pub marker_button_pressed_at: Option<(knotq_model::ItemMarker, std::time::Instant)>,
+    /// Where the last marker-button press landed, so a picker opened by holding
+    /// it appears at the button rather than at the corner of the window.
+    pub marker_family_picker_anchor: Option<Point<Pixels>>,
     /// When the last sync completed successfully, for the "Last synced …" line.
     #[cfg(feature = "accounts")]
     pub last_synced_at: Option<DateTime<Utc>>,

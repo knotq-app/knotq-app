@@ -53,6 +53,7 @@ pub(crate) fn dispatch(
         | Command::ReplaceItem { .. }
         | Command::SetItemIndent { .. }
         | Command::SetItemMarker { .. }
+        | Command::SetItemMarkerFamily { .. }
         | Command::SetItemDate { .. }
         | Command::SetItemRecurrence { .. }
         | Command::SetItemPriority { .. }

@@ -495,6 +495,7 @@ fn collect_crdt_changes(command: &Command, out: &mut WorkspaceCrdtChangeSet) {
         | Command::ReplaceItem { scheme, .. }
         | Command::SetItemIndent { scheme, .. }
         | Command::SetItemMarker { scheme, .. }
+        | Command::SetItemMarkerFamily { scheme, .. }
         | Command::SetItemDate { scheme, .. }
         | Command::SetItemRecurrence { scheme, .. }
         | Command::SetItemPriority { scheme, .. }
@@ -519,6 +520,7 @@ pub(crate) fn collect_affected_schemes(cmd: &Command, out: &mut HashSet<SchemeId
         | Command::ReplaceItem { scheme, .. }
         | Command::SetItemIndent { scheme, .. }
         | Command::SetItemMarker { scheme, .. }
+        | Command::SetItemMarkerFamily { scheme, .. }
         | Command::SetItemDate { scheme, .. }
         | Command::SetItemRecurrence { scheme, .. }
         | Command::SetItemPriority { scheme, .. }

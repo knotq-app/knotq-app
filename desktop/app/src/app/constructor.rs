@@ -164,6 +164,9 @@ impl KnotQApp {
             email_verification_resend_task: None,
             #[cfg(feature = "accounts")]
             sync_status_popover: None,
+            marker_family_picker: None,
+            marker_button_pressed_at: None,
+            marker_family_picker_anchor: None,
             #[cfg(feature = "accounts")]
             last_synced_at: None,
             #[cfg(feature = "accounts")]

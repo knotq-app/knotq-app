@@ -1,6 +1,11 @@
 use super::*;
 use crate::app::GoogleOAuthStatus;
-use knotq_model::{CalendarProvider, ItemMarker, Scheme, SchemeId, SchemeSource};
+use knotq_model::{CalendarProvider, ItemMarker, MarkerFamily, Scheme, SchemeId, SchemeSource};
+
+/// How long one of the marker buttons must be held before releasing it offers
+/// the glyph family instead of just setting the marker. Long enough that a
+/// normal click is never mistaken for a hold, short enough to feel deliberate.
+const MARKER_FAMILY_HOLD: std::time::Duration = std::time::Duration::from_millis(350);
 
 const CLOUD_OFF_ICON: &str = "icons/cloud-off.svg";
 
@@ -46,14 +51,36 @@ impl KnotQApp {
                              editor: Entity<SchemeEditor>,
                              cx: &mut Context<Self>| {
             let active = state.marker == marker;
-            toolbar_glyph_button(
+            // Tap sets the marker; press-and-hold offers the glyph family for
+            // markers that have one. The press time is recorded on mouse-down
+            // and read on release, so a hold does NOT also apply the marker.
+            let offers_family = !MarkerFamily::choices_for(marker).is_empty();
+            toolbar_glyph_button_with_press(
                 id,
                 active,
                 glyph,
                 c,
                 tooltip,
                 editor.clone(),
-                cx.listener(move |_this, _: &ClickEvent, _window, cx| {
+                cx.listener(move |this, event: &gpui::MouseDownEvent, _window, cx| {
+                    this.marker_button_pressed_at = Some((marker, std::time::Instant::now()));
+                    this.marker_family_picker_anchor = Some(event.position);
+                    cx.notify();
+                }),
+                cx.listener(move |this, _: &ClickEvent, _window, cx| {
+                    let held = this
+                        .marker_button_pressed_at
+                        .take()
+                        .filter(|(pressed, _)| *pressed == marker)
+                        .is_some_and(|(_, at)| at.elapsed() >= MARKER_FAMILY_HOLD);
+                    if held && offers_family {
+                        let anchor = this
+                            .marker_family_picker_anchor
+                            .unwrap_or_else(|| gpui::point(px(0.0), px(0.0)));
+                        this.marker_family_picker = Some((marker, anchor));
+                        cx.notify();
+                        return;
+                    }
                     editor.update(cx, |editor, cx| editor.set_marker_for_selection(marker, cx));
                 }),
             )

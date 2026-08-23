@@ -1,7 +1,7 @@
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
-use knotq_model::{
+use knotq_model::{MarkerFamily, 
     DeletedFolderOrigin, DeletedSchemeOrigin, Folder, FolderId, Item, ItemId, ItemMarker, NodeRef,
     OccurrenceId, Recurrence, Scheme, SchemeId, SchemeSource,
 };
@@ -117,6 +117,14 @@ pub enum Command {
         scheme: SchemeId,
         item: ItemId,
         marker: ItemMarker,
+    },
+    /// Override which glyphs a bullet or numbered line draws from. Separate
+    /// from `SetItemMarker` because it changes appearance only — the line stays
+    /// a bullet, or stays ordered.
+    SetItemMarkerFamily {
+        scheme: SchemeId,
+        item: ItemId,
+        family: MarkerFamily,
     },
     SetItemDate {
         scheme: SchemeId,

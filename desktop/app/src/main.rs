@@ -320,6 +320,9 @@ impl Render for KnotQApp {
         if let Some(popover) = self.render_scheme_color_picker(window, cx) {
             root = root.child(popover);
         }
+        if let Some(picker) = self.render_marker_family_picker(window, cx) {
+            root = root.child(picker);
+        }
         if let Some(popover) = self.render_sync_status_popover(window, cx) {
             root = root.child(popover);
         }
