@@ -39,7 +39,7 @@ impl SchemeEditor {
             time_format,
             synced_revision: None,
             rows,
-            text,
+            text: TextBuffer::new(text),
             selection: initial_selection,
             marked_range: None,
             is_selecting: false,
@@ -426,13 +426,13 @@ impl SchemeEditor {
         self.synced_revision = revision;
 
         let (text, rows) = build_buffer(&scheme.items);
-        if text != self.text
+        if !(self.text == *text.as_str())
             || !same_rows(&rows, &self.rows)
             || time_format_changed
             || color_changed
             || theme_changed
         {
-            self.text = text;
+            self.text.set(text);
             self.rows = rows;
             self.refresh_layout_after_content_change(Some(window));
             self.selection = TextSelection::collapsed(self.clamp_location(self.selection.head));

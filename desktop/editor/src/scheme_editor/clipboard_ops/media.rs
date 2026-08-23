@@ -134,7 +134,7 @@ impl SchemeEditor {
 
         let new_top = reconstruct_top_level(&self.rows);
         let (text, rows) = build_buffer(&new_top);
-        self.text = text;
+        self.text.set(text);
         self.rows = rows;
         self.refresh_layout_after_content_change(window);
         self.selection = TextSelection::collapsed(TextLocation {
@@ -176,7 +176,7 @@ impl SchemeEditor {
         new_top.splice(pos..=pos, replacement);
 
         let (text, rows) = build_buffer(&new_top);
-        self.text = text;
+        self.text.set(text);
         self.rows = rows;
         self.refresh_layout_after_content_change(window);
         // Caret just after the inserted block(s): the start of the trailing text

@@ -72,19 +72,43 @@ impl SchemeEditor {
             header_font.weight = gpui::FontWeight::SEMIBOLD;
             header_font
         };
-        let mut wrapped = Vec::new();
+        let probe_started_at = crate::typing_probe::enabled().then(std::time::Instant::now);
+        let mut reshaped_rows = 0usize;
         let mut new_table_layouts = HashMap::new();
         self.last_active_rows = self.active_preview_rows();
-        // Rows shaped by the PREVIOUS relayout, and the lines they produced. A
-        // row whose shaping inputs are unchanged is cloned instead of reshaped —
-        // typing one character used to re-run font shaping for every line in the
-        // scheme.
-        let previous = super::shape_cache::PreviousShapes::new(
-            self.shape_cache.begin(self.rows.len(), &font),
-            self.line_map.take_lines(),
-        );
 
-        for (row, line) in self.text_lines().into_iter().enumerate() {
+        // Relayout updates the line map IN PLACE. Rows are addressed by index
+        // rather than by iterating owned line strings, and a row whose shaping
+        // inputs are unchanged is skipped entirely — neither its shaped line nor
+        // its key is touched. Rebuilding the whole vector instead meant a
+        // keystroke re-allocated a `String` per line and memcpy'd every row's
+        // ~1.4KB shaped line, whatever it had actually changed.
+        //
+        // Rows are matched across passes by item id, not by index, so inserting
+        // or deleting a line is a SPLICE — the rows after it keep their shaped
+        // lines and simply move. Index-alignment alone would have called every
+        // row below an insertion changed, so pressing Enter near the top of a
+        // 10,000-line scheme re-shaped the whole document.
+        //
+        // The same splice is applied to the line map and to the shape cache, so
+        // "row `n` is unchanged" always refers to the line still sitting at row
+        // `n`.
+        let row_ids = self
+            .rows
+            .iter()
+            .map(|row| row.item.id)
+            .collect::<Vec<_>>();
+        let splice = self.shape_cache.begin(&row_ids, &font);
+        self.line_map
+            .splice_rows(splice.at, splice.removed, splice.inserted);
+        // The buffer and the row list are built together, but a row count that
+        // ever disagreed would silently shape the wrong line, so trust the
+        // buffer and make the map match it.
+        let row_count = self.text.line_count();
+        self.line_map.resize_rows(row_count);
+        self.shape_cache.resize_rows(row_count);
+        for row in 0..row_count {
+            let line_range = self.text.line_range(row).unwrap_or(0..0);
             let path = self.rows.get(row).map(|row| row.path).unwrap_or_default();
             let is_anchor = path.is_table_anchor();
             let is_cell = path.is_cell();
@@ -133,7 +157,16 @@ impl SchemeEditor {
                 wrap_width - px(TEXT_LEFT_PAD + 18.0) - self.row_indent_x(row) - row_layout_offset
             }
             .max(px(40.0));
-            let line_without_block = line_without_table_object(&line);
+            // Stripping the block object allocates, so only do it for a line
+            // that actually carries one — nearly none do.
+            let line_without_block: std::borrow::Cow<'_, str> = {
+                let line = &self.text[line_range.clone()];
+                if line.contains(TABLE_OBJECT_CHAR) {
+                    std::borrow::Cow::Owned(line_without_table_object(line))
+                } else {
+                    std::borrow::Cow::Borrowed(line)
+                }
+            };
             let has_line_text = !line_without_block.is_empty();
             let media_height = if is_cell || is_anchor {
                 px(0.0)
@@ -171,10 +204,11 @@ impl SchemeEditor {
             if (is_anchor && !has_line_text) || media_only {
                 line_height = 2.0;
             }
+            let line = &self.text[line_range.clone()];
             let suffix_range = if is_cell {
                 None
             } else {
-                block_suffix_range(&line)
+                block_suffix_range(line)
             };
             let table_suffix = suffix_range.as_ref().and_then(|range| {
                 let suffix = line[range.clone()].to_string();
@@ -188,34 +222,32 @@ impl SchemeEditor {
                 &font
             };
             // A table row's width comes from its anchor's computed grid, which
-            // depends on other rows, so its key is not self-contained; those
+            // depends on other rows, so its view is not self-contained; those
             // always reshape (recorded as `None`).
-            let shape_key = (!is_cell && !is_anchor).then(|| {
-                super::shape_cache::LineShapeKey::new(
-                    line.clone(),
-                    text_width,
-                    hidden_prefix.len(),
-                    is_done,
-                    reveal,
-                    path.is_header_cell(),
-                    color,
-                    annotation.as_ref().map(|a| a.text.to_string()),
-                    media_height,
-                    line_height,
-                )
+            let shape_view = (!is_cell && !is_anchor).then(|| super::shape_cache::LineShapeView {
+                line,
+                text_width,
+                hidden_prefix_len: hidden_prefix.len(),
+                is_done,
+                reveal,
+                header_font: path.is_header_cell(),
+                color,
+                annotation: annotation.as_ref().map(|a| a.text.as_str()),
+                media_height,
+                line_height,
             });
-            if let Some(reused) = shape_key
+            if shape_view
                 .as_ref()
-                .and_then(|key| previous.reuse(row, key))
+                .filter(|_| crate::typing_probe::shape_reuse_enabled())
+                .is_some_and(|view| self.shape_cache.row_is_unchanged(row, view))
             {
-                wrapped.push(reused.clone());
-                self.shape_cache.record(shape_key);
                 continue;
             }
+            reshaped_rows += 1;
             let (shaped_text, runs, collapsed) = self.build_line_layout(LineLayoutInput {
                 font: line_font,
                 hidden_prefix,
-                line: &line,
+                line,
                 default_color: color,
                 is_done,
                 reveal,
@@ -257,7 +289,11 @@ impl SchemeEditor {
                     .pop()
                     .unwrap_or_default()
             });
-            wrapped.push(
+            // Recorded before the line is built: the view borrows `annotation`,
+            // which the line then takes ownership of.
+            self.shape_cache.record_shaped(row, shape_view.as_ref());
+            self.line_map.set_line(
+                row,
                 SchemeItemLine::new(
                     shaped.pop().unwrap_or_default(),
                     annotation,
@@ -267,15 +303,17 @@ impl SchemeEditor {
                 .with_block_height(block_height)
                 .with_block_suffix(block_suffix, px(6.0))
                 .in_grid(is_cell)
-                .with_layout_mapping(hidden_prefix.len(), collapsed, line.len()),
+                .with_layout_mapping(hidden_prefix.len(), collapsed, line_range.len()),
             );
-            self.shape_cache.record(shape_key);
         }
 
-        self.line_map.replace_lines(wrapped);
+        self.line_map.finish_update();
         self.table_layouts = new_table_layouts;
         self.compute_cell_slots();
         self.line_map_dirty = false;
+        if let Some(started_at) = probe_started_at {
+            crate::typing_probe::record_relayout(started_at.elapsed(), reshaped_rows, row_count);
+        }
     }
 
     fn table_layouts_lookup(

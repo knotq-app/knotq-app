@@ -260,5 +260,6 @@ impl Element for SchemeTextElement {
         self.editor.update(cx, |editor, cx| {
             editor.paint_editor(bounds, window, cx);
         });
+        crate::typing_probe::finish_frame();
     }
 }

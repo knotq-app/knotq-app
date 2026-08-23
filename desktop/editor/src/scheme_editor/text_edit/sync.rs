@@ -37,7 +37,7 @@ impl SchemeEditor {
         // Clear auto-bulletize undo on any new text edit (auto-bulletize will
         // re-set it if the edit triggers a conversion).
         self.auto_bullet_undo = None;
-        let mut text = self.text.clone();
+        let mut text = self.text.to_string();
         let start = range.start.min(text.len());
         let end = range.end.min(text.len());
         if start > end || !text.is_char_boundary(start) || !text.is_char_boundary(end) {
@@ -86,7 +86,7 @@ impl SchemeEditor {
         if self.read_only {
             return;
         }
-        if new_text == self.text {
+        if self.text == *new_text.as_str() {
             self.selection = TextSelection::collapsed(self.clamp_location(cursor_after));
             self.reset_cursor_blink(cx);
             self.scroll_to_cursor(cx);
@@ -219,7 +219,7 @@ impl SchemeEditor {
         }
 
         let (text, rows) = build_buffer(&items);
-        self.text = text;
+        self.text.set(text);
         self.rows = rows;
         self.refresh_layout_after_content_change(window);
         self.selection = TextSelection::collapsed(self.clamp_location(cursor_after));
@@ -263,7 +263,7 @@ impl SchemeEditor {
         let new_top = reconstruct_top_level(&new_rows);
 
         let (text, rows) = build_buffer(&new_top);
-        self.text = text;
+        self.text.set(text);
         self.rows = rows;
         self.refresh_layout_after_content_change(window);
         self.selection = TextSelection::collapsed(self.clamp_location(cursor_after));
@@ -369,7 +369,7 @@ impl SchemeEditor {
         // Rebuild buffer to sync text representation.
         let items: Vec<Item> = self.rows.iter().map(|r| r.item.clone()).collect();
         let (text, rows) = build_buffer(&items);
-        self.text = text;
+        self.text.set(text);
         self.rows = rows;
         self.selection = TextSelection::collapsed(TextLocation { row, col: 0 });
         self.marked_range = None;
