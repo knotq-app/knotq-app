@@ -11,7 +11,7 @@ impl KnotQApp {
         let is_daily_queue = self.selection.view == View::DailyQueue;
         let context_menu_open = self.sidebar_context_menu.is_some();
 
-        let root_id = self.workspace.root;
+        let tree = self.render_sidebar_tree(cx);
 
         div()
             .flex()
@@ -88,10 +88,57 @@ impl KnotQApp {
                     .flex_1()
                     .w_full()
                     .min_w_0()
-                    .overflow_y_scroll()
-                    .child(self.render_node_children(root_id, 0, cx)),
+                    .overflow_hidden()
+                    .child(tree),
             )
             .child(self.render_sidebar_footer(cx))
+    }
+
+    fn render_sidebar_tree(&mut self, cx: &mut Context<Self>) -> gpui::AnyElement {
+        // Inline rename errors make a row taller than NAV_ROW_HEIGHT. Keep the
+        // recursive renderer while renaming so the input can measure naturally;
+        // the normal navigator has exact fixed sizes and can be virtualized.
+        if self.rename_node.is_some() {
+            return div()
+                .id("sidebar-tree-recursive")
+                .size_full()
+                .overflow_y_scroll()
+                .track_scroll(self.sidebar_scroll_handle.base_handle())
+                .child(self.render_node_children(self.workspace.root, 0, cx))
+                .into_any_element();
+        }
+
+        let revision = self.state.schedule_revision();
+        if self
+            .sidebar_navigator_cache
+            .as_ref()
+            .is_none_or(|cache| !cache.matches(revision))
+        {
+            let rows = self.flatten_navigator_rows();
+            self.sidebar_navigator_cache = Some(SidebarNavigatorCache::new(revision, rows));
+        }
+        let (rows_for_render, item_sizes) = self
+            .sidebar_navigator_cache
+            .as_ref()
+            .expect("sidebar navigator cache was initialized")
+            .handles();
+
+        v_virtual_list(
+            cx.entity(),
+            "sidebar-tree-virtual",
+            item_sizes,
+            move |this: &mut KnotQApp,
+                  visible_range: std::ops::Range<usize>,
+                  _window: &mut Window,
+                  cx: &mut Context<KnotQApp>| {
+                visible_range
+                    .map(|index| this.render_navigator_row(rows_for_render[index], cx))
+                    .collect::<Vec<_>>()
+            },
+        )
+        .track_scroll(&self.sidebar_scroll_handle)
+        .size_full()
+        .into_any_element()
     }
 
     fn render_sidebar_footer(&mut self, cx: &mut Context<Self>) -> gpui::AnyElement {

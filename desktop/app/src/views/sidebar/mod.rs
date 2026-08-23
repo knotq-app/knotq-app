@@ -1,9 +1,9 @@
 use gpui::prelude::*;
 use gpui::{
-    div, px, ClickEvent, Context, Entity, IntoElement, MouseButton, MouseDownEvent, Pixels, Point,
-    Render, SharedString, Window,
+    div, px, size, ClickEvent, Context, Entity, IntoElement, MouseButton, MouseDownEvent, Pixels,
+    Point, Render, SharedString, Window,
 };
-use gpui_component::{tooltip::Tooltip, Icon, IconName, Sizable};
+use gpui_component::{tooltip::Tooltip, v_virtual_list, Icon, IconName, Sizable};
 use knotq_commands::Command;
 use knotq_model::{CalendarProvider, FolderId, NodeRef, SchemeId, SchemeSource};
 
@@ -60,6 +60,7 @@ mod rows;
 mod trash;
 mod tree;
 
-use crate::views::FOLDER_ICON_SIZE;
 use self::components::*;
 use self::drag::*;
+pub(crate) use self::tree::SidebarNavigatorCache;
+use crate::views::FOLDER_ICON_SIZE;
