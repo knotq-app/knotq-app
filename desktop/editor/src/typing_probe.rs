@@ -47,6 +47,16 @@ pub fn shape_reuse_enabled() -> bool {
     *ENABLED.get_or_init(|| env_flag("KNOTQ_SHAPE_CACHE", true))
 }
 
+/// Whether paint may skip rows outside the viewport.
+///
+/// On by default — like [`shape_reuse_enabled`], the switch exists so the cost
+/// it removes can be measured against the same document in the same binary,
+/// rather than inferred by comparing two builds under two different loads.
+pub fn paint_cull_enabled() -> bool {
+    static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ENABLED.get_or_init(|| env_flag("KNOTQ_PAINT_CULL", true))
+}
+
 #[derive(Default)]
 struct Pending {
     input_at: Option<Instant>,
