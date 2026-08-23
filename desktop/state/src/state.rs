@@ -299,6 +299,15 @@ impl AppState {
         self.store.crdt_document_states()
     }
 
+    /// The same snapshot as handles that encode on demand. Collecting these is
+    /// cheap whatever the workspace holds; encoding a large scheme is not, and
+    /// the save path is on the UI thread.
+    pub fn crdt_document_state_handles(
+        &self,
+    ) -> HashMap<DocumentId, knotq_sync::DocumentStateHandle> {
+        self.store.crdt_document_state_handles()
+    }
+
     pub fn clear_pushed_crdt_edits(
         &mut self,
         document: DocumentId,

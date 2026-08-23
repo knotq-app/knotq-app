@@ -16,7 +16,7 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 pub use crdt::{
-    validate_crdt_update_sequence, DocumentApplyError, WorkspaceApplyError,
+    validate_crdt_update_sequence, DocumentApplyError, DocumentStateHandle, WorkspaceApplyError,
     WorkspaceCrdtApplyOutcome, WorkspaceCrdtChangeSet, WorkspaceCrdtDocuments,
     WorkspaceCrdtSyncOutcome, YrsSchemeDocument,
 };

@@ -139,6 +139,11 @@ impl YrsJsonDocument {
             .get_shared(|| self.doc.transact().encode_diff_v1(&StateVector::default()))
     }
 
+    /// A handle that produces the same state from another thread.
+    pub(crate) fn state_handle(&self) -> DocumentStateHandle {
+        self.encode_cache.handle(&self.doc)
+    }
+
     /// Reconcile the persistent workspace document to `snapshot` and return the
     /// resulting update as an incremental diff from this document's own prior
     /// state. Encoding from the *persistent* doc (rather than a throwaway one) is

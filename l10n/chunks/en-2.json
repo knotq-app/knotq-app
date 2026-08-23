@@ -189,7 +189,7 @@
   "onboarding.step.upcoming.title": "Upcoming",
   "onboarding.step.welcome.body": "KnotQ is a single app for calendar events, reminders, assignments, and general notes. It aims to be simple yet functional.",
   "onboarding.step.welcome.title": "Welcome to KnotQ",
-  "onboarding.sync_prompt.body": "Sync is $3.99 a month and lets you share your workspace across devices. Local-only is fully free.",
+  "onboarding.sync_prompt.body": "Sync is $2.99 a month and lets you share your workspace across devices. Local-only is fully free.",
   "onboarding.sync_prompt.continue_local": "Continue local for now",
   "onboarding.sync_prompt.opening_browser": "Opening your browser to sign in…",
   "onboarding.sync_prompt.panel_title": "KnotQ Sync",
