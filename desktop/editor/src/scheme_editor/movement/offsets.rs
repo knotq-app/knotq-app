@@ -30,19 +30,15 @@ impl SchemeEditor {
     }
 
     pub(in crate::scheme_editor) fn render_line_count(&self) -> usize {
-        line_ranges(&self.text).len().max(1)
+        self.text.line_count().max(1)
     }
 
     pub(in crate::scheme_editor) fn line_len(&self, row: usize) -> usize {
-        let ranges = line_ranges(&self.text);
-        ranges
-            .get(row)
-            .map(|range| range.end.saturating_sub(range.start))
-            .unwrap_or(0)
+        self.text.line_len(row)
     }
 
     pub(in crate::scheme_editor) fn line_range(&self, row: usize) -> Option<Range<usize>> {
-        line_ranges(&self.text).get(row).cloned()
+        self.text.line_range(row)
     }
 
     pub(in crate::scheme_editor) fn table_object_range_for_row(&self, row: usize) -> Option<Range<usize>> {
@@ -54,52 +50,16 @@ impl SchemeEditor {
         table_object_range(self.text.get(range)?)
     }
 
-    pub(in crate::scheme_editor) fn text_lines(&self) -> Vec<String> {
-        self.text.split('\n').map(ToString::to_string).collect()
-    }
-
     pub(in crate::scheme_editor) fn location_to_offset(&self, loc: TextLocation) -> usize {
-        self.location_to_offset_in(&self.text, loc)
-    }
-
-    pub(in crate::scheme_editor) fn location_to_offset_in(&self, text: &str, loc: TextLocation) -> usize {
-        let ranges = line_ranges(text);
-        if ranges.is_empty() {
-            return 0;
-        }
-        let row = loc.row.min(ranges.len().saturating_sub(1));
-        let range = ranges[row].clone();
-        let col = loc.col.min(range.end - range.start);
-        let mut offset = range.start + col;
-        while offset > range.start && !text.is_char_boundary(offset) {
-            offset -= 1;
-        }
-        offset
+        location_to_offset_with(&self.text, self.text.line_ranges(), loc)
     }
 
     pub(in crate::scheme_editor) fn offset_to_location(&self, offset: usize) -> TextLocation {
-        self.offset_to_location_in(&self.text, offset)
+        offset_to_location_with(self.text.len(), self.text.line_ranges(), offset)
     }
 
     pub(in crate::scheme_editor) fn offset_to_location_in(&self, text: &str, offset: usize) -> TextLocation {
-        let ranges = line_ranges(text);
-        if ranges.is_empty() {
-            return TextLocation { row: 0, col: 0 };
-        }
-        let offset = offset.min(text.len());
-        for (row, range) in ranges.iter().enumerate() {
-            if offset <= range.end {
-                return TextLocation {
-                    row,
-                    col: offset.saturating_sub(range.start),
-                };
-            }
-        }
-        let row = ranges.len().saturating_sub(1);
-        TextLocation {
-            row,
-            col: ranges[row].end.saturating_sub(ranges[row].start),
-        }
+        offset_to_location_with(text.len(), &line_ranges(text), offset)
     }
 
     pub(in crate::scheme_editor) fn selection_offsets(&self) -> (usize, usize) {
@@ -120,5 +80,44 @@ impl SchemeEditor {
             .map(|row| self.line_len(row))
             .collect();
         whole_row_selection_range(self.selection, &line_lens)
+    }
+}
+
+/// `(row, col)` → byte offset, given the line index for `text`.
+///
+/// Split out from the editor so both the cached-index path and the
+/// foreign-text path run exactly the same mapping; two copies of this would be
+/// two chances for the caret to land somewhere different.
+fn location_to_offset_with(text: &str, ranges: &[Range<usize>], loc: TextLocation) -> usize {
+    if ranges.is_empty() {
+        return 0;
+    }
+    let row = loc.row.min(ranges.len() - 1);
+    let range = ranges[row].clone();
+    let col = loc.col.min(range.end - range.start);
+    let mut offset = range.start + col;
+    while offset > range.start && !text.is_char_boundary(offset) {
+        offset -= 1;
+    }
+    offset
+}
+
+/// Byte offset → `(row, col)`, given the line index.
+///
+/// Binary search rather than a scan: this is asked once per row while
+/// painting, so a linear walk made drawing quadratic in the line count.
+/// `ranges` is sorted and non-overlapping, so the row is the last one whose
+/// end is still at or after `offset`.
+fn offset_to_location_with(len: usize, ranges: &[Range<usize>], offset: usize) -> TextLocation {
+    if ranges.is_empty() {
+        return TextLocation { row: 0, col: 0 };
+    }
+    let offset = offset.min(len);
+    // First row whose end is >= offset — the same row the scan returned.
+    let row = ranges.partition_point(|range| range.end < offset);
+    let row = row.min(ranges.len() - 1);
+    TextLocation {
+        row,
+        col: offset.saturating_sub(ranges[row].start),
     }
 }

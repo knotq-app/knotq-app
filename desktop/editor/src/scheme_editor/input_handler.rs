@@ -53,6 +53,7 @@ impl EntityInputHandler for SchemeEditor {
         _window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        crate::typing_probe::mark_input();
         let range = range_utf16
             .map(|range| utf16_range_to_byte_range(&self.text, range))
             .or_else(|| self.marked_range.clone())

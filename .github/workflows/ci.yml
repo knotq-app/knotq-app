@@ -44,21 +44,7 @@ jobs:
         with:
           key: linux
 
-      - name: Install system dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y \
-            pkg-config \
-            libdbus-1-dev \
-            libvulkan-dev \
-            libwayland-dev \
-            libxkbcommon-dev \
-            libxkbcommon-x11-dev \
-            libx11-xcb-dev \
-            libxcb-xfixes0-dev \
-            libxcb-shape0-dev \
-            libfontconfig1-dev \
-            libasound2-dev
+      - uses: ./.github/actions/linux-deps
 
       - name: Check workspace
         run: cargo check --workspace
@@ -110,6 +96,8 @@ jobs:
         with:
           key: perf-budget
 
+      - uses: ./.github/actions/linux-deps
+
       - name: Enforce performance budgets
         run: cargo test -p knotq-state --test perf_budget --release -- --nocapture
 
@@ -134,6 +122,8 @@ jobs:
         continue-on-error: true
         with:
           key: sync-fuzz
+
+      - uses: ./.github/actions/linux-deps
 
       - name: Run model-based multi-device sync fuzzer
         run: cargo test -p knotq-sync --test sync_property_model --release -- --nocapture

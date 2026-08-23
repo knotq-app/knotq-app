@@ -43,7 +43,7 @@ impl SchemeEditor {
         select: impl FnOnce(&Self) -> TextLocation,
     ) {
         let (text, rows) = build_buffer(&new_top);
-        self.text = text;
+        self.text.set(text);
         self.rows = rows;
         self.refresh_layout_after_content_change(Some(window));
         let location = select(self);
@@ -67,7 +67,7 @@ impl SchemeEditor {
         select: impl FnOnce(&Self) -> TextLocation,
     ) {
         let (text, rows) = build_buffer(&new_top);
-        self.text = text;
+        self.text.set(text);
         self.rows = rows;
         self.refresh_layout_after_content_change(window);
         let location = select(self);
@@ -138,7 +138,7 @@ impl SchemeEditor {
 
                     let items: Vec<Item> = self.rows.iter().map(|r| r.item.clone()).collect();
                     let (text, rows) = build_buffer(&items);
-                    self.text = text;
+                    self.text.set(text);
                     self.rows = rows;
                     // Put the cursor back where it was when the prefix was typed:
                     // immediately after the restored "- "/"N. " prefix, not at the

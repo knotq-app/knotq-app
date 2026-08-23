@@ -50,8 +50,13 @@ fn glyph_text(glyph: MarkerGlyph, ordinal: usize) -> String {
 /// a sequence — rather than just its glyph at depth 0. Families that repeat one
 /// glyph collapse to that glyph rather than repeating it three times.
 fn family_preview(family: MarkerFamily, marker: ItemMarker) -> String {
+    // The SAME ordinal at every depth. What varies between depths in a preview
+    // must be the glyph style the family chooses, not the count — advancing the
+    // ordinal too showed decimal as "1. 2. 3.", which reads as three levels of
+    // a nested list when it is one style repeated, and hid that the family is
+    // uniform at all.
     let glyphs: Vec<String> = (0..3u8)
-        .map(|depth| glyph_text(family.glyph_at(marker, depth), depth as usize + 1))
+        .map(|depth| glyph_text(family.glyph_at(marker, depth), 1))
         .collect();
     if glyphs.iter().all(|g| *g == glyphs[0]) {
         glyphs[0].clone()
@@ -186,24 +191,39 @@ impl KnotQApp {
 mod tests {
     use super::*;
 
-    /// The preview must show what the glyph will actually be, including for the
-    /// default — which depends on depth, so it previews depth 0.
+    /// A family is a glyph SEQUENCE indexed by depth, so the preview has to
+    /// show the sequence — one glyph would misrepresent every family whose
+    /// whole point is that it changes as the list nests.
     #[test]
-    fn previews_show_the_resolved_glyph() {
-        assert_eq!(family_preview(MarkerFamily::Standard, ItemMarker::Bullet), "●");
-        assert_eq!(family_preview(MarkerFamily::Square, ItemMarker::Bullet), "▪");
-        assert_eq!(family_preview(MarkerFamily::Circle, ItemMarker::Bullet), "○");
+    fn previews_show_the_first_three_depths_of_the_sequence() {
         assert_eq!(
-            family_preview(MarkerFamily::UpperRoman, ItemMarker::Numbered),
-            "I."
+            family_preview(MarkerFamily::Standard, ItemMarker::Bullet),
+            "● ○ ▪"
         );
         assert_eq!(
-            family_preview(MarkerFamily::LowerAlpha, ItemMarker::Numbered),
-            "a."
+            family_preview(MarkerFamily::Alternating, ItemMarker::Bullet),
+            "● ○ ●"
         );
-        // The default for a numbered line is decimal at depth 0.
         assert_eq!(
             family_preview(MarkerFamily::Standard, ItemMarker::Numbered),
+            "1. a. i."
+        );
+        assert_eq!(
+            family_preview(MarkerFamily::Outline, ItemMarker::Numbered),
+            "I. A. 1."
+        );
+    }
+
+    /// A family with one glyph looks the same at every depth, and previewing it
+    /// as "● ● ●" would read as a sequence. Those collapse to a single glyph.
+    #[test]
+    fn a_single_glyph_family_previews_as_one_glyph() {
+        assert_eq!(family_preview(MarkerFamily::Discs, ItemMarker::Bullet), "●");
+        assert_eq!(family_preview(MarkerFamily::Rings, ItemMarker::Bullet), "○");
+        assert_eq!(family_preview(MarkerFamily::Squares, ItemMarker::Bullet), "▪");
+        assert_eq!(family_preview(MarkerFamily::Dashes, ItemMarker::Bullet), "–");
+        assert_eq!(
+            family_preview(MarkerFamily::Decimal, ItemMarker::Numbered),
             "1."
         );
     }

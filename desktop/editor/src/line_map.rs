@@ -9,6 +9,15 @@ use gpui::{point, px, Pixels, Point, WrappedLine};
 /// checkboxes and date annotations.
 pub struct LineMap {
     lines: Vec<SchemeItemLine>,
+    /// Cumulative height above each row: `offsets[row]` is the y of `row`'s top,
+    /// and the last entry is the total height. Always `lines.len() + 1` long.
+    ///
+    /// Summing the rows above on demand made every y lookup O(row), and paint
+    /// asks for one per row — so drawing a document was quadratic in its line
+    /// count, ~10% of a frame on a 2,000-line scheme and rising with the square.
+    /// Rebuilt by `finish_update` once relayout has written its rows, so it
+    /// cannot drift from the heights it summarises.
+    offsets: Vec<Pixels>,
     default_line_height: Pixels,
 }
 
@@ -252,19 +261,64 @@ impl LineMap {
     pub fn new(line_height: Pixels) -> Self {
         Self {
             lines: Vec::new(),
+            offsets: vec![px(0.0)],
             default_line_height: line_height,
         }
     }
 
-    /// Hand out the current shaped lines, leaving the map empty. The caller
-    /// (relayout) reuses the ones whose inputs did not change and puts a full
-    /// set back via `replace_lines`.
-    pub fn take_lines(&mut self) -> Vec<SchemeItemLine> {
-        std::mem::take(&mut self.lines)
+    /// Make the map hold exactly `rows` rows, keeping the ones already there at
+    /// the same indices. New rows are placeholders until `set_line` fills them.
+    ///
+    /// Relayout updates the map IN PLACE rather than rebuilding it. A
+    /// `SchemeItemLine` carries its shaped decoration runs inline and is ~1.4KB,
+    /// so handing the whole vector out and building a new one moved every row's
+    /// worth of that on every keystroke — 42MB of memcpy per keypress in a
+    /// 10,000-line scheme, and the single largest cost left in relayout. Rows
+    /// whose shaping inputs are unchanged are now simply not touched.
+    pub fn resize_rows(&mut self, rows: usize) {
+        self.lines.resize_with(rows, Self::placeholder);
     }
 
-    pub fn replace_lines(&mut self, lines: Vec<SchemeItemLine>) {
-        self.lines = lines;
+    /// Replace the rows `at..at + removed` with `inserted` placeholders,
+    /// shifting the rows after them without re-shaping any of them.
+    ///
+    /// Rows are addressed by index, so inserting a line renumbers every row
+    /// below it. Treating that as "every later row changed" made pressing Enter
+    /// near the top of a large document re-shape the whole thing; moving them is
+    /// one memmove. The caller must apply the SAME splice to the shape cache, or
+    /// the two disagree about which line belongs to which row.
+    pub fn splice_rows(&mut self, at: usize, removed: usize, inserted: usize) {
+        let at = at.min(self.lines.len());
+        let removed = removed.min(self.lines.len() - at);
+        self.lines.splice(
+            at..at + removed,
+            std::iter::repeat_with(Self::placeholder).take(inserted),
+        );
+    }
+
+    /// A row that exists but has not been shaped yet. Zero height, so it takes
+    /// no space if it is somehow painted before relayout fills it in.
+    fn placeholder() -> SchemeItemLine {
+        SchemeItemLine::new(WrappedLine::default(), None, px(0.0))
+    }
+
+    pub fn set_line(&mut self, row: usize, line: SchemeItemLine) {
+        if let Some(slot) = self.lines.get_mut(row) {
+            *slot = line;
+        }
+    }
+
+    /// Recompute the row offsets after an update. Must be called once relayout
+    /// has finished writing rows, or every y is stale.
+    pub fn finish_update(&mut self) {
+        self.offsets.clear();
+        self.offsets.reserve(self.lines.len() + 1);
+        let mut y = px(0.0);
+        self.offsets.push(y);
+        for line in &self.lines {
+            y += line.height();
+            self.offsets.push(y);
+        }
     }
 
     pub fn line_count(&self) -> usize {
@@ -305,9 +359,7 @@ impl LineMap {
     }
 
     pub fn total_height(&self) -> Pixels {
-        self.lines
-            .iter()
-            .fold(px(0.0), |height, line| height + line.height())
+        self.offsets[self.lines.len()]
     }
 
     pub fn y_range(&self, rows: Range<usize>) -> Range<Pixels> {
@@ -345,24 +397,23 @@ impl LineMap {
             return TextLocation { row: 0, col: 0 };
         }
 
-        let mut y = px(0.0);
-        for (row, line) in self.lines.iter().enumerate() {
-            let text_height = line.text_height();
-            let height = line.height();
-            if pos.y < y + height {
-                let local_y = pos.y - y;
-                let col = if local_y < text_height {
-                    let local = point(pos.x, local_y);
-                    line.closest_index_for_position(local)
-                } else {
-                    line.visible_len()
-                };
-                return TextLocation {
-                    row,
-                    col: col.min(line.visible_len()),
-                };
-            }
-            y += height;
+        // The first row whose bottom is past `pos.y`. Rows are laid out
+        // top-to-bottom, so `offsets` is non-decreasing and can be searched
+        // rather than walked — a zero-height row keeps the same tie-break as
+        // the old scan (the first such row wins) because `partition_point`
+        // returns the first index whose bottom strictly exceeds `pos.y`.
+        let row = self.offsets[1..].partition_point(|bottom| *bottom <= pos.y);
+        if let Some(line) = self.lines.get(row) {
+            let local_y = pos.y - self.offsets[row];
+            let col = if local_y < line.text_height() {
+                line.closest_index_for_position(point(pos.x, local_y))
+            } else {
+                line.visible_len()
+            };
+            return TextLocation {
+                row,
+                col: col.min(line.visible_len()),
+            };
         }
 
         let row = self.lines.len().saturating_sub(1);
@@ -393,9 +444,178 @@ impl LineMap {
     }
 
     fn height_before(&self, row: usize) -> Pixels {
-        self.lines
-            .iter()
-            .take(row.min(self.lines.len()))
-            .fold(px(0.0), |height, line| height + line.height())
+        self.offsets[row.min(self.lines.len())]
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn map_of(heights: &[f32]) -> LineMap {
+        let mut map = LineMap::new(px(10.0));
+        map.resize_rows(heights.len());
+        for (row, height) in heights.iter().enumerate() {
+            map.set_line(
+                row,
+                SchemeItemLine::new(Default::default(), None, px(*height)),
+            );
+        }
+        map.finish_update();
+        map
+    }
+
+    /// What `location_for_point` did before it became a binary search: walk the
+    /// rows top-down and take the first whose bottom is past `y`. The search
+    /// must agree with it everywhere, including on zero-height rows and past
+    /// the end of the document.
+    fn row_by_scan(heights: &[f32], y: f32) -> Option<usize> {
+        let mut top = 0.0;
+        for (row, height) in heights.iter().enumerate() {
+            if y < top + height {
+                return Some(row);
+            }
+            top += height;
+        }
+        None
+    }
+
+    #[test]
+    fn hit_testing_a_y_matches_a_top_down_scan() {
+        // Includes zero-height rows, which is where "first row whose bottom is
+        // past y" and "last row whose top is at or before y" disagree.
+        let heights = [12.0, 0.0, 30.0, 0.0, 0.0, 8.0, 25.0];
+        let map = map_of(&heights);
+
+        for tenth in -20..1000 {
+            let y = tenth as f32 / 10.0;
+            let expected = row_by_scan(&heights, y).unwrap_or(heights.len() - 1);
+            assert_eq!(
+                map.location_for_point(point(px(0.0), px(y))).row,
+                expected,
+                "y = {y}"
+            );
+        }
+    }
+
+    #[test]
+    fn an_empty_map_hit_tests_to_the_origin() {
+        let map = LineMap::new(px(10.0));
+
+        assert_eq!(
+            map.location_for_point(point(px(5.0), px(50.0))),
+            TextLocation { row: 0, col: 0 }
+        );
+    }
+
+    #[test]
+    fn row_offsets_and_total_height_add_up() {
+        let map = map_of(&[12.0, 0.0, 30.0, 8.0]);
+
+        assert_eq!(map.y_range(0..1), px(0.0)..px(12.0));
+        assert_eq!(map.y_range(1..2), px(12.0)..px(12.0));
+        assert_eq!(map.y_range(2..4), px(12.0)..px(50.0));
+        assert_eq!(map.total_height(), px(50.0));
+        // Out of range clamps to the end rather than panicking.
+        assert_eq!(map.y_range(9..12), px(50.0)..px(50.0));
+    }
+
+    /// Shrinking must drop the rows that went away, and the offsets with them —
+    /// a stale tail would place the caret and hit-testing past the end.
+    #[test]
+    fn resizing_smaller_drops_the_rows_that_went_away() {
+        let mut map = map_of(&[12.0, 30.0, 8.0]);
+        map.resize_rows(1);
+        map.finish_update();
+
+        assert_eq!(map.line_count(), 1);
+        assert_eq!(map.total_height(), px(12.0));
+    }
+
+    /// Growing must keep the existing rows at the SAME indices — relayout
+    /// relies on that to decide a row is unchanged and leave it alone.
+    #[test]
+    fn resizing_larger_keeps_existing_rows_in_place() {
+        let mut map = map_of(&[12.0, 30.0]);
+        map.resize_rows(4);
+        map.set_line(3, SchemeItemLine::new(Default::default(), None, px(5.0)));
+        map.finish_update();
+
+        assert_eq!(map.line_count(), 4);
+        assert_eq!(map.y_range(0..1), px(0.0)..px(12.0));
+        assert_eq!(map.y_range(1..2), px(12.0)..px(42.0));
+        // The untouched new row is a zero-height placeholder.
+        assert_eq!(map.y_range(2..3), px(42.0)..px(42.0));
+        assert_eq!(map.total_height(), px(47.0));
+    }
+
+    /// A splice must move the surviving rows rather than disturb them: that is
+    /// what lets relayout keep their shaped lines when a line is inserted.
+    #[test]
+    fn splicing_shifts_the_rows_after_the_change() {
+        let mut map = map_of(&[12.0, 30.0, 8.0]);
+
+        // Insert one row at the top.
+        map.splice_rows(0, 0, 1);
+        map.finish_update();
+        assert_eq!(map.line_count(), 4);
+        // The new row is a zero-height placeholder; the old rows kept their
+        // heights, just one index later.
+        assert_eq!(map.y_range(0..1), px(0.0)..px(0.0));
+        assert_eq!(map.y_range(1..2), px(0.0)..px(12.0));
+        assert_eq!(map.y_range(2..3), px(12.0)..px(42.0));
+        assert_eq!(map.total_height(), px(50.0));
+
+        // Remove it again and the original layout is back.
+        map.splice_rows(0, 1, 0);
+        map.finish_update();
+        assert_eq!(map.line_count(), 3);
+        assert_eq!(map.y_range(0..1), px(0.0)..px(12.0));
+        assert_eq!(map.total_height(), px(50.0));
+    }
+
+    /// A splice past the end must clamp rather than panic — the row list and
+    /// the buffer are built together, but a disagreement must not crash.
+    #[test]
+    fn splicing_past_the_end_clamps() {
+        let mut map = map_of(&[12.0]);
+        map.splice_rows(9, 9, 2);
+        map.finish_update();
+
+        assert_eq!(map.line_count(), 3);
+    }
+
+    /// Asking every row for its y must stay linear in the row count.
+    ///
+    /// Summing the rows above on demand made this O(rows) per row, so painting
+    /// a document was quadratic in its line count — ~10% of a frame at 2,000
+    /// lines and growing with the square. A ratio, not a wall clock, so it
+    /// means the same thing on a debug build and a loaded CI runner.
+    #[test]
+    fn asking_every_row_for_its_y_stays_linear() {
+        fn sweep(rows: usize) -> std::time::Duration {
+            let map = map_of(&vec![10.0; rows]);
+            let start = std::time::Instant::now();
+            let mut total = px(0.0);
+            for row in 0..rows {
+                total += map.y_range(row..row + 1).start;
+            }
+            std::hint::black_box(total);
+            start.elapsed()
+        }
+
+        // Warm the allocator and the branch predictor so the first measurement
+        // is not the one paying for them.
+        sweep(4_000);
+        let small = sweep(1_000).max(std::time::Duration::from_nanos(1));
+        let large = sweep(8_000);
+
+        // 8x the rows. Linear is ~8x; the quadratic was ~64x. 24x leaves room
+        // for a noisy runner while still failing loudly on a return of the
+        // per-row sum.
+        assert!(
+            large < small * 24,
+            "y lookups look superlinear: {small:?} for 1,000 rows vs {large:?} for 8,000"
+        );
     }
 }

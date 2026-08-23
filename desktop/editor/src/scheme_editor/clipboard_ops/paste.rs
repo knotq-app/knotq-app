@@ -142,7 +142,7 @@ impl SchemeEditor {
         new_top.splice(pos..=pos, replacement);
 
         let (text, rows) = build_buffer(&new_top);
-        self.text = text;
+        self.text.set(text);
         self.rows = rows;
         self.refresh_layout_after_content_change(window);
         let cursor_top = pos + cursor_index.min(inserted.saturating_sub(1));
@@ -241,7 +241,7 @@ impl SchemeEditor {
         }
 
         let (text, rows) = build_buffer(&new_top);
-        self.text = text;
+        self.text.set(text);
         self.rows = rows;
         self.refresh_layout_after_content_change(window);
         let row = flat_row_for_top_level_index(&self.rows, pos);
@@ -295,7 +295,7 @@ impl SchemeEditor {
         }
 
         let (text, rows) = build_buffer(&current_items);
-        self.text = text;
+        self.text.set(text);
         self.rows = rows;
         self.refresh_layout_after_content_change(window);
         let cursor_row = insert_at + inserted_items.len().saturating_sub(1);

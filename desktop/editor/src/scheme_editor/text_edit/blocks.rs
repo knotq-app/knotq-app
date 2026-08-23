@@ -46,7 +46,7 @@ impl SchemeEditor {
         new_top.insert(insert_pos, item);
 
         let (buffer_text, rows) = build_buffer(&new_top);
-        self.text = buffer_text;
+        self.text.set(buffer_text);
         self.rows = rows;
         self.refresh_layout_after_content_change(None);
         let target_row = flat_row_for_top_level_index(&self.rows, insert_pos);

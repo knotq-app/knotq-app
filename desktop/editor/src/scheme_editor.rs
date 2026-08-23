@@ -275,7 +275,10 @@ pub struct SchemeEditor {
     /// more often than the content changes, so an unchanged revision skips it.
     synced_revision: Option<u64>,
     rows: Vec<EditorRow>,
-    text: String,
+    /// The document text plus its line index; see [`TextBuffer`]. Assigning a
+    /// bare `String` here is deliberately impossible — the index has to be
+    /// rebuilt with it.
+    text: TextBuffer,
     selection: TextSelection,
     marked_range: Option<Range<usize>>,
     is_selecting: bool,

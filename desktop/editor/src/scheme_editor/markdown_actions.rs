@@ -71,7 +71,7 @@ impl SchemeEditor {
                 .is_some_and(is_markdown_heading)
         });
 
-        let mut text = self.text.clone();
+        let mut text = self.text.to_string();
         let cursor_after = self.selection.head;
         for row in (start_row..=end_row).rev() {
             let Some(range) = ranges.get(row).cloned() else {

@@ -174,7 +174,7 @@ impl SchemeEditor {
         }
 
         let (text, editor_rows) = build_buffer(&items);
-        self.text = text;
+        self.text.set(text);
         self.rows = editor_rows;
         self.refresh_layout_after_content_change(window);
         let row = rows.start.min(self.rows.len().saturating_sub(1));

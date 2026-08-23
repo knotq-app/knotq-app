@@ -82,7 +82,7 @@ impl SchemeEditor {
         top.insert(position + 1, blank.clone());
 
         let (text, rows) = build_buffer(&top);
-        self.text = text;
+        self.text.set(text);
         self.rows = rows;
         self.refresh_layout_after_content_change(None);
         let row = flat_row_for_top_level_index(&self.rows, position + 1);

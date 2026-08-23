@@ -16,7 +16,7 @@ impl SchemeEditor {
         top.insert(insert_pos, table_item.clone());
 
         let (text, rows) = build_buffer(&top);
-        self.text = text;
+        self.text.set(text);
         self.rows = rows;
         self.refresh_layout_after_content_change(Some(window));
         if let Some(anchor) = self
@@ -121,7 +121,7 @@ impl SchemeEditor {
         let item = top[pos].clone();
 
         let (text, rows) = build_buffer(&top);
-        self.text = text;
+        self.text.set(text);
         self.rows = rows;
         self.refresh_layout_after_content_change(Some(window));
         self.selection = TextSelection::collapsed(self.clamp_location(self.selection.head));

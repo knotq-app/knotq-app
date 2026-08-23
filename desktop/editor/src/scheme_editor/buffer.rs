@@ -4,11 +4,13 @@ use uuid::Uuid;
 mod block_content;
 mod line_text;
 mod row;
+mod text_buffer;
 mod builders;
 
 pub(in crate::scheme_editor) use block_content::*;
 pub(in crate::scheme_editor) use line_text::*;
 pub(in crate::scheme_editor) use row::*;
+pub(in crate::scheme_editor) use text_buffer::TextBuffer;
 pub(in crate::scheme_editor) use builders::*;
 
 pub(in crate::scheme_editor) const TABLE_OBJECT_CHAR: char = '\u{fffc}';
