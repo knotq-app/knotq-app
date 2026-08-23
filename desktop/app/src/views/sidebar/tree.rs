@@ -1,5 +1,6 @@
 use super::rows::FolderRowArgs;
 use super::*;
+use std::rc::Rc;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) enum NavigatorRow {
@@ -32,6 +33,36 @@ impl NavigatorRow {
             Self::DropZone { .. } => NAV_DROP_ZONE_HEIGHT,
             Self::EmptyFolder { .. } | Self::Folder { .. } | Self::Scheme { .. } => NAV_ROW_HEIGHT,
         }
+    }
+}
+
+pub(crate) struct SidebarNavigatorCache {
+    revision: u64,
+    rows: Rc<Vec<NavigatorRow>>,
+    item_sizes: Rc<Vec<gpui::Size<Pixels>>>,
+}
+
+impl SidebarNavigatorCache {
+    pub(super) fn new(revision: u64, rows: Vec<NavigatorRow>) -> Self {
+        let rows = Rc::new(rows);
+        let item_sizes = Rc::new(
+            rows.iter()
+                .map(|row| size(px(0.0), px(row.height())))
+                .collect(),
+        );
+        Self {
+            revision,
+            rows,
+            item_sizes,
+        }
+    }
+
+    pub(super) fn matches(&self, revision: u64) -> bool {
+        self.revision == revision
+    }
+
+    pub(super) fn handles(&self) -> (Rc<Vec<NavigatorRow>>, Rc<Vec<gpui::Size<Pixels>>>) {
+        (self.rows.clone(), self.item_sizes.clone())
     }
 }
 
@@ -255,5 +286,22 @@ impl KnotQApp {
             NodeRef::Scheme(id) => self.workspace.is_daily_queue_scheme(id),
             NodeRef::Folder(_) => false,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn navigator_cache_reuses_descriptor_and_size_allocations() {
+        let cache = SidebarNavigatorCache::new(7, Vec::new());
+        let (rows_before, sizes_before) = cache.handles();
+        let (rows_after, sizes_after) = cache.handles();
+
+        assert!(cache.matches(7));
+        assert!(!cache.matches(8));
+        assert!(Rc::ptr_eq(&rows_before, &rows_after));
+        assert!(Rc::ptr_eq(&sizes_before, &sizes_after));
     }
 }

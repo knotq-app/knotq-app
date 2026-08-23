@@ -108,13 +108,20 @@ impl KnotQApp {
                 .into_any_element();
         }
 
-        let rows = std::rc::Rc::new(self.flatten_navigator_rows());
-        let item_sizes = std::rc::Rc::new(
-            rows.iter()
-                .map(|row| size(px(0.0), px(row.height())))
-                .collect(),
-        );
-        let rows_for_render = rows.clone();
+        let revision = self.state.schedule_revision();
+        if self
+            .sidebar_navigator_cache
+            .as_ref()
+            .is_none_or(|cache| !cache.matches(revision))
+        {
+            let rows = self.flatten_navigator_rows();
+            self.sidebar_navigator_cache = Some(SidebarNavigatorCache::new(revision, rows));
+        }
+        let (rows_for_render, item_sizes) = self
+            .sidebar_navigator_cache
+            .as_ref()
+            .expect("sidebar navigator cache was initialized")
+            .handles();
 
         v_virtual_list(
             cx.entity(),

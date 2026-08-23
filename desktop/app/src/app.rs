@@ -601,6 +601,7 @@ pub struct KnotQApp {
     pub daily_queue_preserved_bottom_distance: Option<Pixels>,
     pub(crate) daily_queue_scroll_restore_after_sync: Option<Point<Pixels>>,
     pub(crate) sidebar_scroll_handle: VirtualListScrollHandle,
+    pub(crate) sidebar_navigator_cache: Option<crate::views::sidebar::SidebarNavigatorCache>,
     pub cal_scroll_handle: ScrollHandle,
     pub cal_scroll_initialized: bool,
     pub rename_node: Option<RenameNodeState>,

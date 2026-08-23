@@ -62,4 +62,5 @@ mod tree;
 
 use self::components::*;
 use self::drag::*;
+pub(crate) use self::tree::SidebarNavigatorCache;
 use crate::views::FOLDER_ICON_SIZE;
