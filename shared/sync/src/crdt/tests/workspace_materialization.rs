@@ -456,3 +456,89 @@ fn no_op_workspace_pull_repairs_stale_visible_scheme_color_and_name() {
     assert_eq!(outcome.workspace.schemes[&scheme_id].name, "Merged name");
     assert_eq!(outcome.workspace.schemes[&scheme_id].color_index, 17);
 }
+
+/// A device whose local CRDT state is empty must refuse a pull outright rather
+/// than merge remote content into its scheme documents and then fail deep in
+/// materialization with "workspace id missing".
+///
+/// This is what a *downgrade* looks like: a build that predates the
+/// per-document CRDT-state layout finds no state it recognises, loads zero
+/// documents, and starts from an empty workspace document while the real state
+/// sits on disk beside it.
+#[test]
+fn a_device_with_no_local_crdt_state_refuses_remote_updates() {
+    let mut source = Workspace::new();
+    let scheme_id = add_root_scheme(&mut source, "Plan");
+    source
+        .schemes
+        .get_mut(&scheme_id)
+        .unwrap()
+        .items
+        .push(Item::new("A line"));
+    source.ensure_sync_metadata();
+    let mut source_docs = WorkspaceCrdtDocuments::try_new(&source).unwrap();
+    let scheme_only = stored_updates(
+        source.id,
+        source_docs
+            .sync_changes(
+                &source,
+                &WorkspaceCrdtChangeSet::default().touch_scheme(scheme_id),
+            )
+            .updates
+            .into_iter()
+            .filter(|update| update.kind == SyncDocumentKind::Scheme)
+            .collect(),
+    );
+
+    // The device holds the workspace on disk but none of its CRDT state.
+    let mut empty = WorkspaceCrdtDocuments::from_states(
+        &source,
+        knotq_model::ReplicaId::new(),
+        &HashMap::<DocumentId, Vec<u8>>::new(),
+    )
+    .unwrap();
+
+    let outcome = empty.apply_remote_updates(&source, &scheme_only);
+
+    assert_eq!(outcome.applied, 0, "nothing may be applied");
+    let reported = outcome.workspace_errors.first().expect("a workspace error");
+    assert!(
+        reported.message.contains("newer build"),
+        "the error must name the likely cause, got: {}",
+        reported.message
+    );
+}
+
+/// The refusal must not catch a device syncing for the very first time: its
+/// pull carries the workspace document, and applying that is what seeds it.
+#[test]
+fn a_first_pull_that_carries_the_workspace_document_still_bootstraps() {
+    let mut source = Workspace::new();
+    let scheme_id = add_root_scheme(&mut source, "Plan");
+    source
+        .schemes
+        .get_mut(&scheme_id)
+        .unwrap()
+        .items
+        .push(Item::new("A line"));
+    source.ensure_sync_metadata();
+    let source_docs = WorkspaceCrdtDocuments::try_new(&source).unwrap();
+    // Everything, workspace document included — a real first pull.
+    let full = stored_updates(source.id, source_docs.full_snapshot_updates().updates);
+
+    let mut fresh = WorkspaceCrdtDocuments::from_states(
+        &source,
+        knotq_model::ReplicaId::new(),
+        &HashMap::<DocumentId, Vec<u8>>::new(),
+    )
+    .unwrap();
+
+    let outcome = fresh.apply_remote_updates(&Workspace::new(), &full);
+
+    assert!(
+        outcome.workspace_errors.is_empty(),
+        "a first pull must not be refused: {:?}",
+        outcome.workspace_errors
+    );
+    assert!(outcome.applied > 0, "the pull must apply");
+}

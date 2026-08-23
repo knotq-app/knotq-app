@@ -94,8 +94,11 @@ impl EncodeCache {
 
 mod encoding;
 mod scheme_content;
+mod update_capture;
 mod validation;
 mod workspace_index;
+
+use update_capture::{Delta, UpdateCapture};
 
 pub use encoding::stable_client_id;
 pub use scheme_content::YrsSchemeDocument;
@@ -849,6 +852,30 @@ impl WorkspaceCrdtDocuments {
                     return outcome;
                 }
             }
+        }
+
+        // An unseeded workspace document cannot describe anything, so nothing
+        // below it can be materialized. Refusing here — after the workspace pass,
+        // which is what seeds it on a device's very first pull — costs a fresh
+        // device nothing and stops a broken one from merging remote content into
+        // its scheme documents only to fail at the end with "workspace id
+        // missing", which is where this used to surface.
+        //
+        // In practice the cause is a data directory written by a NEWER build:
+        // the per-document CRDT-state layout is invisible to a build that
+        // predates it, so that build loads zero documents and starts from an
+        // empty workspace document while the real state sits on disk beside it.
+        if !self.workspace.is_seeded() {
+            outcome.push_workspace_error(
+                "local CRDT state is empty",
+                anyhow!(
+                    "the workspace document holds nothing while {} schemes exist \
+                     locally; the data directory was most likely written by a newer \
+                     build of KnotQ. No remote updates were applied.",
+                    current.schemes.len()
+                ),
+            );
+            return outcome;
         }
 
         self.schemes
