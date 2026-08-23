@@ -37,6 +37,20 @@ impl TextBuffer {
     /// Replace the whole buffer. The index is rebuilt here and nowhere else.
     pub(in crate::scheme_editor) fn set(&mut self, text: String) {
         self.text = text;
+        self.reindex();
+    }
+
+    /// Rewrite the buffer in place, reusing its allocation. Same guarantee as
+    /// [`set`] — the index is rebuilt before the buffer is readable again — but
+    /// without handing over a freshly allocated `String`, which for a large
+    /// document is most of the cost of rebuilding it.
+    pub(in crate::scheme_editor) fn rewrite(&mut self, fill: impl FnOnce(&mut String)) {
+        self.text.clear();
+        fill(&mut self.text);
+        self.reindex();
+    }
+
+    fn reindex(&mut self) {
         self.ranges.clear();
         let mut start = 0;
         for (idx, ch) in self.text.char_indices() {
