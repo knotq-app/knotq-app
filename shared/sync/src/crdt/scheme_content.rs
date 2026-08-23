@@ -37,6 +37,10 @@ pub struct YrsSchemeDocument {
     pub(crate) id: DocumentId,
     doc: Doc,
     encode_cache: EncodeCache,
+    /// Collects the bytes of the transactions `replace_scheme` commits, so the
+    /// outgoing delta is the edit itself rather than a diff recomputed by
+    /// walking the whole document.
+    capture: UpdateCapture,
     shadow: Mutex<Option<StoredItemsShadow>>,
     /// Cleared by an observer on *any* update to the document — a remote apply, a
     /// re-seed, our own writes. `replace_scheme` re-arms it only after it has
@@ -70,10 +74,12 @@ impl YrsSchemeDocument {
         init_scheme_maps(&doc);
         let encode_cache = EncodeCache::new(&doc);
         let shadow_valid = shadow_invalidator(&doc);
+        let capture = UpdateCapture::install(&doc);
         Self {
             id,
             doc,
             encode_cache,
+            capture,
             shadow: Mutex::new(None),
             shadow_valid,
         }
@@ -84,10 +90,12 @@ impl YrsSchemeDocument {
         init_scheme_maps(&doc);
         let encode_cache = EncodeCache::new(&doc);
         let shadow_valid = shadow_invalidator(&doc);
+        let capture = UpdateCapture::install(&doc);
         Self {
             id,
             doc,
             encode_cache,
+            capture,
             shadow: Mutex::new(None),
             shadow_valid,
         }
@@ -127,9 +135,28 @@ impl YrsSchemeDocument {
     }
 
     pub fn sync_scheme(&self, scheme: &Scheme) -> anyhow::Result<Option<CrdtDocumentUpdate>> {
-        let before = self.state_vector_v1();
+        // Take the delta from the writes themselves. `encode_diff_v1` — the
+        // fallback — answers the same question by walking every block in the
+        // document to rebuild its delete set, so publishing a one-character
+        // edit cost time proportional to the whole scheme. See
+        // `update_capture`, including why carrying only this edit's deletes is
+        // equivalent for every receiver the transport can produce.
+        //
+        // Which path this edit takes has to be decided BEFORE the write: the
+        // fallback diffs against the state vector as it was beforehand, and
+        // taking one is not cheap here either — it clones the document's
+        // client→clock map, which holds an entry per *item*, because item
+        // skeletons are authored under id-derived clientIDs. So the capturing
+        // path must not pay for it speculatively.
+        let delta = match self.capture.arm() {
+            Some(guard) => Delta::Captured(guard),
+            None => Delta::Diff(self.state_vector_v1()),
+        };
         let touched = self.replace_scheme(scheme)?;
-        let update_v1 = self.encode_update_v1(&before)?;
+        let update_v1 = match delta {
+            Delta::Captured(guard) => guard.finish()?,
+            Delta::Diff(before) => self.encode_update_v1(&before)?,
+        };
         if update_v1_is_empty(&update_v1) {
             return Ok(None);
         }
