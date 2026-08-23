@@ -1,0 +1,26 @@
+name: Install Linux system dependencies
+description: >
+  The system libraries the desktop workspace links against on Linux. Shared by
+  every Linux job: the `perf-budget` job was added without them and so could not
+  build `knotq-state` at all — it failed on `libdbus-1-dev` from its first run,
+  meaning the budgets it exists to enforce were never enforced. One definition
+  so a new job cannot silently miss one.
+
+runs:
+  using: composite
+  steps:
+    - shell: bash
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y \
+          pkg-config \
+          libdbus-1-dev \
+          libvulkan-dev \
+          libwayland-dev \
+          libxkbcommon-dev \
+          libxkbcommon-x11-dev \
+          libx11-xcb-dev \
+          libxcb-xfixes0-dev \
+          libxcb-shape0-dev \
+          libfontconfig1-dev \
+          libasound2-dev
