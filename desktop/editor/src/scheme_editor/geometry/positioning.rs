@@ -24,6 +24,58 @@ impl SchemeEditor {
         ))
     }
 
+    /// The rows that can contribute anything to what is on screen, or `None`
+    /// when the viewport is not known yet (the first frame) and nothing can be
+    /// ruled out.
+    ///
+    /// Paint visits every row of the document, and each visit clones the row's
+    /// shaped line, so drawing a 10,000-line scheme did 10,000 clones to show
+    /// about thirty rows. The band is generous — a screen's worth of margin
+    /// either side — because a row that scrolls in before the next frame must
+    /// already be painted.
+    pub(in crate::scheme_editor) fn visible_rows(&self) -> Option<Range<usize>> {
+        if !crate::typing_probe::paint_cull_enabled() {
+            return None;
+        }
+        let viewport = self.scroll_handle.bounds();
+        let viewport_height = viewport.size.height;
+        if viewport_height <= px(0.0) {
+            return None;
+        }
+        let scroll_offset = self.scroll_handle.offset();
+        // Where the editor's content origin sits in the scroll container's
+        // coordinate space — the same frame of reference `try_scroll_to_cursor`
+        // works in.
+        let content_top =
+            self.last_bounds?.top() - viewport.top() - scroll_offset.y + px(self.top_pad);
+        let margin = viewport_height;
+        let visible_top = -scroll_offset.y;
+        Some(self.line_map.rows_intersecting(
+            (visible_top - content_top - margin)..(visible_top + viewport_height - content_top + margin),
+        ))
+    }
+
+    /// Whether paint must visit `row`.
+    ///
+    /// A row inside a table is never skipped: its painted position comes from
+    /// its anchor's computed grid rather than from the document's vertical
+    /// flow, so the band — which is built from that flow — cannot place it.
+    /// Same reason table rows are never reused by the shape cache.
+    pub(in crate::scheme_editor) fn row_is_painted(
+        &self,
+        row: usize,
+        visible: &Option<Range<usize>>,
+    ) -> bool {
+        let Some(visible) = visible else {
+            return true;
+        };
+        visible.contains(&row)
+            || self
+                .rows
+                .get(row)
+                .is_some_and(|row| row.path.is_cell() || row.path.is_table_anchor())
+    }
+
     pub(in crate::scheme_editor) fn row_indent_x(&self, row: usize) -> Pixels {
         px(self
             .rows

@@ -368,6 +368,22 @@ impl LineMap {
         start..end
     }
 
+    /// The rows whose vertical band intersects `band`, in content coordinates.
+    ///
+    /// Both ends are found by searching the offsets rather than walking, so
+    /// asking "what is on screen?" costs the same in a 10-line document and a
+    /// 10,000-line one.
+    pub fn rows_intersecting(&self, band: Range<Pixels>) -> Range<usize> {
+        if self.lines.is_empty() {
+            return 0..0;
+        }
+        // First row whose bottom reaches into the band...
+        let first = self.offsets[1..].partition_point(|bottom| *bottom < band.start);
+        // ...through the last row whose top is still inside it.
+        let last = self.offsets[..self.lines.len()].partition_point(|top| *top <= band.end);
+        first..last.max(first)
+    }
+
     pub fn point_for_location(&self, location: TextLocation) -> Point<Pixels> {
         if self.lines.is_empty() {
             return point(px(0.0), px(0.0));
@@ -583,6 +599,68 @@ mod tests {
         map.finish_update();
 
         assert_eq!(map.line_count(), 3);
+    }
+
+    /// The visible band must name exactly the rows a top-down scan would find
+    /// overlapping it — a row wrongly excluded is a row that does not draw.
+    #[test]
+    fn the_visible_band_matches_a_top_down_scan() {
+        let heights = [12.0, 0.0, 30.0, 8.0, 25.0];
+        let map = map_of(&heights);
+
+        for start in 0..80 {
+            for len in 0..80 {
+                let (from, to) = (start as f32, (start + len) as f32);
+                let expected: Vec<usize> = {
+                    let mut rows = Vec::new();
+                    let mut top = 0.0f32;
+                    for (row, height) in heights.iter().enumerate() {
+                        let bottom = top + height;
+                        if bottom >= from && top <= to {
+                            rows.push(row);
+                        }
+                        top = bottom;
+                    }
+                    rows
+                };
+                let band = map.rows_intersecting(px(from)..px(to));
+                let got: Vec<usize> = band.collect();
+                assert_eq!(got, expected, "band {from}..{to}");
+            }
+        }
+    }
+
+    #[test]
+    fn an_empty_map_has_no_visible_rows() {
+        let map = LineMap::new(px(10.0));
+
+        assert_eq!(map.rows_intersecting(px(0.0)..px(100.0)), 0..0);
+    }
+
+    /// Finding the visible rows must not depend on how long the document is —
+    /// that is the whole reason it is a search and not a walk.
+    #[test]
+    fn finding_the_visible_rows_does_not_scale_with_the_document() {
+        fn sweep(rows: usize) -> std::time::Duration {
+            let map = map_of(&vec![10.0; rows]);
+            let start = std::time::Instant::now();
+            for offset in 0..2_000 {
+                let top = px(offset as f32);
+                std::hint::black_box(map.rows_intersecting(top..top + px(500.0)));
+            }
+            start.elapsed()
+        }
+
+        sweep(4_000);
+        let small = sweep(1_000).max(std::time::Duration::from_nanos(1));
+        let large = sweep(64_000);
+
+        // 64x the rows. A binary search costs ~1.6x (log2 64 = 6 more steps on
+        // ~10); a walk would cost ~64x.
+        assert!(
+            large < small * 8,
+            "finding visible rows looks linear: {small:?} for 1,000 rows vs {large:?} for 64,000"
+        );
     }
 
     /// Asking every row for its y must stay linear in the row count.
