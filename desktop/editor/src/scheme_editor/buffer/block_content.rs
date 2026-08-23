@@ -11,7 +11,7 @@ pub(in crate::scheme_editor) fn set_table_anchor_content_from_line(
 ) {
     let mut line = clean_display_line_text(line);
     if table_object_range(&line).is_none() {
-        line.push(TABLE_OBJECT_CHAR);
+        line.to_mut().push(TABLE_OBJECT_CHAR);
     }
     set_item_content_from_block_line(item, &line, Some(table));
 }

@@ -64,7 +64,7 @@ impl SchemeEditor {
                 let text_w = (col_w[c] - px(CELL_PAD_X * 2.0)).max(px(16.0));
                 let mut cell_h = px(0.0);
                 for sub in &cell.items {
-                    let display = clean_line_text(&sub.text());
+                    let display = clean_line_text(sub.content.as_text().unwrap_or(""));
                     let line =
                         self.shape_cell_line(&font, &display, text_w, body_color, false, window);
                     cell_h += line.size(lh).height.max(lh);

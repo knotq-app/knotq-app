@@ -1,19 +1,46 @@
+use std::borrow::Cow;
 use std::ops::Range;
 
 use knotq_model::{Item, ItemMarker};
 
 use super::{TABLE_OBJECT_CHAR, TABLE_OBJECT_LEN};
 
-pub(in crate::scheme_editor) fn clean_display_line_text(text: &str) -> String {
-    text.trim_start_matches([' ', '\t']).replace('\t', " ")
+/// Trim leading spaces/tabs and turn any remaining tab into a space.
+///
+/// Runs on every line on every keystroke (via [`clean_line_text`]), so it
+/// borrows the input when there is nothing to strip — the overwhelmingly
+/// common case — and only allocates when the line actually needs cleaning.
+pub(in crate::scheme_editor) fn clean_display_line_text(text: &str) -> Cow<'_, str> {
+    let trimmed = text.trim_start_matches([' ', '\t']);
+    if trimmed.contains('\t') {
+        Cow::Owned(trimmed.replace('\t', " "))
+    } else {
+        Cow::Borrowed(trimmed)
+    }
 }
 
-pub(in crate::scheme_editor) fn clean_line_text(text: &str) -> String {
-    line_without_table_object(&clean_display_line_text(text))
+/// Strip the line's table/image sentinel object char(s), if any. Borrows the
+/// input when the line has none, which is nearly always.
+pub(in crate::scheme_editor) fn line_without_table_object(line: &str) -> Cow<'_, str> {
+    if line.contains(TABLE_OBJECT_CHAR) {
+        Cow::Owned(line.replace(TABLE_OBJECT_CHAR, ""))
+    } else {
+        Cow::Borrowed(line)
+    }
 }
 
-pub(in crate::scheme_editor) fn line_without_table_object(line: &str) -> String {
-    line.replace(TABLE_OBJECT_CHAR, "")
+/// [`clean_display_line_text`] then [`line_without_table_object`], composed
+/// without an intermediate allocation when neither step needs to change
+/// anything (plain text with no leading whitespace and no block object,
+/// which is most lines most of the time).
+pub(in crate::scheme_editor) fn clean_line_text(text: &str) -> Cow<'_, str> {
+    match clean_display_line_text(text) {
+        Cow::Borrowed(displayed) => line_without_table_object(displayed),
+        Cow::Owned(displayed) => match line_without_table_object(&displayed) {
+            Cow::Borrowed(_) => Cow::Owned(displayed),
+            Cow::Owned(stripped) => Cow::Owned(stripped),
+        },
+    }
 }
 
 pub(in crate::scheme_editor) fn table_object_range(line: &str) -> Option<Range<usize>> {

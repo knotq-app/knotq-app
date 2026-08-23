@@ -145,9 +145,9 @@ fn push_clean_display_line(out: &mut String, text: &str) {
 
 pub(in crate::scheme_editor) fn display_line_for_row(row: &EditorRow) -> String {
     if item_has_block_object(&row.item) {
-        return clean_display_line_text(&item_inline_text_with_block_objects(&row.item));
+        return clean_display_line_text(&item_inline_text_with_block_objects(&row.item)).into_owned();
     }
-    clean_display_line_text(&row.item.text())
+    clean_display_line_text(&row.item.text()).into_owned()
 }
 
 fn item_inline_text_with_block_objects(item: &Item) -> String {
