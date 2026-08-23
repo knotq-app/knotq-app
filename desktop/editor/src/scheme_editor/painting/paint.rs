@@ -30,6 +30,12 @@ impl SchemeEditor {
             .get(active_row)
             .is_some_and(|row| row.path.is_cell());
 
+        // Rows outside the viewport contribute nothing to the frame, and
+        // visiting one is not free: it clones the row's shaped line. Drawing a
+        // 10,000-line scheme did 10,000 clones to show about thirty rows.
+        // `None` means the viewport is not known yet, so everything is painted.
+        let visible = self.visible_rows();
+
         for row in 0..self.line_map.line_count() {
             if self
                 .rows
@@ -50,6 +56,9 @@ impl SchemeEditor {
         // sit *below* the selection — otherwise a selected highlight would paint
         // over the selection quad and the selection would be invisible on it.
         for row in 0..self.line_map.line_count() {
+            if !self.row_is_painted(row, &visible) {
+                continue;
+            }
             if self
                 .rows
                 .get(row)
@@ -77,6 +86,9 @@ impl SchemeEditor {
         }
 
         for row in 0..self.line_map.line_count() {
+            if !self.row_is_painted(row, &visible) {
+                continue;
+            }
             let path = self.rows.get(row).map(|row| row.path).unwrap_or_default();
             // A table anchor's grid chrome is painted earlier, but its *text*
             // (a title/caption on the same line as the table) still renders here

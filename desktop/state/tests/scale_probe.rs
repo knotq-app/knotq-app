@@ -166,30 +166,40 @@ mod guards {
     use super::*;
 
     /// A keystroke must not get dramatically more expensive because OTHER
-    /// schemes exist. The edited scheme is identical in both workspaces, so any
-    /// large gap is per-keystroke work that scales with the whole workspace.
+    /// schemes exist.
+    ///
+    /// Both workspaces hold the SAME number of items — 800 — differing only in
+    /// how they are partitioned. That is what isolates scheme count. Comparing
+    /// 4x200 against 200x200 also varied the total by 50x, so it measured the
+    /// allocator and the cache as much as the algorithm, and duly failed on a
+    /// debug build on a loaded Windows runner (11.8x) while a release build on
+    /// a developer machine saw ~1.4x. Measured directly, the keystroke is flat
+    /// in scheme count from 1 to 400 schemes. Same flaw, same fix, as the twin
+    /// of this test in `perf_budget.rs`.
     #[test]
     fn keystroke_cost_does_not_scale_with_unrelated_schemes() {
-        let small = synthetic_workspace(4, 200, 80);
-        let large = synthetic_workspace(200, 200, 80);
-        let mut small_state = state_for(&small);
-        let mut large_state = state_for(&large);
+        let few = synthetic_workspace(4, 200, 80);
+        let many = synthetic_workspace(200, 4, 80);
+        let mut few_state = state_for(&few);
+        let mut many_state = state_for(&many);
 
         // Warm both (first edit pays one-off setup on either side).
-        let _ = keystroke_ms(&mut small_state, &small, 3);
-        let _ = keystroke_ms(&mut large_state, &large, 3);
+        let _ = keystroke_ms(&mut few_state, &few, 3);
+        let _ = keystroke_ms(&mut many_state, &many, 3);
 
-        let small_ms = keystroke_ms(&mut small_state, &small, 30);
-        let large_ms = keystroke_ms(&mut large_state, &large, 30);
+        let few_ms = keystroke_ms(&mut few_state, &few, 30);
+        let many_ms = keystroke_ms(&mut many_state, &many, 30);
 
-        // 50x the schemes must not cost anywhere near 50x per keystroke. The
-        // bound is generous so a loaded CI machine cannot flake it; a genuine
-        // regression to "rebuild everything per keystroke" blows past it.
+        // The edited scheme is SMALLER in the many-scheme workspace (4 items vs
+        // 200), so if scheme count were free this would come out below 1. The
+        // bound is one-sided and generous because it only needs to catch work
+        // that is per-scheme.
         assert!(
-            large_ms < small_ms * 8.0 + 1.0,
-            "keystroke cost scaled with unrelated schemes: {small_ms:.3}ms with 4 schemes \
-             vs {large_ms:.3}ms with 200 (limit {:.3}ms)",
-            small_ms * 8.0 + 1.0
+            many_ms < few_ms * 4.0 + 1.0,
+            "keystroke cost scaled with unrelated schemes: {few_ms:.3}ms with 4 schemes of \
+             200 items vs {many_ms:.3}ms with 200 schemes of 4 items (same 800 items, \
+             limit {:.3}ms)",
+            few_ms * 4.0 + 1.0
         );
     }
 
