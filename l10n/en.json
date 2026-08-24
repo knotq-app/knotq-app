@@ -619,7 +619,7 @@
   "scheme.toolbar.end_date": "end date (⌘E)",
   "scheme.toolbar.end_label": "end",
   "scheme.toolbar.heading": "heading (⌘J)",
-  "scheme.toolbar.highlight": "highlight",
+  "scheme.toolbar.highlight": "highlight (⌘⇧H)",
   "scheme.toolbar.imported_calendar": "Imported calendar",
   "scheme.toolbar.indent": "indent (Tab)",
   "scheme.toolbar.insert_table": "insert table (⌘⇧T)",
