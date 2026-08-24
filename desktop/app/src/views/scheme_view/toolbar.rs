@@ -9,6 +9,42 @@ const MARKER_FAMILY_HOLD: std::time::Duration = std::time::Duration::from_millis
 
 const CLOUD_OFF_ICON: &str = "icons/cloud-off.svg";
 
+/// The discoverable alternative to press-and-hold: a small chevron next to an
+/// active marker button that has more than one glyph family, opening the same
+/// picker on a plain click (mirrors Google Docs' list-style dropdown).
+fn toolbar_marker_family_chevron(
+    marker: ItemMarker,
+    active: bool,
+    editor: Entity<SchemeEditor>,
+    c: Theme,
+    cx: &mut Context<KnotQApp>,
+) -> gpui::AnyElement {
+    let id = match marker {
+        ItemMarker::Bullet => "scheme-toolbar-bullet-family",
+        ItemMarker::Numbered => "scheme-toolbar-numbered-family",
+        ItemMarker::Blank | ItemMarker::Checkbox => "scheme-toolbar-marker-family",
+    };
+    // The slot is always this width, active or not, so switching the
+    // selection to a line with a different marker never reflows the rest of
+    // the toolbar — only whether it's visible/clickable changes.
+    let slot = div().id(id).w(px(12.0)).h(px(23.0)).flex().items_center().justify_center();
+    if !active {
+        return slot.into_any_element();
+    }
+    slot.cursor_pointer()
+        .on_mouse_down(MouseButton::Left, toolbar_refocus_listener(editor))
+        .on_click(cx.listener(move |this, event: &ClickEvent, _window, cx| {
+            this.marker_family_picker = Some((marker, event.position()));
+            cx.notify();
+        }))
+        .child(
+            Icon::new(IconName::ChevronDown)
+                .with_size(px(8.0))
+                .text_color(token_hsla(c.toolbar_chip_selected_text)),
+        )
+        .into_any_element()
+}
+
 impl KnotQApp {
     pub(crate) fn render_scheme_toolbar(
         &mut self,
@@ -54,8 +90,13 @@ impl KnotQApp {
             // Tap sets the marker; press-and-hold offers the glyph family for
             // markers that have one. The press time is recorded on mouse-down
             // and read on release, so a hold does NOT also apply the marker.
+            // The hold gesture is kept for muscle memory, but it isn't
+            // discoverable, so an active marker that offers a family also
+            // grows a small chevron that opens the same picker on a plain
+            // click (the Google Docs list-style-dropdown pattern).
             let offers_family = !MarkerFamily::choices_for(marker).is_empty();
-            toolbar_glyph_button_with_press(
+            let chevron_editor = editor.clone();
+            let glyph_button = toolbar_glyph_button_with_press(
                 id,
                 active,
                 glyph,
@@ -83,7 +124,27 @@ impl KnotQApp {
                     }
                     editor.update(cx, |editor, cx| editor.set_marker_for_selection(marker, cx));
                 }),
-            )
+            );
+
+            if !offers_family {
+                return glyph_button;
+            }
+
+            // The chevron's slot is always reserved (not just inserted when
+            // active) so selecting a different line never changes the
+            // toolbar's width — only whether the chevron itself is visible.
+            div()
+                .flex()
+                .items_center()
+                .child(glyph_button)
+                .child(toolbar_marker_family_chevron(
+                    marker,
+                    active,
+                    chevron_editor,
+                    c,
+                    cx,
+                ))
+                .into_any_element()
         };
 
         let bold_editor = editor.clone();
