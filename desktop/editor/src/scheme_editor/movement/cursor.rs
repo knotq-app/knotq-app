@@ -94,10 +94,11 @@ impl SchemeEditor {
     }
 
     pub(in crate::scheme_editor) fn move_line_start(&mut self, select: bool, cx: &mut Context<Self>) {
+        let row = self.selection.head.row;
         self.move_cursor_to(
             TextLocation {
-                row: self.selection.head.row,
-                col: 0,
+                row,
+                col: self.first_non_whitespace_column(row),
             },
             select,
             cx,

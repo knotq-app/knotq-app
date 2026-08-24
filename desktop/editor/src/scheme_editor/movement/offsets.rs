@@ -37,6 +37,22 @@ impl SchemeEditor {
         self.text.line_len(row)
     }
 
+    /// Column of the first non-whitespace character on `row`, or `0` if the
+    /// line is empty/all-whitespace. Used to make Home skip leading
+    /// indentation instead of always landing on column 0.
+    pub(in crate::scheme_editor) fn first_non_whitespace_column(&self, row: usize) -> usize {
+        let Some(range) = self.line_range(row) else {
+            return 0;
+        };
+        self.text
+            .get(range)
+            .and_then(|line| {
+                line.char_indices()
+                    .find_map(|(col, ch)| (!ch.is_whitespace()).then_some(col))
+            })
+            .unwrap_or(0)
+    }
+
     pub(in crate::scheme_editor) fn line_range(&self, row: usize) -> Option<Range<usize>> {
         self.text.line_range(row)
     }
