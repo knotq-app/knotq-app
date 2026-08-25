@@ -10,6 +10,7 @@ use crate::app::{daily_queue_scheme_is_blank, last_nonempty_daily_queue_day, Kno
 use crate::theme_gpui::{token_hsla, FONT_UI};
 use knotq_date_util::format_contextual_date;
 use knotq_editor::SchemeEditor;
+use knotq_model::ItemId;
 
 const DAILY_EDITOR_BOTTOM_PAD: f32 = 4.0;
 const DAILY_QUEUE_BOTTOM_SPACER: f32 = 360.0;
@@ -48,6 +49,13 @@ impl KnotQApp {
         let revision = self.state.content_revision();
         let mut sections = Vec::with_capacity(dates.len());
         let mut seen_today = false;
+        // The last (most recent) day's editor, so clicking below all the
+        // rendered content — in the bottom spacer, past the actual last
+        // line — still activates it, the same way clicking below a regular
+        // scheme's last line does. Only the last day gets this: every
+        // earlier day already has the next day's section directly beneath
+        // it, so growing its hitbox down would steal clicks meant for that.
+        let mut last_day: Option<(Entity<SchemeEditor>, Option<ItemId>)> = None;
 
         for date in dates.drain(..) {
             let Some(editor) = self.ensure_daily_queue_editor(date, window, cx) else {
@@ -94,6 +102,7 @@ impl KnotQApp {
             if date == today {
                 seen_today = true;
             }
+            last_day = Some((editor.clone(), scheme.items.last().map(|item| item.id)));
 
             sections.push(
                 div()
@@ -187,7 +196,29 @@ impl KnotQApp {
                                     .flex_col()
                                     .justify_end()
                                     .children(sections)
-                                    .child(div().h(px(DAILY_QUEUE_BOTTOM_SPACER)).flex_shrink_0()),
+                                    .child(
+                                        div()
+                                            .id("daily-queue-bottom-hitbox")
+                                            .h(px(DAILY_QUEUE_BOTTOM_SPACER))
+                                            .flex_shrink_0()
+                                            .when_some(last_day, |spacer, (editor, last_item_id)| {
+                                                spacer
+                                                    .cursor(gpui::CursorStyle::IBeam)
+                                                    .on_click(cx.listener(
+                                                        move |_this, _: &ClickEvent, window, cx| {
+                                                            editor.update(cx, |editor, cx| {
+                                                                if let Some(item_id) = last_item_id {
+                                                                    editor.focus_item(
+                                                                        item_id, window, cx,
+                                                                    );
+                                                                } else {
+                                                                    editor.focus(window, cx);
+                                                                }
+                                                            });
+                                                        },
+                                                    ))
+                                            }),
+                                    ),
                             ),
                     )
                     .child(
