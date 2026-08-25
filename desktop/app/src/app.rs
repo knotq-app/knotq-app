@@ -22,6 +22,7 @@ mod constructor;
 mod daily_queue;
 mod delete_confirm;
 mod editor_mgr;
+mod export;
 mod google_oauth;
 mod nav;
 mod node_rename;

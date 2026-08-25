@@ -44,6 +44,7 @@ actions!(
         OpenDailyQueueView,
         NewItem,
         NewFolder,
+        ExportWorkspaceMarkdown,
         AppUndo,
         AppRedo,
         RenameSelectedNode,
@@ -240,6 +241,9 @@ impl Render for KnotQApp {
                     this.sidebar_context_menu = None;
                     let parent = this.new_item_parent_folder();
                     this.open_new_node_prompt(parent, app::NewNodeKind::Folder, window, cx);
+                }))
+                .on_action(cx.listener(|this, _: &ExportWorkspaceMarkdown, _window, cx| {
+                    this.export_workspace_to_markdown(cx);
                 }))
                 .on_action(cx.listener(|this, _: &NavWeekPrev, _window, cx| {
                     this.shift_calendar_period(-1);
@@ -438,6 +442,11 @@ fn app_menus() -> Vec<Menu> {
             items: vec![
                 MenuItem::action(knotq_l10n::t("menu.new_item"), NewItem),
                 MenuItem::action(knotq_l10n::t("menu.new_folder"), NewFolder),
+                MenuItem::separator(),
+                MenuItem::action(
+                    knotq_l10n::t("menu.export_workspace_markdown"),
+                    ExportWorkspaceMarkdown,
+                ),
             ],
         },
         Menu {
@@ -485,6 +494,8 @@ fn app_key_bindings() -> Vec<KeyBinding> {
         KeyBinding::new("secondary-n", NewItem, None),
         KeyBinding::new("cmd-shift-n", NewFolder, None),
         KeyBinding::new("secondary-shift-n", NewFolder, None),
+        KeyBinding::new("cmd-shift-m", ExportWorkspaceMarkdown, None),
+        KeyBinding::new("secondary-shift-m", ExportWorkspaceMarkdown, None),
         KeyBinding::new("cmd-f", ToggleSearch, None),
         KeyBinding::new("secondary-f", ToggleSearch, None),
         KeyBinding::new("f2", RenameSelectedNode, Some("KnotQApp")),
@@ -614,6 +625,7 @@ mod tests {
             ("secondary-,", &OpenSettingsView),
             ("secondary-n", &NewItem),
             ("secondary-shift-n", &NewFolder),
+            ("secondary-shift-m", &ExportWorkspaceMarkdown),
             ("secondary-[", &NavWeekPrev),
             ("secondary-]", &NavWeekNext),
             ("secondary-u", &OpenCalendarView),

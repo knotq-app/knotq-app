@@ -9,7 +9,9 @@ async-trait = { workspace = true }
 chrono = { workspace = true }
 keyring = { workspace = true }
 knotq-commands = { workspace = true }
+knotq-date-util = { workspace = true }
 knotq-history = { workspace = true }
+knotq-l10n = { workspace = true }
 knotq-model = { workspace = true }
 knotq-storage = { workspace = true }
 knotq-sync = { workspace = true }
