@@ -234,6 +234,10 @@ impl WorkspaceCrdtChangeSet {
         self.workspace |= other.workspace;
         self.schemes.extend(other.schemes);
     }
+
+    pub fn is_empty(&self) -> bool {
+        !self.workspace && self.schemes.is_empty()
+    }
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]

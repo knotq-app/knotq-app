@@ -209,7 +209,9 @@ impl KnotQApp {
     /// Largest of locally-pending CRDT edits and the count reported by the last
     /// sync run, so the indicator never under-reports unsynced work.
     pub(crate) fn sync_pending_count(&self) -> usize {
-        let local_pending = self.state.pending_crdt_edits().len();
+        // Counted, not reconciled: this renders on every frame, and flushing
+        // the store's deferred CRDT edits here would undo the deferral.
+        let local_pending = self.state.unsynced_edit_count();
         let pending_from_run = match &self.sync_run_status {
             SyncRunStatus::Running { pending }
             | SyncRunStatus::Synced { pending }

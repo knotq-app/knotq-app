@@ -112,6 +112,14 @@ pub struct WorkspaceStore {
     pending_operations: VecDeque<StoreOperation>,
     crdt: WorkspaceCrdtDocuments,
     crdt_save_scope: CrdtSaveScope,
+    // Accumulated but not-yet-reconciled CRDT changes from local/remote edits.
+    // `after_workspace_change` merges into this instead of calling
+    // `crdt.sync_changes` on every edit — committing a yrs transaction is
+    // O(whole document), so per-keystroke reconciliation is the dominant cost of
+    // typing on a large scheme. Anything that reads `crdt` for its content (or is
+    // about to replace/discard it) must call `flush_crdt` first so no deferred
+    // edit is ever silently lost.
+    deferred_crdt: WorkspaceCrdtChangeSet,
 }
 
 impl WorkspaceStore {
@@ -146,18 +154,62 @@ impl WorkspaceStore {
             // retires the legacy blob, so a later incremental save can assume an
             // authoritative directory.
             crdt_save_scope: CrdtSaveScope::All,
+            deferred_crdt: WorkspaceCrdtChangeSet::default(),
+        }
+    }
+
+    /// Reconcile any deferred CRDT changes (see `deferred_crdt`) into the CRDT
+    /// documents now, and record the resulting updates against the most recent
+    /// pending operation. A no-op when nothing is deferred.
+    ///
+    /// The updates are attached to the latest `StoreOperation` because they
+    /// represent the document state as of that operation — everything deferred
+    /// happened no later than it. If there is no pending operation to attach to
+    /// (e.g. only direct/remote edits deferred since the queue was last
+    /// drained), a synthetic one is pushed, mirroring `record_direct_crdt_changes`.
+    pub fn flush_crdt(&mut self) {
+        if self.deferred_crdt.is_empty() {
+            return;
+        }
+        let changes = std::mem::take(&mut self.deferred_crdt);
+        let outcome = self.crdt.sync_changes(&self.workspace, &changes);
+        // The documents are written HERE now, not when the command was applied,
+        // so this is where the save scope has to learn what moved.
+        self.note_crdt_writes(&changes, &outcome);
+        for error in &outcome.errors {
+            eprintln!("CRDT sync update failed: {error}");
+        }
+        if outcome.updates.is_empty() {
+            return;
+        }
+        if let Some(latest) = self.pending_operations.back_mut() {
+            latest.crdt_updates.extend(outcome.updates);
+        } else {
+            self.pending_operations.push_back(StoreOperation {
+                id: OperationId::new(),
+                workspace_id: self.workspace.id,
+                replica_id: self.replica_id,
+                sequence: self.next_sequence,
+                origin: CommandOrigin::User,
+                created_at: Utc::now(),
+                command: Command::Batch(Vec::new()),
+                crdt_updates: outcome.updates,
+            });
+            self.next_sequence += 1;
         }
     }
 
     /// Snapshot the long-lived CRDT documents' state for durable persistence and to
     /// seed the background sync's CRDT from this device's latest local edits.
-    pub fn crdt_document_states(&self) -> HashMap<DocumentId, Arc<[u8]>> {
+    pub fn crdt_document_states(&mut self) -> HashMap<DocumentId, Arc<[u8]>> {
+        self.flush_crdt();
         self.crdt.document_states()
     }
 
     /// The same snapshot as handles that encode on demand, so a caller that is
     /// about to hand the bytes to a background task can do the encoding there.
-    pub fn crdt_document_state_handles(&self) -> HashMap<DocumentId, DocumentStateHandle> {
+    pub fn crdt_document_state_handles(&mut self) -> HashMap<DocumentId, DocumentStateHandle> {
+        self.flush_crdt();
         self.crdt.document_state_handles()
     }
 
@@ -172,6 +224,10 @@ impl WorkspaceStore {
     pub fn take_crdt_save_scope(
         &mut self,
     ) -> (CrdtSaveScope, HashMap<DocumentId, DocumentStateHandle>) {
+        // Reconcile first: a deferred edit has not reached the documents yet, so
+        // both the scope and the handles below would otherwise describe the
+        // state from before it and the save would write a stale document.
+        self.flush_crdt();
         let scope = std::mem::replace(
             &mut self.crdt_save_scope,
             CrdtSaveScope::Only(HashSet::new()),
@@ -218,13 +274,31 @@ impl WorkspaceStore {
         &self.pending_operations
     }
 
-    pub fn has_pending_crdt_edits(&self) -> bool {
+    /// How much unsynced local work there is, WITHOUT reconciling anything.
+    ///
+    /// The sync indicator only needs to know whether there is unsynced work and
+    /// roughly how much, and the title bar renders it on every frame — flushing
+    /// there would reconcile once per frame and defeat the deferral entirely.
+    /// Deferred changes count as one edit: they become one or more on the next
+    /// flush, and the indicator only distinguishes zero from non-zero.
+    pub fn unsynced_edit_count(&self) -> usize {
+        let queued: usize = self
+            .pending_operations
+            .iter()
+            .map(|operation| operation.crdt_updates.len())
+            .sum();
+        queued + usize::from(!self.deferred_crdt.is_empty())
+    }
+
+    pub fn has_pending_crdt_edits(&mut self) -> bool {
+        self.flush_crdt();
         self.pending_operations
             .iter()
             .any(|op| !op.crdt_updates.is_empty())
     }
 
-    pub fn pending_crdt_edits(&self) -> Vec<PendingCrdtEdit> {
+    pub fn pending_crdt_edits(&mut self) -> Vec<PendingCrdtEdit> {
+        self.flush_crdt();
         self.pending_operations
             .iter()
             .flat_map(|operation| {
@@ -290,6 +364,10 @@ impl WorkspaceStore {
         dirty: WorkspaceDirtyState,
         clear_pending_operations: bool,
     ) {
+        // Reconcile any deferred local/remote edits into `self.crdt` before it is
+        // snapshotted below — otherwise the snapshot (and the rebuilt CRDT it
+        // seeds) would silently omit whatever hadn't been flushed yet.
+        self.flush_crdt();
         let states = self.crdt.document_states();
         let direct_changes = WorkspaceCrdtChangeSet {
             workspace: dirty.index,
@@ -347,6 +425,12 @@ impl WorkspaceStore {
         clear_pending_operations: bool,
         crdt_states: HashMap<DocumentId, B>,
     ) {
+        // Defensive: reconcile anything deferred against the OLD workspace/crdt
+        // before either is replaced below. `replace_workspace` already flushes
+        // before calling this (so this is normally a no-op there), but this is
+        // also reachable directly (see `AppState::replace_workspace_from_sync`'s
+        // fallback), and `self.crdt` is about to be discarded wholesale.
+        self.flush_crdt();
         let mut workspace = workspace;
         let sync_metadata_dirty = workspace.ensure_sync_metadata();
         let mut dirty = dirty;
@@ -388,6 +472,10 @@ impl WorkspaceStore {
         sync_workspace: &Workspace,
         crdt_states: &HashMap<DocumentId, B>,
     ) -> bool {
+        // The comparison below and `apply_remote_updates` both read/mutate
+        // `self.crdt` directly; anything deferred must land there first or it is
+        // lost the moment `self.workspace` is overwritten with the merge result.
+        self.flush_crdt();
         let received_at = Utc::now();
         // `crdt_states` always carries EVERY document, but a sync typically changes a
         // handful. Applying an unchanged document's full state is a costly no-op
@@ -538,12 +626,13 @@ impl WorkspaceStore {
             crdt_changes.workspace = true;
         }
         self.index_stale = true;
-        let outcome = self.crdt.sync_changes(&self.workspace, &crdt_changes);
-        self.note_crdt_writes(&crdt_changes, &outcome);
-        for error in &outcome.errors {
-            eprintln!("CRDT sync update failed: {error}");
-        }
-        outcome.updates
+        // Defer the actual CRDT reconciliation (a yrs commit, O(whole document))
+        // instead of doing it on every edit. A keystroke burst then reconciles
+        // once, on the next flush, rather than once per character. Nothing is
+        // lost: every reader/replacer of `self.crdt` calls `flush_crdt` first,
+        // and the save scope is recorded there too.
+        self.deferred_crdt.merge(crdt_changes);
+        Vec::new()
     }
 
     /// Record which document state files a completed `sync_changes` left stale.

@@ -190,6 +190,16 @@ fn a_reader_never_gets_a_pre_delete_state_while_a_save_is_encoding() {
 /// Both threads ask for the state at the same instant. Whichever loses the race
 /// to re-encode is the one that gets handed the cache — so over a few attempts
 /// this covers the save being the loser as well as the editor.
+///
+/// The snapshot is taken through `take_crdt_save_scope`, which is what the save
+/// task calls. That matters: it reconciles the deferred CRDT changes before
+/// handing out handles, so the deletes are in the documents by the time the
+/// background encode starts. Taking raw handles first and deleting afterwards
+/// would leave the deletes merely *deferred*, and a save that ran before they
+/// were reconciled would legitimately write the state without them — they
+/// belong to the next save's scope. That is a different question from the one
+/// this test asks, which is whether the encode cache can hand either thread a
+/// state older than what the documents already hold.
 #[test]
 fn neither_the_save_nor_the_editor_is_handed_the_pre_delete_state() {
     for attempt in 0..8 {
@@ -197,12 +207,13 @@ fn neither_the_save_nor_the_editor_is_handed_the_pre_delete_state() {
         let workspace_before = store.workspace().clone();
         let _ = store.crdt_document_states();
 
-        let (gate, encoding) = background_encode(store.crdt_document_state_handles());
-
         for _ in 0..2 {
             delete_last(&mut store, scheme);
         }
         let expected = scheme_lines(&store, scheme);
+
+        let (_, handles) = store.take_crdt_save_scope();
+        let (gate, encoding) = background_encode(handles);
 
         // Released together: one of the two does the encode, the other reads the
         // cache. Neither may be handed the state from before the deletes.

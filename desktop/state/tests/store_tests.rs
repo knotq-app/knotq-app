@@ -364,3 +364,245 @@ fn burst_of_content_edits_then_scheme_creation_ends_current() {
          structural command runs"
     );
 }
+
+/// A workspace with one scheme holding one editable item, plus the ids needed
+/// to keep editing it.
+fn editable_workspace() -> (Workspace, knotq_model::SchemeId, knotq_model::ItemId) {
+    let scheme = Scheme::new("Plans", 0);
+    let scheme_id = scheme.id;
+    let item = Item::new("draft");
+    let item_id = item.id;
+    (workspace_with_scheme_item(scheme, item), scheme_id, item_id)
+}
+
+/// CRDT reconciliation is deferred (`WorkspaceStore::flush_crdt`): a burst of
+/// keystrokes merges into `deferred_crdt` and only commits to the yrs documents
+/// when something reads them. This must be purely a *when*, not a *what* — the
+/// final document content after one coalesced flush must match what per-edit
+/// reconciliation (the old behavior, still reachable by calling `flush_crdt`
+/// after every edit) would have produced.
+#[test]
+fn deferred_burst_matches_per_edit_reconciliation() {
+    let (workspace, scheme_id, item_id) = editable_workspace();
+
+    let mut burst_store = WorkspaceStore::new::<Vec<u8>>(
+        workspace.clone(),
+        ReplicaId::new(),
+        false,
+        Default::default(),
+        1,
+    );
+    let mut reconciled_store =
+        WorkspaceStore::new::<Vec<u8>>(workspace, ReplicaId::new(), false, Default::default(), 1);
+
+    // Seed the workspace-level CRDT document (materialization refuses to run
+    // against one that has never received a workspace-kind update — see
+    // `WorkspaceCrdtDocuments::apply_remote_updates`'s "local CRDT state is
+    // empty" guard). A scheme rename lives in the workspace document, not the
+    // scheme's own content document.
+    for store in [&mut burst_store, &mut reconciled_store] {
+        store
+            .apply_local(
+                Command::RenameScheme {
+                    id: scheme_id,
+                    name: "Plans v2".to_string(),
+                },
+                CommandOrigin::User,
+            )
+            .unwrap();
+    }
+    reconciled_store.flush_crdt();
+
+    for i in 0..8 {
+        let text = format!("line {i}");
+        burst_store
+            .apply_local(
+                Command::UpdateItemText {
+                    scheme: scheme_id,
+                    item: item_id,
+                    text: text.clone(),
+                },
+                CommandOrigin::User,
+            )
+            .unwrap();
+        reconciled_store
+            .apply_local(
+                Command::UpdateItemText {
+                    scheme: scheme_id,
+                    item: item_id,
+                    text,
+                },
+                CommandOrigin::User,
+            )
+            .unwrap();
+        // Old (pre-deferral) behavior: reconcile into the CRDT after every edit.
+        reconciled_store.flush_crdt();
+    }
+
+    // The burst store never flushed during the loop; this single read is where
+    // all 8 deferred edits reconcile at once.
+    let burst_states = burst_store.crdt_document_states();
+    let reconciled_states = reconciled_store.crdt_document_states();
+
+    let burst_docs = WorkspaceCrdtDocuments::from_states(
+        burst_store.workspace(),
+        ReplicaId::new(),
+        &burst_states,
+    )
+    .unwrap();
+    let reconciled_docs = WorkspaceCrdtDocuments::from_states(
+        reconciled_store.workspace(),
+        ReplicaId::new(),
+        &reconciled_states,
+    )
+    .unwrap();
+
+    let burst_materialized = burst_docs
+        .materialized_workspace_for_diagnostics(burst_store.workspace())
+        .unwrap();
+    let reconciled_materialized = reconciled_docs
+        .materialized_workspace_for_diagnostics(reconciled_store.workspace())
+        .unwrap();
+
+    let burst_text = burst_materialized.scheme(scheme_id).unwrap().items[0].text();
+    let reconciled_text = reconciled_materialized.scheme(scheme_id).unwrap().items[0].text();
+    assert_eq!(burst_text, "line 7");
+    assert_eq!(
+        burst_text, reconciled_text,
+        "a coalesced flush must materialize identical content to per-edit reconciliation"
+    );
+}
+
+/// `pending_crdt_edits()` after a burst of deferred edits must itself flush, and
+/// the resulting updates must be a valid, self-sufficient CRDT delta: applying
+/// them to a document a fresh peer has never seen reproduces the edited scheme.
+#[test]
+fn pending_crdt_edits_after_burst_reproduce_on_fresh_peer() {
+    let (workspace, scheme_id, item_id) = editable_workspace();
+    let mut store =
+        WorkspaceStore::new::<Vec<u8>>(workspace, ReplicaId::new(), false, Default::default(), 1);
+
+    // Seed the workspace-level CRDT document — `apply_remote_updates` refuses
+    // to materialize scheme content on a peer that never received a
+    // workspace-kind update (see the sibling test above for why).
+    store
+        .apply_local(
+            Command::RenameScheme {
+                id: scheme_id,
+                name: "Plans v2".to_string(),
+            },
+            CommandOrigin::User,
+        )
+        .unwrap();
+
+    for i in 0..5 {
+        store
+            .apply_local(
+                Command::UpdateItemText {
+                    scheme: scheme_id,
+                    item: item_id,
+                    text: format!("v{i}"),
+                },
+                CommandOrigin::User,
+            )
+            .unwrap();
+    }
+    // Nothing has read the CRDT yet — everything above is still sitting in
+    // `deferred_crdt`. `has_pending_crdt_edits` is itself a reader (it flushes
+    // before answering), so this both checks and performs the coalesced flush.
+    assert!(store.has_pending_crdt_edits());
+
+    let edits = store.pending_crdt_edits();
+    assert!(!edits.is_empty(), "the burst must produce a pending edit");
+
+    let stored_updates: Vec<StoredCrdtUpdate> = edits
+        .iter()
+        .map(|edit| StoredCrdtUpdate {
+            workspace_id: edit.workspace_id,
+            document: edit.document,
+            kind: edit.kind,
+            replica_id: edit.replica_id,
+            sequence: 0,
+            received_at: chrono::Utc::now(),
+            update_v1: edit.update_v1.clone(),
+        })
+        .collect();
+
+    // A peer that has never seen this document before — the CRDT documents are
+    // constructed empty, never seeded from `store`'s own materialized content.
+    let mut fresh_peer =
+        WorkspaceCrdtDocuments::empty_for_replica(store.workspace(), ReplicaId::new());
+    let outcome = fresh_peer.apply_remote_updates(&Workspace::new(), &stored_updates);
+    assert!(
+        outcome.is_ok(),
+        "fresh peer must accept the pending edits: {:?} / {:?}",
+        outcome.document_errors,
+        outcome.workspace_errors
+    );
+
+    let materialized_scheme = outcome
+        .workspace
+        .scheme(scheme_id)
+        .expect("the scheme must exist on the fresh peer after applying the pending edits");
+    assert_eq!(materialized_scheme.items[0].text(), "v4");
+}
+
+/// An edit that is never followed by a read (no save, no sync run, no direct
+/// `flush_crdt` call) must not be lost: it stays in `deferred_crdt` until
+/// something finally asks, and that later read still sees it.
+#[test]
+fn edit_without_a_read_is_not_lost() {
+    let (workspace, scheme_id, item_id) = editable_workspace();
+    let mut store =
+        WorkspaceStore::new::<Vec<u8>>(workspace, ReplicaId::new(), false, Default::default(), 1);
+
+    // A scheme rename (workspace-level) so the workspace CRDT document is
+    // seeded — required for materialization below — plus a text edit
+    // (scheme-level), so both kinds of deferred change are exercised.
+    store
+        .apply_local(
+            Command::RenameScheme {
+                id: scheme_id,
+                name: "Renamed".to_string(),
+            },
+            CommandOrigin::User,
+        )
+        .unwrap();
+    store
+        .apply_local(
+            Command::UpdateItemText {
+                scheme: scheme_id,
+                item: item_id,
+                text: "only edit".to_string(),
+            },
+            CommandOrigin::User,
+        )
+        .unwrap();
+
+    // Touch things that do NOT read the CRDT — mirrors what a keystroke burst
+    // does in the app before anything asks for CRDT state (a save, a sync run).
+    assert!(store.dirty().is_dirty());
+    assert_eq!(store.pending_operations().len(), 2);
+    assert_eq!(
+        store.workspace().scheme(scheme_id).unwrap().items[0].text(),
+        "only edit"
+    );
+
+    // Only now does something read the CRDT — long after the edits happened.
+    let states = store.crdt_document_states();
+    let docs =
+        WorkspaceCrdtDocuments::from_states(store.workspace(), ReplicaId::new(), &states).unwrap();
+    let materialized = docs
+        .materialized_workspace_for_diagnostics(store.workspace())
+        .unwrap();
+    let materialized_scheme = materialized.scheme(scheme_id).unwrap();
+    assert_eq!(
+        materialized_scheme.name, "Renamed",
+        "the workspace-level edit with no intervening read must still reach the CRDT once flushed"
+    );
+    assert_eq!(
+        materialized_scheme.items[0].text(),
+        "only edit",
+        "the scheme-level edit with no intervening read must still reach the CRDT once flushed"
+    );
+}

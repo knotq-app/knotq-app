@@ -285,17 +285,23 @@ impl AppState {
         self.index_dirty || !self.dirty_schemes.is_empty()
     }
 
-    pub fn pending_crdt_edits(&self) -> Vec<PendingCrdtEdit> {
+    pub fn pending_crdt_edits(&mut self) -> Vec<PendingCrdtEdit> {
         self.store.pending_crdt_edits()
     }
 
-    pub fn has_pending_crdt_edits(&self) -> bool {
+    pub fn has_pending_crdt_edits(&mut self) -> bool {
         self.store.has_pending_crdt_edits()
+    }
+
+    /// Unsynced local work, counted without reconciling. For the sync indicator,
+    /// which renders every frame — see [`WorkspaceStore::unsynced_edit_count`].
+    pub fn unsynced_edit_count(&self) -> usize {
+        self.store.unsynced_edit_count()
     }
 
     /// Snapshot the long-lived CRDT documents' persisted state — for durable saving
     /// and for seeding the background sync with this device's latest local edits.
-    pub fn crdt_document_states(&self) -> HashMap<DocumentId, std::sync::Arc<[u8]>> {
+    pub fn crdt_document_states(&mut self) -> HashMap<DocumentId, std::sync::Arc<[u8]>> {
         self.store.crdt_document_states()
     }
 
@@ -303,7 +309,7 @@ impl AppState {
     /// cheap whatever the workspace holds; encoding a large scheme is not, and
     /// the save path is on the UI thread.
     pub fn crdt_document_state_handles(
-        &self,
+        &mut self,
     ) -> HashMap<DocumentId, knotq_sync::DocumentStateHandle> {
         self.store.crdt_document_state_handles()
     }
