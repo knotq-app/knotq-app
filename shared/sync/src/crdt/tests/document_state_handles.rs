@@ -98,3 +98,128 @@ fn handles_can_encode_on_another_thread() {
         assert_eq!(encoded[document].as_ref(), bytes.as_ref());
     }
 }
+
+// ---------------------------------------------------------------------------
+// Concurrency: the handle shares its document's cache with the thread that owns
+// the document, so the two can be inside `get_shared` at the same time. Both of
+// the interleavings below lose an edit, and the loss is silent: whoever reads
+// the cache next gets bytes from before the edit and rebuilds the CRDT document
+// from them.
+// ---------------------------------------------------------------------------
+
+use std::sync::mpsc;
+
+/// A background encode in flight must not make a concurrent reader serve the
+/// state from *before* the edit that is still being encoded.
+///
+/// The save task takes handles on the UI thread and encodes them on the
+/// background executor. While that encode runs, anything on the UI thread that
+/// asks for the document states — `sync_store_from_workspace` rebuilds the CRDT
+/// documents from exactly those bytes — must not be handed the pre-edit state.
+#[test]
+fn a_reader_never_sees_the_pre_edit_state_while_a_background_encode_is_running() {
+    let cache = Arc::new(EncodeCacheState::default());
+    // Steady state: the document has been encoded once and nothing has changed.
+    assert_eq!(cache.get_shared(|| vec![0]).as_ref(), [0]);
+
+    // The user's edit lands.
+    cache.mark_dirty();
+
+    // The background save starts encoding it, and is still inside `encode`.
+    let (entered_tx, entered_rx) = mpsc::channel();
+    let (release_tx, release_rx) = mpsc::channel();
+    let background = {
+        let cache = Arc::clone(&cache);
+        std::thread::spawn(move || {
+            cache.get_shared(|| {
+                entered_tx.send(()).expect("hand over to the reader");
+                release_rx.recv().expect("wait for the reader");
+                vec![1]
+            })
+        })
+    };
+    entered_rx.recv().expect("the background encode started");
+
+    // Meanwhile the UI thread asks for the states.
+    let read = cache.get_shared(|| vec![1]);
+    release_tx.send(()).expect("release the background encode");
+    background.join().expect("the background encode");
+
+    assert_eq!(
+        read.as_ref(),
+        [1],
+        "a reader was handed the state from before the edit because a background \
+         encode had already consumed the dirty flag"
+    );
+}
+
+/// A slow background encode must not publish its (older) result over a newer
+/// one, leaving the cache serving pre-edit bytes to every later reader.
+#[test]
+fn a_slow_background_encode_never_overwrites_a_newer_state() {
+    let cache = Arc::new(EncodeCacheState::default());
+    cache.mark_dirty();
+
+    // The background save is inside `encode`, holding the pre-edit content.
+    let (entered_tx, entered_rx) = mpsc::channel();
+    let (release_tx, release_rx) = mpsc::channel();
+    let background = {
+        let cache = Arc::clone(&cache);
+        std::thread::spawn(move || {
+            cache.get_shared(|| {
+                entered_tx.send(()).expect("hand over to the reader");
+                release_rx.recv().expect("wait for the reader");
+                vec![0]
+            })
+        })
+    };
+    entered_rx.recv().expect("the background encode started");
+
+    // The user's edit lands and the UI thread encodes it.
+    cache.mark_dirty();
+    assert_eq!(cache.get_shared(|| vec![1]).as_ref(), [1]);
+
+    // Only now does the background encode finish, with its older bytes.
+    release_tx.send(()).expect("release the background encode");
+    background.join().expect("the background encode");
+
+    assert_eq!(
+        cache
+            .get_shared(|| panic!("nothing changed; this must come from the cache"))
+            .as_ref(),
+        [1],
+        "the stale background encode overwrote the newer state in the cache"
+    );
+}
+
+/// The whole point of the cache: an unchanged document is not re-encoded.
+#[test]
+fn an_unchanged_document_is_served_from_the_cache() {
+    let cache = EncodeCacheState::default();
+    assert_eq!(cache.get_shared(|| vec![7]).as_ref(), [7]);
+    assert_eq!(
+        cache
+            .get_shared(|| panic!("re-encoded a document that had not changed"))
+            .as_ref(),
+        [7]
+    );
+    cache.mark_dirty();
+    assert_eq!(cache.get_shared(|| vec![8]).as_ref(), [8]);
+}
+
+/// Two threads encoding the same unchanged document must agree, and neither may
+/// be handed a value the other invented.
+#[test]
+fn concurrent_readers_of_an_unchanged_document_agree() {
+    let cache = Arc::new(EncodeCacheState::default());
+    cache.mark_dirty();
+    let readers = (0..8)
+        .map(|_| {
+            let cache = Arc::clone(&cache);
+            std::thread::spawn(move || cache.get_shared(|| vec![42]))
+        })
+        .collect::<Vec<_>>();
+    for reader in readers {
+        assert_eq!(reader.join().expect("reader").as_ref(), [42]);
+    }
+}
