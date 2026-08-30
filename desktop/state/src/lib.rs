@@ -33,7 +33,7 @@ pub use notification_state::{reschedule_notifications, NotificationState};
 pub use selection::{Selection, View};
 pub use session::{EditorSession, EditorSessions, SchemeEditorMenuState};
 pub use state::AppState;
-pub use store::{StoreOperation, WorkspaceDirtyState, WorkspaceStore};
+pub use store::{CrdtSaveScope, StoreOperation, WorkspaceDirtyState, WorkspaceStore};
 pub use undo::{
     calendar_toggle_keys, editor_undo_key, recurrence_undo_key, should_coalesce_editor_undo,
     should_coalesce_recurrence_undo, EditorUndoGroup, EditorUndoKey, UNDO_DEPTH,

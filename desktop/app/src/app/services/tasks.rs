@@ -7,7 +7,8 @@ use futures::{pin_mut, select, FutureExt};
 use gpui::{Context, Task};
 use knotq_model::{ItemId, ItemKind, OccurrenceId, SchemeId, Workspace};
 use knotq_rrule::ItemOccurrenceExt;
-use knotq_storage_json::{save_crdt_state, save_pending_crdt_edits};
+use knotq_state::CrdtSaveScope;
+use knotq_storage_json::{save_crdt_state, save_crdt_state_incremental, save_pending_crdt_edits};
 
 use super::{
     save_workspace, save_workspace_incremental, workspace_path, AppServiceBus, KnotQApp,
@@ -42,20 +43,29 @@ pub(crate) fn spawn_save_task(
                         // came due while typing. Collecting handles is cheap
                         // whatever the workspace holds; the encoding happens in
                         // the background task below.
-                        let crdt_state_handles = app.state.crdt_document_state_handles();
+                        //
+                        // And only the documents that moved: rewriting all of
+                        // them means reading every state file back to compare
+                        // against, for an edit that touched one. The store
+                        // widens the scope itself whenever it cannot vouch for
+                        // that (see `CrdtSaveScope`).
+                        let (crdt_scope, crdt_state_handles) = app.state.take_crdt_save_scope();
                         let dirty_ids = std::mem::take(&mut app.state.dirty_schemes);
                         app.state.index_dirty = false;
                         Some((
                             app.workspace.clone(),
                             dirty_ids,
                             pending_crdt_edits,
+                            crdt_scope,
                             crdt_state_handles,
                         ))
                     })
                     .ok()
                     .flatten();
 
-                if let Some((ws, dirty_ids, pending_crdt_edits, crdt_state_handles)) = snapshot {
+                if let Some((ws, dirty_ids, pending_crdt_edits, crdt_scope, crdt_state_handles)) =
+                    snapshot
+                {
                     let path = workspace_path();
                     let retry_ids = dirty_ids.clone();
                     let result = cx
@@ -78,7 +88,19 @@ pub(crate) fn spawn_save_task(
                             // with their stable identity) rather than rebuilding.
                             result
                                 .and_then(|_| save_pending_crdt_edits(&path, &pending_crdt_edits))
-                                .and_then(|_| save_crdt_state(&path, &crdt_states))
+                                .and_then(|_| match crdt_scope {
+                                    // Only a full save may remove a file, so it
+                                    // is the one that sweeps documents that went
+                                    // away and retires the legacy blob.
+                                    CrdtSaveScope::All => save_crdt_state(&path, &crdt_states),
+                                    // Nothing moved: the workspace and scheme
+                                    // files still needed writing, the CRDT
+                                    // state did not.
+                                    CrdtSaveScope::Only(_) if crdt_states.is_empty() => Ok(()),
+                                    CrdtSaveScope::Only(_) => {
+                                        save_crdt_state_incremental(&path, &crdt_states)
+                                    }
+                                })
                         })
                         .await;
                     if let Err(err) = result {
@@ -92,6 +114,11 @@ pub(crate) fn spawn_save_task(
                             // user happens to edit them again.
                             app.state.dirty_schemes.extend(retry_ids);
                             app.state.index_dirty = true;
+                            // This attempt took the save scope and then dropped
+                            // it. Widen back to every document so the retry
+                            // rewrites what this one failed to, instead of
+                            // leaving it stale on disk forever.
+                            app.state.mark_all_crdt_documents_changed();
                             app.workspace_save_error = Some(message);
                             cx.notify();
                         });
@@ -393,7 +420,10 @@ async fn compute_next_timeline_deadline(
     let now = Utc::now();
     let (workspace, retained_deadline) = weak
         .update(cx, |app, _cx| {
-            (app.workspace.clone(), app.retained_completed().next_expiry())
+            (
+                app.workspace.clone(),
+                app.retained_completed().next_expiry(),
+            )
         })
         .ok()?;
     let event_deadline = cx
@@ -401,10 +431,14 @@ async fn compute_next_timeline_deadline(
         .spawn(async move { next_event_completion_deadline(&workspace, now) })
         .await;
 
-    [event_deadline, next_daily_queue_deadline(), retained_deadline]
-        .into_iter()
-        .flatten()
-        .min()
+    [
+        event_deadline,
+        next_daily_queue_deadline(),
+        retained_deadline,
+    ]
+    .into_iter()
+    .flatten()
+    .min()
 }
 
 fn sync_daily_queue_day_boundary_if_needed(

@@ -16,7 +16,7 @@ use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use anyhow::{Context, Result};
+use anyhow::{bail, Context, Result};
 use knotq_model::DocumentId;
 use knotq_sync::{
     PersistedCrdtState, LOCAL_CRDT_STATE_DIR, LOCAL_CRDT_STATE_EXT, LOCAL_CRDT_STATE_FILE,
@@ -150,6 +150,27 @@ pub fn save_crdt_state<B: AsRef<[u8]>>(
 
     remove_stale_documents(&dir, &written)?;
     retire_single_blob(workspace_path);
+    Ok(())
+}
+
+/// Persist only known-changed documents in an already-authoritative per-document
+/// state directory. Unlike [`save_crdt_state`], this deliberately does not sweep
+/// stale files or retire the legacy blob, so it is safe only for ordinary edits
+/// that cannot add or remove documents.
+pub fn save_crdt_state_incremental<B: AsRef<[u8]>>(
+    workspace_path: &Path,
+    states: &HashMap<DocumentId, B>,
+) -> Result<()> {
+    let dir = crdt_state_dir(workspace_path);
+    if !dir.is_dir() || crdt_state_path(workspace_path).exists() {
+        bail!("incremental CRDT save requires an authoritative state directory");
+    }
+    for (document, bytes) in states {
+        crate::files::write_atomic_if_changed(
+            &dir.join(document_file_name(*document)),
+            bytes.as_ref(),
+        )?;
+    }
     Ok(())
 }
 
@@ -292,6 +313,63 @@ mod tests {
             }
         }
 
+        let _ = fs::remove_dir_all(workspace_path.parent().unwrap().parent().unwrap());
+    }
+
+    #[test]
+    fn incremental_save_preserves_documents_it_was_not_given() {
+        let workspace_path = temp_workspace("crdt-state-partial");
+        let kept = DocumentId::new();
+        let edited = DocumentId::new();
+        save_crdt_state(
+            &workspace_path,
+            &HashMap::from([(kept, vec![1u8]), (edited, vec![2u8])]),
+        )
+        .unwrap();
+
+        save_crdt_state_incremental(&workspace_path, &HashMap::from([(edited, vec![3u8])]))
+            .unwrap();
+
+        assert_eq!(
+            load_crdt_state(&workspace_path).unwrap(),
+            HashMap::from([(kept, vec![1u8]), (edited, vec![3u8])])
+        );
+        let _ = fs::remove_dir_all(workspace_path.parent().unwrap().parent().unwrap());
+    }
+
+    /// The safety net. An incremental save cannot create the directory, sweep a
+    /// document that went away, or retire the legacy blob — so on a data
+    /// directory where any of that is still outstanding it must refuse rather
+    /// than write half a state. The store makes the first save of every run a
+    /// full one so this never fires in practice; it is here because "never in
+    /// practice" is exactly what stops being true.
+    #[test]
+    fn an_incremental_save_refuses_a_directory_it_cannot_vouch_for() {
+        let workspace_path = temp_workspace("crdt-state-nonauthoritative");
+        let document = DocumentId::new();
+
+        // No per-document directory yet: a full save has never run here.
+        assert!(
+            save_crdt_state_incremental(&workspace_path, &HashMap::from([(document, vec![1u8])]))
+                .is_err(),
+            "an incremental save must refuse before the directory exists"
+        );
+
+        save_crdt_state(&workspace_path, &HashMap::from([(document, vec![1u8])])).unwrap();
+        // ...and again once the legacy single-blob file is back, because only a
+        // full save retires it and a loader that finds it wins over the
+        // directory.
+        fs::write(crdt_state_path(&workspace_path), "{}").unwrap();
+        assert!(
+            save_crdt_state_incremental(&workspace_path, &HashMap::from([(document, vec![2u8])]))
+                .is_err(),
+            "an incremental save must refuse while the legacy blob is still there"
+        );
+        assert_eq!(
+            load_crdt_state(&workspace_path).unwrap(),
+            HashMap::from([(document, vec![1u8])]),
+            "the refused save must not have written anything"
+        );
         let _ = fs::remove_dir_all(workspace_path.parent().unwrap().parent().unwrap());
     }
 

@@ -120,6 +120,7 @@ actions!(
         ToggleStartDate,
         ToggleStatus,
         ToggleStrikethrough,
+        UnfocusEditor,
         UnindentLine,
     ]
 );

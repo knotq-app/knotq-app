@@ -10,7 +10,7 @@ use knotq_model::{
 use knotq_sync::PendingCrdtEdit;
 
 use crate::{
-    DailyQueueState, EditorSessions, EditorUndoGroup, EventBus, NotificationState,
+    CrdtSaveScope, DailyQueueState, EditorSessions, EditorUndoGroup, EventBus, NotificationState,
     RetainedCompletedItems, Selection, UndoScope, UndoStore, View, WorkspaceDirtyState,
     WorkspaceStore,
 };
@@ -308,6 +308,23 @@ impl AppState {
         self.store.crdt_document_state_handles()
     }
 
+    /// Handles for only the documents the next save has to write, with the scope
+    /// that says whether the save may also sweep. See [`CrdtSaveScope`].
+    pub fn take_crdt_save_scope(
+        &mut self,
+    ) -> (
+        CrdtSaveScope,
+        HashMap<DocumentId, knotq_sync::DocumentStateHandle>,
+    ) {
+        self.store.take_crdt_save_scope()
+    }
+
+    /// Hand a taken scope back after a failed save, so the documents it dropped
+    /// are rewritten rather than left stale on disk.
+    pub fn mark_all_crdt_documents_changed(&mut self) {
+        self.store.mark_all_crdt_documents_changed();
+    }
+
     pub fn clear_pushed_crdt_edits(
         &mut self,
         document: DocumentId,
@@ -367,8 +384,7 @@ impl AppState {
         // into the store as if it were an edit. Catch any such drift in debug
         // builds and every test run rather than let it corrupt data silently.
         debug_assert_eq!(
-            &next,
-            store,
+            &next, store,
             "reusing untouched schemes diverged from the store; `touched` under-reported"
         );
         self.workspace = next;

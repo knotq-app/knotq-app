@@ -358,59 +358,63 @@ impl YrsSchemeDocument {
         let positions: Vec<String> = if let Some(cached) = cached_positions {
             cached
         } else {
-        let len = desired.len();
-        let mut next_stored_any = vec![len; len + 1];
-        let mut next_stored_positioned = vec![len; len + 1];
-        for i in (0..len).rev() {
-            let entry = stored.get(&desired[i]);
-            next_stored_any[i] = if entry.is_some() { i } else { next_stored_any[i + 1] };
-            next_stored_positioned[i] = match entry {
-                Some(entry) if !entry.position.is_empty() => i,
-                _ => next_stored_positioned[i + 1],
-            };
-        }
-
-        let mut computed: Vec<String> = Vec::with_capacity(desired.len());
-        for (idx, id) in desired.iter().enumerate() {
-            let prev = computed.last().cloned();
-            // A skeleton-created item has no real position yet (read back as ""); treat
-            // an empty position as absent so a fresh fractional key is minted.
-            let existing = stored
-                .get(id)
-                .map(|entry| entry.position.clone())
-                .filter(|position| !position.is_empty());
-            let keep = match (&existing, &prev) {
-                (Some(existing), Some(prev)) => existing.as_str() > prev.as_str(),
-                (Some(_), None) => true,
-                (None, _) => false,
-            };
-            let position = if keep {
-                existing.unwrap()
-            } else {
-                let mut upper = None;
-                // With no `prev`, the first stored entry of any kind wins; with
-                // one, only entries that actually carry a position can.
-                let (mut cursor, jumps) = match prev.as_deref() {
-                    None => (next_stored_any[idx + 1], &next_stored_any),
-                    Some(_) => (next_stored_positioned[idx + 1], &next_stored_positioned),
+            let len = desired.len();
+            let mut next_stored_any = vec![len; len + 1];
+            let mut next_stored_positioned = vec![len; len + 1];
+            for i in (0..len).rev() {
+                let entry = stored.get(&desired[i]);
+                next_stored_any[i] = if entry.is_some() {
+                    i
+                } else {
+                    next_stored_any[i + 1]
                 };
-                while cursor < len {
-                    let candidate = stored
-                        .get(&desired[cursor])
-                        .map(|entry| entry.position.clone())
-                        .filter(|candidate| {
-                            prev.as_deref().is_none_or(|prev| candidate.as_str() > prev)
-                        });
-                    if candidate.is_some() {
-                        upper = candidate;
-                        break;
+                next_stored_positioned[i] = match entry {
+                    Some(entry) if !entry.position.is_empty() => i,
+                    _ => next_stored_positioned[i + 1],
+                };
+            }
+
+            let mut computed: Vec<String> = Vec::with_capacity(desired.len());
+            for (idx, id) in desired.iter().enumerate() {
+                let prev = computed.last().cloned();
+                // A skeleton-created item has no real position yet (read back as ""); treat
+                // an empty position as absent so a fresh fractional key is minted.
+                let existing = stored
+                    .get(id)
+                    .map(|entry| entry.position.clone())
+                    .filter(|position| !position.is_empty());
+                let keep = match (&existing, &prev) {
+                    (Some(existing), Some(prev)) => existing.as_str() > prev.as_str(),
+                    (Some(_), None) => true,
+                    (None, _) => false,
+                };
+                let position = if keep {
+                    existing.unwrap()
+                } else {
+                    let mut upper = None;
+                    // With no `prev`, the first stored entry of any kind wins; with
+                    // one, only entries that actually carry a position can.
+                    let (mut cursor, jumps) = match prev.as_deref() {
+                        None => (next_stored_any[idx + 1], &next_stored_any),
+                        Some(_) => (next_stored_positioned[idx + 1], &next_stored_positioned),
+                    };
+                    while cursor < len {
+                        let candidate = stored
+                            .get(&desired[cursor])
+                            .map(|entry| entry.position.clone())
+                            .filter(|candidate| {
+                                prev.as_deref().is_none_or(|prev| candidate.as_str() > prev)
+                            });
+                        if candidate.is_some() {
+                            upper = candidate;
+                            break;
+                        }
+                        cursor = jumps[cursor + 1];
                     }
-                    cursor = jumps[cursor + 1];
-                }
-                crate::fractional::between(prev.as_deref(), upper.as_deref())
-            };
-            computed.push(position);
-        }
+                    crate::fractional::between(prev.as_deref(), upper.as_deref())
+                };
+                computed.push(position);
+            }
             computed
         };
 

@@ -17,8 +17,6 @@ pub fn init(cx: &mut App) {
         KeyBinding::new("right", MoveRight, Some(KEY_CONTEXT)),
         KeyBinding::new("alt-left", MoveLeftWord, Some(KEY_CONTEXT)),
         KeyBinding::new("alt-right", MoveRightWord, Some(KEY_CONTEXT)),
-        KeyBinding::new("secondary-left", MoveLineStart, Some(KEY_CONTEXT)),
-        KeyBinding::new("secondary-right", MoveLineEnd, Some(KEY_CONTEXT)),
         KeyBinding::new("cmd-left", MoveLineStart, Some(KEY_CONTEXT)),
         KeyBinding::new("cmd-right", MoveLineEnd, Some(KEY_CONTEXT)),
         KeyBinding::new("home", MoveLineStart, Some(KEY_CONTEXT)),
@@ -35,8 +33,6 @@ pub fn init(cx: &mut App) {
         KeyBinding::new("shift-down", SelectDown, Some(KEY_CONTEXT)),
         KeyBinding::new("shift-alt-left", SelectLeftWord, Some(KEY_CONTEXT)),
         KeyBinding::new("shift-alt-right", SelectRightWord, Some(KEY_CONTEXT)),
-        KeyBinding::new("shift-secondary-left", SelectLineStart, Some(KEY_CONTEXT)),
-        KeyBinding::new("shift-secondary-right", SelectLineEnd, Some(KEY_CONTEXT)),
         KeyBinding::new("shift-cmd-left", SelectLineStart, Some(KEY_CONTEXT)),
         KeyBinding::new("shift-cmd-right", SelectLineEnd, Some(KEY_CONTEXT)),
         KeyBinding::new("shift-home", SelectLineStart, Some(KEY_CONTEXT)),
@@ -69,8 +65,10 @@ pub fn init(cx: &mut App) {
         KeyBinding::new("secondary-b", ToggleBold, Some(KEY_CONTEXT)),
         KeyBinding::new("cmd-i", ToggleItalic, Some(KEY_CONTEXT)),
         KeyBinding::new("secondary-i", ToggleItalic, Some(KEY_CONTEXT)),
-KeyBinding::new("cmd-shift-x", ToggleStrikethrough, Some(KEY_CONTEXT)),
+        KeyBinding::new("cmd-shift-x", ToggleStrikethrough, Some(KEY_CONTEXT)),
         KeyBinding::new("secondary-shift-x", ToggleStrikethrough, Some(KEY_CONTEXT)),
+        KeyBinding::new("cmd-shift-h", ToggleHighlight, Some(KEY_CONTEXT)),
+        KeyBinding::new("secondary-shift-h", ToggleHighlight, Some(KEY_CONTEXT)),
         KeyBinding::new("cmd-j", ToggleHeading, Some(KEY_CONTEXT)),
         KeyBinding::new("secondary-j", ToggleHeading, Some(KEY_CONTEXT)),
         KeyBinding::new("cmd-l", ToggleStatus, Some(KEY_CONTEXT)),
@@ -90,5 +88,27 @@ KeyBinding::new("cmd-shift-x", ToggleStrikethrough, Some(KEY_CONTEXT)),
             ShowCharacterPalette,
             Some(KEY_CONTEXT),
         ),
+        KeyBinding::new("escape", UnfocusEditor, Some(KEY_CONTEXT)),
+    ]);
+
+    // On macOS, Cmd+Left/Right (and Shift+) move/select to the line start/end —
+    // "secondary" here means the platform key. On Windows/Linux "secondary"
+    // means Ctrl, which is conventionally word-movement, not line-movement
+    // (Home/End already cover line start/end there), so the two platforms need
+    // different actions bound to the same "secondary" keystroke.
+    #[cfg(target_os = "macos")]
+    cx.bind_keys([
+        KeyBinding::new("secondary-left", MoveLineStart, Some(KEY_CONTEXT)),
+        KeyBinding::new("secondary-right", MoveLineEnd, Some(KEY_CONTEXT)),
+        KeyBinding::new("shift-secondary-left", SelectLineStart, Some(KEY_CONTEXT)),
+        KeyBinding::new("shift-secondary-right", SelectLineEnd, Some(KEY_CONTEXT)),
+    ]);
+
+    #[cfg(not(target_os = "macos"))]
+    cx.bind_keys([
+        KeyBinding::new("ctrl-left", MoveLeftWord, Some(KEY_CONTEXT)),
+        KeyBinding::new("ctrl-right", MoveRightWord, Some(KEY_CONTEXT)),
+        KeyBinding::new("shift-ctrl-left", SelectLeftWord, Some(KEY_CONTEXT)),
+        KeyBinding::new("shift-ctrl-right", SelectRightWord, Some(KEY_CONTEXT)),
     ]);
 }

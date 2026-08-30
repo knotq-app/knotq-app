@@ -67,7 +67,10 @@ fn a_handle_sees_an_edit_made_after_it_was_taken() {
         .values()
         .map(|handle| handle.encode())
         .collect::<Vec<_>>();
-    assert_ne!(before, after, "the handle served a stale cache after an edit");
+    assert_ne!(
+        before, after,
+        "the handle served a stale cache after an edit"
+    );
     // And it still agrees with the document.
     let direct = docs.document_states();
     for (document, handle) in &handles {
