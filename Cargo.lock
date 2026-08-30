@@ -3199,6 +3199,7 @@ name = "knotq-editor"
 version = "0.1.0"
 dependencies = [
  "chrono",
+ "dispatch",
  "gpui",
  "image",
  "knotq-commands",
@@ -3208,6 +3209,8 @@ dependencies = [
  "knotq-rrule",
  "knotq-theme",
  "knotq-ui",
+ "objc",
+ "raw-window-handle",
  "serde",
  "serde_json",
  "uuid",
