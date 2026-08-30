@@ -50,7 +50,7 @@ impl EntityInputHandler for SchemeEditor {
         &mut self,
         range_utf16: Option<Range<usize>>,
         text: &str,
-        _window: &mut Window,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         crate::typing_probe::mark_input();
@@ -65,10 +65,12 @@ impl EntityInputHandler for SchemeEditor {
         // line instead of collapsing into the block.
         if range.start == range.end && self.try_type_adjacent_to_block(range.start, text, cx) {
             self.marked_range = None;
+            crate::input_frame::request_after_text_input(window);
             return;
         }
         self.replace_byte_range(range, text, None, cx);
         self.marked_range = None;
+        crate::input_frame::request_after_text_input(window);
     }
 
     fn replace_and_mark_text_in_range(
@@ -103,6 +105,7 @@ impl EntityInputHandler for SchemeEditor {
             self.scroll_to_cursor(cx);
         }
         cx.notify();
+        crate::input_frame::request_after_text_input(window);
     }
 
     fn bounds_for_range(
