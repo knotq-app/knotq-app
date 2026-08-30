@@ -82,13 +82,8 @@ fn export_folder(
                 };
                 let name = unique_name(&mut used_names, &sanitize_name(&scheme.name, "Untitled"));
                 let file_path = dir.join(format!("{name}.md"));
-                let markdown = render_scheme_markdown(
-                    scheme,
-                    time_format,
-                    depth,
-                    assets_dir,
-                    copied_assets,
-                )?;
+                let markdown =
+                    render_scheme_markdown(scheme, time_format, depth, assets_dir, copied_assets)?;
                 fs::write(&file_path, markdown)
                     .with_context(|| format!("write {}", file_path.display()))?;
             }
@@ -106,7 +101,14 @@ fn render_scheme_markdown(
 ) -> Result<String> {
     let mut out = String::new();
     for item in &scheme.items {
-        render_item_block(item, time_format, depth, assets_dir, copied_assets, &mut out)?;
+        render_item_block(
+            item,
+            time_format,
+            depth,
+            assets_dir,
+            copied_assets,
+            &mut out,
+        )?;
     }
     Ok(out)
 }

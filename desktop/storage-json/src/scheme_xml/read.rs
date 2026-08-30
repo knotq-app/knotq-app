@@ -6,8 +6,8 @@ use knotq_model::{
     ItemMarker, Recurrence, SchemeId, Table, TableCell, TableColumn, TableRow,
 };
 use quick_xml::events::BytesStart;
-use quick_xml::reader::Reader;
 use quick_xml::events::Event;
+use quick_xml::reader::Reader;
 use std::path::Path;
 
 use crate::scheme_file::SchemeFile;

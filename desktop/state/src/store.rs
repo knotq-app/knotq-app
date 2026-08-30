@@ -44,6 +44,49 @@ impl WorkspaceDirtyState {
     }
 }
 
+/// Which CRDT document state files the next durable save has to write.
+///
+/// Rewriting all of them costs a read of every state file to compare against
+/// (`write_atomic_if_changed`) plus a directory sweep, for a workspace where an
+/// ordinary edit touches one document. Narrowing that is only safe when the
+/// store can *prove* which documents moved, so this defaults to
+/// [`CrdtSaveScope::All`] and is narrowed by one route only: an item-level edit,
+/// which reports the documents it wrote and cannot add or remove one.
+///
+/// Getting this wrong does not cost performance, it leaves a document's state
+/// stale on disk — and a stale state file is re-seeded from nothing on the next
+/// launch. So every route that reaches `self.crdt` any other way (a sync merge,
+/// a wholesale rebuild, a structural command, a failed save) widens it back to
+/// `All`, and anything added later that forgets to say anything at all keeps
+/// whatever the last route set rather than silently narrowing.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum CrdtSaveScope {
+    /// Write every document, sweep the ones that went away, retire the legacy
+    /// blob. The only scope that can remove a file.
+    All,
+    /// Write exactly these documents and nothing else.
+    Only(HashSet<DocumentId>),
+}
+
+impl CrdtSaveScope {
+    fn widen_to_all(&mut self) {
+        *self = CrdtSaveScope::All;
+    }
+
+    fn add(&mut self, documents: impl IntoIterator<Item = DocumentId>) {
+        match self {
+            // Already writing everything; naming a subset changes nothing.
+            CrdtSaveScope::All => {}
+            CrdtSaveScope::Only(known) => known.extend(documents),
+        }
+    }
+
+    /// Nothing to write. A save still runs for the workspace/scheme files.
+    pub fn is_empty(&self) -> bool {
+        matches!(self, CrdtSaveScope::Only(documents) if documents.is_empty())
+    }
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct StoreOperation {
     pub id: OperationId,
@@ -68,6 +111,7 @@ pub struct WorkspaceStore {
     next_sequence: u64,
     pending_operations: VecDeque<StoreOperation>,
     crdt: WorkspaceCrdtDocuments,
+    crdt_save_scope: CrdtSaveScope,
 }
 
 impl WorkspaceStore {
@@ -97,6 +141,11 @@ impl WorkspaceStore {
             next_sequence: initial_sequence.max(1),
             pending_operations: VecDeque::new(),
             crdt,
+            // The first save of a run writes everything: it is what creates the
+            // per-document directory, sweeps whatever a previous run left, and
+            // retires the legacy blob, so a later incremental save can assume an
+            // authoritative directory.
+            crdt_save_scope: CrdtSaveScope::All,
         }
     }
 
@@ -110,6 +159,35 @@ impl WorkspaceStore {
     /// about to hand the bytes to a background task can do the encoding there.
     pub fn crdt_document_state_handles(&self) -> HashMap<DocumentId, DocumentStateHandle> {
         self.crdt.document_state_handles()
+    }
+
+    /// Handles for the documents the next save has to write, and the scope that
+    /// describes them — [`CrdtSaveScope::All`] means the save must also sweep
+    /// documents that went away, so it cannot be served from a subset.
+    ///
+    /// Taking the scope resets it: everything recorded from here on belongs to
+    /// the *next* save. A save that fails must hand it back with
+    /// [`Self::mark_all_crdt_documents_changed`], or the documents it dropped
+    /// stay stale on disk.
+    pub fn take_crdt_save_scope(
+        &mut self,
+    ) -> (CrdtSaveScope, HashMap<DocumentId, DocumentStateHandle>) {
+        let scope = std::mem::replace(
+            &mut self.crdt_save_scope,
+            CrdtSaveScope::Only(HashSet::new()),
+        );
+        let handles = match &scope {
+            CrdtSaveScope::All => self.crdt.document_state_handles(),
+            CrdtSaveScope::Only(documents) => self.crdt.document_state_handles_for(documents),
+        };
+        (scope, handles)
+    }
+
+    /// Widen the next save back to every document. For any route that changes
+    /// the CRDT without being able to name what it touched, and for a save that
+    /// failed after taking the scope.
+    pub fn mark_all_crdt_documents_changed(&mut self) {
+        self.crdt_save_scope.widen_to_all();
     }
 
     pub fn workspace(&self) -> &Workspace {
@@ -235,6 +313,10 @@ impl WorkspaceStore {
             return;
         }
         let outcome = self.crdt.sync_changes(&self.workspace, &changes);
+        // A direct mutation is how a scheme appears without a command (today's
+        // Daily Queue), so it can add documents; it is never on the keystroke
+        // path, so there is nothing to gain from narrowing it.
+        self.crdt_save_scope.widen_to_all();
         for error in &outcome.errors {
             eprintln!("CRDT direct sync update failed: {error}");
         }
@@ -272,6 +354,10 @@ impl WorkspaceStore {
         self.workspace = workspace;
         self.index_stale = true;
         self.crdt = restored_workspace_crdt(&self.workspace, self.replica_id, &crdt_states);
+        // Every document is a fresh object built from bytes that need not match
+        // what is on disk, and the workspace may have lost documents whose files
+        // must be swept.
+        self.crdt_save_scope.widen_to_all();
         self.dirty = dirty;
         if clear_pending_operations {
             self.pending_operations.clear();
@@ -358,6 +444,9 @@ impl WorkspaceStore {
         self.workspace = outcome.workspace;
         self.index_stale = true;
         self.dirty = WorkspaceDirtyState::all(&self.workspace);
+        // A pull can carry an update for any document, and `apply_remote_updates`
+        // does not report which ones moved.
+        self.crdt_save_scope.widen_to_all();
         true
     }
 
@@ -436,10 +525,46 @@ impl WorkspaceStore {
         }
         self.index_stale = true;
         let outcome = self.crdt.sync_changes(&self.workspace, &crdt_changes);
+        self.note_crdt_writes(&crdt_changes, &outcome);
         for error in &outcome.errors {
             eprintln!("CRDT sync update failed: {error}");
         }
         outcome.updates
+    }
+
+    /// Record which document state files a completed `sync_changes` left stale.
+    ///
+    /// The emitted updates are exactly the documents it wrote: a document it did
+    /// not change produces an empty delta, which `sync_scheme` reports as `None`.
+    /// So an item-level edit can name its documents precisely — that is the
+    /// keystroke path, and the whole point of narrowing the save.
+    ///
+    /// Everything else widens back to [`CrdtSaveScope::All`], because only a full
+    /// save sweeps the file of a document that went away:
+    ///
+    ///  - a change set that touches the workspace index is structural, so it can
+    ///    create or drop a scheme;
+    ///  - `sync_changes` re-emits the whole workspace document when it finds a
+    ///    document missing or removed behind the change set's back, which is a
+    ///    document-set change by another name — hence the check on what was
+    ///    actually emitted rather than on what was asked for;
+    ///  - an error means some document's write did not happen, and which one is
+    ///    not worth reasoning about at this level.
+    fn note_crdt_writes(
+        &mut self,
+        requested: &WorkspaceCrdtChangeSet,
+        outcome: &knotq_sync::WorkspaceCrdtSyncOutcome,
+    ) {
+        let touched_the_index = outcome
+            .updates
+            .iter()
+            .any(|update| update.kind == SyncDocumentKind::PersonalWorkspace);
+        if requested.workspace || touched_the_index || !outcome.is_ok() {
+            self.crdt_save_scope.widen_to_all();
+            return;
+        }
+        self.crdt_save_scope
+            .add(outcome.updates.iter().map(|update| update.document));
     }
 }
 

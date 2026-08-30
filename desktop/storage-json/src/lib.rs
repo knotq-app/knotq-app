@@ -19,9 +19,11 @@ use knotq_model::{Scheme, Workspace};
 use knotq_storage::{LoadOptions, StorageBackend};
 use std::path::{Path, PathBuf};
 
+pub use crdt_state::{
+    crdt_state_dir, crdt_state_path, load_crdt_state, save_crdt_state, save_crdt_state_incremental,
+};
 pub use diagnostics::append_diagnostic_line;
 pub use export_markdown::export_workspace_to_markdown;
-pub use crdt_state::{crdt_state_dir, crdt_state_path, load_crdt_state, save_crdt_state};
 pub use files::{
     edit_timing_enabled, load_daily_queue_scheme, load_daily_queue_schemes_for_calendar_range,
     load_workspace, load_workspace_with_options, save_workspace, save_workspace_incremental,

@@ -8,8 +8,8 @@
 //!
 //! Shared data carriers (the `*Snapshot`/`*Entry` structs) and schema constants stay
 //! in this module so the submodules — its descendants — can use them directly.
-use std::collections::{HashMap, HashSet};
 use std::borrow::Cow;
+use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
@@ -499,6 +499,33 @@ impl WorkspaceCrdtDocuments {
         out.insert(self.workspace.id, self.workspace.encode_state_shared_v1());
         for doc in self.schemes.values() {
             out.insert(doc.id, doc.encode_state_shared_v1());
+        }
+        out
+    }
+
+    /// Handles for just these documents, for a caller that knows which ones it
+    /// changed and does not need to rewrite the rest.
+    ///
+    /// Handles rather than bytes on purpose: the changed document is precisely
+    /// the expensive one to encode, so returning its state here would put the
+    /// encode back on whichever thread owns the documents — the UI thread —
+    /// which is the cost [`Self::document_state_handles`] exists to avoid.
+    ///
+    /// Ids this workspace does not hold are skipped rather than reported: a
+    /// caller naming a document that has since gone away wants the rest saved,
+    /// not an error.
+    pub fn document_state_handles_for(
+        &self,
+        documents: &HashSet<DocumentId>,
+    ) -> HashMap<DocumentId, DocumentStateHandle> {
+        let mut out = HashMap::with_capacity(documents.len());
+        if documents.contains(&self.workspace.id) {
+            out.insert(self.workspace.id, self.workspace.state_handle());
+        }
+        for doc in self.schemes.values() {
+            if documents.contains(&doc.id) {
+                out.insert(doc.id, doc.state_handle());
+            }
         }
         out
     }

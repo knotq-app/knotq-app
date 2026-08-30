@@ -4,7 +4,10 @@
 //! and text escaping is the library's responsibility.
 
 use anyhow::Result;
-use knotq_model::{ImageAssetFormat, ImageInline, Item, ItemContent, OccurrenceId, OccurrenceState, Recurrence, Scheme, Table};
+use knotq_model::{
+    ImageAssetFormat, ImageInline, Item, ItemContent, OccurrenceId, OccurrenceState, Recurrence,
+    Scheme, Table,
+};
 use quick_xml::events::{BytesDecl, BytesEnd, BytesStart, BytesText, Event};
 use quick_xml::writer::Writer;
 use std::io::Write;
