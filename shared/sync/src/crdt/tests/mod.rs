@@ -6,4 +6,5 @@ mod document_state_handles;
 mod helpers;
 mod merge;
 mod schema_validation;
+mod scheme_edit_sequences;
 mod workspace_materialization;

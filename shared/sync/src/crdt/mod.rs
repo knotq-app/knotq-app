@@ -10,7 +10,7 @@
 //! in this module so the submodules — its descendants — can use them directly.
 use std::collections::{HashMap, HashSet};
 use std::borrow::Cow;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use anyhow::{anyhow, Context};
@@ -38,9 +38,34 @@ use crate::{CrdtDocumentUpdate, StoredCrdtUpdate};
 ///
 /// Correctness rests on the keyed update observer installed by [`EncodeCache::new`]:
 /// yrs fires `observe_update_v1` on every committed change — insert *and* delete —
-/// so `dirty` is set exactly when the serialized state would differ. A keyed
-/// observer needs no retained `Subscription` (it lives and dies with the document),
-/// keeping the document wrapper trivially constructible.
+/// so the version below moves exactly when the serialized state would differ. A
+/// keyed observer needs no retained `Subscription` (it lives and dies with the
+/// document), keeping the document wrapper trivially constructible.
+///
+/// # Why a version and not a dirty flag
+///
+/// The cache is shared with every [`DocumentStateHandle`] taken from the
+/// document, and the save task encodes those handles on a background thread. So
+/// two threads can be inside [`EncodeCacheState::get_shared`] at once, and a
+/// `dirty` flag cleared on the way *in* is wrong in both directions:
+///
+///  - whoever clears it CONSUMES the notice of an edit that has not been encoded
+///    yet, so a concurrent reader finds a clean flag and is handed the bytes from
+///    before that edit; and
+///  - the slower of two encodes publishes last, overwriting a newer state with an
+///    older one while the flag says the cache is current.
+///
+/// Both hand out a document state that is missing a local edit — and the desktop
+/// rebuilds its live CRDT documents from exactly these bytes
+/// (`WorkspaceStore::replace_workspace`), so the edit is not merely absent from
+/// one snapshot: it is dropped from the document, and the next materialization
+/// puts the user's deleted line back on screen.
+///
+/// Stamping the cached bytes with the version they were encoded at fixes both.
+/// A reader serves the cache only when the stamp still matches the live version,
+/// and an encode publishes only over an older stamp. The stamp is read *before*
+/// encoding, so an edit that lands mid-encode makes the result look older than it
+/// might be — which costs a re-encode and never a stale answer.
 pub(crate) struct EncodeCache {
     inner: Arc<EncodeCacheState>,
 }
@@ -50,20 +75,20 @@ pub(crate) struct EncodeCache {
 /// state could only happen wherever the document lives — the UI thread.
 #[derive(Default)]
 struct EncodeCacheState {
-    dirty: AtomicBool,
-    bytes: Mutex<Option<Arc<[u8]>>>,
+    /// Bumped by the document's update observer. Monotonic, so a cached stamp
+    /// can be compared against it without any lock.
+    version: AtomicU64,
+    /// The last published state and the version it was encoded at.
+    cached: Mutex<Option<(u64, Arc<[u8]>)>>,
 }
 
 impl EncodeCache {
-    /// Install the dirty-tracking observer on `doc` and return a fresh (dirty) cache.
+    /// Install the change-tracking observer on `doc` and return an empty cache.
     pub(crate) fn new(doc: &Doc) -> Self {
-        let inner = Arc::new(EncodeCacheState {
-            dirty: AtomicBool::new(true),
-            bytes: Mutex::new(None),
-        });
-        let flag = Arc::clone(&inner);
+        let inner = Arc::new(EncodeCacheState::default());
+        let versions = Arc::clone(&inner);
         let _ = doc.observe_update_v1_with("knotq_encode_cache", move |_txn, _evt| {
-            flag.dirty.store(true, std::sync::atomic::Ordering::Relaxed);
+            versions.mark_dirty();
         });
         Self { inner }
     }
@@ -101,21 +126,33 @@ impl EncodeCache {
 }
 
 impl EncodeCacheState {
+    /// The document changed: every cached state is now from an older version.
+    fn mark_dirty(&self) {
+        self.version.fetch_add(1, Ordering::Release);
+    }
+
     fn get_shared(&self, encode: impl FnOnce() -> Vec<u8>) -> Arc<[u8]> {
-        // Clear dirty up front: a change racing in during `encode` re-sets it, so the
-        // next call recomputes rather than serving a stale cache.
-        if !self.dirty.swap(false, std::sync::atomic::Ordering::AcqRel) {
-            if let Some(bytes) = self
-                .bytes
-                .lock()
-                .unwrap_or_else(|e| e.into_inner())
-                .as_ref()
-            {
+        // Read the version BEFORE encoding. A change landing during `encode` moves
+        // it past this stamp, so the result is published (and later read) as the
+        // older state it might be, rather than being trusted as current.
+        let version = self.version.load(Ordering::Acquire);
+        if let Some((cached_version, bytes)) = self
+            .cached
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .as_ref()
+        {
+            if *cached_version == version {
                 return Arc::clone(bytes);
             }
         }
         let bytes: Arc<[u8]> = Arc::from(encode());
-        *self.bytes.lock().unwrap_or_else(|e| e.into_inner()) = Some(Arc::clone(&bytes));
+        let mut cached = self.cached.lock().unwrap_or_else(|e| e.into_inner());
+        // Publish only over an older state: a slow encode that finishes after a
+        // newer one must not put the document back.
+        if cached.as_ref().is_none_or(|(cached, _)| *cached < version) {
+            *cached = Some((version, Arc::clone(&bytes)));
+        }
         bytes
     }
 }
