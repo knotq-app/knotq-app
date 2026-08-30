@@ -507,6 +507,31 @@ impl WorkspaceCrdtDocuments {
         out
     }
 
+    /// Persisted states for the given schemes' documents only, as bytes.
+    ///
+    /// For a caller whose durable save is synchronous on its own thread and so
+    /// has nowhere to defer the encoding to — the mobile core, which writes the
+    /// changed scheme documents inline rather than handing them to a background
+    /// task. The desktop wants [`Self::document_state_handles_for`] instead: its
+    /// save encodes in the background, and the changed document is precisely the
+    /// expensive one, so returning its bytes here would put that encode back on
+    /// the UI thread.
+    ///
+    /// Schemes without a document are skipped rather than reported: a caller
+    /// naming one that has since gone away wants the rest saved, not an error.
+    pub fn scheme_document_states(
+        &self,
+        scheme_ids: &HashSet<SchemeId>,
+    ) -> HashMap<DocumentId, Arc<[u8]>> {
+        let mut out = HashMap::with_capacity(scheme_ids.len());
+        for scheme_id in scheme_ids {
+            if let Some(doc) = self.schemes.get(scheme_id) {
+                out.insert(doc.id, doc.encode_state_shared_v1());
+            }
+        }
+        out
+    }
+
     /// Handles for just these documents, for a caller that knows which ones it
     /// changed and does not need to rewrite the rest.
     ///

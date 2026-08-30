@@ -7,6 +7,11 @@ use knotq_model::{
     SyncDocumentKind, Workspace,
 };
 use knotq_state::{WorkspaceDirtyState, WorkspaceStore};
+use knotq_sync::{StoredCrdtUpdate, WorkspaceCrdtDocuments};
+
+mod support;
+
+use support::workspace_with_scheme_item;
 
 #[test]
 fn local_commands_are_recorded_as_pending_store_operations() {
@@ -36,15 +41,20 @@ fn local_commands_are_recorded_as_pending_store_operations() {
         store.workspace().folder_sync.len(),
         store.workspace().folders.len()
     );
+    // CRDT reconciliation is deferred until something reads it (see
+    // `WorkspaceStore::flush_crdt`); flush explicitly so the operation's
+    // `crdt_updates` reflect this edit before inspecting them.
+    store.flush_crdt();
     let operation = &store.pending_operations()[0];
     assert_eq!(operation.workspace_id, workspace_id);
     assert_eq!(operation.replica_id, replica_id);
     assert_eq!(operation.sequence, 1);
     assert_eq!(operation.origin, CommandOrigin::User);
     assert!(!operation.crdt_updates.is_empty());
+    let crdt_update_count = operation.crdt_updates.len();
 
     let pending_edits = store.pending_crdt_edits();
-    assert_eq!(pending_edits.len(), operation.crdt_updates.len());
+    assert_eq!(pending_edits.len(), crdt_update_count);
     assert!(pending_edits
         .iter()
         .all(|edit| edit.workspace_id == workspace_id && edit.replica_id == replica_id));
@@ -145,224 +155,6 @@ fn app_settings_default_includes_replica_identity() {
     let right = AppSettings::default();
 
     assert_ne!(left.replica_id, right.replica_id);
-}
-
-/// `WorkspaceStore::after_workspace_change` only runs
-/// `Workspace::ensure_sync_metadata` when the applied command could have
-/// changed which schemes/folders exist (see `command_may_change_document_set`
-/// in `store.rs`). A pure content edit — typing into an existing item — must
-/// be skipped: it should leave sync metadata exactly as it was (already
-/// current) and must not touch the workspace CRDT document, only the edited
-/// scheme's.
-#[test]
-fn content_only_edit_skips_sync_metadata_repair_when_current() {
-    let workspace = Workspace::new();
-    let root = workspace.root;
-    let replica_id = ReplicaId::new();
-    let mut store =
-        WorkspaceStore::new::<Vec<u8>>(workspace, replica_id, false, Default::default(), 1);
-
-    store
-        .apply_local(
-            Command::CreateScheme {
-                folder: root,
-                name: "Scheme".to_string(),
-                color_index: 0,
-                position: None,
-            },
-            CommandOrigin::User,
-        )
-        .unwrap();
-    let scheme_id = *store.workspace().schemes.keys().next().unwrap();
-    let item = Item::new("hello");
-    let item_id = item.id;
-    store
-        .apply_local(
-            Command::InsertItem {
-                scheme: scheme_id,
-                position: 0,
-                item,
-            },
-            CommandOrigin::User,
-        )
-        .unwrap();
-
-    assert!(
-        store.workspace().sync_metadata_is_current(),
-        "setup: metadata must already be current before the probed edit"
-    );
-
-    // Drain the queue so the next command's CRDT updates can be inspected in
-    // isolation.
-    let latest_sequence = store.pending_operations().back().unwrap().sequence;
-    store.clear_pending_operations_through(latest_sequence);
-    assert!(store.pending_operations().is_empty());
-    let workspace_document = store.workspace().sync.id;
-
-    store
-        .apply_local(
-            Command::UpdateItemText {
-                scheme: scheme_id,
-                item: item_id,
-                text: "hello world".to_string(),
-            },
-            CommandOrigin::User,
-        )
-        .unwrap();
-
-    assert!(
-        store.workspace().sync_metadata_is_current(),
-        "a content-only edit must never leave sync metadata non-current"
-    );
-    let edits = store.pending_crdt_edits();
-    assert!(
-        !edits.is_empty(),
-        "the content edit must still queue an update for the edited scheme"
-    );
-    assert!(
-        edits.iter().all(|edit| edit.document != workspace_document),
-        "a content-only edit must not touch the workspace document when \
-         sync metadata was already current: {edits:?}"
-    );
-}
-
-/// Creating a scheme changes which schemes exist, so it must run the sync
-/// metadata repair and leave the new scheme with a well-formed binding.
-#[test]
-fn create_scheme_repairs_sync_metadata() {
-    let workspace = Workspace::new();
-    let root = workspace.root;
-    let replica_id = ReplicaId::new();
-    let mut store =
-        WorkspaceStore::new::<Vec<u8>>(workspace, replica_id, false, Default::default(), 1);
-
-    store
-        .apply_local(
-            Command::CreateScheme {
-                folder: root,
-                name: "Scheme".to_string(),
-                color_index: 0,
-                position: None,
-            },
-            CommandOrigin::User,
-        )
-        .unwrap();
-
-    assert!(store.workspace().sync_metadata_is_current());
-    let scheme_id = *store.workspace().schemes.keys().next().unwrap();
-    assert!(store.workspace().scheme_sync.contains_key(&scheme_id));
-}
-
-/// Permanently deleting a scheme removes it from `workspace.schemes`, which
-/// must also drop its stale `scheme_sync` binding — otherwise a later restore
-/// (which mints a fresh id) would leave a dangling entry.
-#[test]
-fn delete_scheme_repairs_sync_metadata() {
-    let workspace = Workspace::new();
-    let root = workspace.root;
-    let replica_id = ReplicaId::new();
-    let mut store =
-        WorkspaceStore::new::<Vec<u8>>(workspace, replica_id, false, Default::default(), 1);
-
-    store
-        .apply_local(
-            Command::CreateScheme {
-                folder: root,
-                name: "Scheme".to_string(),
-                color_index: 0,
-                position: None,
-            },
-            CommandOrigin::User,
-        )
-        .unwrap();
-    let scheme_id = *store.workspace().schemes.keys().next().unwrap();
-
-    store
-        .apply_local(Command::DeleteScheme { id: scheme_id }, CommandOrigin::User)
-        .unwrap();
-    assert!(store.workspace().sync_metadata_is_current());
-
-    store
-        .apply_local(
-            Command::PermanentlyDeleteScheme { id: scheme_id },
-            CommandOrigin::User,
-        )
-        .unwrap();
-
-    assert!(store.workspace().sync_metadata_is_current());
-    assert!(!store.workspace().schemes.contains_key(&scheme_id));
-    assert!(
-        !store.workspace().scheme_sync.contains_key(&scheme_id),
-        "the stale binding for a permanently-deleted scheme must be dropped"
-    );
-}
-
-/// A long burst of content-only edits (which skip the repair) followed by a
-/// structural change (which must not skip it) must still converge on
-/// well-formed sync metadata — the skip must never leave a repair "owed".
-#[test]
-fn burst_of_content_edits_then_scheme_creation_ends_current() {
-    let workspace = Workspace::new();
-    let root = workspace.root;
-    let replica_id = ReplicaId::new();
-    let mut store =
-        WorkspaceStore::new::<Vec<u8>>(workspace, replica_id, false, Default::default(), 1);
-
-    store
-        .apply_local(
-            Command::CreateScheme {
-                folder: root,
-                name: "Scheme".to_string(),
-                color_index: 0,
-                position: None,
-            },
-            CommandOrigin::User,
-        )
-        .unwrap();
-    let scheme_id = *store.workspace().schemes.keys().next().unwrap();
-    let item = Item::new("seed");
-    let item_id = item.id;
-    store
-        .apply_local(
-            Command::InsertItem {
-                scheme: scheme_id,
-                position: 0,
-                item,
-            },
-            CommandOrigin::User,
-        )
-        .unwrap();
-
-    for index in 0..50 {
-        store
-            .apply_local(
-                Command::UpdateItemText {
-                    scheme: scheme_id,
-                    item: item_id,
-                    text: format!("edit {index}"),
-                },
-                CommandOrigin::User,
-            )
-            .unwrap();
-    }
-
-    store
-        .apply_local(
-            Command::CreateScheme {
-                folder: root,
-                name: "Second".to_string(),
-                color_index: 1,
-                position: None,
-            },
-            CommandOrigin::User,
-        )
-        .unwrap();
-
-    assert!(
-        store.workspace().sync_metadata_is_current(),
-        "a burst of skipped content edits must not leave a repair owed once a \
-         structural command runs"
-    );
 }
 
 /// A workspace with one scheme holding one editable item, plus the ids needed
@@ -604,5 +396,228 @@ fn edit_without_a_read_is_not_lost() {
         materialized_scheme.items[0].text(),
         "only edit",
         "the scheme-level edit with no intervening read must still reach the CRDT once flushed"
+    );
+}
+
+/// `WorkspaceStore::after_workspace_change` only runs
+/// `Workspace::ensure_sync_metadata` when the applied command could have
+/// changed which schemes/folders exist (see `command_may_change_document_set`
+/// in `store.rs`). A pure content edit — typing into an existing item — must
+/// be skipped: it should leave sync metadata exactly as it was (already
+/// current) and must not touch the workspace CRDT document, only the edited
+/// scheme's.
+#[test]
+fn content_only_edit_skips_sync_metadata_repair_when_current() {
+    let workspace = Workspace::new();
+    let root = workspace.root;
+    let replica_id = ReplicaId::new();
+    let mut store =
+        WorkspaceStore::new::<Vec<u8>>(workspace, replica_id, false, Default::default(), 1);
+
+    store
+        .apply_local(
+            Command::CreateScheme {
+                folder: root,
+                name: "Scheme".to_string(),
+                color_index: 0,
+                position: None,
+            },
+            CommandOrigin::User,
+        )
+        .unwrap();
+    let scheme_id = *store.workspace().schemes.keys().next().unwrap();
+    let item = Item::new("hello");
+    let item_id = item.id;
+    store
+        .apply_local(
+            Command::InsertItem {
+                scheme: scheme_id,
+                position: 0,
+                item,
+            },
+            CommandOrigin::User,
+        )
+        .unwrap();
+
+    assert!(
+        store.workspace().sync_metadata_is_current(),
+        "setup: metadata must already be current before the probed edit"
+    );
+
+    // Drain the queue so the next command's CRDT updates can be inspected in
+    // isolation. Reconcile first: CRDT reconciliation is deferred, so the
+    // setup's updates do not exist yet — draining without flushing would leave
+    // them to surface later, attached to the operation for the edit probed
+    // below, and the workspace update the setup legitimately made would look
+    // like the content edit's.
+    let _ = store.pending_crdt_edits();
+    let latest_sequence = store.pending_operations().back().unwrap().sequence;
+    store.clear_pending_operations_through(latest_sequence);
+    assert!(store.pending_operations().is_empty());
+    let workspace_document = store.workspace().sync.id;
+
+    store
+        .apply_local(
+            Command::UpdateItemText {
+                scheme: scheme_id,
+                item: item_id,
+                text: "hello world".to_string(),
+            },
+            CommandOrigin::User,
+        )
+        .unwrap();
+
+    assert!(
+        store.workspace().sync_metadata_is_current(),
+        "a content-only edit must never leave sync metadata non-current"
+    );
+    let edits = store.pending_crdt_edits();
+    assert!(
+        !edits.is_empty(),
+        "the content edit must still queue an update for the edited scheme"
+    );
+    assert!(
+        edits.iter().all(|edit| edit.document != workspace_document),
+        "a content-only edit must not touch the workspace document when \
+         sync metadata was already current: {edits:?}"
+    );
+}
+
+/// Creating a scheme changes which schemes exist, so it must run the sync
+/// metadata repair and leave the new scheme with a well-formed binding.
+#[test]
+fn create_scheme_repairs_sync_metadata() {
+    let workspace = Workspace::new();
+    let root = workspace.root;
+    let replica_id = ReplicaId::new();
+    let mut store =
+        WorkspaceStore::new::<Vec<u8>>(workspace, replica_id, false, Default::default(), 1);
+
+    store
+        .apply_local(
+            Command::CreateScheme {
+                folder: root,
+                name: "Scheme".to_string(),
+                color_index: 0,
+                position: None,
+            },
+            CommandOrigin::User,
+        )
+        .unwrap();
+
+    assert!(store.workspace().sync_metadata_is_current());
+    let scheme_id = *store.workspace().schemes.keys().next().unwrap();
+    assert!(store.workspace().scheme_sync.contains_key(&scheme_id));
+}
+
+/// Permanently deleting a scheme removes it from `workspace.schemes`, which
+/// must also drop its stale `scheme_sync` binding — otherwise a later restore
+/// (which mints a fresh id) would leave a dangling entry.
+#[test]
+fn delete_scheme_repairs_sync_metadata() {
+    let workspace = Workspace::new();
+    let root = workspace.root;
+    let replica_id = ReplicaId::new();
+    let mut store =
+        WorkspaceStore::new::<Vec<u8>>(workspace, replica_id, false, Default::default(), 1);
+
+    store
+        .apply_local(
+            Command::CreateScheme {
+                folder: root,
+                name: "Scheme".to_string(),
+                color_index: 0,
+                position: None,
+            },
+            CommandOrigin::User,
+        )
+        .unwrap();
+    let scheme_id = *store.workspace().schemes.keys().next().unwrap();
+
+    store
+        .apply_local(Command::DeleteScheme { id: scheme_id }, CommandOrigin::User)
+        .unwrap();
+    assert!(store.workspace().sync_metadata_is_current());
+
+    store
+        .apply_local(
+            Command::PermanentlyDeleteScheme { id: scheme_id },
+            CommandOrigin::User,
+        )
+        .unwrap();
+
+    assert!(store.workspace().sync_metadata_is_current());
+    assert!(!store.workspace().schemes.contains_key(&scheme_id));
+    assert!(
+        !store.workspace().scheme_sync.contains_key(&scheme_id),
+        "the stale binding for a permanently-deleted scheme must be dropped"
+    );
+}
+
+/// A long burst of content-only edits (which skip the repair) followed by a
+/// structural change (which must not skip it) must still converge on
+/// well-formed sync metadata — the skip must never leave a repair "owed".
+#[test]
+fn burst_of_content_edits_then_scheme_creation_ends_current() {
+    let workspace = Workspace::new();
+    let root = workspace.root;
+    let replica_id = ReplicaId::new();
+    let mut store =
+        WorkspaceStore::new::<Vec<u8>>(workspace, replica_id, false, Default::default(), 1);
+
+    store
+        .apply_local(
+            Command::CreateScheme {
+                folder: root,
+                name: "Scheme".to_string(),
+                color_index: 0,
+                position: None,
+            },
+            CommandOrigin::User,
+        )
+        .unwrap();
+    let scheme_id = *store.workspace().schemes.keys().next().unwrap();
+    let item = Item::new("seed");
+    let item_id = item.id;
+    store
+        .apply_local(
+            Command::InsertItem {
+                scheme: scheme_id,
+                position: 0,
+                item,
+            },
+            CommandOrigin::User,
+        )
+        .unwrap();
+
+    for index in 0..50 {
+        store
+            .apply_local(
+                Command::UpdateItemText {
+                    scheme: scheme_id,
+                    item: item_id,
+                    text: format!("edit {index}"),
+                },
+                CommandOrigin::User,
+            )
+            .unwrap();
+    }
+
+    store
+        .apply_local(
+            Command::CreateScheme {
+                folder: root,
+                name: "Second".to_string(),
+                color_index: 1,
+                position: None,
+            },
+            CommandOrigin::User,
+        )
+        .unwrap();
+
+    assert!(
+        store.workspace().sync_metadata_is_current(),
+        "a burst of skipped content edits must not leave a repair owed once a \
+         structural command runs"
     );
 }
