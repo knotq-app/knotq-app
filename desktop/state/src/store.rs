@@ -480,9 +480,11 @@ impl WorkspaceStore {
         command: Command,
         origin: CommandOrigin,
     ) -> Result<CommandReceipt, knotq_commands::CommandError> {
+        let may_change_document_set = command_may_change_document_set(&command);
         let receipt = self.workspace.apply(command.clone())?;
         let crdt_changes = crdt_change_set_for_command(&command);
-        let crdt_updates = self.after_workspace_change(&receipt.touched, crdt_changes);
+        let crdt_updates =
+            self.after_workspace_change(&receipt.touched, crdt_changes, may_change_document_set);
         self.pending_operations.push_back(StoreOperation {
             id: OperationId::new(),
             workspace_id: self.workspace.id,
@@ -505,8 +507,9 @@ impl WorkspaceStore {
             return Ok(None);
         };
         let crdt_changes = crdt_change_set_for_command(&command);
+        let may_change_document_set = command_may_change_document_set(&command);
         let receipt = self.workspace.apply(command)?;
-        self.after_workspace_change(&receipt.touched, crdt_changes);
+        self.after_workspace_change(&receipt.touched, crdt_changes, may_change_document_set);
         Ok(Some(receipt))
     }
 
@@ -514,12 +517,23 @@ impl WorkspaceStore {
         &mut self,
         changeset: &ChangeSet,
         mut crdt_changes: WorkspaceCrdtChangeSet,
+        may_change_document_set: bool,
     ) -> Vec<CrdtDocumentUpdate> {
         for scheme_id in &changeset.schemes {
             self.dirty.schemes.insert(*scheme_id);
         }
         self.dirty.index = true;
-        if self.workspace.ensure_sync_metadata() {
+        // `ensure_sync_metadata` is O(total schemes + daily-queue entries): it
+        // allocates a HashSet of every daily-queue scheme id and walks every
+        // `scheme_sync`/`folder_sync` entry. On a real workspace (hundreds of
+        // documents) that cost lands on EVERY applied command, including a
+        // single keystroke, and scales with total workspace size rather than
+        // with the edit. A command that cannot add, remove, or otherwise
+        // rebind a scheme or folder cannot invalidate sync metadata, so the
+        // caller only asks for the check (via `command_may_change_document_set`)
+        // when it might have. See that function for the exhaustive command
+        // classification.
+        if may_change_document_set && self.workspace.ensure_sync_metadata() {
             self.dirty.index = true;
             crdt_changes.workspace = true;
         }
@@ -641,6 +655,93 @@ fn collect_crdt_changes(command: &Command, out: &mut WorkspaceCrdtChangeSet) {
                 collect_crdt_changes(command, out);
             }
         }
+    }
+}
+
+/// Whether `command` could have changed *which* schemes or folders exist (or
+/// which document a scheme/folder is bound to) — i.e. whether it could have
+/// invalidated `Workspace::sync_metadata_is_current`.
+///
+/// `ensure_sync_metadata` repairs `scheme_sync`/`folder_sync` bindings so every
+/// live scheme and folder (plus every daily-queue scheme) has a well-formed
+/// sync document binding, and nothing stale is left over. Its fast path
+/// (`sync_metadata_is_current`) is O(total schemes + daily-queue entries), so
+/// running it after every command — including a single keystroke — costs
+/// proportional to the whole workspace, not to the edit. A command whose
+/// effects are confined to fields *within* an already-existing scheme/folder
+/// (item text, item structure, scheme/folder metadata like name/color/expanded)
+/// cannot add, remove, or rebind a scheme or folder, so it cannot invalidate
+/// those bindings and the repair pass can be skipped.
+///
+/// DELIBERATELY CONSERVATIVE: this match has NO catch-all arm. Every `Command`
+/// variant is listed explicitly, so a new variant fails to COMPILE here rather
+/// than silently defaulting to "skip the check" (which would let sync metadata
+/// drift out of repair and corrupt sync). If you add a `Command` variant and
+/// the compiler sends you here, default to `true` unless you can prove the
+/// variant never touches `workspace.schemes`, `workspace.folders`,
+/// `workspace.daily_queue`, or any `scheme_sync`/`folder_sync` entry's
+/// identity.
+fn command_may_change_document_set(command: &Command) -> bool {
+    match command {
+        // Mint/remove/rebind a folder, or otherwise change which folders exist
+        // or how they're archived. All of these touch `workspace.folders`
+        // and/or `folder_sync`.
+        Command::CreateFolder { .. }
+        | Command::RestoreFolder { .. }
+        | Command::RestoreDeletedFolder { .. }
+        | Command::DeleteFolder { .. }
+        | Command::PermanentlyDeleteFolder { .. } => true,
+
+        // Mint/remove/rebind a scheme, or otherwise change which schemes
+        // exist. All of these touch `workspace.schemes` and/or `scheme_sync`
+        // (directly, or via `recently_deleted`/archive bookkeeping that
+        // `ensure_sync_metadata` also normalizes against).
+        Command::CreateScheme { .. }
+        | Command::RestoreScheme { .. }
+        | Command::RestoreDeletedScheme { .. }
+        | Command::DeleteScheme { .. }
+        | Command::PermanentlyDeleteScheme { .. } => true,
+
+        // Moves a scheme or folder between folders. Does not itself add or
+        // remove a scheme/folder id, but it can move a node into or out of an
+        // archived (deleted) folder's subtree, which changes deletion/archive
+        // state that `ensure_sync_metadata`'s daily-queue and stale-binding
+        // checks reason about. Kept conservative: true.
+        Command::MoveNode { .. } => true,
+
+        // Folder/scheme metadata-only edits: rename, recolor, toggle
+        // google-calendar sync, change source, toggle expanded. Verified
+        // against `desktop/commands/src/apply/folder.rs` and
+        // `.../apply/scheme.rs`: each of these looks up the existing
+        // folder/scheme by id and mutates exactly one field in place. None of
+        // them touch `workspace.folders`, `workspace.schemes`,
+        // `workspace.daily_queue`, `folder_sync`, or `scheme_sync` keys.
+        Command::RenameFolder { .. }
+        | Command::SetFolderExpanded { .. }
+        | Command::RenameScheme { .. }
+        | Command::SetSchemeColor { .. }
+        | Command::SetSchemeGsync { .. }
+        | Command::SetSchemeSource { .. } => false,
+
+        // Item-content/structure edits, all scoped to items inside an
+        // already-existing scheme (looked up by `scheme` id in
+        // `desktop/commands/src/apply/item.rs`). None of these create,
+        // delete, or rebind a scheme or folder.
+        Command::InsertItem { .. }
+        | Command::UpdateItemText { .. }
+        | Command::ReplaceItem { .. }
+        | Command::SetItemIndent { .. }
+        | Command::SetItemMarker { .. }
+        | Command::SetItemMarkerFamily { .. }
+        | Command::SetItemDate { .. }
+        | Command::SetItemRecurrence { .. }
+        | Command::SetItemPriority { .. }
+        | Command::SetOccurrenceNotificationOffset { .. }
+        | Command::ToggleOccurrence { .. }
+        | Command::DeleteItem { .. }
+        | Command::ReorderItem { .. } => false,
+
+        Command::Batch(commands) => commands.iter().any(command_may_change_document_set),
     }
 }
 
