@@ -2,6 +2,7 @@ use std::collections::HashMap;
 
 use chrono::Local;
 use gpui::{Context, ScrollHandle};
+use gpui_component::VirtualListScrollHandle;
 use knotq_state::{daily_queue_default_window_start, AppState};
 use knotq_storage_json::{load_crdt_state, load_local_sync_state, workspace_path};
 
@@ -127,6 +128,8 @@ impl KnotQApp {
             daily_queue_scroll_initialized: false,
             daily_queue_preserved_bottom_distance: None,
             daily_queue_scroll_restore_after_sync: None,
+            sidebar_scroll_handle: VirtualListScrollHandle::new(),
+            sidebar_navigator_cache: None,
             cal_scroll_handle: ScrollHandle::new(),
             cal_scroll_initialized: false,
             rename_node: None,

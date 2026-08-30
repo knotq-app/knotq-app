@@ -88,7 +88,9 @@ impl SchemeEditor {
             return None;
         }
         let (start, end) = self.selection_offsets();
-        self.text.get(start..end).map(line_without_table_object)
+        self.text
+            .get(start..end)
+            .map(|line| line_without_table_object(line).into_owned())
     }
 
     pub(in crate::scheme_editor) fn selected_whole_rows(&self) -> Option<Range<usize>> {

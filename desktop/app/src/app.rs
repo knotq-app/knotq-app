@@ -48,7 +48,7 @@ use std::sync::{atomic::AtomicBool, Arc};
 
 use chrono::{DateTime, Duration, Local, NaiveDate, Utc};
 use gpui::{Context, Entity, FocusHandle, Pixels, Point, ScrollHandle, Subscription, Task};
-use gpui_component::input::InputState;
+use gpui_component::{input::InputState, VirtualListScrollHandle};
 use knotq_commands::DateKind;
 use knotq_model::{
     FolderId, Item, ItemId, ItemState, NodeRef, OccurrenceId, Recurrence, Scheme, SchemeId,
@@ -601,6 +601,8 @@ pub struct KnotQApp {
     pub daily_queue_scroll_initialized: bool,
     pub daily_queue_preserved_bottom_distance: Option<Pixels>,
     pub(crate) daily_queue_scroll_restore_after_sync: Option<Point<Pixels>>,
+    pub(crate) sidebar_scroll_handle: VirtualListScrollHandle,
+    pub(crate) sidebar_navigator_cache: Option<crate::views::sidebar::SidebarNavigatorCache>,
     pub cal_scroll_handle: ScrollHandle,
     pub cal_scroll_initialized: bool,
     pub rename_node: Option<RenameNodeState>,

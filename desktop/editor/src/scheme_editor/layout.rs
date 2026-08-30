@@ -157,16 +157,10 @@ impl SchemeEditor {
                 wrap_width - px(TEXT_LEFT_PAD + 18.0) - self.row_indent_x(row) - row_layout_offset
             }
             .max(px(40.0));
-            // Stripping the block object allocates, so only do it for a line
-            // that actually carries one — nearly none do.
-            let line_without_block: std::borrow::Cow<'_, str> = {
-                let line = &self.text[line_range.clone()];
-                if line.contains(TABLE_OBJECT_CHAR) {
-                    std::borrow::Cow::Owned(line_without_table_object(line))
-                } else {
-                    std::borrow::Cow::Borrowed(line)
-                }
-            };
+            // `line_without_table_object` itself only allocates for a line
+            // that actually carries a block object — nearly none do.
+            let line_without_block: std::borrow::Cow<'_, str> =
+                line_without_table_object(&self.text[line_range.clone()]);
             let has_line_text = !line_without_block.is_empty();
             let media_height = if is_cell || is_anchor {
                 px(0.0)

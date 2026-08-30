@@ -129,7 +129,9 @@ mod tests {
     }
 
     fn text_lines(text: &str) -> Vec<String> {
-        text.split('\n').map(clean_line_text).collect()
+        text.split('\n')
+            .map(|line| clean_line_text(line).into_owned())
+            .collect()
     }
 
     /// Index of the first body cell row (after the anchor and the header row).
