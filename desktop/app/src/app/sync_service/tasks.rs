@@ -284,9 +284,26 @@ async fn run_sync_attempt(
                 _cx.notify();
                 return None;
             }
+            let step = crate::app::services::step_timing();
+            let t0 = std::time::Instant::now();
             app.state.sync_store_from_workspace();
+            let t_store = t0.elapsed();
+            let t1 = std::time::Instant::now();
             let pending = app.state.pending_crdt_edits();
+            let t_pending = t1.elapsed();
+            let t2 = std::time::Instant::now();
             let crdt_states = app.state.crdt_document_state_handles();
+            let t_handles = t2.elapsed();
+            if step {
+                let ms = |d: std::time::Duration| d.as_secs_f64() * 1000.0;
+                eprintln!(
+                    "[sync-snapshot] total {:7.1}ms = store {:6.1} + pending {:6.1} + handles {:6.1}",
+                    ms(t0.elapsed()),
+                    ms(t_store),
+                    ms(t_pending),
+                    ms(t_handles),
+                );
+            }
             let indicator_before = app.sync_indicator();
             app.sync_run_status = SyncRunStatus::Running {
                 pending: pending.len(),

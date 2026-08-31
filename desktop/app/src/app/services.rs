@@ -10,9 +10,11 @@ pub(super) use super::{save_workspace, save_workspace_incremental, workspace_pat
 use crate::app::sync_service::SyncSignal;
 
 mod bus;
+mod hang_probe;
 mod shutdown;
 mod tasks;
 
+pub(crate) use hang_probe::spawn as spawn_hang_probe;
 pub(crate) use tasks::{spawn_notification_task, spawn_save_task, spawn_timeline_task};
 
 pub(super) const SAVE_DEBOUNCE: StdDuration = StdDuration::from_secs(2);
@@ -181,4 +183,14 @@ mod tests {
 
         assert_eq!(next_event_completion_deadline(&workspace, now), None);
     }
+}
+
+/// Whether `KNOTQ_TYPING_TIMING=1` asked for per-step timings of the UI-thread
+/// snapshot blocks. The hang watchdog can say a freeze happened; these say which
+/// line inside the block caused it.
+pub(crate) fn step_timing() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| {
+        std::env::var("KNOTQ_TYPING_TIMING").is_ok_and(|value| value != "0" && !value.is_empty())
+    })
 }

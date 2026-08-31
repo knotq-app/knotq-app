@@ -36,7 +36,14 @@ pub(crate) fn spawn_save_task(
                         if !app.state.is_dirty() {
                             return None;
                         }
+                        // Step timings behind KNOTQ_TYPING_TIMING: this whole
+                        // block runs on the UI thread, so anything slow in it is
+                        // a freeze the user feels, and the watchdog can only say
+                        // that one happened, not which line caused it.
+                        let step = crate::app::services::step_timing();
+                        let t0 = std::time::Instant::now();
                         let pending_crdt_edits = app.state.pending_crdt_edits();
+                        let t_pending = t0.elapsed();
                         // Handles, not bytes. Serializing a large scheme's CRDT
                         // is several milliseconds and this block runs on the UI
                         // thread, so it used to drop a frame every time a save
@@ -49,11 +56,27 @@ pub(crate) fn spawn_save_task(
                         // against, for an edit that touched one. The store
                         // widens the scope itself whenever it cannot vouch for
                         // that (see `CrdtSaveScope`).
+                        let t1 = std::time::Instant::now();
                         let (crdt_scope, crdt_state_handles) = app.state.take_crdt_save_scope();
+                        let t_scope = t1.elapsed();
                         let dirty_ids = std::mem::take(&mut app.state.dirty_schemes);
                         app.state.index_dirty = false;
+                        let t2 = std::time::Instant::now();
+                        let workspace_clone = app.workspace.clone();
+                        let t_clone = t2.elapsed();
+                        if step {
+                            let ms = |d: std::time::Duration| d.as_secs_f64() * 1000.0;
+                            eprintln!(
+                                "[save-snapshot] total {:7.1}ms = pending {:6.1} + scope {:6.1} + clone {:6.1}  ({} schemes)",
+                                ms(t0.elapsed()),
+                                ms(t_pending),
+                                ms(t_scope),
+                                ms(t_clone),
+                                workspace_clone.schemes.len(),
+                            );
+                        }
                         Some((
-                            app.workspace.clone(),
+                            workspace_clone,
                             dirty_ids,
                             pending_crdt_edits,
                             crdt_scope,
