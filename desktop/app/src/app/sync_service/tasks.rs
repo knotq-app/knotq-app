@@ -286,7 +286,7 @@ async fn run_sync_attempt(
             }
             app.state.sync_store_from_workspace();
             let pending = app.state.pending_crdt_edits();
-            let crdt_states = app.state.crdt_document_states();
+            let crdt_states = app.state.crdt_document_state_handles();
             let indicator_before = app.sync_indicator();
             app.sync_run_status = SyncRunStatus::Running {
                 pending: pending.len(),

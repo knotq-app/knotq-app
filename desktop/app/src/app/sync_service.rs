@@ -4,7 +4,9 @@ use std::time::Duration as StdDuration;
 use knotq_model::{
     DocumentId, ImageAssetFormat, NotificationDefaults, ReplicaId, SyncAccountSettings, Workspace,
 };
-use knotq_sync::{NotificationScheduleSnapshot, PendingCrdtEdit, PushedDocument};
+use knotq_sync::{
+    DocumentStateHandle, NotificationScheduleSnapshot, PendingCrdtEdit, PushedDocument,
+};
 use std::fmt;
 
 mod http;
@@ -152,7 +154,14 @@ struct SyncSnapshot {
     /// CRDT from the UI store's latest local edits (with the same stable identity)
     /// rather than from a possibly-staler on-disk copy. Shared, not copied: this
     /// is handed over from the UI thread.
-    crdt_states: HashMap<DocumentId, std::sync::Arc<[u8]>>,
+    ///
+    /// Handles, not bytes: the snapshot is taken on the UI thread, and a handle
+    /// encodes on whichever thread calls `encode()` — the background sync thread
+    /// here. Encoding on main instead makes a typing burst pay for it, because the
+    /// deferred CRDT reconcile this snapshot forces (`crdt_document_state_handles`
+    /// -> `flush_crdt`) has just dirtied the encode cache of every document the
+    /// burst touched. That is the same reason the durable save takes handles.
+    crdt_states: HashMap<DocumentId, DocumentStateHandle>,
     /// Lead-time defaults for the notification schedule. The schedule itself
     /// (recurrence expansion + per-occurrence hashing — the heaviest snapshot step)
     /// is computed on the background sync thread from `workspace`, not on main.
