@@ -82,7 +82,14 @@ pub(super) fn sync_snapshot(snapshot: SyncSnapshot) -> Result<SyncRunResult> {
         .into_iter()
         .map(|(document, state)| (document, std::sync::Arc::from(state)))
         .collect();
-    crdt_states.extend(snapshot.crdt_states);
+    // Encode HERE, on the background sync thread: these handles were taken on the
+    // UI thread precisely so this cost lands off main.
+    crdt_states.extend(
+        snapshot
+            .crdt_states
+            .into_iter()
+            .map(|(document, handle)| (document, handle.encode())),
+    );
     // When this device adopts a different account's canonical workspace id (a
     // sign-in into an account it did not last sync — e.g. prod -> sandbox), carry
     // the workspace document's persisted content to the new id. `from_states` keys

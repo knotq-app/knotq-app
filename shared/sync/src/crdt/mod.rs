@@ -167,6 +167,9 @@ impl EncodeCacheState {
 /// two writes were never atomic with respect to each other anyway (a crash
 /// between them already skews either way), and the skew this adds is a few
 /// milliseconds of edits against a window that was already the whole write.
+/// Cloning shares the same document and cache, so clones agree with each other
+/// and with the document they came from.
+#[derive(Clone)]
 pub struct DocumentStateHandle {
     doc: Doc,
     cache: Arc<EncodeCacheState>,
