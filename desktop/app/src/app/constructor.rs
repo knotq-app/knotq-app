@@ -9,7 +9,7 @@ use knotq_storage_json::{load_crdt_state, load_local_sync_state, workspace_path}
 use super::auto_update::{spawn_auto_update_task, AutoUpdateUiStatus};
 use super::bootstrap::{load_or_seed, load_settings_bootstrap};
 use super::services::{
-    spawn_notification_task, spawn_save_task, spawn_timeline_task, AppServiceBus,
+    spawn_hang_probe, spawn_notification_task, spawn_save_task, spawn_timeline_task, AppServiceBus,
 };
 #[cfg(feature = "accounts")]
 use super::sync_service::spawn_sync_task;
@@ -38,6 +38,8 @@ impl KnotQApp {
         let (service_bus, service_receivers) = AppServiceBus::new();
         let (auto_update_tx, auto_update_rx) = async_channel::bounded(4);
         let save_task = spawn_save_task(service_bus.clone(), service_receivers.save_rx, cx);
+        // No-op unless KNOTQ_TYPING_TIMING=1.
+        spawn_hang_probe(cx);
         let notification_task =
             spawn_notification_task(service_bus.clone(), service_receivers.notification_rx, cx);
         let state_task = spawn_timeline_task(service_receivers.timeline_rx, cx);

@@ -17,8 +17,3 @@ knotq-ui = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 uuid = { workspace = true }
-
-[target.'cfg(target_os = "macos")'.dependencies]
-dispatch = "0.2"
-objc = "0.2"
-raw-window-handle = "0.6"

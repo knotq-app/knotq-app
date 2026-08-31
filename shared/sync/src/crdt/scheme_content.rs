@@ -258,6 +258,15 @@ impl YrsSchemeDocument {
         // Every item already has its container when the shadow describes this exact
         // item set, and creating them is another walk over the whole scheme.
         if reusable_shadow.is_none() {
+            // The miss is the expensive branch: another walk over every item in
+            // the scheme. `KNOTQ_TYPING_TIMING=1` reports it so a stall can be
+            // attributed to a shadow miss rather than guessed at.
+            if shadow_miss_timing() {
+                eprintln!(
+                    "[crdt-shadow] MISS - walking all {} items to ensure skeletons",
+                    desired_ids.len()
+                );
+            }
             self.ensure_item_skeletons(scheme)?;
         }
         // Taken from inside the transaction, not from the document.
@@ -1115,4 +1124,15 @@ pub(crate) fn insert_units(
         text.insert(txn, at, &pending);
     }
     Ok(())
+}
+
+
+/// Whether `KNOTQ_TYPING_TIMING=1` asked for shadow-miss reporting. A miss makes
+/// `replace_scheme` walk the whole scheme, so it is the difference between a
+/// reconcile that costs microseconds and one that costs tens of milliseconds.
+fn shadow_miss_timing() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| {
+        std::env::var("KNOTQ_TYPING_TIMING").is_ok_and(|value| value != "0" && !value.is_empty())
+    })
 }

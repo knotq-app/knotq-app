@@ -172,7 +172,20 @@ impl WorkspaceStore {
             return;
         }
         let changes = std::mem::take(&mut self.deferred_crdt);
+        // `KNOTQ_TYPING_TIMING=1` reports each flush individually. A profiler
+        // aggregates identical stacks, so it cannot tell one 45 ms reconcile
+        // apart from 45 one-millisecond ones — and which of those it is decides
+        // whether this is a stall worth chasing.
+        let started = crdt_flush_timing().then(std::time::Instant::now);
         let outcome = self.crdt.sync_changes(&self.workspace, &changes);
+        if let Some(started) = started {
+            let elapsed = started.elapsed().as_secs_f64() * 1000.0;
+            eprintln!(
+                "[crdt-flush] {elapsed:6.2}ms  ({} scheme(s), {} update(s))",
+                changes.schemes.len(),
+                outcome.updates.len(),
+            );
+        }
         // The documents are written HERE now, not when the command was applied,
         // so this is where the save scope has to learn what moved.
         self.note_crdt_writes(&changes, &outcome);
@@ -879,4 +892,16 @@ pub(crate) fn collect_affected_schemes(cmd: &Command, out: &mut HashSet<SchemeId
         | Command::CreateScheme { .. }
         | Command::MoveNode { .. } => {}
     }
+}
+
+/// Whether `KNOTQ_TYPING_TIMING=1` asked for per-flush reconcile timings.
+///
+/// A sampling profiler aggregates identical stacks, so it cannot tell one 45 ms
+/// reconcile apart from forty-five 1 ms ones — and which of those it is decides
+/// whether a deferred flush is a user-visible stall or just steady overhead.
+fn crdt_flush_timing() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| {
+        std::env::var("KNOTQ_TYPING_TIMING").is_ok_and(|value| value != "0" && !value.is_empty())
+    })
 }
