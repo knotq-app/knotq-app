@@ -8,6 +8,7 @@ mod gen_android;
 mod gen_ios;
 mod gen_website;
 mod merge;
+mod refs;
 mod validate;
 
 use anyhow::{bail, Context, Result};
@@ -29,15 +30,22 @@ fn main() -> Result<()> {
 
     match args.first().map(String::as_str) {
         Some("merge") => merge::run(&l10n_dir),
-        Some("validate") => validate::run(&l10n_dir),
+        Some("validate") => {
+            validate::run(&l10n_dir)?;
+            let catalogs = catalog::load_all(&l10n_dir)?;
+            refs::run(catalogs.english(), &root, &l10n_dir)
+        }
         Some("generate") => {
             let targets: Vec<&str> = args
                 .get(1)
                 .map(|t| t.split(',').collect())
                 .unwrap_or_else(|| vec!["ios", "android", "website"]);
-            // Never generate from a broken catalog.
+            // Never generate from a broken catalog, and never regenerate an
+            // artifact out from under code that still references a key the
+            // catalog cannot serve — that ships raw key names into the UI.
             validate::run(&l10n_dir)?;
             let catalogs = catalog::load_all(&l10n_dir)?;
+            refs::run(catalogs.english(), &root, &l10n_dir)?;
             let config = catalog::TargetConfig::load(&l10n_dir, &root)?;
             for target in targets {
                 match target {
@@ -54,7 +62,8 @@ fn main() -> Result<()> {
                 "usage: l10n-gen <merge | validate | generate [ios,android,website]>\n\
                  \n\
                  merge     fold l10n/partial/*.json into en.json (then delete the partials)\n\
-                 validate  check every locale catalog against en.json\n\
+                 validate  check every locale catalog against en.json, and every\n\
+                 \x20         catalog key referenced by source code against en.json\n\
                  generate  validate, then rewrite platform artifacts"
             );
             bail!("missing or unknown subcommand");
