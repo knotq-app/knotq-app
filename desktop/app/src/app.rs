@@ -24,6 +24,7 @@ mod delete_confirm;
 mod editor_mgr;
 mod export;
 mod google_oauth;
+mod mcp_service;
 mod nav;
 mod node_rename;
 #[cfg(feature = "accounts")]
@@ -749,6 +750,11 @@ pub struct KnotQApp {
     pub _sync_task: Task<()>,
     pub _google_calendar_sync_task: Task<()>,
     pub _auto_update_task: Task<()>,
+    /// The local MCP server, when the user has enabled it. Held for the life of
+    /// the app rather than started per request: dropping it stops the listener
+    /// and removes the endpoint file, so its presence is what "a server is
+    /// running" means.
+    pub _mcp_server: Option<crate::app::mcp_service::McpServer>,
     #[cfg(feature = "accounts")]
     pub _presence_task: Task<()>,
     pub _window_activation_subscription: Option<Subscription>,

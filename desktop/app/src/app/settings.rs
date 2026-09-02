@@ -152,6 +152,10 @@ impl KnotQApp {
             onboarding_completed: self.settings.onboarding_completed,
             last_view: self.settings.last_view,
             last_scheme_id: self.settings.last_scheme_id,
+            // There is no desktop UI for the MCP server yet, so carry the loaded
+            // value through rather than resetting a user's hand-edited config on
+            // the next save.
+            mcp: self.settings.mcp.clone(),
         };
         // The settings file on disk holds something this build cannot represent
         // (see `settings_save_blocked_reason`); writing would replace it with a

@@ -126,6 +126,8 @@ pub struct AppSettings {
     pub last_view: Option<SavedView>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_scheme_id: Option<SchemeId>,
+    #[serde(default)]
+    pub mcp: McpSettings,
 }
 
 impl Default for AppSettings {
@@ -148,8 +150,58 @@ impl Default for AppSettings {
             onboarding_completed: false,
             last_view: None,
             last_scheme_id: None,
+            mcp: McpSettings::default(),
         }
     }
+}
+
+/// The local MCP server, which lets an AI assistant read and edit this
+/// workspace over loopback.
+///
+/// Off by default and never enabled implicitly: turning it on opens a port that
+/// any process on the machine can reach, so it has to be a deliberate act.
+/// While it is on the server runs for the whole life of the app rather than
+/// starting on demand, so a client's saved configuration keeps working across
+/// restarts without the user re-arming anything.
+///
+/// Serialized even at its default, unlike most optional settings, because
+/// editing `settings.json` is currently the only way to turn this on — writing
+/// the block out is what tells someone opening that file that the option
+/// exists. A build that predates this field ignores it on load but drops it on
+/// save, so an old build will silently switch the server off; that is the
+/// cheaper failure than bumping the schema version, which would stop an old
+/// build opening the file at all.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct McpSettings {
+    #[serde(default)]
+    pub enabled: bool,
+    /// Refuse every tool that changes the workspace. Independent of `enabled`
+    /// so a user can grant reading without granting writing — the common case
+    /// for "let it see my calendar" — and can revoke writes without tearing the
+    /// connection down.
+    #[serde(default)]
+    pub read_only: bool,
+    /// Loopback port to bind. Fixed rather than ephemeral so a client config
+    /// survives a restart. If it is taken, the server binds elsewhere and
+    /// records where in the endpoint file.
+    #[serde(default = "default_mcp_port")]
+    pub port: u16,
+}
+
+impl Default for McpSettings {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            read_only: false,
+            port: default_mcp_port(),
+        }
+    }
+}
+
+/// Chosen from the IANA dynamic range and away from the crowded low 8000s that
+/// dev servers occupy, so the default works without a fight on most machines.
+fn default_mcp_port() -> u16 {
+    52373
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]

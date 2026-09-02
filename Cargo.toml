@@ -8,6 +8,7 @@ members = [
     "desktop/history",
     "desktop/import",
     "desktop/index",
+    "desktop/mcp",
     "desktop/notifications",
     "desktop/rrule",
     "desktop/state",
@@ -19,6 +20,7 @@ members = [
     "shared/model",
     "shared/sync",
     "tools/l10n",
+    "tools/mcp-bridge",
 ]
 resolver = "2"
 
@@ -48,6 +50,7 @@ knotq-history = { path = "desktop/history" }
 knotq-import = { path = "desktop/import" }
 knotq-index = { path = "desktop/index" }
 knotq-l10n = { path = "shared/l10n" }
+knotq-mcp = { path = "desktop/mcp" }
 knotq-model = { path = "shared/model" }
 knotq-notifications = { path = "desktop/notifications" }
 knotq-rrule = { path = "desktop/rrule" }
