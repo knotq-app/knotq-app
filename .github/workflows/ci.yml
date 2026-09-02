@@ -76,6 +76,30 @@ jobs:
       - name: Test workspace
         run: cargo test --workspace
 
+  l10n:
+    name: Localization catalogs
+    runs-on: ubuntu-24.04
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        continue-on-error: true
+        with:
+          key: l10n
+
+      # Checks the locales against en.json, and every catalog key the source
+      # code asks for against en.json — a key code references but the catalog
+      # lacks renders as the key itself, with nothing failing anywhere. The
+      # mobile sources live in a separate repository this job does not clone,
+      # so it covers the desktop surface here and skips the rest; the same
+      # command run locally, where that checkout exists, covers all of them
+      # (and `generate` runs it before rewriting any artifact).
+      - name: Validate localization catalogs
+        run: cargo run -p l10n-gen -- validate
+
   perf-budget:
     name: Performance budget
     runs-on: ubuntu-24.04
