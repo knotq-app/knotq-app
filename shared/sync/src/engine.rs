@@ -341,6 +341,7 @@ pub fn batch_push_pending(
     local_state: &mut LocalSyncState,
     replica_id: ReplicaId,
     notification_schedule: &NotificationScheduleSnapshot,
+    background_refresh_required: bool,
     pushed: &mut Vec<PushedDocument>,
     crdt_docs: &mut WorkspaceCrdtDocuments,
     workspace: &Workspace,
@@ -350,7 +351,12 @@ pub fn batch_push_pending(
     let mut reseeded: HashSet<DocumentId> = HashSet::new();
     loop {
         let Some((request, acks)) =
-            build_push_request(local_state, replica_id, notification_schedule)
+            build_push_request(
+                local_state,
+                replica_id,
+                notification_schedule,
+                background_refresh_required,
+            )
         else {
             return Ok(());
         };
@@ -568,6 +574,7 @@ fn build_push_request(
     local_state: &LocalSyncState,
     fallback_replica_id: ReplicaId,
     notification_schedule: &NotificationScheduleSnapshot,
+    background_refresh_required: bool,
 ) -> Option<(BatchPushRequest, Vec<DocumentAck>)> {
     let mut documents = Vec::new();
     let mut acks = Vec::new();
@@ -631,6 +638,7 @@ fn build_push_request(
             replica_id: local_state.replica_id.unwrap_or(fallback_replica_id),
             documents,
             notification_schedule_changed: false,
+            background_refresh_required,
             notification_schedule: Some(schedule),
             client_protocol_version: crate::CLIENT_SYNC_PROTOCOL_VERSION,
         },
@@ -733,7 +741,7 @@ mod tests {
         state.push_pending(pending(workspace_id, replica_id, document, 1, update_len));
         state.push_pending(pending(workspace_id, replica_id, document, 2, update_len));
 
-        let (request, acks) = build_push_request(&state, replica_id, &schedule()).unwrap();
+        let (request, acks) = build_push_request(&state, replica_id, &schedule(), false).unwrap();
 
         assert_eq!(request.documents.len(), 1);
         assert_eq!(request.documents[0].document, document);
@@ -763,7 +771,7 @@ mod tests {
         ));
         state.push_pending(pending(workspace_id, replica_id, small_document, 2, 8));
 
-        let (request, acks) = build_push_request(&state, replica_id, &schedule()).unwrap();
+        let (request, acks) = build_push_request(&state, replica_id, &schedule(), false).unwrap();
 
         assert_eq!(request.documents.len(), 1);
         assert_eq!(request.documents[0].document, huge_document);
@@ -787,7 +795,7 @@ mod tests {
         state.push_pending(pending(workspace_id, replica_id, first, 1, update_len));
         state.push_pending(pending(workspace_id, replica_id, second, 2, update_len));
 
-        let (request, acks) = build_push_request(&state, replica_id, &schedule()).unwrap();
+        let (request, acks) = build_push_request(&state, replica_id, &schedule(), false).unwrap();
 
         assert_eq!(request.documents.len(), 1);
         assert_eq!(request.documents[0].document, first);

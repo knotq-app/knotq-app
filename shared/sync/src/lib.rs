@@ -535,6 +535,8 @@ pub struct BatchPushRequest {
     pub documents: Vec<PushDocumentUpdates>,
     #[serde(default)]
     pub notification_schedule_changed: bool,
+    #[serde(default)]
+    pub background_refresh_required: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub notification_schedule: Option<NotificationScheduleSnapshot>,
     /// See [`BatchPullRequest::client_protocol_version`].
@@ -825,6 +827,7 @@ mod tests {
                 updates: vec![vec![1, 2, 3]],
             }],
             notification_schedule_changed: true,
+            background_refresh_required: false,
             client_protocol_version: CLIENT_SYNC_PROTOCOL_VERSION,
             notification_schedule: Some(NotificationScheduleSnapshot {
                 sequence: 3,

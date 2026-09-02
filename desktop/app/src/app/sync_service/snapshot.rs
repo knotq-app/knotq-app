@@ -244,6 +244,7 @@ pub(super) fn sync_snapshot(snapshot: SyncSnapshot) -> Result<SyncRunResult> {
         &mut local_state,
         replica_id,
         &notification_schedule,
+        snapshot.reuse_schedule.is_none(),
         &mut pushed,
         &mut crdt_docs,
         &workspace,

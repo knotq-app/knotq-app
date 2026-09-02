@@ -693,6 +693,7 @@ impl TestDevice {
                 updates: vec![workspace_doc_update.update_v1],
             }],
             notification_schedule_changed: true,
+            background_refresh_required: false,
             notification_schedule: Some(schedule),
             client_protocol_version: knotq_sync::CLIENT_SYNC_PROTOCOL_VERSION,
         };
@@ -837,6 +838,7 @@ impl TestDevice {
             &mut self.local_state,
             self.replica_id,
             &schedule,
+            false,
             &mut pushed,
             &mut apply_crdt,
             &self.workspace,
