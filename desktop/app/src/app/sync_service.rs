@@ -60,13 +60,24 @@ const SYNC_LOCAL_CHANGE_DEBOUNCE: StdDuration = StdDuration::from_secs(30);
 // 150 ms Immediate window), and unpushed edits are already saved locally, so the
 // window only costs outbound convergence latency.
 //
-// It was raised to 2 s because the per-run snapshot the UI thread takes
-// (workspace clone + CRDT encode) was expensive enough while typing that running
-// it often mattered. That snapshot is now 0.65 ms on a 169-scheme / 3.7k-item
-// workspace (0.37 ms clone + 0.27 ms encode, measured), so at 500 ms it costs
-// ~1.3 ms per second of main thread against the ~35 ms per second a fast typing
-// burst already spends — under 4%, for four times quicker convergence to peers.
-// A burst still coalesces; it just coalesces into a few runs instead of one.
+// It was once raised to 2 s because the per-run snapshot the UI thread takes was
+// expensive enough while typing that running it often mattered. Two changes have
+// since gutted that cost: the CRDT encode moved off the UI thread (the snapshot
+// takes `DocumentStateHandle`s and the background sync thread encodes them), and
+// the CRDT now reconciles once per burst rather than once per keystroke, so a
+// run's reconcile is priced per *dirty scheme*, not per keystroke it coalesces.
+//
+// Re-measured 2026-08-31 in release on a 170-scheme / 3,740-item workspace
+// (`cargo test -p knotq-state --test sync_snapshot_probe --release -- --ignored
+// --nocapture`), typing a 400-keystroke burst and snapshotting at various
+// windows. The whole UI-thread block costs **0.16-0.22 ms per run**, and that is
+// flat in how many edits the run carries — 0.14 ms of it is the workspace clone,
+// ~0.04 ms the deferred-CRDT reconcile, 0.003 ms collecting the handles.
+//
+// So the window sets how *often* 0.2 ms is paid, nothing more: at 500 ms that is
+// ~0.4 ms per second of main thread while typing, about 2% of one 16 ms frame per
+// run. Four times quicker convergence to peers for that is not a close call. A
+// burst still coalesces; it just coalesces into a few runs instead of one.
 const SYNC_LOCAL_CHANGE_DEBOUNCE_WS: StdDuration = StdDuration::from_millis(500);
 const SYNC_DEBOUNCE_WS: StdDuration = StdDuration::from_millis(150);
 const SYNC_PENDING_RETRY: StdDuration = StdDuration::from_secs(30);
