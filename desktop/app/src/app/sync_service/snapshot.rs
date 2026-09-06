@@ -74,14 +74,12 @@ pub(super) fn sync_snapshot(snapshot: SyncSnapshot) -> Result<SyncRunResult> {
     // deterministic identity plus its newest local edits — never rebuilt from plain
     // data. Disk fills documents the in-memory store doesn't hold (e.g. archived /
     // off-screen Daily Queue schemes loaded by `workspace_for_background_sync`).
-    let mut crdt_states: std::collections::HashMap<
-        knotq_model::DocumentId,
-        std::sync::Arc<[u8]>,
-    > = load_crdt_state(&path)
-        .unwrap_or_default()
-        .into_iter()
-        .map(|(document, state)| (document, std::sync::Arc::from(state)))
-        .collect();
+    let mut crdt_states: std::collections::HashMap<knotq_model::DocumentId, std::sync::Arc<[u8]>> =
+        load_crdt_state(&path)
+            .unwrap_or_default()
+            .into_iter()
+            .map(|(document, state)| (document, std::sync::Arc::from(state)))
+            .collect();
     // Encode HERE, on the background sync thread: these handles were taken on the
     // UI thread precisely so this cost lands off main.
     crdt_states.extend(
@@ -244,6 +242,7 @@ pub(super) fn sync_snapshot(snapshot: SyncSnapshot) -> Result<SyncRunResult> {
         &mut local_state,
         replica_id,
         &notification_schedule,
+        snapshot.reuse_schedule.is_none(),
         &mut pushed,
         &mut crdt_docs,
         &workspace,

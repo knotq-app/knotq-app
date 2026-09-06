@@ -203,6 +203,7 @@ pub fn orphan_push_request(
             updates: vec![update_bytes],
         }],
         notification_schedule_changed: false,
+        background_refresh_required: false,
         client_protocol_version: knotq_sync::CLIENT_SYNC_PROTOCOL_VERSION,
         notification_schedule: Some(NotificationScheduleSnapshot {
             sequence: 0,

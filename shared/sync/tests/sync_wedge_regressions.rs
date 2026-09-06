@@ -36,6 +36,42 @@ mod common;
 
 use common::{Harness, D0, D1};
 
+/// A matching pull cursor only says the CRDT transport is caught up. It does
+/// not prove the separately persisted, UI-facing workspace was materialized
+/// successfully from that CRDT state. A malformed/lazy local scheme file used
+/// to leave exactly this state: both devices said synced, but one rendered its
+/// stale plain workspace forever because the server quite correctly returned an
+/// empty pull response.
+#[test]
+fn empty_pull_repairs_a_stale_materialized_workspace() {
+    let mut h = Harness::new(2);
+    h.login_all();
+
+    let scheme = h.add_scheme(D0, "Materialization repair", &["authoritative line"]);
+    // First run publishes the edit; second run consumes the push echo, leaving
+    // D0's persisted cursor exactly at the server head.
+    h.sync(D0);
+    h.sync(D0);
+
+    // Model a failed local materialization/save without changing its durable
+    // CRDT document or cursor. The next pull is intentionally empty.
+    h.device_mut_for_surgery(D0)
+        .workspace
+        .schemes
+        .get_mut(&scheme)
+        .expect("scheme")
+        .items
+        .clear();
+
+    h.sync(D0);
+
+    assert_eq!(
+        h.device(D0).scheme_item_texts(scheme),
+        vec!["authoritative line".to_string()],
+        "an empty pull must still restore the visible workspace from local CRDT state"
+    );
+}
+
 // ---------------------------------------------------------------------------
 // Bug 1a — restart_with_pending_edits_must_not_wedge_sync
 // ---------------------------------------------------------------------------

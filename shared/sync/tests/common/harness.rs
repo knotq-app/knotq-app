@@ -526,6 +526,7 @@ impl Harness {
                 replica_id: ReplicaId::new(),
                 documents,
                 notification_schedule_changed: false,
+                background_refresh_required: false,
                 notification_schedule: Some(test_notification_schedule()),
                 client_protocol_version: knotq_sync::CLIENT_SYNC_PROTOCOL_VERSION,
             })

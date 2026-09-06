@@ -477,6 +477,18 @@ pub struct BatchPullRequest {
     /// build of this same crate (pre-gate) still deserializes as version 0.
     #[serde(default)]
     pub client_protocol_version: u32,
+    /// A periodic, compact proof that this replica still holds the same CRDT
+    /// histories as the server. Optional for wire compatibility with servers
+    /// deployed before integrity verification.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub integrity_state_vectors: Vec<DocumentStateVector>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct DocumentStateVector {
+    pub document: DocumentId,
+    #[serde(with = "base64_bytes")]
+    pub state_vector_v1: Vec<u8>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -504,6 +516,15 @@ pub struct BatchPullResponse {
     /// document named by a stale local cursor" after a workspace purge/reset.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub known_documents: Option<HashMap<DocumentId, u64>>,
+    /// Present only when a server that supports integrity verification compared
+    /// an empty/current pull against `integrity_state_vectors`. These are the
+    /// precise documents the client must re-pull, not a workspace-wide reset.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub integrity_mismatches: Option<Vec<DocumentId>>,
+    /// The requested proof could not yet be checked because this response
+    /// carried changed documents. The client retries once it has applied them.
+    #[serde(default)]
+    pub integrity_check_deferred: bool,
     #[serde(default)]
     pub notification_schedule_revision: u64,
     /// More changed documents remain beyond the per-response cap; the client should
@@ -535,6 +556,8 @@ pub struct BatchPushRequest {
     pub documents: Vec<PushDocumentUpdates>,
     #[serde(default)]
     pub notification_schedule_changed: bool,
+    #[serde(default)]
+    pub background_refresh_required: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub notification_schedule: Option<NotificationScheduleSnapshot>,
     /// See [`BatchPullRequest::client_protocol_version`].
@@ -815,6 +838,7 @@ mod tests {
             replica_id,
             cursors: HashMap::from([(document, 7)]),
             client_protocol_version: CLIENT_SYNC_PROTOCOL_VERSION,
+            integrity_state_vectors: Vec::new(),
         };
         let push = BatchPushRequest {
             replica_id,
@@ -825,6 +849,7 @@ mod tests {
                 updates: vec![vec![1, 2, 3]],
             }],
             notification_schedule_changed: true,
+            background_refresh_required: false,
             client_protocol_version: CLIENT_SYNC_PROTOCOL_VERSION,
             notification_schedule: Some(NotificationScheduleSnapshot {
                 sequence: 3,

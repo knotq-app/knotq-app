@@ -485,6 +485,19 @@ impl WorkspaceCrdtDocuments {
         ids
     }
 
+    /// Compact state-vector proofs for the documents this replica currently
+    /// owns. Unlike full document snapshots these contain only client clocks,
+    /// so they are suitable for an occasional integrity check on an otherwise
+    /// empty pull.
+    pub fn state_vectors_v1(&self) -> HashMap<DocumentId, Vec<u8>> {
+        let mut out = HashMap::with_capacity(self.schemes.len() + 1);
+        out.insert(self.workspace.id, self.workspace.state_vector_v1());
+        for doc in self.schemes.values() {
+            out.insert(doc.id, doc.state_vector_v1());
+        }
+        out
+    }
+
     /// Snapshot every owned document's full `state_v1`, keyed by document id, for
     /// durable persistence. Restoring these via [`from_states`](Self::from_states)
     /// with the same `replica_id` round-trips the documents losslessly.

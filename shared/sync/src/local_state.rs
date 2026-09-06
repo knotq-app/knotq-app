@@ -408,6 +408,45 @@ impl LocalSyncState {
         // If there is no cursor yet the next pull will already fetch from seq 0.
     }
 
+    /// Forget only the personal-workspace cursor after its on-disk index was
+    /// unreadable and replaced. The replacement has no trustworthy relation to
+    /// the prior index, but scheme cursors and their pending local edits remain
+    /// valid. Pulling the workspace index from zero lets the engine discover
+    /// precisely which scheme cursors also need re-fetching.
+    pub fn reset_workspace_pull_cursor(&mut self) -> bool {
+        let before = self.document_cursors.len();
+        self.document_cursors
+            .retain(|_, cursor| cursor.kind != SyncDocumentKind::PersonalWorkspace);
+        self.document_cursors.len() != before
+    }
+
+    /// Reconcile cached pull cursors against the server's authoritative heads.
+    ///
+    /// A cursor greater than the server's sequence is impossible unless local
+    /// state was damaged or the server was reset; reset only that document so
+    /// the next request receives its full merged state. A cursor for a document
+    /// the server no longer has must be removed entirely: leaving it at zero
+    /// would make every future head comparison repeat without making progress.
+    /// The caller's bootstrap path will re-seed a locally-held document that is
+    /// absent from the server. Returns true when another pull is needed now.
+    pub fn reconcile_server_heads(&mut self, heads: &HashMap<DocumentId, u64>) -> bool {
+        let mut needs_repull = false;
+        self.document_cursors
+            .retain(|document, cursor| match heads.get(document) {
+                Some(server_sequence) if cursor.last_pulled_sequence > *server_sequence => {
+                    cursor.last_pulled_sequence = 0;
+                    needs_repull = true;
+                    true
+                }
+                Some(_) => true,
+                None => {
+                    needs_repull = true;
+                    false
+                }
+            });
+        needs_repull
+    }
+
     pub fn mark_media_uploaded(
         &mut self,
         image_name: String,
@@ -691,7 +730,7 @@ fn merge_document_pending(
 
 #[cfg(test)]
 mod account_change_tests {
-    use std::collections::HashSet;
+    use std::collections::{HashMap, HashSet};
 
     use super::{
         queue_account_switch_reseed, DocumentSyncCursor, LocalSyncState, MediaSyncCursor,
@@ -883,6 +922,75 @@ mod account_change_tests {
         assert_eq!(state.document_cursors.len(), 1);
         assert_eq!(state.media_cursors.len(), 1);
         assert_eq!(state.pending.len(), 2);
+    }
+
+    #[test]
+    fn server_head_reconciliation_repairs_only_impossible_cursors() {
+        let account = WorkspaceId::new();
+        let mut state = configured_state(account, SERVER_A);
+        let kept = DocumentId::new();
+        state.document_cursors.insert(
+            kept,
+            DocumentSyncCursor {
+                document: kept,
+                kind: SyncDocumentKind::Scheme,
+                last_pulled_sequence: 2,
+                last_pushed_sequence: 2,
+                epoch: 0,
+            },
+        );
+        let stale = *state
+            .document_cursors
+            .keys()
+            .find(|id| **id != kept)
+            .unwrap();
+
+        assert!(state.reconcile_server_heads(&HashMap::from([(kept, 2), (stale, 3)])));
+        assert_eq!(state.document_cursors[&kept].last_pulled_sequence, 2);
+        assert_eq!(state.document_cursors[&stale].last_pulled_sequence, 0);
+        assert_eq!(
+            state.pending.len(),
+            2,
+            "cursor repair must preserve local edits"
+        );
+    }
+
+    #[test]
+    fn server_head_reconciliation_drops_a_cursor_for_a_missing_remote_document() {
+        let account = WorkspaceId::new();
+        let mut state = configured_state(account, SERVER_A);
+        let document = *state.document_cursors.keys().next().unwrap();
+
+        assert!(state.reconcile_server_heads(&HashMap::new()));
+        assert!(!state.document_cursors.contains_key(&document));
+        assert_eq!(
+            state.pending.len(),
+            2,
+            "pending edits are retained for bootstrap"
+        );
+    }
+
+    #[test]
+    fn workspace_parse_recovery_resets_only_the_workspace_cursor() {
+        let account = WorkspaceId::new();
+        let mut state = configured_state(account, SERVER_A);
+        let workspace_document = DocumentId::new();
+        state.document_cursors.insert(
+            workspace_document,
+            DocumentSyncCursor {
+                document: workspace_document,
+                kind: SyncDocumentKind::PersonalWorkspace,
+                last_pulled_sequence: 7,
+                last_pushed_sequence: 7,
+                epoch: 0,
+            },
+        );
+        let pending_before = state.pending.clone();
+
+        assert!(state.reset_workspace_pull_cursor());
+        assert!(!state.document_cursors.contains_key(&workspace_document));
+        assert_eq!(state.document_cursors.len(), 1, "scheme cursor is retained");
+        assert_eq!(state.pending, pending_before, "pending edits are retained");
     }
 
     #[test]
