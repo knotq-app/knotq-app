@@ -57,8 +57,8 @@ cleanup() {
 trap cleanup EXIT INT TERM
 
 echo "run-sync-stress: applying D1 migrations…"
-( cd "${BACKEND_DIR}" && pnpm wrangler d1 migrations apply knotq-auth \
-    --local --persist-to "${PERSIST}" >/dev/null )
+( cd "${BACKEND_DIR}" && CI=1 pnpm wrangler d1 migrations apply knotq-auth \
+    --local --persist-to "${PERSIST}" )
 
 echo "run-sync-stress: starting wrangler dev on :${PORT} (KNOTQ_TEST_MODE=1)…"
 ( cd "${BACKEND_DIR}" && pnpm wrangler dev --local --port "${PORT}" \
@@ -73,6 +73,22 @@ for attempt in $(seq 1 60); do
   sleep 0.5
 done
 curl -sf "${BACKEND_URL}/healthz" >/dev/null || { echo "run-sync-stress: backend never became ready" >&2; exit 1; }
+
+# Prove the DB schema is actually present before handing off to the suite: a
+# migration that silently applied nothing (wrong persist path, non-interactive
+# abort) shows up here as a bootstrap 500 instead of 26 identical failures.
+probe_email="stress-probe-$(date +%s)@example.com"
+probe_status="$(curl -s -o /dev/null -w '%{http_code}' -X POST \
+  -H 'content-type: application/json' -d "{\"email\":\"${probe_email}\"}" \
+  "${BACKEND_URL}/__test/bootstrap")"
+if [ "${probe_status}" != "200" ]; then
+  echo "run-sync-stress: /__test/bootstrap probe returned ${probe_status} — D1 not ready" >&2
+  ( cd "${BACKEND_DIR}" && pnpm wrangler d1 execute knotq-auth --local \
+      --persist-to "${PERSIST}" --command \
+      "SELECT name FROM sqlite_master WHERE type='table'" 2>&1 || true )
+  exit 1
+fi
+echo "run-sync-stress: /__test/bootstrap probe ok."
 
 export KNOTQ_SYNC_BACKEND_URL="${BACKEND_URL}"
 
