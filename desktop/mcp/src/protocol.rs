@@ -82,15 +82,8 @@ pub fn route(request: &Request) -> Routed {
         "tools/list" => Routed::Respond(success(id, tools_list_result())),
         "tools/call" => {
             let params = request.params.as_ref();
-            let Some(name) = params
-                .and_then(|p| p.get("name"))
-                .and_then(Value::as_str)
-            else {
-                return Routed::Respond(error(
-                    id,
-                    INVALID_REQUEST,
-                    "tools/call requires a `name`",
-                ));
+            let Some(name) = params.and_then(|p| p.get("name")).and_then(Value::as_str) else {
+                return Routed::Respond(error(id, INVALID_REQUEST, "tools/call requires a `name`"));
             };
             Routed::CallTool {
                 id,
@@ -122,7 +115,8 @@ pub fn initialize_result() -> Value {
             "name": SERVER_NAME,
             "version": env!("CARGO_PKG_VERSION"),
         },
-        "instructions": "When the user mentions KnotQ or their plans, use these tools first—call list_schemes before answering. Do not launch, inspect, or modify the KnotQ desktop app directly. KnotQ is the user's planning workspace: hierarchical documents \
+        "instructions": "Use KnotQ's tools for workspace questions and edits; do not open or \
+                         inspect the desktop app directly. KnotQ is the user's planning workspace: hierarchical documents \
                          (schemes) of lines (items), where a line can carry dates, a repeat \
                          rule, a priority and a completion state. Call list_schemes first to \
                          learn ids; ids are opaque, so pass them back exactly as given. Use \
