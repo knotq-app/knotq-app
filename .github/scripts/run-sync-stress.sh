@@ -39,6 +39,13 @@ if [ ! -d "${BACKEND_DIR}" ]; then
   exit 1
 fi
 
+# Compile the test binaries BEFORE starting wrangler dev. rustc + the linker peak
+# at several GB; on a 2-vCPU / 7 GB CI runner that memory spike gets `workerd`
+# OOM-killed while it sits idle waiting, and every test then fails instantly
+# against a dead backend.
+echo "run-sync-stress: pre-building test binaries…"
+cargo test -p knotq-sync --test backend_integration --test ws_integration --no-run
+
 WRANGLER_PID=""
 cleanup() {
   if [ -n "${WRANGLER_PID}" ]; then
