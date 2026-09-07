@@ -24,6 +24,22 @@ impl<T: Styled> SettingsRowStyle for T {
 /// The stacked title + muted detail column shared by the calendar/account/action
 /// rows. Same type sizes and colors in every caller.
 pub(super) fn title_detail_column(title: String, detail: String, t: UiTheme) -> gpui::AnyElement {
+    if detail.is_empty() {
+        return div()
+            .min_w_0()
+            .h(px(30.0))
+            .flex()
+            .items_center()
+            .child(
+                div()
+                    .text_size(px(11.0))
+                    .line_height(px(16.0))
+                    .font_weight(gpui::FontWeight::SEMIBOLD)
+                    .text_color(token_hsla(t.text_primary))
+                    .child(title),
+            )
+            .into_any_element();
+    }
     div()
         .min_w_0()
         .h(px(30.0))
