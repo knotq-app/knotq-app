@@ -99,6 +99,37 @@ fn weekly_recurrence_keeps_local_weekday_for_late_evening_events() {
 }
 
 #[test]
+fn weekly_recurrence_keeps_local_weekday_when_timezone_is_ahead_of_utc() {
+    let local_anchor = Local
+        .with_ymd_and_hms(2026, 1, 5, 1, 0, 0)
+        .single()
+        .expect("test date must be representable in the local timezone");
+    assert_eq!(local_anchor.weekday(), Weekday::Mon);
+    let anchor = local_anchor.with_timezone(&Utc);
+    let item = Item::new("early morning class")
+        .with_start(anchor)
+        .with_repeats(CalendarRecurrence {
+            rrules: vec!["FREQ=WEEKLY;BYDAY=MO;COUNT=2".to_string()],
+            ..Default::default()
+        });
+
+    let occurrences = expand_item(
+        &item,
+        DateRange {
+            start: anchor,
+            end: anchor + Duration::weeks(2),
+        },
+    );
+
+    assert_eq!(occurrences.len(), 2);
+    for occurrence in occurrences {
+        let local = occurrence.start.unwrap().with_timezone(&Local);
+        assert_eq!(local.weekday(), Weekday::Mon);
+        assert_eq!(local.hour(), 1);
+    }
+}
+
+#[test]
 fn weekly_recurrence_keeps_all_selected_local_weekdays() {
     let local_anchor = Local
         .with_ymd_and_hms(2026, 1, 5, 21, 0, 0)
