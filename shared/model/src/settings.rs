@@ -384,6 +384,13 @@ pub struct NotificationLeadTimes {
 pub const DEFAULT_EVENT_NOTIFICATION_OFFSET_SECS: i64 = 10 * 60;
 pub const DEFAULT_ASSIGNMENT_NOTIFICATION_OFFSET_SECS: i64 = 2 * 60 * 60;
 
+/// How long an event with no explicit end time is treated as lasting, for the
+/// purpose of expiring its notification. A timed event entered without an end
+/// ("Dentist 3pm") still needs a definite moment past which showing it is
+/// pointless — otherwise its delivered banner lingers in Notification Center
+/// (iOS has no per-notification TTL) until the user swipes it away.
+pub const DEFAULT_EVENT_DURATION_SECS: i64 = 60 * 60;
+
 fn default_event_notification_offset_secs() -> i64 {
     DEFAULT_EVENT_NOTIFICATION_OFFSET_SECS
 }
