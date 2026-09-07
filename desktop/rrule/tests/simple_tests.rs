@@ -1,4 +1,4 @@
-use chrono::{Duration, TimeZone, Utc};
+use chrono::{Datelike, Duration, Local, TimeZone, Timelike, Utc, Weekday};
 use knotq_date_util::DateRange;
 use knotq_model::{CalendarRecurrence, Item};
 use knotq_rrule::{expand_item, OccurrenceExpander};
@@ -67,4 +67,33 @@ fn prev_before_only_searches_recent_occurrences() {
     assert!(knotq_rrule::DefaultExpander
         .prev_before(&item, before)
         .is_none());
+}
+
+#[test]
+fn weekly_recurrence_keeps_local_weekday_for_late_evening_events() {
+    let local_anchor = Local
+        .with_ymd_and_hms(2026, 1, 5, 21, 0, 0)
+        .single()
+        .expect("test date must be representable in the local timezone");
+    assert_eq!(local_anchor.weekday(), Weekday::Mon);
+    let anchor = local_anchor.with_timezone(&Utc);
+    let item = Item::new("evening class")
+        .with_start(anchor)
+        .with_repeats(CalendarRecurrence {
+            rrules: vec!["FREQ=WEEKLY;BYDAY=MO;COUNT=2".to_string()],
+            ..Default::default()
+        });
+    let range = DateRange {
+        start: anchor,
+        end: anchor + Duration::weeks(2),
+    };
+
+    let occurrences = expand_item(&item, range);
+
+    assert_eq!(occurrences.len(), 2);
+    for occurrence in occurrences {
+        let local = occurrence.start.unwrap().with_timezone(&Local);
+        assert_eq!(local.weekday(), Weekday::Mon);
+        assert_eq!(local.hour(), 21);
+    }
 }
