@@ -50,7 +50,9 @@ runs:
 
     - uses: actions/setup-node@v4
       with:
-        node-version: 20
+        # backend/cloudflare requires Node >=22 (package.json engines; its pnpm
+        # and the vitest runner use node:sqlite).
+        node-version: 22
         cache: pnpm
         cache-dependency-path: backend/cloudflare/pnpm-lock.yaml
 
