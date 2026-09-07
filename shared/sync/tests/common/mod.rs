@@ -62,6 +62,7 @@ use knotq_sync::{
 };
 use uuid::Uuid;
 use yrs::updates::decoder::Decode;
+use yrs::updates::encoder::Encode;
 use yrs::{Doc, ReadTxn, StateVector, Transact, Update};
 
 use summaries::{

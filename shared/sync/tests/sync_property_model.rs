@@ -86,6 +86,13 @@ struct World {
     /// `enable_undo`: enabling it unconditionally would shift every existing
     /// seed's operation sequence, including the named regression seeds.
     enable_restart: bool,
+    /// When set, `step` may run the server's at-rest compaction sweep between
+    /// syncs (transcode every stored `state_v1` v1->v2->v1 without bumping seq).
+    /// Gated like the others so existing seeds keep their RNG sequence. The
+    /// wedge this guards against: a compaction that is not state-vector-
+    /// preserving makes every device that pulled before the sweep fail the pull
+    /// integrity check forever.
+    enable_compaction: bool,
 }
 
 /// Ops in `edit_op` that mutate a scheme's item list (so an undo can revert it).
@@ -130,6 +137,7 @@ impl World {
             trace: std::env::var("KNOTQ_FUZZ_TRACE").is_ok(),
             enable_undo: false,
             enable_restart: false,
+            enable_compaction: false,
         }
     }
 
@@ -408,7 +416,14 @@ impl World {
         self.step_no += 1;
         let i = self.rng.below(self.devices.len() as u64) as usize;
         let roll = self.rng.below(100);
-        if self.enable_restart && roll < 6 {
+        if self.enable_compaction && roll < 4 {
+            // The server's nightly at-rest compaction sweep runs on this
+            // account. Devices that already pulled must not be forced into a
+            // permanent re-pull afterwards.
+            let account = self.devices[i].account;
+            self.accounts[account].server.run_compaction();
+            self.log(&format!("acct{account} SERVER COMPACTION SWEEP"));
+        } else if self.enable_restart && roll < 6 {
             self.restart_op(i);
         } else if roll < 25 {
             self.log(&format!("dev{i} acct{} SYNC", self.devices[i].account));
@@ -555,6 +570,60 @@ fn run_seed_restart(seed: u64, num_accounts: usize, num_devices: usize, steps: u
     world.assert_invariants(seed);
 }
 
+/// The server periodically runs its at-rest compaction sweep (v1->v2->v1
+/// transcode + re-encode of every stored document, seq unchanged) while devices
+/// keep editing and syncing. Guards against a compaction that is not
+/// state-vector-preserving, which would wedge every device that pulled a
+/// document before the sweep on the pull integrity check forever.
+fn run_seed_compaction(seed: u64, num_accounts: usize, num_devices: usize, steps: usize) {
+    let mut world = World::new(seed, num_accounts, num_devices);
+    world.enable_compaction = true;
+    world.enable_restart = true;
+    for _ in 0..steps {
+        world.step();
+    }
+    // A final sweep after all edits, so the very last state each device holds is
+    // also checked against a freshly-compacted server.
+    for account in 0..world.accounts.len() {
+        world.accounts[account].server.run_compaction();
+    }
+    world.settle();
+    world.assert_invariants(seed);
+
+    // A caught-up device must not be told to re-pull anything by the pull
+    // integrity check. A non-zero count `settle` could not clear is the "stuck
+    // on Resyncing" livelock — most plausibly a server rewrite (compaction) that
+    // changed a document's state vector out from under a device that had already
+    // pulled it.
+    for account in 0..world.accounts.len() {
+        let idxs = world.devices_on(account);
+        let Some(&first) = idxs.first() else { continue };
+        world.accounts[account].server.run_compaction();
+        let _ = world.devices[first]
+            .dev
+            .try_sync(&world.accounts[account].server);
+        // The compaction-specific invariant: for every document the caught-up
+        // device DID hold and submit a vector for, the server's re-derived
+        // vector must match. A disagreement here means the v1->v2->v1 transcode
+        // (or the re-encode) changed a document's state vector, which would wedge
+        // that device on the pull integrity check forever.
+        //
+        // A *missing* vector (`last_integrity_mismatch_count` > its disagreement
+        // subset) is a different problem — the server tracks a document the
+        // client cannot materialize (an orphaned `scheme_sync` binding). That is
+        // covered separately; it is not caused by compaction.
+        assert_eq!(
+            world.accounts[account]
+                .server
+                .last_integrity_vector_disagreement_count(),
+            0,
+            "seed {seed}: account {account}: a caught-up device's state vector disagrees with \
+             the server's re-derived one after compaction — the compaction sweep is not \
+             state-vector-preserving, which wedges that device on the pull integrity check"
+        );
+    }
+}
+
 fn run_seed_undo(seed: u64, num_accounts: usize, num_devices: usize, steps: usize) {
     let mut world = World::new(seed, num_accounts, num_devices);
     world.enable_undo = true;
@@ -681,6 +750,20 @@ fn undo_redo_fuzz_converges() {
     let steps = env_usize("KNOTQ_FUZZ_STEPS", 160);
     for seed in 0..seeds {
         run_seed_undo(seed.wrapping_add(13), 3, 4, steps);
+    }
+}
+
+/// At-rest compaction fuzz: the server rewrites every stored document (v1->v2->v1
+/// transcode + materialized re-encode, seq unchanged) while devices edit, sync,
+/// and restart. Asserts convergence AND that a caught-up device is never left
+/// re-pulling by the pull integrity check — i.e. the compaction is
+/// state-vector-preserving in every interleaving.
+#[test]
+fn compaction_sweep_fuzz_converges() {
+    let seeds = env_usize("KNOTQ_FUZZ_SEEDS", 24) as u64;
+    let steps = env_usize("KNOTQ_FUZZ_STEPS", 160);
+    for seed in 0..seeds {
+        run_seed_compaction(seed.wrapping_add(101), 2, 4, steps);
     }
 }
 

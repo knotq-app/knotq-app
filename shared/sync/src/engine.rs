@@ -141,7 +141,41 @@ pub fn batch_pull_and_apply(
     // the otherwise-undetectable case where persisted CRDT bytes were damaged
     // while their sequence cursors still equal the server's heads.
     let mut integrity_check_pending = true;
+    // Hard backstop against a pull loop that cannot make progress (e.g. a
+    // document that never materializes, so its cursor keeps getting reset). One
+    // page per document plus the deferred integrity re-check is a handful of
+    // iterations even for a workspace at the document cap; anything beyond this
+    // is a bug. We `break` (not error) so the workspace and cursors advanced so
+    // far are still persisted by the caller.
+    const MAX_PULL_LOOP_ITERATIONS: u32 = 32;
+    // Per-document budget for the re-convergence cursor reset below. A document
+    // that legitimately needs a re-pull (its index entry arrived before its
+    // content) converges in one. A document that comes back down and still fails
+    // to materialize is a materialization bug, not a transport gap — re-pulling
+    // it forever is what wedged every client. After this many resets in one
+    // call we leave its cursor advanced and move on; the next full `sync_once`
+    // starts the budget over.
+    const MAX_CURSOR_RESETS_PER_DOCUMENT: u32 = 3;
+    let mut cursor_reset_counts: HashMap<DocumentId, u32> = HashMap::new();
+    // Documents that came down in a response during THIS call. If such a
+    // document is still not a live local CRDT doc after we applied its full
+    // state, re-pulling it cannot help — that is a materialization bug (bug B),
+    // not a transport gap. Resetting its cursor anyway is what turned the pull
+    // loop, and then the whole `sync_once` poll, into a livelock. We leave its
+    // cursor where `mark_pulled` advanced it so the server stops re-sending it,
+    // and surface it as a skipped document.
+    let mut pulled_this_call: HashSet<DocumentId> = HashSet::new();
+    let mut pull_loop_iteration = 0u32;
     loop {
+        pull_loop_iteration += 1;
+        if pull_loop_iteration > MAX_PULL_LOOP_ITERATIONS {
+            eprintln!(
+                "knotq sync: batch_pull_and_apply hit the {MAX_PULL_LOOP_ITERATIONS}-iteration \
+                 cap; stopping the pull loop with partial progress (a document is failing to \
+                 materialize — see the reset_pull_cursor lines above)"
+            );
+            break;
+        }
         let request = BatchPullRequest {
             replica_id,
             cursors: local_state
@@ -166,8 +200,24 @@ pub fn batch_pull_and_apply(
         let response = transport.pull(&request)?;
         if let Some(mismatches) = &response.integrity_mismatches {
             integrity_check_pending = false;
-            if !mismatches.is_empty() {
-                for document in mismatches {
+            // The server flags a document as a mismatch whenever the client did
+            // not submit a state vector for it — and the client deliberately
+            // omits vectors for *deferred* documents (off-window Daily Queue
+            // days it owns as undecoded bytes: `state_vectors_v1` skips them so
+            // the first pull of a session need not decode the user's whole
+            // history). Those are not damaged and re-pulling them is a livelock:
+            // the client re-applies the bytes, re-defers them, sends no vector
+            // again, and the next integrity check flags them again. Only reset
+            // the cursor for a mismatched document the client does NOT already
+            // own in some form — those are the ones a re-pull can actually fix.
+            let owned = crdt_docs.known_document_ids();
+            let actionable: Vec<DocumentId> = mismatches
+                .iter()
+                .copied()
+                .filter(|document| !owned.contains(document))
+                .collect();
+            if !actionable.is_empty() {
+                for document in &actionable {
                     local_state.reset_pull_cursor(*document);
                 }
                 // The backend has identified the exact bad documents. Fetch
@@ -301,6 +351,7 @@ pub fn batch_pull_and_apply(
             .collect();
 
         for doc in &response.documents {
+            pulled_this_call.insert(doc.document);
             // Always advance the cursor — including for skipped documents.
             // Advancing past a failed document is safe because the merged-state
             // protocol re-delivers the *full* merged state whenever the server
@@ -321,37 +372,77 @@ pub fn batch_pull_and_apply(
 
         // Re-convergence: after applying workspace updates, any scheme that is
         // now in the workspace index but whose local CRDT doc is missing (or was
-        // in this pull's skipped set) needs its pull cursor reset to 0 so the
-        // next poll fetches its full merged state from sequence zero. This is
-        // safe — we only reset, we never loop within this call — and ensures
-        // that an orphan-then-index-added sequence eventually converges.
-        // Include failed epoch adoptions as well as ordinary merge errors. An
-        // adoption failure used to be logged but absent from
-        // `errored_document_ids`, leaving its cursor advanced until somebody
-        // happened to edit that scheme again.
+        // in this pull's skipped set) needs its pull cursor reset so the next
+        // poll fetches its full merged state from sequence zero. This converges
+        // an orphan-then-index-added sequence.
+        //
+        // The reset is budgeted PER DOCUMENT (`MAX_CURSOR_RESETS_PER_DOCUMENT`).
+        // Without a budget this loop is unbounded: a document that comes back
+        // down every page and still fails to materialize gets its cursor reset,
+        // is re-pulled, still fails, is reset again — forever, re-cloning and
+        // re-applying the whole workspace each pass. That is the "stuck on
+        // Resyncing" wedge. After the budget is spent we leave the cursor where
+        // `mark_pulled` advanced it and move on; a later `sync_once` (or a fix
+        // to whatever is dropping the document) retries from a clean budget.
         let skipped_document_ids: std::collections::HashSet<DocumentId> =
             all_skipped.iter().map(|skipped| skipped.document).collect();
         let local_crdt_doc_ids = crdt_docs.known_document_ids();
+        let mut materialization_gaps: Vec<(DocumentId, SyncDocumentKind)> = Vec::new();
         for (scheme_id, meta) in &workspace.scheme_sync {
             if meta.kind != SyncDocumentKind::Scheme {
                 continue;
             }
             let missing_locally = !local_crdt_doc_ids.contains(&meta.id);
             let was_skipped = skipped_document_ids.contains(&meta.id);
-            if missing_locally || was_skipped {
-                // Reset so the next poll re-pulls from seq 0 for this document.
-                local_state.reset_pull_cursor(meta.id);
+            if !(missing_locally || was_skipped) {
+                continue;
             }
+            let ever_pulled = local_state
+                .document_cursors
+                .get(&meta.id)
+                .is_some_and(|cursor| cursor.last_pulled_sequence > 0);
+            if pulled_this_call.contains(&meta.id) || ever_pulled {
+                // Its full state has already come down (this call, or an earlier
+                // sync — its cursor is advanced) and it is still not a live local
+                // document. That is a workspace-index inconsistency (the index
+                // binds the scheme in `scheme_sync` but never materializes a node
+                // for it), not a transport gap. Re-pulling cannot fix it and
+                // resetting the cursor to 0 makes the server resend it every
+                // pull — the "stuck on Resyncing" livelock. Leave the cursor
+                // advanced so the server stops resending it, and record the gap.
+                materialization_gaps.push((meta.id, meta.kind));
+                continue;
+            }
+            let count = cursor_reset_counts.entry(meta.id).or_insert(0);
+            if *count >= MAX_CURSOR_RESETS_PER_DOCUMENT {
+                continue;
+            }
+            *count += 1;
+            local_state.reset_pull_cursor(meta.id);
             let _ = scheme_id; // used via meta
+        }
+        for (document, kind) in materialization_gaps.drain(..) {
+            if skipped_document_ids.contains(&document) {
+                continue;
+            }
+            all_skipped.push(SkippedDocument {
+                document,
+                kind,
+                unknown_scheme_document: false,
+                reason: "pulled but did not materialize into a local CRDT document".to_string(),
+            });
         }
 
         if !response.has_more {
             // A new server defers an integrity proof while it returns changed
             // documents, because the vectors in this request necessarily
-            // describe the pre-merge local state. Re-run once after applying
-            // the page. Older servers omit the flag, so remain compatible and
-            // do not gain an extra round trip.
+            // describe the pre-merge local state. Re-run the check ONCE after
+            // applying the page — clearing `integrity_check_pending` here makes
+            // it a one-shot, so a document that keeps coming back cannot keep
+            // this deferred re-check alive and spin the loop. Older servers omit
+            // the flag and are unaffected.
             if integrity_check_pending && response.integrity_check_deferred {
+                integrity_check_pending = false;
                 continue;
             }
             break;

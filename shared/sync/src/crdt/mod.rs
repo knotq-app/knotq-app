@@ -1296,8 +1296,43 @@ impl WorkspaceCrdtDocuments {
         // live document for it re-queues a schema-less delta the server rejects
         // forever (`crdt_schema_invalid`), and `heal_schema_invalid_documents`
         // cannot fix it because the scheme is absent from `workspace.schemes`.
-        self.schemes
-            .retain(|id, _| outcome.workspace.schemes.contains_key(id));
+        //
+        // A live document for a scheme that IS still bound in the index but is
+        // not currently materialized (an off-window Daily Queue day: the mobile
+        // loader keeps only the visible window live) must NOT just be dropped —
+        // it just came down from the server with a full, valid snapshot, and if
+        // it is discarded here it is absent from `known_document_ids`, so every
+        // subsequent caught-up pull re-fetches and re-applies it forever (the
+        // "materialization gap" re-pull loop). Demote it to `deferred` instead —
+        // undecoded bytes, exactly as the load path does — so its state
+        // survives without a live Yjs document and without being pushed.
+        let mut demote_to_deferred: Vec<(SchemeId, DeferredSchemeDocument)> = Vec::new();
+        self.schemes.retain(|id, doc| {
+            if outcome.workspace.schemes.contains_key(id) {
+                return true;
+            }
+            let bound = outcome
+                .workspace
+                .scheme_sync
+                .get(id)
+                .is_some_and(|meta| meta.kind == SyncDocumentKind::Scheme);
+            if bound {
+                let state_v1 = doc.encode_state_shared_v1();
+                if !update_v1_is_empty(state_v1.as_ref()) {
+                    demote_to_deferred.push((
+                        *id,
+                        DeferredSchemeDocument {
+                            document: doc.id,
+                            state_v1,
+                        },
+                    ));
+                }
+            }
+            false
+        });
+        for (scheme_id, deferred) in demote_to_deferred {
+            self.deferred.insert(scheme_id, deferred);
+        }
         // A *deferred* document is different: it is never materialized into the
         // UI workspace by design, is never pushed as a delta (an edit hydrates
         // it first), and its persisted bytes are already a valid full snapshot.
