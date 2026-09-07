@@ -26,6 +26,14 @@ PERSIST=".wrangler/integration-test-state"
 RUN_FUZZ=0
 [ "${1:-}" = "--fuzz" ] && RUN_FUZZ=1
 
+# The scenario suites all hammer one `wrangler dev` instance. On a small CI
+# runner (2 vCPU) the default one-thread-per-core fan-out overwhelms workerd and
+# it drops connections mid-request; cap concurrency there. Empty locally =
+# cargo's default.
+TEST_THREADS="${KNOTQ_STRESS_TEST_THREADS:-}"
+THREAD_ARG=""
+[ -n "${TEST_THREADS}" ] && THREAD_ARG="--test-threads=${TEST_THREADS}"
+
 if [ ! -d "${BACKEND_DIR}" ]; then
   echo "run-sync-stress: ${BACKEND_DIR} not found — check out knotq-app/backend there." >&2
   exit 1
@@ -63,13 +71,13 @@ export KNOTQ_SYNC_BACKEND_URL="${BACKEND_URL}"
 
 echo ""
 echo "run-sync-stress: HTTP scenario suite…"
-cargo test -p knotq-sync --test backend_integration -- --nocapture
+cargo test -p knotq-sync --test backend_integration -- --nocapture ${THREAD_ARG}
 
 echo ""
 echo "run-sync-stress: WebSocket scenario suite…"
 # The fixed scenarios (2-device convergence, presence, changed-broadcast,
 # account switch, g/g2/e/f/m2). The randomized/fuzz tests run below.
-cargo test -p knotq-sync --test ws_integration -- --nocapture \
+cargo test -p knotq-sync --test ws_integration -- --nocapture ${THREAD_ARG} \
   --skip _fuzz --skip hopping
 
 echo ""
@@ -80,7 +88,7 @@ KNOTQ_WS_FUZZ_SEEDS="${KNOTQ_WS_FUZZ_SEEDS:-$([ "${RUN_FUZZ}" -eq 1 ] && echo 8 
 KNOTQ_WS_FUZZ_STEPS="${KNOTQ_WS_FUZZ_STEPS:-$([ "${RUN_FUZZ}" -eq 1 ] && echo 60 || echo 30)}" \
 KNOTQ_WS_HOP_SEEDS="${KNOTQ_WS_HOP_SEEDS:-$([ "${RUN_FUZZ}" -eq 1 ] && echo 3 || echo 1)}" \
 KNOTQ_WS_HOP_STEPS="${KNOTQ_WS_HOP_STEPS:-$([ "${RUN_FUZZ}" -eq 1 ] && echo 24 || echo 16)}" \
-  cargo test -p knotq-sync --test ws_integration -- --nocapture \
+  cargo test -p knotq-sync --test ws_integration -- --nocapture ${THREAD_ARG} \
     ws_scenario_l_randomized_fuzz \
     ws_scenario_l_randomized_fuzz_mixed_transport \
     ws_account_hopping_fuzz_converges

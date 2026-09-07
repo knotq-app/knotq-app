@@ -75,6 +75,10 @@ runs:
         KNOTQ_WS_FUZZ_STEPS: ${{ inputs.ws-fuzz-steps }}
         KNOTQ_WS_HOP_SEEDS: ${{ inputs.ws-hop-seeds }}
         KNOTQ_WS_HOP_STEPS: ${{ inputs.ws-hop-steps }}
+        # A GitHub runner is 2 vCPU; the default one-thread-per-core scenario
+        # fan-out crashes the single `wrangler dev` workerd mid-run. Serialize
+        # the scenario suites against it (the fuzz depth is the real work).
+        KNOTQ_STRESS_TEST_THREADS: "2"
       # Starts `wrangler dev` (test mode, isolated state), runs the Rust HTTP +
       # WebSocket integration/fuzz suites against it, tears it down. The same
       # script a developer runs locally.
