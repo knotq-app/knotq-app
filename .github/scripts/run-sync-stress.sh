@@ -46,6 +46,22 @@ fi
 echo "run-sync-stress: pre-building test binaries…"
 cargo test -p knotq-sync --test backend_integration --test ws_integration --no-run
 
+# `wrangler dev` auto-loads `.dev.vars` for local secrets. A developer already
+# has one (gitignored) — leave it untouched. A fresh CI checkout has none, so
+# without this the PASETO signer has no key and every `/__test/bootstrap`
+# returns 500; write a throwaway one (same test values as the vitest suite) and
+# remove it on exit. Never touches an existing file.
+DEV_VARS="${BACKEND_DIR}/.dev.vars"
+WROTE_DEV_VARS=0
+if [ ! -f "${DEV_VARS}" ]; then
+  cat > "${DEV_VARS}" <<'DEV_VARS_EOF'
+PASETO_LOCAL_KEY=k4.local.Cu1j1l3ySqVlVF5_DPNsB71Ra_sKFH9RSVMw9GQ2VaM
+EXPOSE_EMAIL_TOKENS=1
+ALLOWED_ORIGINS=*
+DEV_VARS_EOF
+  WROTE_DEV_VARS=1
+fi
+
 WRANGLER_PID=""
 cleanup() {
   if [ -n "${WRANGLER_PID}" ]; then
@@ -53,6 +69,7 @@ cleanup() {
     for _ in 1 2 3 4 5; do kill -0 "${WRANGLER_PID}" 2>/dev/null || break; sleep 1; done
     kill -9 "${WRANGLER_PID}" 2>/dev/null || true
   fi
+  [ "${WROTE_DEV_VARS}" -eq 1 ] && rm -f "${DEV_VARS}"
 }
 trap cleanup EXIT INT TERM
 
