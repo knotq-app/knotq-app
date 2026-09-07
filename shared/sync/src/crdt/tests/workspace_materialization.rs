@@ -3,7 +3,50 @@ use super::super::*;
 
 use super::helpers::{add_root_folder, add_root_scheme, stored_updates};
 use chrono::NaiveDate;
-use knotq_model::{Item, NodeRef};
+use knotq_model::{daily_queue_scheme_id, Item, NodeRef, ReplicaId, DAILY_QUEUE_COLOR_INDEX};
+
+#[test]
+fn restore_and_materialization_include_lazy_daily_queue_documents() {
+    let date = NaiveDate::from_ymd_opt(2026, 9, 1).unwrap();
+    let daily_id = daily_queue_scheme_id(date);
+    let mut workspace = Workspace::new();
+    let mut daily = Scheme::new(
+        format!("Daily {}", date.format("%Y-%m-%d")),
+        DAILY_QUEUE_COLOR_INDEX,
+    );
+    daily.id = daily_id;
+    daily
+        .items
+        .push(Item::new("persisted outside the launch window"));
+    workspace.daily_queue.insert(date, daily_id);
+    workspace.schemes.insert(daily_id, daily);
+    workspace.ensure_sync_metadata();
+
+    let document = workspace.scheme_sync[&daily_id].id;
+    let states = WorkspaceCrdtDocuments::try_new(&workspace)
+        .unwrap()
+        .document_states();
+
+    // This is precisely the mobile cold-open shape: the daily index and its sync
+    // binding survive, while its scheme body is deferred until the viewed range
+    // reaches that date.
+    let mut lazy_loaded = workspace.clone();
+    lazy_loaded.schemes.remove(&daily_id);
+    let restored =
+        WorkspaceCrdtDocuments::from_states(&lazy_loaded, ReplicaId::new(), &states).unwrap();
+
+    assert!(
+        restored.document_states().contains_key(&document),
+        "a lazy daily scheme must retain its persisted CRDT document"
+    );
+    let repaired = restored
+        .materialized_workspace_for_diagnostics(&lazy_loaded)
+        .unwrap();
+    assert_eq!(
+        repaired.schemes[&daily_id].items[0].text(),
+        "persisted outside the launch window"
+    );
+}
 
 #[test]
 fn workspace_crdt_documents_emit_scheme_updates_for_touched_schemes() {

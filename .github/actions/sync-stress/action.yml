@@ -1,0 +1,79 @@
+name: Sync stress test
+description: >
+  The full sync-convergence gate. Runs the model-based property fuzzer at depth
+  (in-memory, backend-faithful merge) AND the HTTP + WebSocket scenario/fuzz
+  suites against a REAL Cloudflare Worker running under `wrangler dev`. Both the
+  desktop release and any backend deploy depend on this passing — see
+  AGENTS.md / CLAUDE.md.
+
+inputs:
+  fuzz-seeds:
+    description: Seeds for the in-memory property fuzzer.
+    default: "300"
+  fuzz-steps:
+    description: Operations per seed for the in-memory property fuzzer.
+    default: "400"
+  ws-fuzz-seeds:
+    description: Seeds for the WebSocket-over-wrangler randomized fuzz.
+    default: "4"
+  ws-fuzz-steps:
+    description: Operations per seed for the WebSocket fuzz.
+    default: "40"
+  ws-hop-seeds:
+    description: Seeds for the account-hopping-over-WebSocket fuzz (the slowest).
+    default: "2"
+  ws-hop-steps:
+    description: Operations per seed for the account-hopping fuzz.
+    default: "20"
+  backend-repo-token:
+    description: >
+      A token with read access to knotq-app/backend (the backend lives in a
+      separate repo). A fine-grained PAT or GitHub App token; the default
+      GITHUB_TOKEN is scoped to the current repo and will NOT work.
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - uses: ./.github/actions/linux-deps
+
+    - name: Checkout backend (separate repo)
+      uses: actions/checkout@v6
+      with:
+        repository: knotq-app/backend
+        path: backend
+        token: ${{ inputs.backend-repo-token }}
+
+    - uses: pnpm/action-setup@v4
+      with:
+        package_json_file: backend/cloudflare/package.json
+
+    - uses: actions/setup-node@v4
+      with:
+        node-version: 20
+        cache: pnpm
+        cache-dependency-path: backend/cloudflare/pnpm-lock.yaml
+
+    - name: Install backend dependencies
+      shell: bash
+      working-directory: backend/cloudflare
+      run: pnpm install --frozen-lockfile
+
+    - name: Model-based property fuzzer (deep, in-memory)
+      shell: bash
+      env:
+        KNOTQ_FUZZ_SEEDS: ${{ inputs.fuzz-seeds }}
+        KNOTQ_FUZZ_STEPS: ${{ inputs.fuzz-steps }}
+      run: cargo test -p knotq-sync --test sync_property_model --release -- --nocapture
+
+    - name: Backend-driven HTTP + WebSocket scenario / fuzz suites
+      shell: bash
+      env:
+        KNOTQ_WS_FUZZ_SEEDS: ${{ inputs.ws-fuzz-seeds }}
+        KNOTQ_WS_FUZZ_STEPS: ${{ inputs.ws-fuzz-steps }}
+        KNOTQ_WS_HOP_SEEDS: ${{ inputs.ws-hop-seeds }}
+        KNOTQ_WS_HOP_STEPS: ${{ inputs.ws-hop-steps }}
+      # Starts `wrangler dev` (test mode, isolated state), runs the Rust HTTP +
+      # WebSocket integration/fuzz suites against it, tears it down. The same
+      # script a developer runs locally.
+      run: ./.github/scripts/run-sync-stress.sh --fuzz

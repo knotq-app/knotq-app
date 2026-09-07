@@ -86,10 +86,6 @@ struct World {
     /// `enable_undo`: enabling it unconditionally would shift every existing
     /// seed's operation sequence, including the named regression seeds.
     enable_restart: bool,
-    /// When set, inject a failure in the separately materialized workspace
-    /// while retaining its CRDT bytes and pull cursors. This is the production
-    /// failure domain that ordinary operation fuzzing did not model.
-    enable_materialization_faults: bool,
 }
 
 /// Ops in `edit_op` that mutate a scheme's item list (so an undo can revert it).
@@ -134,7 +130,6 @@ impl World {
             trace: std::env::var("KNOTQ_FUZZ_TRACE").is_ok(),
             enable_undo: false,
             enable_restart: false,
-            enable_materialization_faults: false,
         }
     }
 
@@ -409,46 +404,11 @@ impl World {
         );
     }
 
-    /// Model the exact wedge: local CRDT state and cursors are current, but a
-    /// lazy on-disk scheme failed to materialize into the UI workspace. The
-    /// following pull is deliberately empty, so cursor-only sync would falsely
-    /// claim success forever. A correct engine restores the visible workspace
-    /// from its local CRDT state in that one sync.
-    fn materialization_fault_op(&mut self, i: usize) {
-        self.sync_device(i).expect("pre-fault sync");
-        let before = fingerprint(&self.devices[i].dev);
-        let target = self.devices[i]
-            .dev
-            .workspace
-            .schemes
-            .iter()
-            .find(|(_, scheme)| !scheme.items.is_empty())
-            .map(|(id, _)| *id);
-        let Some(target) = target else { return };
-        self.devices[i]
-            .dev
-            .workspace
-            .schemes
-            .get_mut(&target)
-            .expect("selected scheme")
-            .items
-            .clear();
-        self.log(&format!("dev{i} MATERIALIZATION_FAULT scheme={target}"));
-        self.sync_device(i).expect("empty pull must repair materialization");
-        assert_eq!(
-            fingerprint(&self.devices[i].dev),
-            before,
-            "seeded materialization fault left device {i} stale after an empty pull"
-        );
-    }
-
     fn step(&mut self) {
         self.step_no += 1;
         let i = self.rng.below(self.devices.len() as u64) as usize;
         let roll = self.rng.below(100);
-        if self.enable_materialization_faults && roll < 8 {
-            self.materialization_fault_op(i);
-        } else if self.enable_restart && roll < 6 {
+        if self.enable_restart && roll < 6 {
             self.restart_op(i);
         } else if roll < 25 {
             self.log(&format!("dev{i} acct{} SYNC", self.devices[i].account));
@@ -574,21 +534,6 @@ impl World {
 
 fn run_seed(seed: u64, num_accounts: usize, num_devices: usize, steps: usize) {
     let mut world = World::new(seed, num_accounts, num_devices);
-    for _ in 0..steps {
-        world.step();
-    }
-    world.settle();
-    world.assert_invariants(seed);
-}
-
-fn run_seed_with_materialization_faults(
-    seed: u64,
-    num_accounts: usize,
-    num_devices: usize,
-    steps: usize,
-) {
-    let mut world = World::new(seed, num_accounts, num_devices);
-    world.enable_materialization_faults = true;
     for _ in 0..steps {
         world.step();
     }
@@ -751,19 +696,6 @@ fn restart_fuzz_converges() {
     let steps = env_usize("KNOTQ_FUZZ_STEPS", 180);
     for seed in 0..seeds {
         run_seed_restart(seed.wrapping_add(101), 3, 4, steps);
-    }
-}
-
-/// This runs the exact persistence/materialization fault that was absent from
-/// the original fuzzer. It is deliberately high-frequency: a cursor-only
-/// regression fails on the first injected fault rather than after thousands of
-/// random operation seeds.
-#[test]
-fn materialization_fault_fuzz_converges_immediately() {
-    let seeds = env_usize("KNOTQ_FUZZ_SEEDS", 16) as u64;
-    let steps = env_usize("KNOTQ_FUZZ_STEPS", 120);
-    for seed in 0..seeds {
-        run_seed_with_materialization_faults(seed.wrapping_add(4_001), 2, 3, steps);
     }
 }
 

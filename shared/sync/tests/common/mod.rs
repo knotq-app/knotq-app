@@ -32,6 +32,7 @@
 pub mod http_transport;
 pub mod rich_items;
 pub mod scenarios;
+pub mod ws_transport;
 
 mod harness;
 mod summaries;
@@ -81,12 +82,29 @@ pub struct DeviceKey(pub usize);
 // Backend abstraction
 // ---------------------------------------------------------------------------
 
-/// Distinguishes which backend the Harness is running against.  The HTTP variant
-/// holds one HttpClient per device (indexed by DeviceKey); they all share the same
-/// workspace but have independent bearer tokens.
+/// Distinguishes which backend the Harness is running against.
+///
+/// `Remote` covers the real Cloudflare Worker (`wrangler dev`): one `HttpClient`
+/// per device for pull/push/media, plus — when `ws` is `Some` — one persistent
+/// `WsClient` per device so pull/push run over the real WebSocket path instead
+/// (media and aux calls stay on HTTP, exactly as the desktop does).
 enum HarnessBackend {
     InMemory(TestServer),
-    Http(HashMap<DeviceKey, http_transport::HttpClient>),
+    Remote {
+        http: HashMap<DeviceKey, http_transport::HttpClient>,
+        ws: RemoteWsMode,
+    },
+}
+
+/// How pull/push reach the real backend on a `Remote` harness.
+enum RemoteWsMode {
+    /// Plain HTTP for every request.
+    HttpOnly,
+    /// The persistent WebSocket for every request.
+    WsOnly(HashMap<DeviceKey, std::sync::Arc<knotq_sync::ws::WsClient>>),
+    /// Alternate WS / HTTP per request (models `FallbackTransport` mid-cycle
+    /// socket drops).
+    Mixed(HashMap<DeviceKey, std::sync::Arc<knotq_sync::ws::WsClient>>),
 }
 
 pub const D0: DeviceKey = DeviceKey(0);

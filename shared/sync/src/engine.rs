@@ -360,18 +360,44 @@ pub fn batch_pull_and_apply(
     // A cursor proves that this replica received a server document version; it
     // does *not* prove that the separately-persisted, UI-facing `Workspace`
     // was successfully materialized from that CRDT state. In particular, an
-    // interrupted save or an unreadable lazy daily-queue file can leave the
-    // plain workspace stale while the CRDT state and cursor are both current.
-    // The server correctly returns an empty response in that case, which used
-    // to let both devices report "synced" while rendering different content.
+    // interrupted save can leave the plain workspace stale while the CRDT state
+    // and cursor are both current. The server correctly returns an empty
+    // response in that case, which used to let both devices report "synced"
+    // while rendering different content.
     //
     // Rebuild once after every pull, including an empty one. This is local-only
     // (no additional request, wake-up, or document download) and changes the
     // workspace only when the CRDT's authoritative materialization differs.
     // Count a repair as remote work so platform drivers durably save it before
     // they persist the already-advanced cursors.
+    //
+    // This uses the ordinary (not the exhaustive-diagnostic) materialization:
+    // it repairs the schemes this replica has decoded — ordinary schemes and
+    // the visible daily window — so a caught-up pull's cost tracks the
+    // visible/touched set rather than the total historical daily count. An
+    // off-window daily that failed to parse is repaired the moment the UI
+    // touches that date (which decodes its intact CRDT bytes), not here.
+    //
+    // A scheme whose content document has never synced (a daily just created
+    // locally, a scheme mid-bootstrap) may have an empty local CRDT document
+    // while its real content sits only in the plain workspace, waiting to be
+    // pushed. The repair must keep that content, not treat the empty document
+    // as authoritative — so only an empty CRDT document for an already-synced
+    // scheme is trusted here.
+    let synced_scheme_documents: HashSet<DocumentId> = local_state
+        .document_cursors
+        .values()
+        .filter(|cursor| cursor.last_pulled_sequence > 0 || cursor.last_pushed_sequence > 0)
+        .map(|cursor| cursor.document)
+        .collect();
+    let scheme_document_is_synced = |scheme_id: &knotq_model::SchemeId| {
+        workspace
+            .scheme_sync
+            .get(scheme_id)
+            .is_some_and(|meta| synced_scheme_documents.contains(&meta.id))
+    };
     let materialized = crdt_docs
-        .materialized_workspace_for_diagnostics(&workspace)
+        .materialized_workspace_repair(&workspace, &scheme_document_is_synced)
         .context("verify workspace materialization after sync pull")?;
     if materialized != workspace {
         workspace = materialized;

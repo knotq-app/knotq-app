@@ -1125,8 +1125,6 @@ pub(crate) fn insert_units(
     }
     Ok(())
 }
-
-
 /// Whether `KNOTQ_TYPING_TIMING=1` asked for shadow-miss reporting. A miss makes
 /// `replace_scheme` walk the whole scheme, so it is the difference between a
 /// reconcile that costs microseconds and one that costs tens of milliseconds.

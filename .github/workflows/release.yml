@@ -12,9 +12,36 @@ env:
   MACOSX_DEPLOYMENT_TARGET: "11.0"
 
 jobs:
+  # ── Mandatory pre-release gate ──────────────────────────────────────────────
+  # No signed artifact is built until the sync engine has survived the full
+  # convergence stress suite (deep in-memory property fuzz + HTTP + WebSocket
+  # scenario/fuzz against a real Cloudflare Worker). A sync regression that
+  # reverts users' edits or wedges a device must never reach a release.
+  # See AGENTS.md / CLAUDE.md — "Deployment gate".
+  sync-stress:
+    name: Sync stress gate
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        continue-on-error: true
+        with:
+          key: sync-stress
+      - name: Sync stress test (release depth)
+        uses: ./.github/actions/sync-stress
+        with:
+          # A release runs deeper than PR CI — this is the last line of defence.
+          fuzz-seeds: "800"
+          fuzz-steps: "400"
+          ws-fuzz-seeds: "8"
+          ws-fuzz-steps: "60"
+          backend-repo-token: ${{ secrets.BACKEND_REPO_TOKEN }}
+
   build-macos-arch:
     name: macOS build (${{ matrix.artifact }})
     runs-on: ${{ matrix.runner }}
+    needs: [sync-stress]
     strategy:
       fail-fast: false
       matrix:
@@ -57,7 +84,11 @@ jobs:
           KNOTQ_GOOGLE_OAUTH_CLIENT_SECRET: ${{ secrets.KNOTQ_GOOGLE_OAUTH_CLIENT_SECRET }}
 
       - name: Bundle app
-        run: cargo bundle --package knotq-app --release --target ${{ matrix.target }}
+        run: |
+          cargo bundle --package knotq-app --release --target ${{ matrix.target }}
+          cargo build --package knotq-mcp-bridge --release --target ${{ matrix.target }}
+          cp "target/${{ matrix.target }}/release/knotq-mcp" \
+            "target/${{ matrix.target }}/release/bundle/osx/KnotQ.app/Contents/MacOS/knotq-mcp"
         env:
           KNOTQ_GOOGLE_OAUTH_CLIENT_ID: ${{ secrets.KNOTQ_GOOGLE_OAUTH_CLIENT_ID }}
           KNOTQ_GOOGLE_OAUTH_CLIENT_SECRET: ${{ secrets.KNOTQ_GOOGLE_OAUTH_CLIENT_SECRET }}
@@ -194,6 +225,7 @@ jobs:
   build-windows:
     name: Windows
     runs-on: windows-latest
+    needs: [sync-stress]
     environment: release-signing
     permissions:
       contents: read
@@ -230,7 +262,7 @@ jobs:
           KNOTQ_GOOGLE_OAUTH_CLIENT_SECRET: ${{ secrets.KNOTQ_GOOGLE_OAUTH_CLIENT_SECRET }}
 
       - name: Build
-        run: cargo build --package knotq-app --release --target x86_64-pc-windows-msvc
+        run: cargo build --package knotq-app --package knotq-mcp-bridge --release --target x86_64-pc-windows-msvc
         env:
           KNOTQ_GOOGLE_OAUTH_CLIENT_ID: ${{ secrets.KNOTQ_GOOGLE_OAUTH_CLIENT_ID }}
           KNOTQ_GOOGLE_OAUTH_CLIENT_SECRET: ${{ secrets.KNOTQ_GOOGLE_OAUTH_CLIENT_SECRET }}
@@ -256,7 +288,9 @@ jobs:
           endpoint: ${{ secrets.AZURE_ARTIFACT_SIGNING_ENDPOINT }}
           signing-account-name: ${{ secrets.AZURE_ARTIFACT_SIGNING_ACCOUNT }}
           certificate-profile-name: ${{ secrets.AZURE_ARTIFACT_SIGNING_CERT_PROFILE }}
-          files: ${{ github.workspace }}\target\x86_64-pc-windows-msvc\release\knotq.exe
+          files: |
+            ${{ github.workspace }}\target\x86_64-pc-windows-msvc\release\knotq.exe
+            ${{ github.workspace }}\target\x86_64-pc-windows-msvc\release\knotq-mcp.exe
           file-digest: SHA256
           timestamp-rfc3161: http://timestamp.acs.microsoft.com
           timestamp-digest: SHA256
@@ -318,6 +352,7 @@ jobs:
   build-linux:
     name: Linux
     runs-on: ubuntu-24.04
+    needs: [sync-stress]
 
     steps:
       - uses: actions/checkout@v6
@@ -363,7 +398,7 @@ jobs:
           KNOTQ_GOOGLE_OAUTH_CLIENT_SECRET: ${{ secrets.KNOTQ_GOOGLE_OAUTH_CLIENT_SECRET }}
 
       - name: Build
-        run: cargo build --package knotq-app --release --target x86_64-unknown-linux-gnu
+        run: cargo build --package knotq-app --package knotq-mcp-bridge --release --target x86_64-unknown-linux-gnu
         env:
           KNOTQ_GOOGLE_OAUTH_CLIENT_ID: ${{ secrets.KNOTQ_GOOGLE_OAUTH_CLIENT_ID }}
           KNOTQ_GOOGLE_OAUTH_CLIENT_SECRET: ${{ secrets.KNOTQ_GOOGLE_OAUTH_CLIENT_SECRET }}
@@ -372,11 +407,12 @@ jobs:
         run: |
           mkdir -p dist/linux/stage/assets dist/linux
           cp target/x86_64-unknown-linux-gnu/release/knotq dist/linux/stage/knotq
+          cp target/x86_64-unknown-linux-gnu/release/knotq-mcp dist/linux/stage/knotq-mcp
           cp -R desktop/app/assets/. dist/linux/stage/assets/
           find dist/linux/stage/assets -name .DS_Store -delete
-          chmod +x dist/linux/stage/knotq
+          chmod +x dist/linux/stage/knotq dist/linux/stage/knotq-mcp
           tar czf "dist/linux/KnotQ-${{ steps.version.outputs.version }}-linux-x86_64.tar.gz" \
-            -C dist/linux/stage knotq assets
+            -C dist/linux/stage knotq knotq-mcp assets
 
       - name: Upload artifact
         uses: actions/upload-artifact@v6
