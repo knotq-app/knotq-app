@@ -27,6 +27,15 @@ struct ServerCounters {
     /// one-shot `reject_next_push` fault injection, so a test can assert that a clean
     /// account switch never pushes a bare delta in the first place.
     schema_invalid_rejections: usize,
+    /// Documents flagged by the most recent integrity-bearing pull (see the
+    /// `integrity_state_vectors` branch of `pull`).
+    last_integrity_mismatches: usize,
+    /// Subset of the above where the client DID submit a state vector but it did
+    /// not match the server's re-derived one — i.e. the stored bytes changed the
+    /// document's state vector out from under a device that had it. A missing
+    /// vector (an orphan binding the client cannot hold) is counted only in
+    /// `last_integrity_mismatches`, not here.
+    last_integrity_vector_disagreements: usize,
 }
 
 struct ServerDocument {
@@ -171,6 +180,57 @@ impl TestServer {
             .map(|doc| (doc.seq, doc.epoch))
     }
 
+    /// Server-side effect of the at-rest compaction sweep
+    /// (`runCrdtCompaction` in `backend/cloudflare/src/workspace_object/sync.ts`):
+    /// every stored `state_v1` is transcoded v1 -> v2 -> v1 (the real worker uses
+    /// `Y.convertUpdateFormat*`; the model uses the yrs equivalent) and the
+    /// materialized doc re-encoded, WITHOUT bumping `seq` or `epoch`.
+    ///
+    /// This is the exact shape of the "stuck on Resyncing" regression risk: if
+    /// the transcode/re-encode is not state-vector-preserving, a device that
+    /// last pulled a document before the sweep will fail the pull integrity
+    /// check forever. Callers should follow this with `settle()` and assert both
+    /// convergence and [`Self::last_integrity_mismatch_count`] == 0.
+    pub fn run_compaction(&self) {
+        let mut documents = self.documents.borrow_mut();
+        for doc in documents.values_mut() {
+            let Ok(update) = Update::decode_v1(&doc.state_v1) else {
+                continue;
+            };
+            // v1 -> v2 -> v1, then materialize + re-encode (mirrors the worker's
+            // transcode plus the fact that every stored state is a fresh
+            // `encodeStateAsUpdate`).
+            let v2 = update.encode_v2();
+            let Ok(back) = Update::decode_v2(&v2) else {
+                continue;
+            };
+            let rebuilt = Doc::new();
+            {
+                let mut txn = rebuilt.transact_mut();
+                if txn.apply_update(back).is_err() {
+                    continue;
+                }
+            }
+            doc.state_v1 = rebuilt.transact().encode_diff_v1(&StateVector::default());
+        }
+    }
+
+    /// The number of documents the last integrity-bearing pull flagged as
+    /// mismatched (see the `integrity_state_vectors` branch of [`Self::pull`]).
+    /// 0 once every device has reconciled; a value that never returns to 0 is
+    /// the permanent re-pull loop.
+    pub fn last_integrity_mismatch_count(&self) -> usize {
+        self.counters.borrow().last_integrity_mismatches
+    }
+
+    /// Documents where the client submitted a state vector that disagreed with
+    /// the server's re-derived one on the most recent integrity-bearing pull.
+    /// This is the compaction-not-SV-preserving signal, isolated from orphan
+    /// bindings (which show up only as a *missing* vector).
+    pub fn last_integrity_vector_disagreement_count(&self) -> usize {
+        self.counters.borrow().last_integrity_vector_disagreements
+    }
+
     /// Corrupt the personal workspace document on the server by replacing its
     /// CRDT state with garbage bytes.  Used to test that workspace-level
     /// corruption causes the pull to return Err.
@@ -188,7 +248,7 @@ impl SyncTransport for TestServer {
     fn pull(&self, request: &BatchPullRequest) -> anyhow::Result<BatchPullResponse> {
         self.counters.borrow_mut().pull_calls += 1;
         let documents = self.documents.borrow();
-        let pulled = documents
+        let pulled: Vec<PulledCrdtDocument> = documents
             .iter()
             .filter(|(id, doc)| doc.seq > request.cursors.get(*id).copied().unwrap_or(0))
             .map(|(id, doc)| PulledCrdtDocument {
@@ -200,10 +260,56 @@ impl SyncTransport for TestServer {
             })
             .collect();
         let known_documents = documents.iter().map(|(id, doc)| (*id, doc.seq)).collect();
+
+        // Mirror the backend's pull integrity check: only on a caught-up pull
+        // (nothing to return) that carries state-vector proofs, re-derive each
+        // stored document's state vector and compare it to what the client
+        // submitted. A document whose stored bytes no longer produce the vector
+        // the client holds — the exact failure a non-SV-preserving compaction
+        // sweep would cause — is flagged for re-pull.
+        let integrity_mismatches = if pulled.is_empty()
+            && !request.integrity_state_vectors.is_empty()
+        {
+            let submitted: HashMap<DocumentId, &[u8]> = request
+                .integrity_state_vectors
+                .iter()
+                .map(|entry| (entry.document, entry.state_vector_v1.as_slice()))
+                .collect();
+            let mut mismatched = Vec::new();
+            let mut disagreements = 0usize;
+            for (id, doc) in documents.iter() {
+                let expected = Update::decode_v1(&doc.state_v1).ok().map(|update| {
+                    let rebuilt = Doc::new();
+                    {
+                        let mut txn = rebuilt.transact_mut();
+                        let _ = txn.apply_update(update);
+                    }
+                    let sv = rebuilt.transact().state_vector().encode_v1();
+                    sv
+                });
+                match (submitted.get(id), expected) {
+                    (Some(client_sv), Some(server_sv)) if *client_sv == server_sv.as_slice() => {}
+                    (Some(_), _) => {
+                        disagreements += 1;
+                        mismatched.push(*id);
+                    }
+                    _ => mismatched.push(*id),
+                }
+            }
+            {
+                let mut counters = self.counters.borrow_mut();
+                counters.last_integrity_mismatches = mismatched.len();
+                counters.last_integrity_vector_disagreements = disagreements;
+            }
+            Some(mismatched)
+        } else {
+            None
+        };
+
         Ok(BatchPullResponse {
             documents: pulled,
             known_documents: Some(known_documents),
-            integrity_mismatches: None,
+            integrity_mismatches,
             integrity_check_deferred: false,
             notification_schedule_revision: 0,
             has_more: false,
