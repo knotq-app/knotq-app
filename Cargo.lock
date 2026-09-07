@@ -3140,6 +3140,7 @@ dependencies = [
  "knotq-editor",
  "knotq-index",
  "knotq-l10n",
+ "knotq-mcp",
  "knotq-model",
  "knotq-notifications",
  "knotq-rrule",
@@ -3152,6 +3153,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2",
+ "toml_edit 0.22.27",
  "tungstenite",
  "ureq",
  "urlencoding",
@@ -3253,6 +3255,30 @@ dependencies = [
 ]
 
 [[package]]
+name = "knotq-mcp"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "knotq-commands",
+ "knotq-date-util",
+ "knotq-index",
+ "knotq-model",
+ "serde",
+ "serde_json",
+ "thiserror 1.0.69",
+]
+
+[[package]]
+name = "knotq-mcp-bridge"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "knotq-storage-json",
+ "serde_json",
+ "ureq",
+]
+
+[[package]]
 name = "knotq-model"
 version = "0.1.0"
 dependencies = [
@@ -3351,6 +3377,9 @@ dependencies = [
  "anyhow",
  "base64",
  "chrono",
+ "knotq-commands",
+ "knotq-index",
+ "knotq-mcp",
  "knotq-model",
  "knotq-notifications",
  "serde",

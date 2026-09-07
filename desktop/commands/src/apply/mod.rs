@@ -15,7 +15,7 @@ pub fn apply(
     cmd: Command,
     origin: CommandOrigin,
 ) -> Result<CommandReceipt, CommandError> {
-    if origin == CommandOrigin::User {
+    if origin.enforces_user_invariants() {
         ensure_command_allowed_for_user(workspace, &cmd)?;
     }
     dispatch(workspace, cmd, origin)

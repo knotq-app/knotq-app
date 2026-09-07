@@ -31,12 +31,14 @@ uuid = { workspace = true }
 anyhow = { workspace = true }
 async-channel = "2.5.0"
 futures = "0.3"
+toml_edit = "0.22"
 webbrowser = { version = "1.2.4", features = ["hardened"] }
 knotq-auto-update = { workspace = true }
 knotq-commands = { workspace = true }
 knotq-date-util = { workspace = true }
 knotq-editor = { workspace = true }
 knotq-index = { workspace = true }
+knotq-mcp = { workspace = true }
 knotq-l10n = { workspace = true, features = ["system-locale"] }
 knotq-model = { workspace = true }
 knotq-rrule = { workspace = true }

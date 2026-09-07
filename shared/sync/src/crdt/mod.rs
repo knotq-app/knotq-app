@@ -328,6 +328,58 @@ impl WorkspaceCrdtApplyOutcome {
 pub struct WorkspaceCrdtDocuments {
     workspace: YrsJsonDocument,
     schemes: HashMap<SchemeId, YrsSchemeDocument>,
+    /// Persisted `state_v1` bytes for scheme documents that are bound in the
+    /// workspace index but not currently decoded into a live Yjs document.
+    ///
+    /// Mobile deliberately lazy-loads Daily Queue schemes outside the viewed
+    /// date range: their scheme files are left unparsed and their entries stay
+    /// out of the UI [`Workspace`]. Their sync bindings and their durable CRDT
+    /// bytes are still on disk, though. Decoding every historical daily into a
+    /// Yjs `Doc` at cold open (or re-deriving one on every caught-up pull) costs
+    /// time proportional to the user's entire history for no visible benefit, so
+    /// those bytes are held here verbatim instead.
+    ///
+    /// A deferred document is promoted into `schemes` (see
+    /// [`Self::hydrate_deferred`]) only when it is
+    ///   * about to be edited or re-synced locally,
+    ///   * the target of an incoming remote update, or
+    ///   * explicitly requested for parser recovery.
+    /// It is never dropped by a save and never pruned by activity on an
+    /// unrelated scheme, and its bytes round-trip byte-for-byte through
+    /// [`Self::document_states`], so no document is ever lost by deferring it.
+    deferred: HashMap<SchemeId, DeferredSchemeDocument>,
+}
+
+/// One entry of [`WorkspaceCrdtDocuments::deferred`]: the durable bytes of a
+/// scheme document we own but have not decoded.
+#[derive(Clone)]
+struct DeferredSchemeDocument {
+    document: DocumentId,
+    /// A full `state_v1` snapshot (`encode_diff_v1` against the empty state
+    /// vector), exactly as it was persisted — safe to re-emit as a bootstrap
+    /// update or re-persist without any decode/re-encode round trip.
+    state_v1: Arc<[u8]>,
+}
+
+/// Decode a deferred entry's persisted bytes into a live scheme document.
+/// A fresh random authoring identity, consistent with [`from_states`] — the
+/// restored bytes keep their own authoring clientIDs, so nothing is re-authored.
+fn deferred_live_document(
+    deferred: &DeferredSchemeDocument,
+) -> anyhow::Result<YrsSchemeDocument> {
+    let doc = YrsSchemeDocument::for_replica(deferred.document, None);
+    doc.apply_update_v1(&deferred.state_v1)
+        .with_context(|| format!("hydrate deferred scheme document {}", deferred.document))?;
+    Ok(doc)
+}
+
+/// A count of how many scheme documents are decoded into live Yjs documents vs
+/// held only as deferred bytes. Returned by
+/// [`WorkspaceCrdtDocuments::document_population`] for structural assertions.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct CrdtDocumentPopulation {
+    pub live_schemes: usize,
+    pub deferred_schemes: usize,
 }
 
 impl WorkspaceCrdtDocuments {
@@ -350,6 +402,7 @@ impl WorkspaceCrdtDocuments {
                 workspace_client_id,
             ),
             schemes: HashMap::new(),
+            deferred: HashMap::new(),
         };
         docs.sync_changes_with_scheme_factory(
             &workspace,
@@ -383,6 +436,7 @@ impl WorkspaceCrdtDocuments {
                 replica_id,
             ),
             schemes: HashMap::new(),
+            deferred: HashMap::new(),
         }
     }
 
@@ -448,41 +502,154 @@ impl WorkspaceCrdtDocuments {
                 .context("restore workspace CRDT state")?;
         }
         let mut schemes = HashMap::new();
+        let mut deferred = HashMap::new();
         // Sorted: each restored document takes a fresh random clientID, so the
         // iteration order decides which scheme gets which id. Content converges
         // either way, but a seeded property-fuzz run has to replay exactly, and
         // `from_states` runs on every sync.
-        let mut ordered: Vec<SchemeId> = workspace.schemes.keys().copied().collect();
+        //
+        // Iterate the durable `scheme_sync` bindings, not the visible
+        // `workspace.schemes`. `WorkspaceLoadOptions` deliberately omits
+        // old/future Daily Queue schemes from the materialized workspace at
+        // startup, but their bindings and persisted CRDT bytes are still on
+        // disk. Keying restore off `workspace.schemes` would drop those
+        // documents on the next full CRDT save while their pull cursors stay
+        // current -- an empty pull then claims success forever.
+        let mut ordered: Vec<SchemeId> = workspace
+            .scheme_sync
+            .iter()
+            .filter_map(|(id, meta)| (meta.kind == SyncDocumentKind::Scheme).then_some(*id))
+            .collect();
         ordered.sort();
         for id in &ordered {
             let meta = scheme_meta(&workspace, *id)?;
-            let doc = YrsSchemeDocument::for_replica(meta.id, None);
-            if let Some(state) = states
+            let state = states
                 .get(&meta.id)
                 .map(AsRef::as_ref)
-                .filter(|state: &&[u8]| !state.is_empty())
-            {
-                doc.apply_update_v1(state)
-                    .with_context(|| format!("restore scheme CRDT state {id}"))?;
+                .filter(|state: &&[u8]| !state.is_empty());
+            if workspace.schemes.contains_key(id) {
+                // The loader materialized this scheme (every scheme on desktop;
+                // the visible date window on mobile), so decoding it is already
+                // required. Restore its bytes, or start an empty base for
+                // first-sight/heal — exactly as before.
+                let doc = YrsSchemeDocument::for_replica(meta.id, None);
+                if let Some(state) = state {
+                    doc.apply_update_v1(state)
+                        .with_context(|| format!("restore scheme CRDT state {id}"))?;
+                }
+                schemes.insert(*id, doc);
+            } else if let Some(state) = state {
+                // An off-window daily: bound in the index with real persisted
+                // bytes, but not materialized. Keep the bytes verbatim and
+                // decode on demand (`hydrate_deferred`) rather than paying for
+                // the user's whole history at cold open.
+                deferred.insert(
+                    *id,
+                    DeferredSchemeDocument {
+                        document: meta.id,
+                        state_v1: Arc::from(state),
+                    },
+                );
             }
-            schemes.insert(*id, doc);
+            // A binding with neither a materialized scheme nor persisted bytes
+            // gets NO local document — same as the historical behaviour, which
+            // iterated `workspace.schemes` only. An empty live document here
+            // would re-queue a schema-less delta the server rejects forever.
         }
         Ok(Self {
             workspace: workspace_doc,
             schemes,
+            deferred,
         })
     }
 
-    /// The set of document IDs for which this instance holds a local CRDT doc.
-    /// Used by the engine to detect scheme documents that are now in the workspace
-    /// index but have no local CRDT representation (so their cursor can be reset).
+    /// The set of document IDs this instance owns a persisted CRDT state for —
+    /// live *and* deferred. Used by the engine to detect scheme documents that
+    /// are in the workspace index but have no local CRDT representation (so their
+    /// cursor can be reset). A deferred daily is owned, just not decoded, so it
+    /// must count here or every caught-up pull would reset its cursor and
+    /// re-download it.
     pub fn known_document_ids(&self) -> std::collections::HashSet<DocumentId> {
         let mut ids = std::collections::HashSet::new();
         ids.insert(self.workspace.id);
         for doc in self.schemes.values() {
             ids.insert(doc.id);
         }
+        for deferred in self.deferred.values() {
+            ids.insert(deferred.document);
+        }
         ids
+    }
+
+    /// Promote a deferred scheme document into a live Yjs document, so it can be
+    /// edited, receive a remote merge, or be materialized. A no-op when the
+    /// scheme is already live or not owned at all. A decode failure (bytes also
+    /// damaged on disk) is reported but not fatal — the scheme is left absent
+    /// from `schemes` so the caller's first-sight path seeds it from an empty
+    /// base and the engine's re-convergence resets its cursor.
+    pub(crate) fn hydrate_deferred(&mut self, scheme_id: SchemeId) {
+        let Some(deferred) = self.deferred.remove(&scheme_id) else {
+            return;
+        };
+        match deferred_live_document(&deferred) {
+            Ok(doc) => {
+                self.schemes.insert(scheme_id, doc);
+            }
+            Err(err) => {
+                eprintln!(
+                    "knotq: deferred scheme document {scheme_id} could not be hydrated \
+                     ({err:#}); it will be rebuilt from the server"
+                );
+            }
+        }
+    }
+
+    /// Recover one scheme's content from its durable CRDT bytes. The mobile UI
+    /// calls this when a lazy Daily Queue file fails to parse: the persisted
+    /// CRDT state is intact, so decoding that one document restores it into
+    /// `schemes`, from where the next materialization puts it back in the UI
+    /// workspace and the following save rewrites a good file. Unrelated deferred
+    /// documents are untouched. Returns whether the scheme was deferred (so a
+    /// recovery was attempted).
+    pub fn request_deferred_recovery(&mut self, scheme_id: SchemeId) -> bool {
+        if !self.deferred.contains_key(&scheme_id) {
+            return false;
+        }
+        self.hydrate_deferred(scheme_id);
+        true
+    }
+
+    /// Whether a scheme is currently held only as undecoded deferred bytes.
+    /// Exposed so a caller can assert the lazy path is actually being exercised.
+    pub fn is_deferred(&self, scheme_id: SchemeId) -> bool {
+        self.deferred.contains_key(&scheme_id)
+    }
+
+    /// Counts of decoded vs deferred scheme documents, for structural tests and
+    /// load-cost assertions: cold restore and a caught-up pull must keep the
+    /// deferred count proportional to the user's history rather than decoding it.
+    pub fn document_population(&self) -> CrdtDocumentPopulation {
+        CrdtDocumentPopulation {
+            live_schemes: self.schemes.len(),
+            deferred_schemes: self.deferred.len(),
+        }
+    }
+
+    /// Compact state-vector proofs for the *decoded* documents this replica
+    /// owns. Deferred (lazy) documents are intentionally omitted: computing a
+    /// state vector means decoding the document, and this probe runs on the
+    /// first pull of every session — decoding the user's whole daily history
+    /// there is exactly the cost lazy-loading exists to avoid. A deferred
+    /// document damaged on disk is instead caught when it is hydrated (a view,
+    /// a remote update, or `request_deferred_recovery`), where the failure
+    /// routes into a server-backed rebuild.
+    pub fn state_vectors_v1(&self) -> HashMap<DocumentId, Vec<u8>> {
+        let mut out = HashMap::with_capacity(self.schemes.len() + 1);
+        out.insert(self.workspace.id, self.workspace.state_vector_v1());
+        for doc in self.schemes.values() {
+            out.insert(doc.id, doc.state_vector_v1());
+        }
+        out
     }
 
     /// Snapshot every owned document's full `state_v1`, keyed by document id, for
@@ -507,6 +674,13 @@ impl WorkspaceCrdtDocuments {
         for doc in self.schemes.values() {
             out.insert(doc.id, doc.encode_state_shared_v1());
         }
+        // Deferred documents are re-emitted from the bytes they were loaded
+        // with, unchanged. This is what makes a normal save safe while old
+        // dailies are lazy: their persisted state passes straight through
+        // rather than being swept because no live document produced it.
+        for deferred in self.deferred.values() {
+            out.insert(deferred.document, Arc::clone(&deferred.state_v1));
+        }
         out
     }
 
@@ -530,6 +704,11 @@ impl WorkspaceCrdtDocuments {
         for scheme_id in scheme_ids {
             if let Some(doc) = self.schemes.get(scheme_id) {
                 out.insert(doc.id, doc.encode_state_shared_v1());
+            } else if let Some(deferred) = self.deferred.get(scheme_id) {
+                // Defensive: a deferred document is never in a dirty set (it is
+                // not editable while deferred), but if one is named, pass its
+                // bytes through rather than dropping it.
+                out.insert(deferred.document, Arc::clone(&deferred.state_v1));
             }
         }
         out
@@ -559,6 +738,16 @@ impl WorkspaceCrdtDocuments {
                 out.insert(doc.id, doc.state_handle());
             }
         }
+        // Desktop (the only caller) loads every scheme, so `deferred` is empty
+        // there; this pass exists so no document is silently dropped if that
+        // ever changes. Decoding is confined to the requested deferred ids.
+        for deferred in self.deferred.values() {
+            if documents.contains(&deferred.document) {
+                if let Ok(doc) = deferred_live_document(deferred) {
+                    out.insert(deferred.document, doc.state_handle());
+                }
+            }
+        }
         out
     }
 
@@ -574,6 +763,13 @@ impl WorkspaceCrdtDocuments {
         out.insert(self.workspace.id, self.workspace.state_handle());
         for doc in self.schemes.values() {
             out.insert(doc.id, doc.state_handle());
+        }
+        // Empty on desktop (its loader materializes every scheme). Handled for
+        // correctness so a full-scope save can never drop a deferred document.
+        for deferred in self.deferred.values() {
+            if let Ok(doc) = deferred_live_document(deferred) {
+                out.insert(deferred.document, doc.state_handle());
+            }
         }
         out
     }
@@ -613,6 +809,20 @@ impl WorkspaceCrdtDocuments {
                 kind: SyncDocumentKind::Scheme,
                 update_v1: doc.encode_state_v1(),
                 touched_items,
+            });
+        }
+        // Deferred documents carry a full `state_v1` snapshot already, so they
+        // re-seed a base-less server without being decoded. `touched_items` is
+        // empty: a deferred document has no local pending edits (any edit would
+        // have hydrated it), so the epoch-adoption rescue has nothing to keep.
+        let mut deferred: Vec<&DeferredSchemeDocument> = self.deferred.values().collect();
+        deferred.sort_by_key(|entry| entry.document);
+        for entry in deferred {
+            outcome.updates.push(CrdtDocumentUpdate {
+                document: entry.document,
+                kind: SyncDocumentKind::Scheme,
+                update_v1: entry.state_v1.to_vec(),
+                touched_items: Vec::new(),
             });
         }
         outcome
@@ -766,9 +976,16 @@ impl WorkspaceCrdtDocuments {
             _ => None,
         };
 
+        // An adopted document replaces whatever we held — including a deferred
+        // entry for the same scheme (a squash of an off-window daily). Drop it
+        // so `document_states` does not later re-emit the pre-squash bytes.
+        self.deferred.remove(&scheme_id);
         self.schemes.insert(scheme_id, adopted);
+        // Only the adopted document carries fresh authoritative state; an empty
+        // CRDT document for any other scheme still means "not flushed here yet".
+        let trust_empty = |id: &SchemeId| *id == scheme_id;
         let workspace = self
-            .materialize_workspace(current)
+            .materialized_workspace_repair(current, &trust_empty)
             .context("materialize after epoch adoption")?;
         Ok((workspace, rescue))
     }
@@ -822,6 +1039,16 @@ impl WorkspaceCrdtDocuments {
 
         self.schemes
             .retain(|id, _| workspace.schemes.contains_key(id));
+        // A deferred document survives as long as its scheme still has a Scheme
+        // binding — the same ownership rule as `apply_remote_updates`. A
+        // `replace_all` caller passes a fully materialized workspace (desktop),
+        // so in practice nothing is deferred here; keep the rule anyway.
+        self.deferred.retain(|id, _| {
+            workspace
+                .scheme_sync
+                .get(id)
+                .is_some_and(|meta| meta.kind == SyncDocumentKind::Scheme)
+        });
         // Sorted: a document created here takes a fresh random clientID, so
         // HashMap iteration order would decide which scheme receives which id.
         // Content converges either way, but a seeded run must replay exactly.
@@ -830,6 +1057,10 @@ impl WorkspaceCrdtDocuments {
         for id in &ordered {
             let scheme = &workspace.schemes[id];
             let meta = scheme_meta(&workspace, *id)?;
+            // If this scheme was deferred, decode its real bytes before writing
+            // to it, so its CRDT history is kept rather than replaced by a diff
+            // against an empty base.
+            self.hydrate_deferred(*id);
             // A doc created here starts from an empty base (no restored bytes), so it
             // gets a fresh identity — never the stable clientID, which is reserved for
             // from-bytes restore (see `from_states`) to avoid `(clientID, clock)` reuse.
@@ -903,6 +1134,16 @@ impl WorkspaceCrdtDocuments {
         );
         self.schemes
             .retain(|id, _| workspace.schemes.contains_key(id));
+        // Deferred documents are pruned by their *sync binding*, never by the
+        // (lazy, UI-facing) `workspace.schemes`: an edit's workspace is the
+        // mobile view, which omits every off-window daily. `scheme_sync` is the
+        // complete index, so this drops only a scheme that was actually removed.
+        self.deferred.retain(|id, _| {
+            workspace
+                .scheme_sync
+                .get(id)
+                .is_some_and(|meta| meta.kind == SyncDocumentKind::Scheme)
+        });
         // Sorted for the same reason as `replace_all`: a first-sight document
         // takes a fresh random clientID here, and the emitted updates are queued
         // in this order, so HashMap order would make a seeded run unreplayable.
@@ -919,6 +1160,10 @@ impl WorkspaceCrdtDocuments {
                     continue;
                 }
             };
+            // Editing a daily that was still deferred (it just entered the view
+            // window): decode its real bytes so the edit diffs against real
+            // history instead of an empty base.
+            self.hydrate_deferred(id);
             match self
                 .schemes
                 .entry(id)
@@ -991,13 +1236,16 @@ impl WorkspaceCrdtDocuments {
             }
         }
 
-        // No scheme content has been applied yet, so reuse `current`'s scheme items
-        // wholesale; this first pass only reflects the workspace-structure document.
+        // No scheme content has been applied yet, so this first pass only
+        // reflects the workspace-structure document. A scheme whose live CRDT
+        // document is empty here has NOT had a remote update applied, so an
+        // empty document cannot be an authoritative deletion — keep `current`'s
+        // items (this protects a scheme created locally but not yet flushed to
+        // its CRDT document, e.g. the desktop's direct Daily Queue creation).
         // When no workspace update changed the doc (empty batch or pure echo),
-        // `outcome.workspace` stays the `current` clone — re-materializing would
-        // only re-derive the same content.
+        // `outcome.workspace` stays the `current` clone.
         if workspace_update_eligible_for_materialization {
-            match self.materialize_workspace(current) {
+            match self.materialized_workspace_repair(current, &|_| false) {
                 Ok(workspace) => {
                     // A no-op CRDT merge can still expose stale optimistic UI state:
                     // the long-lived document may already contain the server's
@@ -1042,8 +1290,27 @@ impl WorkspaceCrdtDocuments {
             return outcome;
         }
 
+        // A *live* CRDT document is kept only when the materialized workspace
+        // actually holds that scheme. A daily-queue entry with no scheme node
+        // yet, or a scheme mid-undo, is not materializable: keeping an empty
+        // live document for it re-queues a schema-less delta the server rejects
+        // forever (`crdt_schema_invalid`), and `heal_schema_invalid_documents`
+        // cannot fix it because the scheme is absent from `workspace.schemes`.
         self.schemes
             .retain(|id, _| outcome.workspace.schemes.contains_key(id));
+        // A *deferred* document is different: it is never materialized into the
+        // UI workspace by design, is never pushed as a delta (an edit hydrates
+        // it first), and its persisted bytes are already a valid full snapshot.
+        // So it is kept as long as its durable sync binding survives — a remote
+        // update to one scheme must never sweep the untouched bytes of an
+        // unrelated off-window daily.
+        self.deferred.retain(|id, _| {
+            outcome
+                .workspace
+                .scheme_sync
+                .get(id)
+                .is_some_and(|meta| meta.kind == SyncDocumentKind::Scheme)
+        });
         let scheme_by_document = scheme_documents_by_id(&outcome.workspace);
         // Track which scheme documents had errors so their cursor can be reset later.
         let mut touched_schemes: HashSet<SchemeId> = HashSet::new();
@@ -1068,6 +1335,11 @@ impl WorkspaceCrdtDocuments {
                 );
                 continue;
             };
+            // A remote update targeting an off-window daily: decode its durable
+            // bytes into a live document first, so the merge lands on real
+            // history rather than an empty base (which would drop any local-only
+            // content on that daily).
+            self.hydrate_deferred(scheme_id);
             // First sight of this content doc: create it from an empty base and adopt
             // the server's structs from the update below. A fresh identity (`None`) — not
             // the stable clientID — keeps it from reusing a `(clientID, clock)` the server
@@ -1152,7 +1424,13 @@ impl WorkspaceCrdtDocuments {
         }
 
         if !touched_schemes.is_empty() {
-            match self.materialize_workspace(current) {
+            // A scheme this batch touched has just had authoritative remote
+            // state merged into its document — trust it even if it is now
+            // empty (a remote "delete every item"). For every *other* scheme an
+            // empty document still means "content not in the CRDT here yet" and
+            // `current`'s items are kept.
+            let trust_empty = |scheme_id: &SchemeId| touched_schemes.contains(scheme_id);
+            match self.materialized_workspace_repair(current, &trust_empty) {
                 Ok(workspace) => outcome.workspace = workspace,
                 Err(err) => outcome.push_workspace_error("scheme materialization", err),
             }
@@ -1161,21 +1439,59 @@ impl WorkspaceCrdtDocuments {
         outcome
     }
 
-    /// [`Self::materialize_workspace`] for diagnostics: rebuilding the workspace
-    /// straight from the CRDT and comparing it against what is on disk is how you
-    /// check a data directory is intact, and that is worth being able to do from
-    /// outside this crate.
+    /// Rebuild the workspace from the CRDT documents for the ordinary sync path:
+    /// scales with the schemes this replica has decoded (ordinary schemes plus
+    /// the visible daily window), NOT with the user's whole daily history. An
+    /// off-window daily that is still deferred stays out of the result — it is
+    /// deliberately not in the UI workspace and its bytes are untouched.
+    /// `current` supplies only state the documents do not carry.
+    ///
+    /// `trust_empty_crdt` decides, per scheme, whether an *empty* live CRDT
+    /// document is authoritative (`true` — a real merge result: a delete of
+    /// every item, or a repair of a bad local save) or means "content not in
+    /// the CRDT here yet" (`false` — a daily just created locally, a scheme
+    /// mid-bootstrap), in which case `current`'s items are kept so locally
+    /// authored content that has not synced is never wiped by a repair pass.
+    pub fn materialized_workspace_repair(
+        &self,
+        current: &Workspace,
+        trust_empty_crdt: &dyn Fn(&SchemeId) -> bool,
+    ) -> anyhow::Result<Workspace> {
+        self.materialize_workspace_inner(current, false, trust_empty_crdt)
+    }
+
+    /// The exhaustive variant: every deferred daily is decoded too, so the
+    /// result is the complete picture of what the CRDT holds. Rebuilding this
+    /// and comparing it against disk is how a data directory is checked for
+    /// integrity, and how a test oracle confirms nothing diverged — both accept
+    /// the cost of touching every historical daily. Not for the sync hot path.
     pub fn materialized_workspace_for_diagnostics(
         &self,
         current: &Workspace,
     ) -> anyhow::Result<Workspace> {
-        self.materialize_workspace(current)
+        self.materialize_workspace_inner(current, true, &|_| true)
     }
 
     /// Rebuild the workspace from the CRDT documents, using `current` only for
     /// state the documents do not carry (a scheme with no local document, and
-    /// the local-only calendar sync token).
-    fn materialize_workspace(&self, current: &Workspace) -> anyhow::Result<Workspace> {
+    /// the local-only calendar sync token). `hydrate_all_deferred` decodes every
+    /// deferred daily as well (the diagnostic/oracle path). `trust_empty_crdt`
+    /// decides, per scheme, whether an empty live CRDT document is authoritative
+    /// (true) or means "content not yet in the CRDT, keep `current`" (false).
+    fn materialize_workspace_inner(
+        &self,
+        current: &Workspace,
+        hydrate_all_deferred: bool,
+        trust_empty_crdt: &dyn Fn(&SchemeId) -> bool,
+    ) -> anyhow::Result<Workspace> {
+        // A workspace document that was never seeded (a fresh device before its
+        // first pull, or one whose local CRDT state is empty) describes nothing.
+        // `snapshot()` would fail with "workspace id missing"; there is simply
+        // nothing to materialize, so hand `current` back unchanged. The caller's
+        // `materialized == workspace` check then correctly reports no repair.
+        if !self.workspace.is_seeded() {
+            return Ok(current.clone());
+        }
         let snapshot: WorkspaceDocumentSnapshot = self.workspace.snapshot()?;
         let scheme_sync = snapshot
             .scheme_sync
@@ -1218,6 +1534,11 @@ impl WorkspaceCrdtDocuments {
                 .collect(),
         };
 
+        // `snapshot.schemes` carries every scheme entry the workspace index
+        // holds — ordinary schemes *and* Daily Queue schemes (the daily-queue
+        // filter only keeps dailies out of the folder tree, not out of this
+        // list). So name/colour/source always come from the index here; the
+        // only question per entry is where its items come from.
         for entry in snapshot.schemes {
             // The document is authoritative: derive items from it whenever this
             // replica has one, and fall back to `current` only when it does not.
@@ -1236,17 +1557,54 @@ impl WorkspaceCrdtDocuments {
             // Deriving unconditionally costs ~16 ms on a 168-scheme / 3.7k-item
             // workspace, and only on a pull that changed something — a background
             // sync step, not the interactive path.
-            let items = self
+            let live_items = self
                 .schemes
                 .get(&entry.id)
-                .and_then(|doc| doc.scheme_items().ok())
-                .or_else(|| {
-                    current
-                        .schemes
-                        .get(&entry.id)
-                        .map(|scheme| scheme.items.clone())
-                })
-                .unwrap_or_default();
+                .and_then(|doc| doc.scheme_items().ok());
+            let items = if let Some(items) = live_items
+                .as_ref()
+                .filter(|items| !items.is_empty() || trust_empty_crdt(&entry.id))
+                .cloned()
+            {
+                // A live document with content, or an empty one the caller
+                // trusts as authoritative (a real merge result, or a synced
+                // scheme). Locally-authored content that has never reached the
+                // CRDT falls through instead of being wiped.
+                items
+            } else if self.deferred.contains_key(&entry.id) {
+                // An off-window Daily Queue document this replica keeps only as
+                // undecoded bytes. Decode it when it is inside the view window
+                // (so a stale on-disk copy is repaired from authoritative CRDT
+                // state — bounded by the view window, not total history) or on
+                // the exhaustive diagnostic pass. Otherwise leave it OUT of the
+                // materialized workspace entirely, exactly as the mobile lazy
+                // loader does: its `daily_queue` entry stays, its bytes stay
+                // safe in `deferred`, and nothing claims it is materialized.
+                let visible = current.schemes.contains_key(&entry.id);
+                if !visible && !hydrate_all_deferred {
+                    continue;
+                }
+                match deferred_live_document(&self.deferred[&entry.id])
+                    .and_then(|doc| doc.scheme_items())
+                {
+                    Ok(items) => items,
+                    Err(err) => {
+                        eprintln!(
+                            "knotq: deferred scheme {} could not be decoded ({err:#}); \
+                             using the on-disk copy",
+                            entry.id
+                        );
+                        match current.schemes.get(&entry.id) {
+                            Some(scheme) => scheme.items.clone(),
+                            None => continue,
+                        }
+                    }
+                }
+            } else if let Some(scheme) = current.schemes.get(&entry.id) {
+                scheme.items.clone()
+            } else {
+                Vec::new()
+            };
             workspace.schemes.insert(
                 entry.id,
                 Scheme {
@@ -1320,10 +1678,13 @@ pub(crate) fn merge_items_for_adoption(
 }
 
 fn documents_missing(docs: &WorkspaceCrdtDocuments, workspace: &Workspace) -> bool {
+    // A deferred document is owned, just not decoded — it is not "missing", and
+    // treating it as such would force a full workspace snapshot on every edit
+    // made while an old daily is still lazy.
     workspace
         .schemes
         .keys()
-        .any(|id| !docs.schemes.contains_key(id))
+        .any(|id| !docs.schemes.contains_key(id) && !docs.deferred.contains_key(id))
 }
 
 fn documents_removed(docs: &WorkspaceCrdtDocuments, workspace: &Workspace) -> bool {

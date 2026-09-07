@@ -367,19 +367,32 @@ fn notification_fire_at(
     Some(trigger - lead)
 }
 
+/// The moment an event is over. Uses the occurrence's explicit end when it has
+/// one; otherwise falls back to a fixed duration past the start, so a timed
+/// event entered without an end still has a definite expiry instead of a
+/// notification that never clears. Returns `None` only for an event with no
+/// start at all (which never schedules a notification anyway).
+fn effective_event_end(occurrence: &Occurrence) -> Option<DateTime<Utc>> {
+    occurrence.end.or_else(|| {
+        occurrence
+            .start
+            .map(|start| start + Duration::seconds(knotq_model::DEFAULT_EVENT_DURATION_SECS))
+    })
+}
+
 fn notification_expires_at(
     kind: NotificationKind,
     occurrence: &Occurrence,
 ) -> Option<DateTime<Utc>> {
     match kind {
-        NotificationKind::Event => occurrence.end,
+        NotificationKind::Event => effective_event_end(occurrence),
         NotificationKind::Reminder | NotificationKind::Assignment => None,
     }
 }
 
 fn event_end_at(kind: NotificationKind, occurrence: &Occurrence) -> Option<DateTime<Utc>> {
     match kind {
-        NotificationKind::Event => occurrence.end,
+        NotificationKind::Event => effective_event_end(occurrence),
         NotificationKind::Reminder | NotificationKind::Assignment => None,
     }
 }

@@ -148,3 +148,37 @@ fn insert_imported_scheme(workspace: &mut Workspace, items: Vec<Item>) -> Scheme
 fn assert_read_only(err: CommandError, scheme_id: SchemeId) {
     assert!(matches!(err, CommandError::ReadOnlyScheme(id) if id == scheme_id));
 }
+
+/// An MCP agent is a user-equivalent actor, not a trusted internal writer. It
+/// must be held to every rule the UI is held to — otherwise "ask the assistant
+/// to do it" becomes a way around the invariants.
+#[test]
+fn agent_mutations_are_rejected_for_read_only_calendar_schemes() {
+    let mut workspace = Workspace::new();
+    let scheme_id = insert_imported_scheme(&mut workspace, vec![Item::new("meeting")]);
+    let item_id = workspace.schemes[&scheme_id].items[0].id;
+
+    let err = workspace
+        .apply_with_origin(
+            Command::UpdateItemText {
+                scheme: scheme_id,
+                item: item_id,
+                text: "rewritten by an agent".into(),
+            },
+            CommandOrigin::Agent,
+        )
+        .unwrap_err();
+
+    assert_read_only(err, scheme_id);
+    assert_eq!(workspace.schemes[&scheme_id].items[0].text(), "meeting");
+}
+
+/// The importer's exemption is what lets a calendar refresh write a read-only
+/// scheme at all, so the two origins must not collapse into one another.
+#[test]
+fn the_agent_and_importer_origins_are_not_interchangeable() {
+    assert!(CommandOrigin::Agent.enforces_user_invariants());
+    assert!(CommandOrigin::User.enforces_user_invariants());
+    assert!(!CommandOrigin::Importer.enforces_user_invariants());
+    assert!(!CommandOrigin::Migration.enforces_user_invariants());
+}

@@ -25,15 +25,75 @@ on:
         description: "Operations per seed"
         required: false
         default: "400"
+      ws_seeds:
+        description: "Seeds for the WebSocket-against-wrangler fuzz"
+        required: false
+        default: "30"
+      ws_steps:
+        description: "Operations per seed for the WebSocket fuzz"
+        required: false
+        default: "80"
 
 concurrency:
   group: sync-fuzz-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
+  # The engine is deterministic, so re-fuzzing the exact same (app + backend)
+  # commit pair at the same depth cannot find anything new. This job builds a
+  # marker from both repos' HEAD SHAs and looks for a cache entry with that key;
+  # if the fuzz jobs already recorded it, the scheduled run skips. Manual
+  # `workflow_dispatch` always runs. If the backend token is missing its HEAD is
+  # unknown, so we run to be safe.
+  changed:
+    name: New commit pair since the last fuzz?
+    runs-on: ubuntu-24.04
+    outputs:
+      run: ${{ steps.decide.outputs.run }}
+      marker: ${{ steps.sha.outputs.marker }}
+    steps:
+      - uses: actions/checkout@v6
+
+      - id: sha
+        env:
+          BACKEND_REPO_TOKEN: ${{ secrets.BACKEND_REPO_TOKEN }}
+        run: |
+          set -euo pipefail
+          BACKEND_SHA="unknown"
+          if [ -n "${BACKEND_REPO_TOKEN}" ]; then
+            BACKEND_SHA="$(GH_TOKEN="${BACKEND_REPO_TOKEN}" gh api \
+              repos/knotq-app/backend/commits/main --jq '.sha' 2>/dev/null || echo unknown)"
+          fi
+          echo "backend=${BACKEND_SHA}" >> "$GITHUB_OUTPUT"
+          echo "marker=sync-fuzz-done-${{ github.sha }}-${BACKEND_SHA}" >> "$GITHUB_OUTPUT"
+          echo "app=${{ github.sha }}  backend=${BACKEND_SHA}"
+
+      - id: cache
+        uses: actions/cache/restore@v4
+        with:
+          path: .sync-fuzz-marker
+          key: ${{ steps.sha.outputs.marker }}
+          lookup-only: true
+
+      - id: decide
+        run: |
+          if [ "${{ github.event_name }}" != "schedule" ]; then
+            echo "run=true" >> "$GITHUB_OUTPUT"; echo "manual dispatch — running"
+          elif [ "${{ steps.sha.outputs.backend }}" = "unknown" ]; then
+            echo "run=true" >> "$GITHUB_OUTPUT"
+            echo "::warning::backend HEAD unknown — running to be safe"
+          elif [ "${{ steps.cache.outputs.cache-hit }}" = "true" ]; then
+            echo "run=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::This app+backend commit pair was already fuzzed — skipping."
+          else
+            echo "run=true" >> "$GITHUB_OUTPUT"
+          fi
+
   deep-fuzz:
     name: Deep property fuzz
     runs-on: ubuntu-24.04
+    needs: changed
+    if: needs.changed.outputs.run == 'true'
     # The default 1500 x 400 run takes ~15 minutes; leave headroom for a cold
     # cache and for the manual dispatch to ask for more.
     timeout-minutes: 90
@@ -66,3 +126,44 @@ jobs:
         run: |
           cargo test -p knotq-sync --test sync_property_model --release -- \
             --ignored --exact daily_queue_multiorigin_stress --nocapture
+
+  backend-ws-fuzz:
+    name: WebSocket fuzz against a real backend (deep)
+    runs-on: ubuntu-24.04
+    needs: changed
+    if: needs.changed.outputs.run == 'true'
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        continue-on-error: true
+        with:
+          key: sync-fuzz
+      - name: Deep HTTP + WebSocket scenario/fuzz against wrangler
+        uses: ./.github/actions/sync-stress
+        with:
+          # This job's whole point is the backend transports; keep the in-memory
+          # fuzz shallow here (the deep-fuzz job above covers it) and go deep on
+          # the WebSocket run.
+          fuzz-seeds: "50"
+          fuzz-steps: "200"
+          ws-fuzz-seeds: ${{ github.event.inputs.ws_seeds || '30' }}
+          ws-fuzz-steps: ${{ github.event.inputs.ws_steps || '80' }}
+          ws-hop-seeds: "8"
+          ws-hop-steps: "40"
+          backend-repo-token: ${{ secrets.BACKEND_REPO_TOKEN }}
+
+  # Both fuzz jobs passed for this exact app+backend commit pair — record it so
+  # the next scheduled run at the same pair skips.
+  record:
+    name: Record the fuzzed commit pair
+    runs-on: ubuntu-24.04
+    needs: [changed, deep-fuzz, backend-ws-fuzz]
+    if: needs.changed.outputs.run == 'true' && needs.changed.outputs.marker != ''
+    steps:
+      - run: 'date -u > .sync-fuzz-marker'
+      - uses: actions/cache/save@v4
+        with:
+          path: .sync-fuzz-marker
+          key: ${{ needs.changed.outputs.marker }}

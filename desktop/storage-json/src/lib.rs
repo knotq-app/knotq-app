@@ -3,6 +3,7 @@ mod crdt_state;
 mod diagnostics;
 mod export_markdown;
 mod files;
+mod mcp;
 mod options;
 mod paths;
 mod schema;
@@ -35,6 +36,9 @@ pub use knotq_history::{
 pub use knotq_model::{
     AppSettings, CalendarViewMode, CalendarWeekRange, NotificationDefaults, SavedWindowPosition,
     SavedWindowSize, ThemeMode, TimeFormat,
+};
+pub use mcp::{
+    clear_mcp_endpoint, load_mcp_endpoint, mcp_endpoint_path, save_mcp_endpoint, McpEndpoint,
 };
 pub use options::WorkspaceLoadOptions;
 pub use paths::{

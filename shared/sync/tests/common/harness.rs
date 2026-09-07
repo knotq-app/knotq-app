@@ -46,23 +46,103 @@ impl Harness {
         Self {
             account_workspace: workspace_id,
             base,
-            backend: HarnessBackend::Http(clients),
+            backend: HarnessBackend::Remote {
+                http: clients,
+                ws: RemoteWsMode::HttpOnly,
+            },
             devices: BTreeMap::new(),
             device_count,
         }
     }
 
-    /// True when this harness is backed by the real HTTP backend.
-    pub fn is_http(&self) -> bool {
-        matches!(self.backend, HarnessBackend::Http(_))
+    /// Real-backend harness where pull/push run over the persistent WebSocket
+    /// (`WsClient` -> tungstenite -> DO). Media/aux calls still use HTTP.
+    pub fn new_ws(base_url: &str, workspace_id: WorkspaceId, bearer_tokens: Vec<String>) -> Self {
+        Self::new_remote(base_url, workspace_id, bearer_tokens, true, false)
     }
 
-    /// Return a reference to the in-memory TestServer.  Panics when called on an
-    /// HTTP harness — in-memory introspection knobs are not available over the wire.
+    /// Real-backend harness that alternates WS / HTTP per request — the pull and
+    /// the push of a single sync cycle routinely land on different transports,
+    /// modelling `FallbackTransport` when a socket drops mid-cycle.
+    pub fn new_ws_mixed(
+        base_url: &str,
+        workspace_id: WorkspaceId,
+        bearer_tokens: Vec<String>,
+    ) -> Self {
+        Self::new_remote(base_url, workspace_id, bearer_tokens, true, true)
+    }
+
+    fn new_remote(
+        base_url: &str,
+        workspace_id: WorkspaceId,
+        bearer_tokens: Vec<String>,
+        with_ws: bool,
+        mixed: bool,
+    ) -> Self {
+        use knotq_sync::ws::WsCallbacks;
+        assert!(!bearer_tokens.is_empty(), "new_remote requires a token");
+        let device_count = bearer_tokens.len();
+        let mut base = Workspace::new();
+        base.canonicalize_personal_sync_identity(workspace_id);
+        base.ensure_sync_metadata();
+        let mut http = HashMap::new();
+        let mut ws = HashMap::new();
+        for (i, token) in bearer_tokens.into_iter().enumerate() {
+            http.insert(
+                DeviceKey(i),
+                http_transport::HttpClient {
+                    api_base: base_url.trim_end_matches('/').to_string(),
+                    bearer_token: token.clone(),
+                },
+            );
+            if with_ws {
+                ws.insert(
+                    DeviceKey(i),
+                    super::ws_transport::connect_ws(base_url, &token, WsCallbacks::noop()),
+                );
+            }
+        }
+        let ws = match (with_ws, mixed) {
+            (false, _) => RemoteWsMode::HttpOnly,
+            (true, false) => RemoteWsMode::WsOnly(ws),
+            (true, true) => RemoteWsMode::Mixed(ws),
+        };
+        Self {
+            account_workspace: workspace_id,
+            base,
+            backend: HarnessBackend::Remote { http, ws },
+            devices: BTreeMap::new(),
+            device_count,
+        }
+    }
+
+    /// True when this harness talks to the real backend (HTTP and/or WebSocket).
+    pub fn is_remote(&self) -> bool {
+        matches!(self.backend, HarnessBackend::Remote { .. })
+    }
+
+    /// Backwards-compatible alias (scenarios scale op counts by this).
+    pub fn is_http(&self) -> bool {
+        self.is_remote()
+    }
+
+    /// True when at least some requests run over the real WebSocket.
+    pub fn is_ws(&self) -> bool {
+        matches!(
+            &self.backend,
+            HarnessBackend::Remote {
+                ws: RemoteWsMode::WsOnly(_) | RemoteWsMode::Mixed(_),
+                ..
+            }
+        )
+    }
+
+    /// Return a reference to the in-memory TestServer.  Panics when called on a
+    /// remote harness — in-memory introspection knobs are not available over the wire.
     fn require_in_memory_server(&self) -> &TestServer {
         match &self.backend {
             HarnessBackend::InMemory(server) => server,
-            HarnessBackend::Http(_) => {
+            HarnessBackend::Remote { .. } => {
                 panic!("server introspection is only available for the in-memory harness")
             }
         }
@@ -127,7 +207,7 @@ impl Harness {
         let device = self.devices.get_mut(&key).expect("device");
         match &self.backend {
             HarnessBackend::InMemory(server) => device.try_push_only(server),
-            HarnessBackend::Http(_) => panic!("push-only is in-memory only"),
+            HarnessBackend::Remote { .. } => panic!("push-only is in-memory only"),
         }
     }
 
@@ -282,8 +362,8 @@ impl Harness {
             HarnessBackend::InMemory(server) => {
                 device.update_notification_schedule_with(server, sequence, hash)
             }
-            HarnessBackend::Http(clients) => {
-                let client = clients
+            HarnessBackend::Remote { http, .. } => {
+                let client = http
                     .get(&key)
                     .unwrap_or_else(|| panic!("no HTTP client for {key:?}"));
                 device.update_notification_schedule_with(client, sequence, hash)
@@ -361,14 +441,33 @@ impl Harness {
     /// Like [`sync`] but returns the push result rather than panicking on failure.
     pub fn try_sync(&mut self, key: DeviceKey) -> anyhow::Result<()> {
         let mut device = self.devices.remove(&key).expect("missing device");
+        let http_client = |http: &HashMap<DeviceKey, http_transport::HttpClient>| {
+            http.get(&key)
+                .unwrap_or_else(|| panic!("no HTTP client for {key:?}"))
+                .clone()
+        };
+        let ws_client = |ws: &HashMap<DeviceKey, std::sync::Arc<knotq_sync::ws::WsClient>>| {
+            ws.get(&key)
+                .unwrap_or_else(|| panic!("no WS client for {key:?}"))
+                .clone()
+        };
         let result = match &self.backend {
             HarnessBackend::InMemory(server) => device.try_sync(server),
-            HarnessBackend::Http(clients) => {
-                let client = clients
-                    .get(&key)
-                    .unwrap_or_else(|| panic!("no HTTP client for {key:?}"));
-                device.try_sync_with(client)
-            }
+            HarnessBackend::Remote {
+                http,
+                ws: RemoteWsMode::HttpOnly,
+            } => device.try_sync_with(&http_client(http)),
+            HarnessBackend::Remote {
+                ws: RemoteWsMode::WsOnly(ws),
+                ..
+            } => device.try_sync_with(&super::ws_transport::WsTransport::new(ws_client(ws))),
+            HarnessBackend::Remote {
+                http,
+                ws: RemoteWsMode::Mixed(ws),
+            } => device.try_sync_with(&super::ws_transport::MixedTransport::new(
+                ws_client(ws),
+                http_client(http),
+            )),
         };
         self.devices.insert(key, device);
         result
@@ -464,8 +563,8 @@ impl Harness {
         let mut device = self.devices.remove(&key).expect("missing device");
         let result = match &self.backend {
             HarnessBackend::InMemory(server) => device.upload_media_to(server, remote_latest),
-            HarnessBackend::Http(clients) => {
-                let client = clients
+            HarnessBackend::Remote { http, .. } => {
+                let client = http
                     .get(&key)
                     .unwrap_or_else(|| panic!("no HTTP client for {key:?}"));
                 device.upload_media_to_http(client, remote_latest)
@@ -480,8 +579,8 @@ impl Harness {
         let mut device = self.devices.remove(&key).expect("missing device");
         match &self.backend {
             HarnessBackend::InMemory(server) => device.download_media_from(server),
-            HarnessBackend::Http(clients) => {
-                let client = clients
+            HarnessBackend::Remote { http, .. } => {
+                let client = http
                     .get(&key)
                     .unwrap_or_else(|| panic!("no HTTP client for {key:?}"));
                 device
@@ -526,6 +625,7 @@ impl Harness {
                 replica_id: ReplicaId::new(),
                 documents,
                 notification_schedule_changed: false,
+                background_refresh_required: false,
                 notification_schedule: Some(test_notification_schedule()),
                 client_protocol_version: knotq_sync::CLIENT_SYNC_PROTOCOL_VERSION,
             })

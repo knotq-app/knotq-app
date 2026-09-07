@@ -139,6 +139,10 @@ impl YrsJsonDocument {
             .get_shared(|| self.doc.transact().encode_diff_v1(&StateVector::default()))
     }
 
+    pub(crate) fn state_vector_v1(&self) -> Vec<u8> {
+        self.doc.transact().state_vector().encode_v1()
+    }
+
     /// A handle that produces the same state from another thread.
     pub(crate) fn state_handle(&self) -> DocumentStateHandle {
         self.encode_cache.handle(&self.doc)

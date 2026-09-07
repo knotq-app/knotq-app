@@ -1,0 +1,14 @@
+[package]
+name = "knotq-mcp"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+chrono = { workspace = true }
+knotq-commands = { workspace = true }
+knotq-date-util = { workspace = true }
+knotq-index = { workspace = true }
+knotq-model = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }

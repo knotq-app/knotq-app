@@ -179,6 +179,7 @@ mod tests {
             replica_id: knotq_model::ReplicaId::new(),
             cursors: Default::default(),
             client_protocol_version: knotq_sync::CLIENT_SYNC_PROTOCOL_VERSION,
+            integrity_state_vectors: Default::default(),
         };
         let response = client.request_pull(&request);
         assert!(

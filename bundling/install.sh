@@ -39,8 +39,10 @@ curl -fsSL "$ASSET_URL" -o "$TMPDIR/knotq.tar.gz"
 mkdir -p "$TMPDIR/extract" "$APP_ROOT" "$BIN_DIR"
 tar xzf "$TMPDIR/knotq.tar.gz" -C "$TMPDIR/extract"
 test -f "$TMPDIR/extract/knotq"
+test -f "$TMPDIR/extract/knotq-mcp"
 test -d "$TMPDIR/extract/assets"
 install -m 0755 "$TMPDIR/extract/knotq" "$APP_ROOT/knotq"
+install -m 0755 "$TMPDIR/extract/knotq-mcp" "$APP_ROOT/knotq-mcp"
 # Assets live in KnotQ's private application root. This prevents an update from
 # pruning an unrelated, generically named ~/.local/bin/assets directory.
 rm -rf "$APP_ROOT/assets"

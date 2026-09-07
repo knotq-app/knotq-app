@@ -20,6 +20,12 @@ yrs = { workspace = true }
 # All other test dependencies (anyhow, serde, uuid, chrono, yrs) are already in
 # [dependencies] and are accessible from integration tests in tests/.
 knotq-notifications = { workspace = true }
+# The MCP tool surface and the command layer it emits into, so agent edits can be
+# driven through the same convergence fuzzing as human ones (mcp_agent_convergence).
+# Neither depends on this crate, so this stays a leaf edge.
+knotq-commands = { workspace = true }
+knotq-index = { workspace = true }
+knotq-mcp = { workspace = true }
 ureq = { workspace = true }
 # Real WebSocket client for the ws_integration test (ws:// local backend — no TLS
 # feature needed). Exercises knotq_sync::ws against a live `wrangler dev` worker.

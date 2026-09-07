@@ -13,14 +13,14 @@
 
 use std::collections::{HashMap, HashSet};
 
-use anyhow::{anyhow, Result};
+use anyhow::{anyhow, Context, Result};
 use chrono::Utc;
 use knotq_model::{
     DocumentId, OperationId, ReplicaId, SyncDocumentKind, Workspace, WorkspaceId,
 };
 
 use crate::{
-    BatchPullRequest, BatchPushRequest, LocalSyncState, NotificationScheduleSnapshot,
+    BatchPullRequest, BatchPushRequest, DocumentStateVector, LocalSyncState, NotificationScheduleSnapshot,
     PendingCrdtEdit, PulledCrdtDocument, PushDocumentUpdates, StoredCrdtUpdate,
     WorkspaceCrdtDocuments,
 };
@@ -137,6 +137,10 @@ pub fn batch_pull_and_apply(
     let mut remote_updates_applied = 0;
     let mut authoritative_remote_latest: Option<HashMap<DocumentId, u64>> = None;
     let mut all_skipped: Vec<SkippedDocument> = Vec::new();
+    // A state-vector proof is tiny compared with a merged document. It catches
+    // the otherwise-undetectable case where persisted CRDT bytes were damaged
+    // while their sequence cursors still equal the server's heads.
+    let mut integrity_check_pending = true;
     loop {
         let request = BatchPullRequest {
             replica_id,
@@ -146,10 +150,41 @@ pub fn batch_pull_and_apply(
                 .map(|cursor| (cursor.document, cursor.last_pulled_sequence))
                 .collect(),
             client_protocol_version: crate::CLIENT_SYNC_PROTOCOL_VERSION,
+            integrity_state_vectors: integrity_check_pending
+                .then(|| {
+                    crdt_docs
+                        .state_vectors_v1()
+                        .into_iter()
+                        .map(|(document, state_vector_v1)| DocumentStateVector {
+                            document,
+                            state_vector_v1,
+                        })
+                        .collect()
+                })
+                .unwrap_or_default(),
         };
         let response = transport.pull(&request)?;
+        if let Some(mismatches) = &response.integrity_mismatches {
+            integrity_check_pending = false;
+            if !mismatches.is_empty() {
+                for document in mismatches {
+                    local_state.reset_pull_cursor(*document);
+                }
+                // The backend has identified the exact bad documents. Fetch
+                // only those full states; no workspace-wide reset is needed.
+                continue;
+            }
+        }
         if let Some(known_documents) = &response.known_documents {
             authoritative_remote_latest = Some(known_documents.clone());
+            // A server head lower than our saved cursor (or a saved cursor for a
+            // document the server no longer has) is a precise, cheap signal of
+            // stale local state. Repair only the offending cursor and immediately
+            // repeat the pull; do not turn a normal manual sync into a full
+            // workspace download.
+            if local_state.reconcile_server_heads(known_documents) {
+                continue;
+            }
         }
         if response.documents.is_empty() {
             break;
@@ -290,8 +325,12 @@ pub fn batch_pull_and_apply(
         // next poll fetches its full merged state from sequence zero. This is
         // safe — we only reset, we never loop within this call — and ensures
         // that an orphan-then-index-added sequence eventually converges.
+        // Include failed epoch adoptions as well as ordinary merge errors. An
+        // adoption failure used to be logged but absent from
+        // `errored_document_ids`, leaving its cursor advanced until somebody
+        // happened to edit that scheme again.
         let skipped_document_ids: std::collections::HashSet<DocumentId> =
-            errored_document_ids.keys().copied().collect();
+            all_skipped.iter().map(|skipped| skipped.document).collect();
         let local_crdt_doc_ids = crdt_docs.known_document_ids();
         for (scheme_id, meta) in &workspace.scheme_sync {
             if meta.kind != SyncDocumentKind::Scheme {
@@ -307,9 +346,64 @@ pub fn batch_pull_and_apply(
         }
 
         if !response.has_more {
+            // A new server defers an integrity proof while it returns changed
+            // documents, because the vectors in this request necessarily
+            // describe the pre-merge local state. Re-run once after applying
+            // the page. Older servers omit the flag, so remain compatible and
+            // do not gain an extra round trip.
+            if integrity_check_pending && response.integrity_check_deferred {
+                continue;
+            }
             break;
         }
     }
+    // A cursor proves that this replica received a server document version; it
+    // does *not* prove that the separately-persisted, UI-facing `Workspace`
+    // was successfully materialized from that CRDT state. In particular, an
+    // interrupted save can leave the plain workspace stale while the CRDT state
+    // and cursor are both current. The server correctly returns an empty
+    // response in that case, which used to let both devices report "synced"
+    // while rendering different content.
+    //
+    // Rebuild once after every pull, including an empty one. This is local-only
+    // (no additional request, wake-up, or document download) and changes the
+    // workspace only when the CRDT's authoritative materialization differs.
+    // Count a repair as remote work so platform drivers durably save it before
+    // they persist the already-advanced cursors.
+    //
+    // This uses the ordinary (not the exhaustive-diagnostic) materialization:
+    // it repairs the schemes this replica has decoded — ordinary schemes and
+    // the visible daily window — so a caught-up pull's cost tracks the
+    // visible/touched set rather than the total historical daily count. An
+    // off-window daily that failed to parse is repaired the moment the UI
+    // touches that date (which decodes its intact CRDT bytes), not here.
+    //
+    // A scheme whose content document has never synced (a daily just created
+    // locally, a scheme mid-bootstrap) may have an empty local CRDT document
+    // while its real content sits only in the plain workspace, waiting to be
+    // pushed. The repair must keep that content, not treat the empty document
+    // as authoritative — so only an empty CRDT document for an already-synced
+    // scheme is trusted here.
+    let synced_scheme_documents: HashSet<DocumentId> = local_state
+        .document_cursors
+        .values()
+        .filter(|cursor| cursor.last_pulled_sequence > 0 || cursor.last_pushed_sequence > 0)
+        .map(|cursor| cursor.document)
+        .collect();
+    let scheme_document_is_synced = |scheme_id: &knotq_model::SchemeId| {
+        workspace
+            .scheme_sync
+            .get(scheme_id)
+            .is_some_and(|meta| synced_scheme_documents.contains(&meta.id))
+    };
+    let materialized = crdt_docs
+        .materialized_workspace_repair(&workspace, &scheme_document_is_synced)
+        .context("verify workspace materialization after sync pull")?;
+    if materialized != workspace {
+        workspace = materialized;
+        remote_updates_applied += 1;
+    }
+
     let remote_latest = authoritative_remote_latest.unwrap_or_else(|| {
         local_state
             .document_cursors
@@ -341,6 +435,7 @@ pub fn batch_push_pending(
     local_state: &mut LocalSyncState,
     replica_id: ReplicaId,
     notification_schedule: &NotificationScheduleSnapshot,
+    background_refresh_required: bool,
     pushed: &mut Vec<PushedDocument>,
     crdt_docs: &mut WorkspaceCrdtDocuments,
     workspace: &Workspace,
@@ -349,9 +444,12 @@ pub fn batch_push_pending(
     // after reseed means something is deeply wrong — propagate that error.
     let mut reseeded: HashSet<DocumentId> = HashSet::new();
     loop {
-        let Some((request, acks)) =
-            build_push_request(local_state, replica_id, notification_schedule)
-        else {
+        let Some((request, acks)) = build_push_request(
+            local_state,
+            replica_id,
+            notification_schedule,
+            background_refresh_required,
+        ) else {
             return Ok(());
         };
         let push_result = transport.push(&request);
@@ -568,6 +666,7 @@ fn build_push_request(
     local_state: &LocalSyncState,
     fallback_replica_id: ReplicaId,
     notification_schedule: &NotificationScheduleSnapshot,
+    background_refresh_required: bool,
 ) -> Option<(BatchPushRequest, Vec<DocumentAck>)> {
     let mut documents = Vec::new();
     let mut acks = Vec::new();
@@ -631,6 +730,7 @@ fn build_push_request(
             replica_id: local_state.replica_id.unwrap_or(fallback_replica_id),
             documents,
             notification_schedule_changed: false,
+            background_refresh_required,
             notification_schedule: Some(schedule),
             client_protocol_version: crate::CLIENT_SYNC_PROTOCOL_VERSION,
         },
@@ -733,7 +833,7 @@ mod tests {
         state.push_pending(pending(workspace_id, replica_id, document, 1, update_len));
         state.push_pending(pending(workspace_id, replica_id, document, 2, update_len));
 
-        let (request, acks) = build_push_request(&state, replica_id, &schedule()).unwrap();
+        let (request, acks) = build_push_request(&state, replica_id, &schedule(), false).unwrap();
 
         assert_eq!(request.documents.len(), 1);
         assert_eq!(request.documents[0].document, document);
@@ -763,7 +863,7 @@ mod tests {
         ));
         state.push_pending(pending(workspace_id, replica_id, small_document, 2, 8));
 
-        let (request, acks) = build_push_request(&state, replica_id, &schedule()).unwrap();
+        let (request, acks) = build_push_request(&state, replica_id, &schedule(), false).unwrap();
 
         assert_eq!(request.documents.len(), 1);
         assert_eq!(request.documents[0].document, huge_document);
@@ -787,7 +887,7 @@ mod tests {
         state.push_pending(pending(workspace_id, replica_id, first, 1, update_len));
         state.push_pending(pending(workspace_id, replica_id, second, 2, update_len));
 
-        let (request, acks) = build_push_request(&state, replica_id, &schedule()).unwrap();
+        let (request, acks) = build_push_request(&state, replica_id, &schedule(), false).unwrap();
 
         assert_eq!(request.documents.len(), 1);
         assert_eq!(request.documents[0].document, first);

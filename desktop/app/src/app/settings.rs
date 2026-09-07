@@ -1,15 +1,131 @@
-use gpui::{App, Bounds, Context, Pixels, Window, WindowAppearance};
+use anyhow::Context as _;
+use gpui::{App, Bounds, ClipboardItem, Context, Pixels, Window, WindowAppearance};
 use knotq_storage_json::{
     save_app_settings, settings_path, AppSettings, CalendarViewMode, CalendarWeekRange,
     NotificationDefaults, SavedWindowPosition, SavedWindowSize, ThemeMode, TimeFormat,
 };
 
 use super::{
+    mcp_clients::{self, McpClient},
     KnotQApp, DEFAULT_WINDOW_HEIGHT, DEFAULT_WINDOW_WIDTH, MIN_WINDOW_HEIGHT, MIN_WINDOW_WIDTH,
 };
 use crate::theme_gpui::{all_themes, Theme};
 
 impl KnotQApp {
+    /// Enable or disable the local listener immediately. Dropping the running
+    /// server clears its endpoint descriptor before a replacement is started.
+    pub fn set_mcp_enabled(&mut self, enabled: bool, cx: &mut Context<Self>) {
+        if self.settings.mcp.enabled == enabled {
+            return;
+        }
+        self.settings.mcp.enabled = enabled;
+        self.reconcile_mcp_server(cx);
+        self.save_app_settings();
+        cx.notify();
+    }
+
+    /// Read-only takes effect for the next tool call without disconnecting a
+    /// client. The descriptor is updated too, so the bridge can report it.
+    pub fn set_mcp_read_only(&mut self, read_only: bool, cx: &mut Context<Self>) {
+        if self.settings.mcp.read_only == read_only {
+            return;
+        }
+        self.settings.mcp.read_only = read_only;
+        self.mcp_error = self
+            ._mcp_server
+            .as_ref()
+            .and_then(|server| server.set_read_only(read_only).err())
+            .map(|error| format!("Could not update MCP endpoint: {error:#}"));
+        self.save_app_settings();
+        cx.notify();
+    }
+
+    /// A config snippet for clients that use the standard stdio transport.
+    /// The bridge reads the per-run endpoint descriptor and token itself; no
+    /// credential is copied into a client config.
+    pub fn copy_mcp_setup(&mut self, cx: &mut Context<Self>) {
+        let command = crate::app::mcp_service::bundled_bridge_path()
+            .map(|path| path.to_string_lossy().into_owned())
+            .unwrap_or_else(|| "knotq-mcp".to_string());
+        let data_dir = knotq_storage_json::data_dir();
+        let config = serde_json::json!({
+            "mcpServers": { "knotq": {
+                "command": command,
+                "env": { "KNOTQ_DATA_DIR": data_dir }
+            } }
+        });
+        let text = serde_json::to_string_pretty(&config).expect("MCP setup is serializable");
+        cx.write_to_clipboard(ClipboardItem::new_string(text));
+        self.mcp_client_message = Some("Setup copied to the clipboard.".to_string());
+        cx.notify();
+    }
+
+    pub(crate) fn install_mcp_client(&mut self, client: McpClient, cx: &mut Context<Self>) {
+        let result = crate::app::mcp_service::bundled_bridge_path()
+            .context("could not locate the bundled MCP bridge")
+            .and_then(|bridge| {
+                mcp_clients::install(client, &bridge, &knotq_storage_json::data_dir())
+            });
+        self.mcp_client_message = Some(match result {
+            Ok(path) => {
+                // Choosing Install is an intentional authorization to turn the
+                // local listener on too; otherwise the newly registered client
+                // would immediately fail with an opaque "server unavailable".
+                if !self.settings.mcp.enabled {
+                    self.settings.mcp.enabled = true;
+                    self.reconcile_mcp_server(cx);
+                    self.save_app_settings();
+                }
+                // Re-read the file after writing it. The settings view uses the
+                // same check for its button state, so a successful install is
+                // reflected as Remove on the very next render.
+                if mcp_clients::installed(client).unwrap_or(false) {
+                    format!("{} connected via {}.", client.label(), path.display())
+                } else {
+                    format!("{} could not be verified after install.", client.label())
+                }
+            }
+            Err(error) => format!("Could not connect {}: {error:#}", client.label()),
+        });
+        cx.notify();
+    }
+
+    pub(crate) fn remove_mcp_client(&mut self, client: McpClient, cx: &mut Context<Self>) {
+        self.mcp_client_message = Some(match mcp_clients::remove(client) {
+            Ok(path) => {
+                let removed = !mcp_clients::installed(client).unwrap_or(true);
+                if removed {
+                    format!(
+                        "Removed KnotQ from {} ({}).",
+                        client.label(),
+                        path.display()
+                    )
+                } else {
+                    format!("{} is still present in {}.", client.label(), path.display())
+                }
+            }
+            Err(error) => format!("Could not remove {}: {error:#}", client.label()),
+        });
+        cx.notify();
+    }
+
+    fn reconcile_mcp_server(&mut self, cx: &mut Context<Self>) {
+        self._mcp_server = None;
+        self.mcp_error = None;
+        if self.settings.mcp.enabled {
+            match crate::app::mcp_service::start(
+                self.settings.mcp.port,
+                self.settings.mcp.read_only,
+                cx,
+            ) {
+                Ok(server) => self._mcp_server = Some(server),
+                Err(error) => {
+                    self.mcp_error = Some(format!("Could not start MCP server: {error:#}"));
+                }
+            }
+        }
+    }
+
     pub fn theme(&self) -> Theme {
         let themes = all_themes();
         match self.theme_mode {
@@ -152,6 +268,10 @@ impl KnotQApp {
             onboarding_completed: self.settings.onboarding_completed,
             last_view: self.settings.last_view,
             last_scheme_id: self.settings.last_scheme_id,
+            // There is no desktop UI for the MCP server yet, so carry the loaded
+            // value through rather than resetting a user's hand-edited config on
+            // the next save.
+            mcp: self.settings.mcp.clone(),
         };
         // The settings file on disk holds something this build cannot represent
         // (see `settings_save_blocked_reason`); writing would replace it with a

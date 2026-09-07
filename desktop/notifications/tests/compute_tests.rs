@@ -7,8 +7,9 @@ use knotq_model::{
 use knotq_notifications::{
     completed_notification_keys, compute_due_notifications,
     compute_due_notifications_with_expander, compute_due_notifications_with_lead_times,
-    expired_event_notification_keys, notification_keys_for_item, notification_keys_for_occurrence,
-    NotificationKind, NotificationLeadTimes,
+    expired_event_notification_keys, expired_event_notification_keys_with_expander,
+    notification_keys_for_item, notification_keys_for_occurrence, NotificationKind,
+    NotificationLeadTimes,
 };
 use knotq_rrule::OccurrenceExpander;
 
@@ -36,6 +37,52 @@ fn event_notifications_fire_at_start_time() {
     assert_eq!(notes[0].title, "Class");
     assert!(!notes[0].body.starts_with("From "));
     assert!(notes[0].body.contains(" to "));
+}
+
+#[test]
+fn event_without_an_explicit_end_still_gets_a_definite_expiry() {
+    // Events normally carry both a start and an end, but a synthetic/degenerate
+    // occurrence (e.g. an anchor-less recurring expansion) can reach the
+    // notification path as an Event with `end == None`. It must still expire, or
+    // its delivered banner never clears (iOS has no per-notification TTL).
+    let start = Utc.with_ymd_and_hms(2026, 5, 10, 12, 0, 0).unwrap();
+    let expected_end = start + Duration::seconds(knotq_model::DEFAULT_EVENT_DURATION_SECS);
+    let workspace = workspace_with_item(Item::new("Open-ended").with_start(start));
+    let expander = EndlessEventExpander { start };
+
+    let notes = compute_due_notifications_with_expander(
+        &workspace,
+        NotificationLeadTimes {
+            event_offset_secs: 0,
+            ..NotificationLeadTimes::default()
+        },
+        start - Duration::minutes(1),
+        start + Duration::minutes(1),
+        &expander,
+    );
+    assert_eq!(notes.len(), 1);
+    assert_eq!(notes[0].kind, NotificationKind::Event);
+    assert_eq!(notes[0].expires_at, Some(expected_end));
+    assert_eq!(notes[0].end_at, Some(expected_end));
+
+    // Before the synthetic end: not yet expired. After it: eligible for cleanup.
+    assert!(expired_event_notification_keys_with_expander(
+        &workspace,
+        NotificationLeadTimes::default(),
+        expected_end - Duration::minutes(1),
+        &expander,
+    )
+    .is_empty());
+    assert_eq!(
+        expired_event_notification_keys_with_expander(
+            &workspace,
+            NotificationLeadTimes::default(),
+            expected_end + Duration::minutes(1),
+            &expander,
+        )
+        .len(),
+        1
+    );
 }
 
 #[test]
@@ -381,6 +428,32 @@ fn workspace_and_scheme_with_item(item: Item) -> (Workspace, knotq_model::Scheme
         .children
         .push(NodeRef::Scheme(scheme_id));
     (workspace, scheme_id)
+}
+
+struct EndlessEventExpander {
+    start: chrono::DateTime<Utc>,
+}
+
+impl OccurrenceExpander for EndlessEventExpander {
+    fn expand(&self, item: &Item, _range: DateRange) -> Vec<Occurrence> {
+        vec![Occurrence {
+            id: OccurrenceId::Single,
+            start: Some(self.start),
+            end: None,
+            available: None,
+            kind: ItemKind::Event,
+            occurrence_index: 0,
+            state: item.single_state(),
+        }]
+    }
+
+    fn next_after(&self, _item: &Item, _after: chrono::DateTime<Utc>) -> Option<Occurrence> {
+        None
+    }
+
+    fn prev_before(&self, _item: &Item, _before: chrono::DateTime<Utc>) -> Option<Occurrence> {
+        None
+    }
 }
 
 struct SyntheticExpander {

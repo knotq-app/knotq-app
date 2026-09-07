@@ -10,10 +10,12 @@ $ErrorActionPreference = "Stop"
 
 $Root = (Resolve-Path (Join-Path $PSScriptRoot "../..")).Path
 $Binary = Join-Path $Root "target\$Target\release\knotq.exe"
+$McpBridge = Join-Path $Root "target\$Target\release\knotq-mcp.exe"
 $Dist = Join-Path $Root "dist\windows"
 $Script = Join-Path $PSScriptRoot "KnotQ.iss"
 
 if (-not (Test-Path $Binary)) { throw "binary not found: $Binary" }
+if (-not (Test-Path $McpBridge)) { throw "MCP bridge not found: $McpBridge" }
 if (-not (Test-Path $Script)) { throw "installer script not found: $Script" }
 
 New-Item -ItemType Directory -Force -Path $Dist | Out-Null
@@ -42,6 +44,7 @@ if (-not $Iscc) { throw "ISCC.exe not found. Install Inno Setup 6 before running
 $env:KNOTQ_VERSION = $Version
 $env:KNOTQ_SOURCE_ROOT = $Root
 $env:KNOTQ_BINARY = $Binary
+$env:KNOTQ_MCP_BRIDGE = $McpBridge
 $env:KNOTQ_OUTPUT_DIR = $Dist
 
 & $Iscc "$Script"

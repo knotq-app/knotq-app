@@ -68,6 +68,9 @@ impl KnotQApp {
         // compiled in regardless of the `accounts` feature.
         let google_calendar_sync_task = Self::spawn_google_calendar_sync_task(cx);
         let auto_update_task = spawn_auto_update_task(auto_update_rx, cx);
+        // Off unless the user turned it on; when it is on it stays up for the
+        // whole session, so a client's saved config survives a restart.
+        let mcp_server = super::mcp_service::start_if_enabled(&settings, cx);
         let quit_subscription = cx.on_app_quit(|app, _cx| {
             app.flush_for_shutdown("app quit");
             async {}
@@ -217,6 +220,9 @@ impl KnotQApp {
             _sync_task: sync_task,
             _google_calendar_sync_task: google_calendar_sync_task,
             _auto_update_task: auto_update_task,
+            _mcp_server: mcp_server,
+            mcp_error: None,
+            mcp_client_message: None,
             #[cfg(feature = "accounts")]
             _presence_task: presence_task,
             _window_activation_subscription: None,

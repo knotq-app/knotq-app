@@ -63,7 +63,10 @@ pub(super) fn google_calendar_last_synced_label(value: DateTime<Utc>) -> String 
         "settings.google_calendar.synced_at",
         &[(
             "when",
-            &value.with_timezone(&Local).format("%b %-d %H:%M").to_string(),
+            &value
+                .with_timezone(&Local)
+                .format("%b %-d %H:%M")
+                .to_string(),
         )],
     )
 }

@@ -555,6 +555,7 @@ mod tests {
                 replica_id: crate::ReplicaId::new(),
                 cursors: Default::default(),
                 client_protocol_version: crate::CLIENT_SYNC_PROTOCOL_VERSION,
+                integrity_state_vectors: Default::default(),
             };
             client.request_pull(&req)
         });
@@ -639,6 +640,7 @@ mod tests {
                 replica_id: crate::ReplicaId::new(),
                 documents: Vec::new(),
                 notification_schedule_changed: false,
+                background_refresh_required: false,
                 notification_schedule: None,
                 client_protocol_version: crate::CLIENT_SYNC_PROTOCOL_VERSION,
             };
@@ -695,6 +697,7 @@ mod tests {
                 replica_id: crate::ReplicaId::new(),
                 cursors: Default::default(),
                 client_protocol_version: crate::CLIENT_SYNC_PROTOCOL_VERSION,
+                integrity_state_vectors: Default::default(),
             };
             req_client.request_pull(&req)
         });

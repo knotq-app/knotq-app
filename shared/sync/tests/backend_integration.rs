@@ -406,6 +406,7 @@ fn atomic_batch_rejection_and_server_gate() {
             updates: vec![vec![1u8, 2, 3, 4, 5, 6, 7, 8]],
         }],
         notification_schedule_changed: false,
+        background_refresh_required: false,
         notification_schedule: Some(schedule.clone()),
         client_protocol_version: knotq_sync::CLIENT_SYNC_PROTOCOL_VERSION,
     };
@@ -430,6 +431,7 @@ fn atomic_batch_rejection_and_server_gate() {
             replica_id: ReplicaId::new(),
             cursors: HashMap::new(),
             client_protocol_version: knotq_sync::CLIENT_SYNC_PROTOCOL_VERSION,
+            integrity_state_vectors: Vec::new(),
         })
         .expect("pull after rejection");
     let persisted = pull.documents.iter().any(|d| d.document == doc_id);

@@ -203,6 +203,8 @@ impl SyncTransport for TestServer {
         Ok(BatchPullResponse {
             documents: pulled,
             known_documents: Some(known_documents),
+            integrity_mismatches: None,
+            integrity_check_deferred: false,
             notification_schedule_revision: 0,
             has_more: false,
         })

@@ -201,6 +201,25 @@ impl Command {
 #[serde(rename_all = "snake_case")]
 pub enum CommandOrigin {
     User,
+    /// An MCP agent acting on the user's behalf. Distinct from `User` so a
+    /// caller can tell the two apart, but it enforces exactly the same
+    /// invariants: an agent is a user-equivalent actor, not a trusted internal
+    /// writer, so it must not be able to edit a linked calendar or bypass any
+    /// other rule the UI is held to. See [`CommandOrigin::enforces_user_invariants`].
+    Agent,
     Importer,
     Migration,
+}
+
+impl CommandOrigin {
+    /// Whether commands from this origin are checked against the rules the UI
+    /// enforces.
+    ///
+    /// `Importer` and `Migration` are exempt because they legitimately write
+    /// the things a user may not — an import populates a read-only calendar
+    /// scheme, a migration rewrites whatever the old format left behind. An
+    /// agent has no such licence.
+    pub fn enforces_user_invariants(self) -> bool {
+        matches!(self, Self::User | Self::Agent)
+    }
 }
