@@ -24,6 +24,7 @@ mod delete_confirm;
 mod editor_mgr;
 mod export;
 mod google_oauth;
+pub(crate) mod mcp_clients;
 mod mcp_service;
 mod nav;
 mod node_rename;
@@ -755,6 +756,11 @@ pub struct KnotQApp {
     /// and removes the endpoint file, so its presence is what "a server is
     /// running" means.
     pub _mcp_server: Option<crate::app::mcp_service::McpServer>,
+    /// A listener startup or descriptor-write failure the settings screen can
+    /// surface instead of silently leaving the feature switched on but absent.
+    pub(crate) mcp_error: Option<String>,
+    /// Last result from explicitly installing or removing a client integration.
+    pub(crate) mcp_client_message: Option<String>,
     #[cfg(feature = "accounts")]
     pub _presence_task: Task<()>,
     pub _window_activation_subscription: Option<Subscription>,

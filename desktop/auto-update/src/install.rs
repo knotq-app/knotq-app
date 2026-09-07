@@ -142,6 +142,12 @@ fn install_linux_update(downloaded_tar_gz: &Path, temp_dir: &Path) -> Result<Pat
     let target_exe = install_dir.join("knotq");
     copy_file(&source_exe, &target_exe)?;
 
+    let source_mcp_bridge = extracted.join("knotq-mcp");
+    if !source_mcp_bridge.is_file() {
+        bail!("Linux update did not contain knotq-mcp");
+    }
+    copy_file(&source_mcp_bridge, &install_dir.join("knotq-mcp"))?;
+
     let source_assets = extracted.join("assets");
     if source_assets.is_dir() {
         install_linux_assets(&source_assets, &install_dir.join("assets"))?;

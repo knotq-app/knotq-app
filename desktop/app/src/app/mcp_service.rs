@@ -98,6 +98,7 @@ pub(crate) type McpJobSender = Sender<McpJob>;
 /// A running server. Dropping it stops the listener.
 pub(crate) struct McpServer {
     pub port: u16,
+    token: String,
     shutdown: Arc<AtomicBool>,
     /// Kept alive for the life of the server; the GPUI task ends when it is dropped.
     _task: Task<()>,
@@ -111,6 +112,38 @@ impl Drop for McpServer {
         let _ = std::net::TcpStream::connect(("127.0.0.1", self.port));
         clear_mcp_endpoint();
     }
+}
+
+impl McpServer {
+    /// Keep the descriptor honest when the setting changes without a restart.
+    /// Tool evaluation reads the live setting on the main thread, but clients
+    /// also use this field to explain their current access level before making
+    /// a call.
+    pub(crate) fn set_read_only(&self, read_only: bool) -> anyhow::Result<()> {
+        save_mcp_endpoint(&McpEndpoint {
+            url: format!("http://127.0.0.1:{}{}", self.port, http::MCP_PATH),
+            port: self.port,
+            token: self.token.clone(),
+            read_only,
+            protocol_version: protocol::PROTOCOL_VERSION.to_string(),
+        })
+    }
+}
+
+/// The stdio bridge shipped beside the desktop executable.
+///
+/// Keeping this resolution relative to the app rather than relying on `PATH`
+/// means a client config remains valid after the user installs or updates
+/// KnotQ, without a separate package manager or runtime.
+pub(crate) fn bundled_bridge_path() -> Option<std::path::PathBuf> {
+    let executable = if cfg!(windows) {
+        "knotq-mcp.exe"
+    } else {
+        "knotq-mcp"
+    };
+    std::env::current_exe()
+        .ok()
+        .and_then(|path| path.parent().map(|parent| parent.join(executable)))
 }
 
 /// Start the server if the user has enabled it.
@@ -139,7 +172,7 @@ pub(crate) fn start_if_enabled(
     }
 }
 
-fn start(
+pub(crate) fn start(
     preferred_port: u16,
     read_only: bool,
     cx: &mut Context<KnotQApp>,
@@ -149,12 +182,12 @@ fn start(
     // A fresh token every start. The endpoint file is rewritten alongside it, so
     // a client that reads the file each time keeps working, and a token that
     // leaked from a previous session stops working the moment the app restarts.
-    let token = Arc::new(random_token(TOKEN_LENGTH));
+    let token = random_token(TOKEN_LENGTH);
 
     save_mcp_endpoint(&McpEndpoint {
         url: format!("http://127.0.0.1:{port}{}", http::MCP_PATH),
         port,
-        token: token.as_ref().clone(),
+        token: token.clone(),
         read_only,
         protocol_version: protocol::PROTOCOL_VERSION.to_string(),
     })?;
@@ -163,7 +196,7 @@ fn start(
     let shutdown = Arc::new(AtomicBool::new(false));
 
     let listener_shutdown = Arc::clone(&shutdown);
-    let listener_token = Arc::clone(&token);
+    let listener_token = Arc::new(token.clone());
     std::thread::Builder::new()
         .name("knotq-mcp".into())
         .spawn(move || {
@@ -175,9 +208,13 @@ fn start(
             )
         })?;
 
-    eprintln!("[mcp] listening on http://127.0.0.1:{port}{}", http::MCP_PATH);
+    eprintln!(
+        "[mcp] listening on http://127.0.0.1:{port}{}",
+        http::MCP_PATH
+    );
     Ok(McpServer {
         port,
+        token,
         shutdown,
         _task: spawn_job_task(jobs_rx, cx),
     })
@@ -193,9 +230,7 @@ fn spawn_job_task(jobs: Receiver<McpJob>, cx: &mut Context<KnotQApp>) -> Task<()
             // keystroke. That is what serialises agent edits against the user's.
             let response = weak
                 .update(cx, |app, cx| app.evaluate_mcp_job(&job, cx))
-                .unwrap_or_else(|_| {
-                    protocol::internal_error(id, "KnotQ is shutting down")
-                });
+                .unwrap_or_else(|_| protocol::internal_error(id, "KnotQ is shutting down"));
             // The connection thread may already have timed out and gone; that
             // is not an error worth reporting.
             let _ = job.reply.send(response);
@@ -235,7 +270,10 @@ impl KnotQApp {
         };
 
         let response = match outcome {
-            Ok(Outcome::Write { command, mut response }) => {
+            Ok(Outcome::Write {
+                command,
+                mut response,
+            }) => {
                 match self.apply_from_agent(command, cx) {
                     // `changed` comes from whether a receipt came back, not from
                     // the fact that a command was built: a command can still be
@@ -246,8 +284,7 @@ impl KnotQApp {
                         // `create_scheme` / `create_folder` cannot name what
                         // they made until the apply returns, so splice the id in
                         // here rather than making the agent re-list and guess.
-                        if let (Some((field, id)), Some(map)) =
-                            (created, response.as_object_mut())
+                        if let (Some((field, id)), Some(map)) = (created, response.as_object_mut())
                         {
                             map.insert(field.to_string(), Value::String(id));
                         }

@@ -21,6 +21,12 @@
   #define Binary SourceRoot + "\target\x86_64-pc-windows-msvc\release\knotq.exe"
 #endif
 
+#define McpBridge GetEnv("KNOTQ_MCP_BRIDGE")
+#if McpBridge == ""
+  #undef McpBridge
+  #define McpBridge SourceRoot + "\target\x86_64-pc-windows-msvc\release\knotq-mcp.exe"
+#endif
+
 #define OutputDir GetEnv("KNOTQ_OUTPUT_DIR")
 #if OutputDir == ""
   #undef OutputDir
@@ -54,6 +60,7 @@ Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{
 
 [Files]
 Source: "{#Binary}"; DestDir: "{app}"; DestName: "{#AppExeName}"; Flags: ignoreversion
+Source: "{#McpBridge}"; DestDir: "{app}"; DestName: "knotq-mcp.exe"; Flags: ignoreversion
 Source: "{#SourceRoot}\desktop\app\assets\*"; DestDir: "{app}\assets"; Excludes: ".DS_Store"; Flags: ignoreversion recursesubdirs createallsubdirs
 
 [Icons]

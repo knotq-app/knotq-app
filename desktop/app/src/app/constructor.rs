@@ -221,6 +221,8 @@ impl KnotQApp {
             _google_calendar_sync_task: google_calendar_sync_task,
             _auto_update_task: auto_update_task,
             _mcp_server: mcp_server,
+            mcp_error: None,
+            mcp_client_message: None,
             #[cfg(feature = "accounts")]
             _presence_task: presence_task,
             _window_activation_subscription: None,

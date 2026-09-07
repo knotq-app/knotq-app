@@ -38,14 +38,9 @@ tool call to command, is covered without a window or a socket.
 
 ## Turning it on
 
-There is no settings UI yet. In `settings.json` in the [data
-directory](../../CLAUDE.md):
-
-```json
-"mcp": { "enabled": true, "read_only": false, "port": 52373 }
-```
-
-Restart KnotQ. It writes `mcp-endpoint.json` beside `settings.json`:
+Open **Settings → AI & MCP** and enable the local server. It starts
+and stops immediately; no restart is needed. You can also grant read-only
+access there. KnotQ writes `mcp-endpoint.json` beside `settings.json`:
 
 ```json
 {
@@ -58,14 +53,20 @@ Restart KnotQ. It writes `mcp-endpoint.json` beside `settings.json`:
 ```
 
 The server is up for the whole session, so a client's saved configuration
-survives a restart. If the configured port is taken it binds another one and
-records it here — read the file, don't assume the port.
+survives a restart. If the configured port is taken, KnotQ reports the conflict
+and does not start the server; client configurations never silently drift.
 
-Point a stdio client at the bridge:
+The `knotq-mcp` stdio bridge is bundled beside the desktop app on every
+platform. Use **Copy setup** in Settings to copy a ready-to-paste stdio client
+configuration with the exact installed path. The bridge reads this endpoint
+file on every request and supplies the token itself, so no credential is stored
+in an AI-client configuration.
 
-```json
-{ "mcpServers": { "knotq": { "command": "knotq-mcp" } } }
-```
+The same **AI & MCP** section can register KnotQ directly with Claude Desktop,
+Claude Code, Codex, or Cursor. Each button updates only the `knotq` entry in
+that client's global configuration and has a matching Remove action; other
+servers and preferences are left intact. Restart the chosen client after
+installing it.
 
 Or POST straight to the URL with `Authorization: Bearer <token>`.
 
@@ -125,7 +126,7 @@ Deliberately **not** exposed:
 | `desktop/mcp/tests/write_tools.rs` | The command each tool emits, round trips, idempotency, refusals. |
 | `desktop/mcp/tests/protocol.rs` | JSON-RPC framing, result wrapping, and that the advertised surface matches the implemented one. |
 | `desktop/app/src/app/mcp_service/http.rs` | Admission: paths, methods, tokens, origins. |
-| `desktop/app/src/app/mcp_service/server.rs` | The real listener over real sockets: split bodies, concurrent clients, port fallback. |
+| `desktop/app/src/app/mcp_service/server.rs` | The real listener over real sockets: split bodies, concurrent clients, deterministic port binding. |
 | `shared/sync/tests/mcp_agent_convergence.rs` | That agent edits converge with human ones, across devices, restarts and retries. |
 | `desktop/mcp/tests/manual_e2e.sh` | Manual, not run by `cargo test`: a real KnotQ driven over a real socket, to prove the app wires the server up at all. |
 

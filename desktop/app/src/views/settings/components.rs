@@ -26,8 +26,10 @@ impl<T: Styled> SettingsRowStyle for T {
 pub(super) fn title_detail_column(title: String, detail: String, t: UiTheme) -> gpui::AnyElement {
     div()
         .min_w_0()
+        .h(px(30.0))
         .flex()
         .flex_col()
+        .justify_center()
         .gap(px(2.0))
         .child(
             div()
@@ -193,7 +195,7 @@ where
                     div()
                         .id((id, 0_usize))
                         .h(px(28.0))
-                        .max_w(px(240.0))
+                        .w(px(300.0))
                         .px(px(8.0))
                         .flex()
                         .items_center()
@@ -284,6 +286,7 @@ where
 {
     div()
         .id(id)
+        .flex_1()
         .px(px(8.0))
         .py(px(3.0))
         .min_h(px(28.0))
@@ -465,8 +468,11 @@ where
             div()
                 .id((id, 0_usize))
                 .flex_shrink_0()
+                .h(px(30.0))
                 .px(px(7.0))
                 .py(px(3.0))
+                .flex()
+                .items_center()
                 .rounded(px(3.0))
                 .border_1()
                 .border_color(token_rgba(if primary {

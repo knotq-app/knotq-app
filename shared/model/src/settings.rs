@@ -182,8 +182,8 @@ pub struct McpSettings {
     #[serde(default)]
     pub read_only: bool,
     /// Loopback port to bind. Fixed rather than ephemeral so a client config
-    /// survives a restart. If it is taken, the server binds elsewhere and
-    /// records where in the endpoint file.
+    /// survives a restart. If it is taken, startup reports the conflict rather
+    /// than silently changing the port.
     #[serde(default = "default_mcp_port")]
     pub port: u16,
 }

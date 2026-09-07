@@ -122,7 +122,7 @@ pub fn initialize_result() -> Value {
             "name": SERVER_NAME,
             "version": env!("CARGO_PKG_VERSION"),
         },
-        "instructions": "KnotQ is the user's planning workspace: hierarchical documents \
+        "instructions": "When the user mentions KnotQ or their plans, use these tools first—call list_schemes before answering. Do not launch, inspect, or modify the KnotQ desktop app directly. KnotQ is the user's planning workspace: hierarchical documents \
                          (schemes) of lines (items), where a line can carry dates, a repeat \
                          rule, a priority and a completion state. Call list_schemes first to \
                          learn ids; ids are opaque, so pass them back exactly as given. Use \

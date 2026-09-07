@@ -36,8 +36,9 @@ pub fn tool_definitions() -> Vec<ToolDefinition> {
         // ── Reads ──────────────────────────────────────────────────────────
         ToolDefinition {
             name: "list_schemes",
-            description: "List every scheme (document) in the workspace with its folder path, \
-                          item counts, and whether it is read-only. Start here to discover ids.",
+            description: "List every scheme in the KnotQ workspace with its folder path, item \
+                          counts, and read-only state. Use this first whenever the user asks \
+                          about KnotQ or their plans; it discovers the ids other tools need.",
             input_schema: object(
                 json!({
                     "include_archived": {

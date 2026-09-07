@@ -34,30 +34,15 @@ pub(super) struct Listening {
     pub port: u16,
 }
 
-/// Bind the configured port, falling back to whatever the OS will give us.
-///
-/// A fixed port is what lets a client's saved configuration survive a restart,
-/// but it is not worth refusing to start over: a stale process or an unrelated
-/// service holding the port would otherwise leave the user with a feature that
-/// is switched on and silently absent. The endpoint file records where we
-/// actually landed.
+/// Bind the configured port. The port is deliberately deterministic so client
+/// configurations remain valid across app restarts.
 pub(super) fn bind(preferred: u16) -> std::io::Result<Listening> {
     let loopback = |port: u16| SocketAddr::from((Ipv4Addr::LOCALHOST, port));
-    match TcpListener::bind(loopback(preferred)) {
-        Ok(listener) => Ok(Listening {
-            port: listener.local_addr()?.port(),
-            listener,
-        }),
-        Err(e) if e.kind() == std::io::ErrorKind::AddrInUse => {
-            eprintln!("[mcp] port {preferred} is in use; binding an available port instead");
-            let listener = TcpListener::bind(loopback(0))?;
-            Ok(Listening {
-                port: listener.local_addr()?.port(),
-                listener,
-            })
-        }
-        Err(e) => Err(e),
-    }
+    let listener = TcpListener::bind(loopback(preferred))?;
+    Ok(Listening {
+        port: listener.local_addr()?.port(),
+        listener,
+    })
 }
 
 /// Serve connections until `shutdown` is set.
@@ -108,9 +93,8 @@ fn handle_connection(mut stream: TcpStream, token: &str, jobs: &McpJobSender) {
     let body = match protocol::parse(&request.body) {
         Ok(parsed) => parsed,
         Err(error_response) => {
-            let _ = stream.write_all(
-                json_response(200, "OK", &error_response.to_string()).as_bytes(),
-            );
+            let _ =
+                stream.write_all(json_response(200, "OK", &error_response.to_string()).as_bytes());
             return;
         }
     };
@@ -131,7 +115,9 @@ fn handle_connection(mut stream: TcpStream, token: &str, jobs: &McpJobSender) {
     let payload = match response {
         // A JSON-RPC notification gets an HTTP 202 with no body, which is what
         // the Streamable HTTP transport specifies.
-        None => "HTTP/1.1 202 Accepted\r\nContent-Length: 0\r\nConnection: close\r\n\r\n".to_string(),
+        None => {
+            "HTTP/1.1 202 Accepted\r\nContent-Length: 0\r\nConnection: close\r\n\r\n".to_string()
+        }
         Some(response) => json_response(200, "OK", &response.to_string()),
     };
     let _ = stream.write_all(payload.as_bytes());
@@ -315,9 +301,8 @@ mod tests {
     fn initialize_is_answered_without_ever_reaching_the_main_thread() {
         // The stub panics if called: a handshake must not cost a main-thread hop.
         let harness = Harness::start(|_| panic!("initialize must not reach the workspace"));
-        let response = harness.authorized(
-            r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}"#,
-        );
+        let response =
+            harness.authorized(r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}"#);
         assert!(response.starts_with("HTTP/1.1 200 OK"), "{response}");
         let body = Harness::body_of(&response);
         assert_eq!(body["result"]["serverInfo"]["name"], "knotq");
@@ -326,9 +311,9 @@ mod tests {
     #[test]
     fn tools_list_is_also_answered_locally() {
         let harness = Harness::start(|_| panic!("tools/list must not reach the workspace"));
-        let body = Harness::body_of(&harness.authorized(
-            r#"{"jsonrpc":"2.0","id":2,"method":"tools/list"}"#,
-        ));
+        let body = Harness::body_of(
+            &harness.authorized(r#"{"jsonrpc":"2.0","id":2,"method":"tools/list"}"#),
+        );
         assert!(!body["result"]["tools"].as_array().unwrap().is_empty());
     }
 
@@ -469,16 +454,12 @@ mod tests {
         }
     }
 
-    /// The preferred port is what makes a saved client config keep working; the
-    /// fallback is what stops a taken port turning the feature into a silent no-op.
     #[test]
-    fn binding_falls_back_when_the_preferred_port_is_taken() {
+    fn binding_fails_when_the_preferred_port_is_taken() {
         let squatter = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
         let taken = squatter.local_addr().unwrap().port();
 
-        let listening = bind(taken).expect("should still bind somewhere");
-        assert_ne!(listening.port, taken);
-        assert_ne!(listening.port, 0);
+        assert!(bind(taken).is_err());
     }
 
     #[test]

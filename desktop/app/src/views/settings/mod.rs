@@ -11,12 +11,13 @@ use knotq_l10n::t as tr;
 use knotq_model::DEFAULT_EVENT_NOTIFICATION_OFFSET_SECS;
 use knotq_storage_json::{CalendarViewMode, CalendarWeekRange, ThemeMode, TimeFormat};
 
+use crate::app::mcp_clients::{self, McpClient};
 use crate::app::{KnotQApp, SettingsDropdown};
 use crate::theme_gpui::{token_hsla, Theme as UiTheme};
 
 use components::{
-    active_marker, choice_row, settings_dropdown_group, settings_header, settings_section,
-    update_status_row, SettingsDropdownGroupArgs,
+    active_marker, choice_row, settings_action_row, settings_dropdown_group, settings_header,
+    settings_section, update_status_row, SettingsActionRowArgs, SettingsDropdownGroupArgs,
 };
 use labels::{
     assignment_notification_offset_label, calendar_range_label, calendar_view_label,
@@ -165,14 +166,10 @@ impl KnotQApp {
                     (tr("settings.notifications.offset_2_hr"), 2 * 60 * 60),
                     (tr("settings.notifications.offset_6_hr"), 6 * 60 * 60),
                     (tr("settings.notifications.offset_1_day"), 24 * 60 * 60),
-                    (
-                        tr("settings.notifications.offset_2_days"),
-                        2 * 24 * 60 * 60,
-                    ),
+                    (tr("settings.notifications.offset_2_days"), 2 * 24 * 60 * 60),
                 ],
                 current: self.notification_defaults.assignment_offset_secs,
-                is_open: self.settings_dropdown
-                    == Some(SettingsDropdown::AssignmentNotification),
+                is_open: self.settings_dropdown == Some(SettingsDropdown::AssignmentNotification),
                 t,
             },
             cx,
@@ -183,6 +180,7 @@ impl KnotQApp {
             },
         ));
         let update_rows = self.auto_update_rows(t, cx);
+        let mcp_rows = self.mcp_rows(t, cx);
         let sync_panel = self.settings_sync_panel(t, cx);
         let google_rows = self.google_calendar_account_rows(t, cx);
 
@@ -204,6 +202,7 @@ impl KnotQApp {
                         .gap(px(6.0))
                         .child(settings_header(t))
                         .child(sync_panel)
+                        .child(settings_section("AI & MCP", mcp_rows, t))
                         .child(settings_section(
                             tr("settings.appearance.section"),
                             theme_rows,
@@ -248,6 +247,105 @@ impl KnotQApp {
         )];
 
         rows.push(update_status_row(self.auto_update_status.clone(), t, cx));
+        rows
+    }
+
+    fn mcp_rows(&mut self, t: UiTheme, cx: &mut Context<Self>) -> Vec<gpui::AnyElement> {
+        let enabled = self.settings.mcp.enabled;
+        let read_only = self.settings.mcp.read_only;
+        let running = self._mcp_server.as_ref().map(|server| server.port);
+        let mut rows = vec![choice_row(
+            ("mcp-enabled", 0),
+            "Enable local MCP server",
+            enabled,
+            active_marker(enabled, t),
+            t,
+            cx,
+            move |this, cx| this.set_mcp_enabled(!enabled, cx),
+        )];
+        if enabled {
+            rows.push(choice_row(
+                ("mcp-read-only", 0),
+                "Read-only access",
+                read_only,
+                active_marker(read_only, t),
+                t,
+                cx,
+                move |this, cx| this.set_mcp_read_only(!read_only, cx),
+            ));
+        }
+        let detail = match (&self.mcp_error, running) {
+            (Some(error), _) => error.clone(),
+            (None, Some(port)) => format!(
+                "Running locally on 127.0.0.1:{port}. The bundled bridge supplies its token automatically."
+            ),
+            (None, None) => format!(
+                "Off by default. When enabled, it listens only on this computer (port {}).",
+                self.settings.mcp.port
+            ),
+        };
+        if enabled {
+            let detail = if let Some(message) = self.mcp_client_message.as_ref() {
+                format!("{detail} {message}")
+            } else {
+                detail
+            };
+            rows.push(settings_action_row(
+                SettingsActionRowArgs {
+                    id: "mcp-copy-setup",
+                    title: "Manual setup".to_string(),
+                    detail,
+                    button_label: "Copy setup",
+                    primary: false,
+                },
+                t,
+                cx,
+                |this, cx| this.copy_mcp_setup(cx),
+            ));
+            let client_rows = McpClient::ALL
+                .into_iter()
+                .map(|client| {
+                    let installed = mcp_clients::installed(client).unwrap_or(false);
+                    settings_action_row(
+                        SettingsActionRowArgs {
+                            id: match client {
+                                McpClient::ClaudeDesktop => "mcp-client-claude-desktop",
+                                McpClient::ClaudeCode => "mcp-client-claude-code",
+                                McpClient::Codex => "mcp-client-codex",
+                                McpClient::Cursor => "mcp-client-cursor",
+                            },
+                            title: client.label().to_string(),
+                            detail: String::new(),
+                            button_label: if installed { "Remove" } else { "Install" },
+                            primary: false,
+                        },
+                        t,
+                        cx,
+                        move |this, cx| {
+                            if installed {
+                                this.remove_mcp_client(client, cx);
+                            } else {
+                                this.install_mcp_client(client, cx);
+                            }
+                        },
+                    )
+                })
+                .collect::<Vec<_>>();
+            let mut client_rows = client_rows.into_iter();
+            while let Some(first) = client_rows.next() {
+                let first = div().flex_1().min_w_0().child(first).into_any_element();
+                let row = div()
+                    .flex()
+                    .w_full()
+                    .gap(px(8.0))
+                    .child(first)
+                    .when_some(client_rows.next(), |row, second| {
+                        row.child(div().flex_1().min_w_0().child(second))
+                    })
+                    .into_any_element();
+                rows.push(row);
+            }
+        }
         rows
     }
 }
