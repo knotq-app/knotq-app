@@ -271,6 +271,13 @@ impl KnotQApp {
         let mut synced = 0usize;
         let mut content_changed = false;
         for calendar in calendars {
+            if calendar.calendar_deleted {
+                let stale_scheme_ids = active_google_calendar_scheme_ids(&self.workspace, &calendar);
+                if self.delete_duplicate_google_calendar_schemes(&stale_scheme_ids, cx) {
+                    content_changed = true;
+                }
+                continue;
+            }
             let existing_scheme_ids = active_google_calendar_scheme_ids(&self.workspace, &calendar);
             let existing_scheme_id = existing_scheme_ids
                 .first()
