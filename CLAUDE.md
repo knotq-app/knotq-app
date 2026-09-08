@@ -24,6 +24,10 @@ workspace layout.
 - GPUI widgets must call `.id()` before `.on_click()`.
 - Mirror `Cmd+*` shortcuts with `secondary-*` where the app already follows that
   cross-platform pattern.
+- After merging a pull request, delete its remote branch (`git push origin
+  --delete <branch>` or the hosting UI), but preserve the corresponding local
+  branch/worktree. Do not delete a branch that still contains unmerged work,
+  even if some of its commits were cherry-picked elsewhere.
 
 ### Deployment gate — run the sync stress suite before ANY deployment
 
