@@ -36,12 +36,39 @@ jobs:
           fuzz-steps: "400"
           ws-fuzz-seeds: "8"
           ws-fuzz-steps: "60"
+          ws-hop-seeds: "3"
+          ws-hop-steps: "24"
           backend-repo-token: ${{ secrets.BACKEND_REPO_TOKEN }}
+
+  mobile-accounts:
+    name: Mobile core accounts
+    runs-on: ubuntu-24.04
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/checkout@v6
+        with:
+          repository: knotq-app/mobile
+          path: mobile
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        continue-on-error: true
+        with:
+          key: mobile-accounts
+
+      - uses: ./.github/actions/linux-deps
+
+      - name: Test mobile core with accounts
+        working-directory: mobile
+        run: cargo test -p knotq-mobile-core --features accounts
 
   build-macos-arch:
     name: macOS build (${{ matrix.artifact }})
     runs-on: ${{ matrix.runner }}
-    needs: [sync-stress]
+    needs: [sync-stress, mobile-accounts]
     strategy:
       fail-fast: false
       matrix:
@@ -225,7 +252,7 @@ jobs:
   build-windows:
     name: Windows
     runs-on: windows-latest
-    needs: [sync-stress]
+    needs: [sync-stress, mobile-accounts]
     environment: release-signing
     permissions:
       contents: read
@@ -352,7 +379,7 @@ jobs:
   build-linux:
     name: Linux
     runs-on: ubuntu-24.04
-    needs: [sync-stress]
+    needs: [sync-stress, mobile-accounts]
 
     steps:
       - uses: actions/checkout@v6
