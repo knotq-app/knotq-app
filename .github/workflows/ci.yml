@@ -186,6 +186,7 @@ jobs:
         with:
           repository: knotq-app/mobile
           path: mobile
+          token: ${{ secrets.MOBILE_REPO_TOKEN }}
 
       - uses: dtolnay/rust-toolchain@stable
 
