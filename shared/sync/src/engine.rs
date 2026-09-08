@@ -15,14 +15,12 @@ use std::collections::{HashMap, HashSet};
 
 use anyhow::{anyhow, Context, Result};
 use chrono::Utc;
-use knotq_model::{
-    DocumentId, OperationId, ReplicaId, SyncDocumentKind, Workspace, WorkspaceId,
-};
+use knotq_model::{DocumentId, OperationId, ReplicaId, SyncDocumentKind, Workspace, WorkspaceId};
 
 use crate::{
-    BatchPullRequest, BatchPushRequest, DocumentStateVector, LocalSyncState, NotificationScheduleSnapshot,
-    PendingCrdtEdit, PulledCrdtDocument, PushDocumentUpdates, StoredCrdtUpdate,
-    WorkspaceCrdtDocuments,
+    BatchPullRequest, BatchPushRequest, DocumentStateVector, LocalSyncState,
+    NotificationScheduleSnapshot, PendingCrdtEdit, PulledCrdtDocument, PushDocumentUpdates,
+    StoredCrdtUpdate, WorkspaceCrdtDocuments,
 };
 
 /// A document that was included in a pull response but could not be applied
@@ -207,14 +205,14 @@ pub fn batch_pull_and_apply(
             // the first pull of a session need not decode the user's whole
             // history). Those are not damaged and re-pulling them is a livelock:
             // the client re-applies the bytes, re-defers them, sends no vector
-            // again, and the next integrity check flags them again. Only reset
-            // the cursor for a mismatched document the client does NOT already
-            // own in some form — those are the ones a re-pull can actually fix.
-            let owned = crdt_docs.known_document_ids();
+            // again, and the next integrity check flags them again. A live
+            // document — including an empty shell left by a partial restore —
+            // is actionable and must be re-pulled; merely having its document
+            // ID in the local map is not proof that it has usable state.
             let actionable: Vec<DocumentId> = mismatches
                 .iter()
                 .copied()
-                .filter(|document| !owned.contains(document))
+                .filter(|document| !crdt_docs.owns_deferred_document(*document))
                 .collect();
             if !actionable.is_empty() {
                 for document in &actionable {
@@ -349,6 +347,18 @@ pub fn batch_pull_and_apply(
             .iter()
             .map(|e| (e.document, e))
             .collect();
+        // An unknown scheme document can be a transient ordering issue: the
+        // content page may arrive before the workspace-index page that binds
+        // it.  Keep that distinction for the re-convergence pass below.  A
+        // generic materialization failure should not be retried indefinitely,
+        // but an unknown document must be fetched again once its index entry is
+        // present or the device can remain permanently empty at a matching
+        // cursor.
+        let unknown_scheme_documents: HashSet<DocumentId> = errored_document_ids
+            .values()
+            .filter(|error| error.unknown_scheme_document)
+            .map(|error| error.document)
+            .collect();
 
         for doc in &response.documents {
             pulled_this_call.insert(doc.document);
@@ -401,7 +411,9 @@ pub fn batch_pull_and_apply(
                 .document_cursors
                 .get(&meta.id)
                 .is_some_and(|cursor| cursor.last_pulled_sequence > 0);
-            if pulled_this_call.contains(&meta.id) || ever_pulled {
+            let needs_index_ordering_retry =
+                was_skipped && unknown_scheme_documents.contains(&meta.id) && missing_locally;
+            if (pulled_this_call.contains(&meta.id) || ever_pulled) && !needs_index_ordering_retry {
                 // Its full state has already come down (this call, or an earlier
                 // sync — its cursor is advanced) and it is still not a live local
                 // document. That is a workspace-index inconsistency (the index

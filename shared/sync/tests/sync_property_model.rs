@@ -517,8 +517,41 @@ impl World {
                     let fp = fingerprint(&puller);
                     let server_has_only_a: Vec<_> =
                         fp.iter().filter(|x| only_a.contains(x)).collect();
+                    let diagnostic_scheme = self.devices[first]
+                        .dev
+                        .workspace
+                        .schemes
+                        .keys()
+                        .copied()
+                        .find(|id| only_a.iter().any(|line| line.contains(&id.to_string())))
+                        .or_else(|| {
+                            self.devices[i]
+                                .dev
+                                .workspace
+                                .schemes
+                                .keys()
+                                .copied()
+                                .find(|id| only_b.iter().any(|line| line.contains(&id.to_string())))
+                        });
+                    let diagnostic_state = diagnostic_scheme.map(|scheme| {
+                        let doc = self.devices[i].dev.scheme_document_id(scheme);
+                        let cursor = self.devices[i]
+                            .dev
+                            .local_state_ref()
+                            .document_cursors
+                            .get(&doc)
+                            .map(|cursor| {
+                                (cursor.last_pulled_sequence, cursor.last_pushed_sequence)
+                            });
+                        (
+                            scheme,
+                            doc,
+                            cursor,
+                            self.devices[i].dev.scheme_state_len(scheme),
+                        )
+                    });
                     panic!(
-                        "seed {seed}: devices {first} and {i} on account {account} diverged\n  only on dev{first}: {only_a:#?}\n  only on dev{i}: {only_b:#?}\n  of dev{first}-only, the SERVER has: {server_has_only_a:#?}\n  dev{first} last_skipped: {sa:#?}\n  dev{i} last_skipped: {sb:#?}"
+                        "seed {seed}: devices {first} and {i} on account {account} diverged\n  only on dev{first}: {only_a:#?}\n  only on dev{i}: {only_b:#?}\n  of dev{first}-only, the SERVER has: {server_has_only_a:#?}\n  dev{first} last_skipped: {sa:#?}\n  dev{i} last_skipped: {sb:#?}\n  diagnostic dev{i} scheme/doc/cursor/state: {diagnostic_state:#?}"
                     );
                 }
             }

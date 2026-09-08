@@ -364,9 +364,7 @@ struct DeferredSchemeDocument {
 /// Decode a deferred entry's persisted bytes into a live scheme document.
 /// A fresh random authoring identity, consistent with [`from_states`] — the
 /// restored bytes keep their own authoring clientIDs, so nothing is re-authored.
-fn deferred_live_document(
-    deferred: &DeferredSchemeDocument,
-) -> anyhow::Result<YrsSchemeDocument> {
+fn deferred_live_document(deferred: &DeferredSchemeDocument) -> anyhow::Result<YrsSchemeDocument> {
     let doc = YrsSchemeDocument::for_replica(deferred.document, None);
     doc.apply_update_v1(&deferred.state_v1)
         .with_context(|| format!("hydrate deferred scheme document {}", deferred.document))?;
@@ -623,6 +621,17 @@ impl WorkspaceCrdtDocuments {
     /// Exposed so a caller can assert the lazy path is actually being exercised.
     pub fn is_deferred(&self, scheme_id: SchemeId) -> bool {
         self.deferred.contains_key(&scheme_id)
+    }
+
+    /// Whether `document` is owned only as lazy, undecoded bytes. Deferred
+    /// documents intentionally omit a state vector from integrity probes; a
+    /// mismatch for one is expected and must not trigger a pull loop. A live
+    /// document, including an empty shell, is different: it participates in
+    /// integrity checks and can be repaired by re-pulling.
+    pub fn owns_deferred_document(&self, document: DocumentId) -> bool {
+        self.deferred
+            .values()
+            .any(|deferred| deferred.document == document)
     }
 
     /// Counts of decoded vs deferred scheme documents, for structural tests and
