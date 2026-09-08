@@ -125,38 +125,6 @@ jobs:
       - name: Enforce performance budgets
         run: cargo test -p knotq-state --test perf_budget --release -- --nocapture
 
-  sync-fuzz:
-    name: Deep sync fuzz
-    runs-on: ubuntu-24.04
-    # Release, not debug: the fuzzer is 7.6x faster optimized (the same
-    # 100 seeds x 240 steps takes 200 s debug vs 26 s release, measured), so the
-    # same wall time buys 5x the seeds and 1.7x the depth. The convergence bugs
-    # fixed in this area needed 1500 x 400 to surface, so depth is the whole
-    # point — see the nightly `sync-fuzz.yml` for the full run.
-    env:
-      KNOTQ_FUZZ_SEEDS: 300
-      KNOTQ_FUZZ_STEPS: 400
-
-    steps:
-      - uses: actions/checkout@v6
-
-      - uses: dtolnay/rust-toolchain@stable
-
-      - uses: Swatinem/rust-cache@v2
-        continue-on-error: true
-        with:
-          key: sync-fuzz
-
-      - uses: ./.github/actions/linux-deps
-
-      - name: Run model-based multi-device sync fuzzer
-        run: cargo test -p knotq-sync --test sync_property_model --release -- --nocapture
-
-      - name: Run deterministic hard-scenario fuzzer
-        run: |
-          cargo test -p knotq-sync --test hard_scenarios --release \
-            scenario_l_randomized_fuzz_seeds -- --exact --nocapture
-
   sync-stress:
     name: Sync stress (real backend, HTTP + WebSocket)
     runs-on: ubuntu-24.04
