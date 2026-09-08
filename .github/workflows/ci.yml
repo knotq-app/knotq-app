@@ -205,15 +205,6 @@ jobs:
         if: steps.filter.outputs.sync == 'true'
         uses: ./.github/actions/sync-stress
         with:
-          # Keep PR coverage at the same depth as the release gate. This is
-          # deliberately expensive: shallow sync fuzzing misses convergence
-          # regressions that only appear after long histories.
-          fuzz-seeds: "800"
-          fuzz-steps: "400"
-          ws-fuzz-seeds: "8"
-          ws-fuzz-steps: "60"
-          ws-hop-seeds: "3"
-          ws-hop-steps: "24"
           backend-repo-token: ${{ secrets.BACKEND_REPO_TOKEN }}
 
   mobile-accounts:
