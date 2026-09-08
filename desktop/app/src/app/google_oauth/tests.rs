@@ -50,6 +50,7 @@
             items: Vec::new(),
             deleted: Vec::new(),
             recurrence_exdates: Vec::new(),
+            calendar_deleted: false,
         }
     }
 
@@ -574,6 +575,7 @@
                     event_id: "series-1".to_string(),
                     original_start: CalendarDateTime::utc(dt("2026-06-19T20:00:00Z")),
                 }],
+                calendar_deleted: false,
             },
         );
 
@@ -600,6 +602,7 @@
                 items: Vec::new(),
                 deleted: Vec::new(),
                 recurrence_exdates: Vec::new(),
+                calendar_deleted: false,
             },
             false,
         );
@@ -757,6 +760,7 @@
                     instance_id: None,
                 }],
                 recurrence_exdates: Vec::new(),
+                calendar_deleted: false,
             },
         );
 
@@ -791,6 +795,7 @@
                 items: vec![imported],
                 deleted: Vec::new(),
                 recurrence_exdates: Vec::new(),
+                calendar_deleted: false,
             },
         );
 
@@ -825,6 +830,7 @@
                 items: vec![imported],
                 deleted: Vec::new(),
                 recurrence_exdates: Vec::new(),
+                calendar_deleted: false,
             },
         );
 
@@ -857,6 +863,7 @@
                 items: vec![imported],
                 deleted: Vec::new(),
                 recurrence_exdates: Vec::new(),
+                calendar_deleted: false,
             },
         );
 
@@ -892,6 +899,7 @@
                 items: vec![imported],
                 deleted: Vec::new(),
                 recurrence_exdates: Vec::new(),
+                calendar_deleted: false,
             },
         );
 

@@ -479,7 +479,7 @@ pub(crate) fn import_google_account_calendars(
     mode: GoogleCalendarImportMode,
     target_calendar_id: Option<&str>,
 ) -> Result<(Vec<ImportedGoogleCalendar>, Vec<String>)> {
-    let calendars = match list_google_calendars(&account.access_token) {
+    let calendars = match list_google_calendar_entries(&account.access_token) {
         Ok(calendars) => {
             google_oauth_log(format!(
                 "calendar_list ok account={} calendars={}",
@@ -497,7 +497,15 @@ pub(crate) fn import_google_account_calendars(
             return Err(google_calendar_request_error(account, err));
         }
     };
-    let fallback_count = calendars.len().max(1);
+    let fallback_count = calendars
+        .iter()
+        .filter(|calendar| calendar.deleted != Some(true))
+        .count()
+        .max(1);
+    let listed_ids = calendars
+        .iter()
+        .map(|calendar| calendar.id.clone())
+        .collect::<HashSet<_>>();
     let mut imported = Vec::new();
     let mut failures = Vec::new();
 
@@ -509,6 +517,24 @@ pub(crate) fn import_google_account_calendars(
             source.calendar_id == calendar.id
                 && existing_source_matches_google_account(source, account)
         });
+        if calendar.deleted == Some(true) {
+            if existing.is_some() {
+                imported.push(ImportedGoogleCalendar {
+                    account_id: account.account_id.clone(),
+                    account_email: account.email.clone(),
+                    calendar_id: calendar.id.clone(),
+                    name: google_calendar_name(&calendar),
+                    color_index: 0,
+                    sync_token: None,
+                    full_sync: false,
+                    items: Vec::new(),
+                    deleted: Vec::new(),
+                    recurrence_exdates: Vec::new(),
+                    calendar_deleted: true,
+                });
+            }
+            continue;
+        }
         match mode {
             GoogleCalendarImportMode::ExistingOnly if existing.is_none() => continue,
             GoogleCalendarImportMode::MissingOnly if existing.is_some() => continue,
@@ -566,7 +592,31 @@ pub(crate) fn import_google_account_calendars(
             items,
             deleted,
             recurrence_exdates,
+            calendar_deleted: false,
         });
+    }
+
+    // A calendar can disappear from the list entirely when access is revoked.
+    // Emit a tombstone so the applied sync can archive its old KnotQ scheme.
+    for source in existing_sources.iter().filter(|source| {
+        existing_source_matches_google_account(source, account)
+            && target_calendar_id.is_none_or(|target| target == source.calendar_id)
+    }) {
+        if !listed_ids.contains(source.calendar_id.as_str()) {
+            imported.push(ImportedGoogleCalendar {
+                account_id: account.account_id.clone(),
+                account_email: account.email.clone(),
+                calendar_id: source.calendar_id.clone(),
+                name: "Google Calendar".to_string(),
+                color_index: 0,
+                sync_token: None,
+                full_sync: false,
+                items: Vec::new(),
+                deleted: Vec::new(),
+                recurrence_exdates: Vec::new(),
+                calendar_deleted: true,
+            });
+        }
     }
 
     Ok((imported, failures))
@@ -581,6 +631,29 @@ pub(crate) struct GoogleEventsSync {
 pub(crate) fn list_google_calendars(
     access_token: &str,
 ) -> std::result::Result<Vec<GoogleCalendarListEntry>, GoogleApiError> {
+    let calendars = list_google_calendar_entries(access_token)?;
+    let visible = calendars
+        .iter()
+        .filter(|calendar| {
+            calendar.deleted != Some(true)
+                && calendar.hidden != Some(true)
+                && (calendar.selected != Some(false) || calendar.primary == Some(true))
+        })
+        .cloned()
+        .collect::<Vec<_>>();
+    if visible.is_empty() {
+        Ok(calendars
+            .into_iter()
+            .filter(|calendar| calendar.deleted != Some(true) && calendar.hidden != Some(true))
+            .collect())
+    } else {
+        Ok(visible)
+    }
+}
+
+fn list_google_calendar_entries(
+    access_token: &str,
+) -> std::result::Result<Vec<GoogleCalendarListEntry>, GoogleApiError> {
     let mut page_token: Option<String> = None;
     let mut calendars = Vec::new();
 
@@ -588,34 +661,22 @@ pub(crate) fn list_google_calendars(
         let mut params = vec![
             ("maxResults", "250".to_string()),
             ("minAccessRole", "reader".to_string()),
+            ("showDeleted", "true".to_string()),
+            ("showHidden", "true".to_string()),
         ];
         if let Some(token) = &page_token {
             params.push(("pageToken", token.clone()));
         }
         let url = with_query(GOOGLE_CALENDAR_LIST_URL, &params);
         let response: GoogleCalendarListResponse = google_get_json(&url, access_token)?;
-        calendars.extend(
-            response
-                .items
-                .into_iter()
-                .filter(|calendar| calendar.deleted != Some(true) && calendar.hidden != Some(true)),
-        );
+        calendars.extend(response.items);
         page_token = response.next_page_token;
         if page_token.is_none() {
             break;
         }
     }
 
-    let visible = calendars
-        .iter()
-        .filter(|calendar| calendar.selected != Some(false) || calendar.primary == Some(true))
-        .cloned()
-        .collect::<Vec<_>>();
-    if visible.is_empty() {
-        Ok(calendars)
-    } else {
-        Ok(visible)
-    }
+    Ok(calendars)
 }
 
 pub(crate) fn list_google_events(
