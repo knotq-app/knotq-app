@@ -156,7 +156,10 @@ fn probe_edit_costs() {
 
     let start = Instant::now();
     let states = state.crdt_document_states();
-    println!("crdt_document_states() warm   {:8.2} ms   (nothing changed)", ms(start));
+    println!(
+        "crdt_document_states() warm   {:8.2} ms   (nothing changed)",
+        ms(start)
+    );
     drop(states);
 
     // What a save actually meets: one scheme edited since the last save.
@@ -169,7 +172,10 @@ fn probe_edit_costs() {
     });
     let start = Instant::now();
     let states = state.crdt_document_states();
-    println!("crdt_document_states() 1 edit {:8.2} ms   (per save while typing)", ms(start));
+    println!(
+        "crdt_document_states() 1 edit {:8.2} ms   (per save while typing)",
+        ms(start)
+    );
     drop(states);
 
     let start = Instant::now();

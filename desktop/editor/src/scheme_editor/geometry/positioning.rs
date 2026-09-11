@@ -10,7 +10,11 @@ use super::super::{
 };
 
 impl SchemeEditor {
-    pub(in crate::scheme_editor) fn row_bounds(&self, row: usize, bounds: Bounds<Pixels>) -> Option<Bounds<Pixels>> {
+    pub(in crate::scheme_editor) fn row_bounds(
+        &self,
+        row: usize,
+        bounds: Bounds<Pixels>,
+    ) -> Option<Bounds<Pixels>> {
         if row >= self.line_map.line_count() {
             return None;
         }
@@ -51,7 +55,8 @@ impl SchemeEditor {
         let margin = viewport_height;
         let visible_top = -scroll_offset.y;
         Some(self.line_map.rows_intersecting(
-            (visible_top - content_top - margin)..(visible_top + viewport_height - content_top + margin),
+            (visible_top - content_top - margin)
+                ..(visible_top + viewport_height - content_top + margin),
         ))
     }
 
@@ -122,7 +127,10 @@ impl SchemeEditor {
         }
     }
 
-    pub(in crate::scheme_editor) fn visual_point_for_location(&self, loc: TextLocation) -> Point<Pixels> {
+    pub(in crate::scheme_editor) fn visual_point_for_location(
+        &self,
+        loc: TextLocation,
+    ) -> Point<Pixels> {
         let loc = self.clamp_location(loc);
         if let Some(object) = self.table_object_range_for_row(loc.row) {
             if loc.col > object.end {
@@ -193,7 +201,10 @@ impl SchemeEditor {
         Some(point(origin.x + suffix_pos.x, origin.y + suffix_pos.y))
     }
 
-    pub(in crate::scheme_editor) fn last_block_object_range_for_row(&self, row: usize) -> Option<Range<usize>> {
+    pub(in crate::scheme_editor) fn last_block_object_range_for_row(
+        &self,
+        row: usize,
+    ) -> Option<Range<usize>> {
         let line = self
             .line_range(row)
             .and_then(|range| self.text.get(range))?;
@@ -245,7 +256,10 @@ impl SchemeEditor {
         ))
     }
 
-    pub(in crate::scheme_editor) fn location_for_window_position(&self, position: Point<Pixels>) -> TextLocation {
+    pub(in crate::scheme_editor) fn location_for_window_position(
+        &self,
+        position: Point<Pixels>,
+    ) -> TextLocation {
         let Some(bounds) = self.last_bounds else {
             return self.selection.head;
         };

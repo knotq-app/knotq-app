@@ -5,7 +5,9 @@ on:
     tags: ["v*"]
 
 permissions:
-  contents: write
+  # Build, signing, and packaging jobs only need to read the tagged source.
+  # Keep repository mutation authority confined to the final publish job.
+  contents: read
 
 env:
   CARGO_TERM_COLOR: always
@@ -424,6 +426,8 @@ jobs:
     name: Publish GitHub release
     runs-on: ubuntu-24.04
     needs: [package-macos, build-windows, build-linux]
+    permissions:
+      contents: write
 
     steps:
       - uses: actions/checkout@v6

@@ -234,10 +234,7 @@ fn bootstrap_ws_tokens(base_url: &str, label: &str, n: usize) -> (Vec<String>, W
         }
         tokens.push(resp.bearer_token);
     }
-    (
-        tokens,
-        workspace_id_str.parse().expect("workspace_id uuid"),
-    )
+    (tokens, workspace_id_str.parse().expect("workspace_id uuid"))
 }
 
 /// Bootstrap `n` devices sharing one workspace and return a WS-backed harness.
@@ -261,7 +258,11 @@ fn device_fingerprint(dev: &TestDevice) -> Vec<String> {
             format!(
                 "{}=[{}]",
                 s.name,
-                s.items.iter().map(|i| i.text()).collect::<Vec<_>>().join(",")
+                s.items
+                    .iter()
+                    .map(|i| i.text())
+                    .collect::<Vec<_>>()
+                    .join(",")
             )
         })
         .collect();
@@ -390,11 +391,8 @@ fn ws_account_hopping_fuzz_converges() {
         let mut ws_ids = Vec::new();
         let mut tokens: Vec<Vec<String>> = Vec::new(); // [workspace][device.. , fresh]
         for w in 0..n_workspaces {
-            let (t, id) = bootstrap_ws_tokens(
-                &base_url,
-                &format!("ws-hop-{seed}-{w}"),
-                n_devices + 1,
-            );
+            let (t, id) =
+                bootstrap_ws_tokens(&base_url, &format!("ws-hop-{seed}-{w}"), n_devices + 1);
             ws_ids.push(id);
             tokens.push(t);
         }
@@ -410,11 +408,7 @@ fn ws_account_hopping_fuzz_converges() {
                 Dev {
                     inner: make_device(ws_ids[account]),
                     account,
-                    client: start_client(
-                        &base_url,
-                        &tokens[account][d],
-                        WsCallbacks::noop(),
-                    ),
+                    client: start_client(&base_url, &tokens[account][d], WsCallbacks::noop()),
                 }
             })
             .collect();
@@ -451,11 +445,8 @@ fn ws_account_hopping_fuzz_converges() {
                         devices[d].client.shutdown();
                         devices[d].inner.switch_account(ws_ids[target], &base_url);
                         devices[d].account = target;
-                        devices[d].client = start_client(
-                            &base_url,
-                            &tokens[target][d],
-                            WsCallbacks::noop(),
-                        );
+                        devices[d].client =
+                            start_client(&base_url, &tokens[target][d], WsCallbacks::noop());
                         let transport = WsTransport::new(Arc::clone(&devices[d].client));
                         let _ = devices[d].inner.try_sync_with(&transport);
                     }
@@ -487,8 +478,7 @@ fn ws_account_hopping_fuzz_converges() {
                 );
             }
             let mut fresh = make_device(*ws_id);
-            let fresh_client =
-                start_client(&base_url, &tokens[w][n_devices], WsCallbacks::noop());
+            let fresh_client = start_client(&base_url, &tokens[w][n_devices], WsCallbacks::noop());
             for _ in 0..4 {
                 let _ = fresh.try_sync_with(&WsTransport::new(Arc::clone(&fresh_client)));
             }
@@ -550,8 +540,7 @@ fn ws_account_switch_carries_content_over_real_socket() {
 
     // A fresh device on B must see exactly that content — no silent loss.
     let mut puller = make_device(ws_b);
-    let client_b_puller =
-        start_client(&base_url, &resp_b_puller.bearer_token, WsCallbacks::noop());
+    let client_b_puller = start_client(&base_url, &resp_b_puller.bearer_token, WsCallbacks::noop());
     puller
         .try_sync_with(&WsTransport::new(Arc::clone(&client_b_puller)))
         .expect("fresh B device pull over ws");

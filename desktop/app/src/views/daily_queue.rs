@@ -201,13 +201,16 @@ impl KnotQApp {
                                             .id("daily-queue-bottom-hitbox")
                                             .h(px(DAILY_QUEUE_BOTTOM_SPACER))
                                             .flex_shrink_0()
-                                            .when_some(last_day, |spacer, (editor, last_item_id)| {
-                                                spacer
-                                                    .cursor(gpui::CursorStyle::IBeam)
-                                                    .on_click(cx.listener(
+                                            .when_some(
+                                                last_day,
+                                                |spacer, (editor, last_item_id)| {
+                                                    spacer
+                                                        .cursor(gpui::CursorStyle::IBeam)
+                                                        .on_click(cx.listener(
                                                         move |_this, _: &ClickEvent, window, cx| {
                                                             editor.update(cx, |editor, cx| {
-                                                                if let Some(item_id) = last_item_id {
+                                                                if let Some(item_id) = last_item_id
+                                                                {
                                                                     editor.focus_item(
                                                                         item_id, window, cx,
                                                                     );
@@ -217,7 +220,8 @@ impl KnotQApp {
                                                             });
                                                         },
                                                     ))
-                                            }),
+                                                },
+                                            ),
                                     ),
                             ),
                     )
@@ -373,10 +377,7 @@ impl KnotQApp {
         } else {
             knotq_l10n::t_with(
                 "daily.carryover.from_date",
-                &[(
-                    "date",
-                    &format_contextual_date(source_date, today.year()),
-                )],
+                &[("date", &format_contextual_date(source_date, today.year()))],
             )
         };
 
@@ -436,10 +437,7 @@ fn schedule_daily_queue_scroll_offset_restore(
 /// changes nothing costs a frame for no reason — and a sync round trip arms
 /// this restore, which while typing means every round trip. Returning whether
 /// anything moved lets the common case cost no frames at all.
-fn restore_daily_queue_scroll_offset(
-    scroll_handle: &ScrollHandle,
-    offset: Point<Pixels>,
-) -> bool {
+fn restore_daily_queue_scroll_offset(scroll_handle: &ScrollHandle, offset: Point<Pixels>) -> bool {
     let max_y = scroll_handle.max_offset().height;
     let y = offset.y.clamp(-max_y, Pixels::ZERO);
     let target = point(offset.x, y);

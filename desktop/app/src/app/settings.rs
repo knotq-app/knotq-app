@@ -138,6 +138,12 @@ impl KnotQApp {
             }
             ThemeMode::Dark => themes[0],
             ThemeMode::Light => themes[1],
+            ThemeMode::RosePineMoon => knotq_theme::theme_rose_pine_moon(),
+            ThemeMode::CatppuccinMocha => knotq_theme::theme_catppuccin_mocha(),
+            ThemeMode::TokyoNight => knotq_theme::theme_tokyo_night(),
+            ThemeMode::Parchment => knotq_theme::theme_parchment(),
+            ThemeMode::RosePineDawn => knotq_theme::theme_rose_pine_dawn(),
+            ThemeMode::CatppuccinLatte => knotq_theme::theme_catppuccin_latte(),
         }
     }
 
@@ -330,11 +336,13 @@ mod tests {
 
     #[test]
     fn restored_window_size_is_clamped_to_usable_minimum() {
-        let mut settings = AppSettings::default();
-        settings.window_size = Some(SavedWindowSize {
-            width: 320.0,
-            height: 1.0,
-        });
+        let settings = AppSettings {
+            window_size: Some(SavedWindowSize {
+                width: 320.0,
+                height: 1.0,
+            }),
+            ..AppSettings::default()
+        };
 
         assert_eq!(
             initial_window_size(&settings),

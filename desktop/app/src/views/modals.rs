@@ -2,14 +2,14 @@ use gpui::prelude::*;
 use gpui::{div, px, ClickEvent, Context, FontWeight, IntoElement, SharedString, Window};
 use knotq_storage_json::CalendarViewMode;
 
-use crate::app::{KnotQApp, View};
 #[cfg(feature = "accounts")]
 use crate::app::OnboardingPhase;
+use crate::app::{KnotQApp, View};
 #[cfg(feature = "accounts")]
 use crate::app::{SyncAuthMode, SyncAuthStatus};
-use crate::theme_gpui::{token_hsla, token_rgba};
 #[cfg(feature = "accounts")]
 use crate::theme_gpui::Theme;
+use crate::theme_gpui::{token_hsla, token_rgba};
 #[cfg(feature = "accounts")]
 use crate::views::{sync_cta_bg, sync_cta_hover_bg};
 
@@ -511,7 +511,9 @@ impl KnotQApp {
                                                 .text_size(px(13.0))
                                                 .font_weight(FontWeight::SEMIBOLD)
                                                 .text_color(token_hsla(t.text_primary))
-                                                .child(knotq_l10n::t("onboarding.sync_prompt.panel_title")),
+                                                .child(knotq_l10n::t(
+                                                    "onboarding.sync_prompt.panel_title",
+                                                )),
                                         ),
                                     )
                                     .child(onboarding_account_choice(
@@ -551,7 +553,7 @@ impl KnotQApp {
                                         }))
                                         .child(message),
                                 )
-                            })
+                            }),
                     )
                     .into_any_element(),
             );

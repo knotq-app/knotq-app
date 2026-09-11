@@ -477,6 +477,8 @@
   "mobile.search.no_results": "Ingen resultater.",
   "mobile.search.no_results_detail": "Intet passede \"{query}\".",
   "mobile.search.screen_title": "Søg",
+  "mobile.search.searching": "Søger…",
+  "mobile.workspace.loading": "Indlæser arbejdsområde…",
   "mobile.settings.archived_items": "Arkiverede elementer",
   "mobile.settings.assignment_reminders_title": "Opgavepåmindelser",
   "mobile.settings.cancel_sync_subscription_confirm": "Annullér abonnement",

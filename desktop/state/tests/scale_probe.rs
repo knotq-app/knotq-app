@@ -38,7 +38,10 @@ fn synthetic_workspace(schemes: usize, items_per_scheme: usize, text_len: usize)
         let mut scheme = Scheme::new(format!("scheme-{scheme_index}"), 0);
         for item_index in 0..items_per_scheme {
             let mut item = Item::new(format!("a{item_index}"));
-            item.set_text(format!("{item_index} {}", &body[..text_len.min(body.len())]));
+            item.set_text(format!(
+                "{item_index} {}",
+                &body[..text_len.min(body.len())]
+            ));
             scheme.items.push(item);
         }
         let id = scheme.id;
@@ -152,9 +155,7 @@ fn probe_scaling() {
         let changed = state.replace_workspace_from_sync(workspace.clone(), states);
         let replace = ms(start);
         assert!(!changed, "an identical workspace must report no change");
-        println!(
-            "{schemes:>8} {items:>8} | {store:>12.1}ms {states_ms:>14.1}ms {replace:>16.1}ms"
-        );
+        println!("{schemes:>8} {items:>8} | {store:>12.1}ms {states_ms:>14.1}ms {replace:>16.1}ms");
     }
 }
 
@@ -236,7 +237,10 @@ mod guards {
         let changed = state.replace_workspace_from_sync(workspace.clone(), states);
         let elapsed = ms(start);
 
-        assert!(!changed, "identical workspace must report no visible change");
+        assert!(
+            !changed,
+            "identical workspace must report no visible change"
+        );
         assert!(
             elapsed < 750.0,
             "no-op sync replace took {elapsed:.1}ms on 120x300 items"
@@ -286,7 +290,6 @@ fn probe_construction_breakdown() {
     }
 }
 
-
 /// Where a single keystroke's time goes in a large scheme.
 #[test]
 #[ignore = "measurement; run with --ignored --nocapture"]
@@ -307,7 +310,10 @@ fn probe_keystroke_breakdown() {
 #[ignore = "measurement; run with --ignored --nocapture"]
 fn probe_keystroke_vs_text_length() {
     println!();
-    println!("{:>7} {:>10} | {:>12} {:>14}", "items", "text len", "keystroke", "per item (us)");
+    println!(
+        "{:>7} {:>10} | {:>12} {:>14}",
+        "items", "text len", "keystroke", "per item (us)"
+    );
     for &(items, text_len) in &[
         (5_000usize, 10usize),
         (5_000, 80),

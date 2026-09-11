@@ -242,9 +242,11 @@ impl Render for KnotQApp {
                     let parent = this.new_item_parent_folder();
                     this.open_new_node_prompt(parent, app::NewNodeKind::Folder, window, cx);
                 }))
-                .on_action(cx.listener(|this, _: &ExportWorkspaceMarkdown, _window, cx| {
-                    this.export_workspace_to_markdown(cx);
-                }))
+                .on_action(
+                    cx.listener(|this, _: &ExportWorkspaceMarkdown, _window, cx| {
+                        this.export_workspace_to_markdown(cx);
+                    }),
+                )
                 .on_action(cx.listener(|this, _: &NavWeekPrev, _window, cx| {
                     this.shift_calendar_period(-1);
                     cx.notify();
@@ -570,10 +572,7 @@ fn main() {
             let opts = WindowOptions {
                 titlebar: Some(titlebar_options()),
                 window_bounds: Some(WindowBounds::Windowed(initial_bounds)),
-                window_min_size: Some(gpui::size(
-                    px(MIN_WINDOW_WIDTH),
-                    px(MIN_WINDOW_HEIGHT),
-                )),
+                window_min_size: Some(gpui::size(px(MIN_WINDOW_WIDTH), px(MIN_WINDOW_HEIGHT))),
                 window_decorations: window_decorations(),
                 ..Default::default()
             };
@@ -613,7 +612,7 @@ mod tests {
         let keystroke = Keystroke::parse(key).unwrap();
         bindings.iter().any(|binding| {
             binding.action().partial_eq(action)
-                && binding.match_keystrokes(&[keystroke.clone()]) == Some(false)
+                && binding.match_keystrokes(std::slice::from_ref(&keystroke)) == Some(false)
         })
     }
 

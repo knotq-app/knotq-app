@@ -143,7 +143,12 @@ mod tests {
         }
 
         for pair in keys.windows(2) {
-            assert!(pair[0] < pair[1], "append not ordered: {} !< {}", pair[0], pair[1]);
+            assert!(
+                pair[0] < pair[1],
+                "append not ordered: {} !< {}",
+                pair[0],
+                pair[1]
+            );
         }
 
         // Stepping one digit at a time packs 61 appends into each character, so

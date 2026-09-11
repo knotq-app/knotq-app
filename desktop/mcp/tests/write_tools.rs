@@ -236,8 +236,11 @@ fn create_and_rename_a_scheme_round_trip_through_list_schemes() {
         .expect("the new scheme should be listed");
     let id = fresh["id"].as_str().unwrap().to_string();
 
-    f.run("rename_scheme", json!({ "scheme_id": id, "name": "Renamed" }))
-        .unwrap();
+    f.run(
+        "rename_scheme",
+        json!({ "scheme_id": id, "name": "Renamed" }),
+    )
+    .unwrap();
     let out = f.read("list_schemes", json!({}));
     assert!(out["schemes"]
         .as_array()
@@ -260,11 +263,7 @@ fn set_item_recurrence_sets_and_clears_a_repeat() {
     )
     .unwrap();
     assert_eq!(
-        f.scheme(f.notes).items[0]
-            .repeats
-            .as_ref()
-            .unwrap()
-            .rrules,
+        f.scheme(f.notes).items[0].repeats.as_ref().unwrap().rrules,
         vec!["FREQ=WEEKLY;BYDAY=MO"]
     );
 
@@ -287,11 +286,7 @@ fn changing_a_repeat_rule_keeps_the_exceptions_already_on_the_line() {
     let mut f = Fixture::new();
     let item = f.item_id(f.notes, 2);
     let exdate = knotq_model::CalendarDateTime::utc(support::at(2026, 9, 3, 9, 30));
-    f.workspace
-        .schemes
-        .get_mut(&f.notes)
-        .unwrap()
-        .items[2]
+    f.workspace.schemes.get_mut(&f.notes).unwrap().items[2]
         .repeats
         .as_mut()
         .unwrap()
@@ -567,7 +562,10 @@ fn the_workspace_root_folder_cannot_be_deleted() {
 fn deleting_a_folder_reports_how_many_schemes_it_takes_with_it() {
     let mut f = Fixture::new();
     let out = f
-        .run("delete_folder", json!({ "folder_id": f.folder.to_string() }))
+        .run(
+            "delete_folder",
+            json!({ "folder_id": f.folder.to_string() }),
+        )
         .unwrap();
     assert_eq!(out["schemes_archived"], json!(3));
 }
@@ -604,9 +602,7 @@ impl<T: std::fmt::Debug, E> UnwrapErrOrElse<T, E> for Result<T, E> {
 #[test]
 fn the_id_of_a_created_scheme_is_recoverable_from_the_receipt() {
     let mut f = Fixture::new();
-    let outcome = f
-        .call("create_scheme", json!({ "name": "Fresh" }))
-        .unwrap();
+    let outcome = f.call("create_scheme", json!({ "name": "Fresh" })).unwrap();
     let Outcome::Write { command, .. } = outcome else {
         panic!("expected a write");
     };

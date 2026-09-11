@@ -477,6 +477,8 @@
   "mobile.search.no_results": "Sonuç yok.",
   "mobile.search.no_results_detail": "Hiçbir şey \"{query}\" ile eşleşmedi.",
   "mobile.search.screen_title": "Ara",
+  "mobile.search.searching": "Aranıyor…",
+  "mobile.workspace.loading": "Çalışma alanı yükleniyor…",
   "mobile.settings.archived_items": "Arşivlenen öğeler",
   "mobile.settings.assignment_reminders_title": "Görev anımsatıcıları",
   "mobile.settings.cancel_sync_subscription_confirm": "Aboneliği İptal Et",

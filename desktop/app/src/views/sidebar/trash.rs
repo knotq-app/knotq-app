@@ -184,9 +184,7 @@ impl KnotQApp {
                     if let Some(scheme) = self.workspace.scheme(id) {
                         rows.push(trash_scheme_row(
                             TrashSchemeRowArgs {
-                                id: SharedString::from(format!(
-                                    "trash-subscheme-{child_idx}-{id}"
-                                )),
+                                id: SharedString::from(format!("trash-subscheme-{child_idx}-{id}")),
                                 scheme_id: scheme.id,
                                 name: scheme.name.clone(),
                                 color_index: scheme.color_index,

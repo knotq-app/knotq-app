@@ -1,0 +1,40 @@
+name: CodeQL
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  schedule:
+    - cron: "30 3 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  analyze:
+    name: Analyze (${{ matrix.language }})
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      actions: read
+      security-events: write
+    strategy:
+      fail-fast: false
+      matrix:
+        language: [actions, rust]
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: github/codeql-action/init@v4
+        with:
+          languages: ${{ matrix.language }}
+          # Rust is supported without a separate build in the current CodeQL
+          # extractor; keeping this explicit avoids compiling the full GPUI
+          # workspace in the scanner job.
+          build-mode: none
+
+      - uses: github/codeql-action/analyze@v4
+        with:
+          category: "/language:${{ matrix.language }}"

@@ -72,10 +72,35 @@ pub struct LocalSyncState {
     pub replica_id: Option<ReplicaId>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub server_url: Option<String>,
+    /// SHA-256 of the access token that last established `workspace_id` with
+    /// `server_url`. The bearer itself is never written here. Mobile uses this
+    /// to reuse a still-valid session's canonical workspace id on cold launch;
+    /// a rotated token or server change falls back to account status.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub account_token_fingerprint: Option<String>,
+    /// Stable account identifier supplied by the mobile shell. Access tokens
+    /// rotate frequently; this lets a cold launch reuse the canonical workspace
+    /// id without an account-status round trip, while an actual account switch
+    /// still takes the authoritative lookup path.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub account_user_id: Option<String>,
     #[serde(default)]
     pub document_cursors: HashMap<DocumentId, DocumentSyncCursor>,
+    /// State-vector proofs from the last durable sync checkpoint. Mobile keeps
+    /// these for deferred CRDT documents so a startup integrity check can ask
+    /// the server about cold histories without decoding every one first.
+    /// Missing entries are simply outside the proof scope and are covered by
+    /// the normal per-document pull cursors.
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub integrity_state_vectors: HashMap<DocumentId, String>,
     #[serde(default)]
     pub media_cursors: HashMap<String, MediaSyncCursor>,
+    /// Last time the best-effort missing-media sweep was attempted. This is
+    /// durable so restarting the app cannot turn the sweep into a blocking
+    /// startup job every time. A remote document change or local push still
+    /// triggers an immediate sweep.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_media_reconciliation_at: Option<DateTime<Utc>>,
     #[serde(default)]
     pub pending: VecDeque<PendingCrdtEdit>,
     /// Last applied recovery generation (see [`SYNC_STATE_RECOVERY_VERSION`]).
@@ -97,6 +122,19 @@ pub struct LocalSyncState {
     /// re-seeded as a full snapshot instead, which merges into any base.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub reseed_all_documents: bool,
+    /// Set before a sync starts and cleared once the merged workspace and pull
+    /// cursors are durably paired. A process termination while this is set
+    /// arms the next launch's one-shot integrity proof; clean launches stay
+    /// cursor-only. Mobile submits cached state vectors for cold documents, so
+    /// this recovery proof does not require decoding the whole workspace.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub sync_in_progress: bool,
+    /// Deferred scheme documents whose complete remote state changed during a
+    /// lazy bootstrap. Mobile keeps their existing plain files cheap to load,
+    /// but must hydrate the authoritative CRDT bytes when one of these schemes
+    /// enters the visible daily range. Older state files simply have no set.
+    #[serde(default, skip_serializing_if = "HashSet::is_empty")]
+    pub deferred_materialization_pending: HashSet<DocumentId>,
 }
 
 impl LocalSyncState {
@@ -107,6 +145,14 @@ impl LocalSyncState {
                 .server_url
                 .as_deref()
                 .is_some_and(|url| !url.is_empty())
+    }
+
+    pub fn mark_deferred_materialization(&mut self, document: DocumentId) {
+        self.deferred_materialization_pending.insert(document);
+    }
+
+    pub fn clear_deferred_materialization(&mut self, document: DocumentId) -> bool {
+        self.deferred_materialization_pending.remove(&document)
     }
 
     pub fn replace_pending(&mut self, pending: impl IntoIterator<Item = PendingCrdtEdit>) {
@@ -123,6 +169,8 @@ impl LocalSyncState {
     fn clear_cursors_for_full_repull(&mut self) {
         self.document_cursors.clear();
         self.media_cursors.clear();
+        self.deferred_materialization_pending.clear();
+        self.last_media_reconciliation_at = None;
         self.pending
             .retain(|edit| edit.kind != SyncDocumentKind::PersonalWorkspace);
     }
@@ -131,6 +179,12 @@ impl LocalSyncState {
     /// re-seed an account/server change requires (see `reseed_all_documents`).
     fn clear_cursors_for_account_change(&mut self) {
         self.clear_cursors_for_full_repull();
+        self.account_token_fingerprint = None;
+        // Document ids for schemes/daily pages are derived from their logical
+        // ids and can recur in another account. A cached Yjs state vector is
+        // only meaningful for the history it was computed from, so never send
+        // the previous account's vectors as delta hints after a switch.
+        self.integrity_state_vectors.clear();
         self.reseed_all_documents = true;
     }
 
@@ -157,6 +211,36 @@ impl LocalSyncState {
             return false;
         }
         self.clear_cursors_for_full_repull();
+        self.recovery_version = SYNC_STATE_RECOVERY_VERSION;
+        true
+    }
+
+    /// Apply the current recovery generation without downloading documents the
+    /// local CRDT store already owns. This is the mobile recovery path: the old
+    /// materialization bug could have advanced a cursor for a document that was
+    /// absent locally, so reset only those bindings (plus the workspace index).
+    /// Existing CRDT bytes are already the exact history we want to retain, and
+    /// ordinary cursor pulls still fetch any server sequence that has advanced.
+    ///
+    /// Workspace-index pending edits are dropped for the same reason as the full
+    /// recovery method; the plain workspace/CRDT pair will re-bootstrap them if
+    /// needed. Scheme pending edits remain pushable.
+    pub fn heal_for_recovery_version_targeted(
+        &mut self,
+        workspace: &Workspace,
+        known_document_ids: &HashSet<DocumentId>,
+    ) -> bool {
+        if self.recovery_version >= SYNC_STATE_RECOVERY_VERSION {
+            return false;
+        }
+        self.pending
+            .retain(|edit| edit.kind != SyncDocumentKind::PersonalWorkspace);
+        self.reset_pull_cursor(workspace.sync.id);
+        for meta in workspace.scheme_sync.values() {
+            if meta.kind == SyncDocumentKind::Scheme && !known_document_ids.contains(&meta.id) {
+                self.reset_pull_cursor(meta.id);
+            }
+        }
         self.recovery_version = SYNC_STATE_RECOVERY_VERSION;
         true
     }
@@ -348,6 +432,31 @@ impl LocalSyncState {
         cursor.epoch = epoch;
     }
 
+    /// Advance a post-push pull cursor to the exact server head returned by the
+    /// push response, without changing the epoch learned from the last pull.
+    /// The caller must still run the scoped integrity proof before making this
+    /// state durable: another device may have changed the document immediately
+    /// after the push response was committed.
+    pub fn advance_pushed_server_sequence(
+        &mut self,
+        document: DocumentId,
+        kind: SyncDocumentKind,
+        server_sequence: u64,
+    ) {
+        let cursor = self
+            .document_cursors
+            .entry(document)
+            .or_insert(DocumentSyncCursor {
+                document,
+                kind,
+                last_pulled_sequence: 0,
+                last_pushed_sequence: 0,
+                epoch: 0,
+            });
+        cursor.kind = kind;
+        cursor.last_pulled_sequence = cursor.last_pulled_sequence.max(server_sequence);
+    }
+
     /// The epoch this replica last recorded for `document` (0 when unknown).
     pub fn document_epoch(&self, document: DocumentId) -> u64 {
         self.document_cursors
@@ -474,6 +583,16 @@ pub fn queue_workspace_bootstrap_updates(
     replica_id: ReplicaId,
     remote_latest: &HashMap<DocumentId, u64>,
 ) -> Vec<DocumentId> {
+    let reseed_all = sync_state.needs_full_reseed();
+    // A normal pull only needs to bootstrap documents for which the server has
+    // no base. Computing this set from the authoritative server heads lets the
+    // CRDT layer skip full-state encoding for every already-synced document.
+    // Account/server reseeds are intentionally exhaustive and remain rare.
+    let bootstrap_documents: HashSet<DocumentId> = crdt
+        .known_document_ids()
+        .into_iter()
+        .filter(|document| reseed_all || remote_latest.get(document).copied().unwrap_or(0) == 0)
+        .collect();
     // Before snapshotting, repair any document whose full state would fail the
     // server's schema validation — a scheme added to the workspace outside the
     // command path (e.g. desktop's direct Daily Queue creation) leaves an empty
@@ -487,9 +606,7 @@ pub fn queue_workspace_bootstrap_updates(
     // the snapshot pushes fine and all replicas converge — see
     // validate_scheme_document. Healing here is now only for an empty, schema-less
     // document, e.g. desktop's direct Daily Queue creation before its first pull.)
-    let healed = crdt.heal_schema_invalid_documents(workspace, |document| {
-        remote_latest.get(&document).copied().unwrap_or(0) == 0
-    });
+    let healed = crdt.heal_schema_invalid_documents_for_documents(workspace, &bootstrap_documents);
     let healed_set: HashSet<DocumentId> = healed.iter().copied().collect();
     let mut next_sequence = sync_state
         .pending
@@ -507,8 +624,10 @@ pub fn queue_workspace_bootstrap_updates(
     // is not applicable there — every document must go out as a full snapshot,
     // even one the server already has a base for (a snapshot merges into any
     // base; a foreign-history delta corrupts it). See `reseed_all_documents`.
-    let reseed_all = sync_state.needs_full_reseed();
-    for update in crdt.full_snapshot_updates().updates {
+    for update in crdt
+        .full_snapshot_updates_for_documents(&bootstrap_documents)
+        .updates
+    {
         // Only documents the server lacks a base for are seeded here; a document the
         // server already holds converges through the normal pull/push CRDT merge.
         if !reseed_all && remote_latest.get(&update.document).copied().unwrap_or(0) != 0 {
@@ -543,6 +662,13 @@ pub fn queue_workspace_bootstrap_updates(
             touched_items: update.touched_items,
         });
         next_sequence += 1;
+    }
+    // The obligation means "queue a full snapshot once after an account/server
+    // change", not "force a full snapshot on every later poll". The queued
+    // snapshots are durable pending edits and remain retryable if the network
+    // push fails or accepts only part of the batch.
+    if reseed_all {
+        sync_state.clear_full_reseed();
     }
 
     // Drop queued deltas that the server can never accept: a document it has no
@@ -733,8 +859,8 @@ mod account_change_tests {
     use std::collections::{HashMap, HashSet};
 
     use super::{
-        queue_account_switch_reseed, DocumentSyncCursor, LocalSyncState, MediaSyncCursor,
-        PendingCrdtEdit,
+        queue_account_switch_reseed, queue_workspace_bootstrap_updates, DocumentSyncCursor,
+        LocalSyncState, MediaSyncCursor, PendingCrdtEdit,
     };
     use crate::WorkspaceCrdtDocuments;
     use chrono::Utc;
@@ -808,6 +934,7 @@ mod account_change_tests {
         let account_a = WorkspaceId::new();
         let account_b = WorkspaceId::new();
         let mut state = configured_state(account_a, SERVER_A);
+        state.account_token_fingerprint = Some("old-token-fingerprint".to_string());
 
         assert!(state.reset_for_account_change(account_b, SERVER_A));
 
@@ -816,12 +943,32 @@ mod account_change_tests {
             "pull/push cursors cleared"
         );
         assert!(state.media_cursors.is_empty(), "media cursors cleared");
+        assert!(
+            state.account_token_fingerprint.is_none(),
+            "the new account must not inherit the old token binding"
+        );
         // Scheme content pending is kept; workspace-index pending is dropped.
         assert_eq!(state.pending.len(), 1);
         assert!(state
             .pending
             .iter()
             .all(|edit| edit.kind == SyncDocumentKind::Scheme));
+    }
+
+    #[test]
+    fn media_reconciliation_timestamp_is_durable_and_cleared_by_full_recovery() {
+        let account_a = WorkspaceId::new();
+        let account_b = WorkspaceId::new();
+        let mut state = configured_state(account_a, SERVER_A);
+        let checked_at = Utc::now();
+        state.last_media_reconciliation_at = Some(checked_at);
+
+        let json = serde_json::to_string(&state).expect("serialize");
+        let restored: LocalSyncState = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(restored.last_media_reconciliation_at, Some(checked_at));
+
+        assert!(state.reset_for_account_change(account_b, SERVER_A));
+        assert!(state.last_media_reconciliation_at.is_none());
     }
 
     /// An account/server change must arm the full-snapshot re-seed.
@@ -851,6 +998,84 @@ mod account_change_tests {
 
         state.clear_full_reseed();
         assert!(!state.needs_full_reseed());
+    }
+
+    #[test]
+    fn targeted_recovery_resets_only_crdt_documents_missing_locally() {
+        let mut workspace = Workspace::new();
+        let scheme = Scheme::new("Visible", 0);
+        let scheme_id = scheme.id;
+        workspace.schemes.insert(scheme_id, scheme);
+        let missing_scheme = Scheme::new("Missing", 1);
+        let missing_scheme_id = missing_scheme.id;
+        workspace.schemes.insert(missing_scheme_id, missing_scheme);
+        workspace.ensure_sync_metadata();
+        let workspace_document = workspace.sync.id;
+        let scheme_document = workspace.scheme_sync[&scheme_id].id;
+        let missing_document = workspace.scheme_sync[&missing_scheme_id].id;
+        let mut state = LocalSyncState {
+            workspace_id: Some(workspace.id),
+            server_url: Some(SERVER_A.to_string()),
+            ..LocalSyncState::default()
+        };
+        for document in [workspace_document, scheme_document, missing_document] {
+            state.document_cursors.insert(
+                document,
+                DocumentSyncCursor {
+                    document,
+                    kind: if document == workspace_document {
+                        SyncDocumentKind::PersonalWorkspace
+                    } else {
+                        SyncDocumentKind::Scheme
+                    },
+                    last_pulled_sequence: 8,
+                    last_pushed_sequence: 8,
+                    epoch: 0,
+                },
+            );
+        }
+        state.push_pending(pending(
+            workspace.id,
+            workspace_document,
+            SyncDocumentKind::PersonalWorkspace,
+        ));
+        state.push_pending(pending(
+            workspace.id,
+            scheme_document,
+            SyncDocumentKind::Scheme,
+        ));
+        state.media_cursors.insert(
+            "image.png".to_string(),
+            MediaSyncCursor {
+                image_name: "image.png".to_string(),
+                document: scheme_document,
+                byte_length: 3,
+                sha256: "deadbeef".to_string(),
+                uploaded_at: Utc::now(),
+            },
+        );
+
+        assert!(state.heal_for_recovery_version_targeted(
+            &workspace,
+            &HashSet::from([workspace_document, scheme_document])
+        ));
+        assert_eq!(
+            state.document_cursors[&workspace_document].last_pulled_sequence,
+            0
+        );
+        assert_eq!(
+            state.document_cursors[&scheme_document].last_pulled_sequence,
+            8
+        );
+        assert_eq!(
+            state.document_cursors[&missing_document].last_pulled_sequence,
+            0
+        );
+        assert!(state
+            .pending
+            .iter()
+            .all(|edit| edit.kind == SyncDocumentKind::Scheme));
+        assert_eq!(state.media_cursors.len(), 1);
     }
 
     /// Changing only the backend (prod -> sandbox) is the same hazard: a
@@ -1088,11 +1313,67 @@ mod account_change_tests {
         assert!(state.pending.iter().any(|edit| edit.document == indexed));
         assert!(state.pending.iter().all(|edit| edit.document != orphan));
     }
+
+    #[test]
+    fn workspace_bootstrap_consumes_full_reseed_obligation_after_queueing_snapshots() {
+        let mut workspace = Workspace::new();
+        let scheme = Scheme::new("Indexed", 0);
+        let scheme_id = scheme.id;
+        workspace.schemes.insert(scheme_id, scheme);
+        workspace.ensure_sync_metadata();
+        let mut crdt = WorkspaceCrdtDocuments::try_new(&workspace).unwrap();
+        let mut state = LocalSyncState {
+            reseed_all_documents: true,
+            ..LocalSyncState::default()
+        };
+
+        let _ = queue_workspace_bootstrap_updates(
+            &mut state,
+            &mut crdt,
+            &workspace,
+            ReplicaId::new(),
+            &HashMap::new(),
+        );
+
+        assert!(!state.needs_full_reseed());
+        assert!(state
+            .pending
+            .iter()
+            .any(|edit| { edit.document == workspace.scheme_sync[&scheme_id].id }));
+    }
+
+    #[test]
+    fn routine_bootstrap_does_not_snapshot_documents_with_a_server_base() {
+        let mut workspace = Workspace::new();
+        let scheme = Scheme::new("Already synced", 0);
+        let scheme_id = scheme.id;
+        workspace.schemes.insert(scheme_id, scheme);
+        workspace.ensure_sync_metadata();
+        let mut crdt = WorkspaceCrdtDocuments::try_new(&workspace).unwrap();
+        let mut state = LocalSyncState::default();
+        let remote_latest = HashMap::from([
+            (workspace.sync.id, 8),
+            (workspace.scheme_sync[&scheme_id].id, 8),
+        ]);
+
+        let healed = queue_workspace_bootstrap_updates(
+            &mut state,
+            &mut crdt,
+            &workspace,
+            ReplicaId::new(),
+            &remote_latest,
+        );
+
+        assert!(healed.is_empty());
+        assert!(state.pending.is_empty());
+    }
 }
 
 #[cfg(test)]
 mod compaction_tests {
-    use super::{compact_pending_documents, LocalSyncState, PendingCrdtEdit, MAX_PENDING_PER_DOCUMENT};
+    use super::{
+        compact_pending_documents, LocalSyncState, PendingCrdtEdit, MAX_PENDING_PER_DOCUMENT,
+    };
     use chrono::Utc;
     use knotq_model::{DocumentId, OperationId, ReplicaId, SyncDocumentKind, WorkspaceId};
     use yrs::updates::decoder::Decode;
@@ -1152,7 +1433,8 @@ mod compaction_tests {
         let root = doc.get_or_insert_text("body");
         for update in updates {
             let mut txn = doc.transact_mut();
-            txn.apply_update(Update::decode_v1(&update).unwrap()).unwrap();
+            txn.apply_update(Update::decode_v1(&update).unwrap())
+                .unwrap();
         }
         let txn = doc.transact();
         root.get_string(&txn)
@@ -1169,7 +1451,11 @@ mod compaction_tests {
             compact_pending_documents(&mut state, MAX_PENDING_PER_DOCUMENT),
             0
         );
-        assert_eq!(state.pending.len(), 4, "nothing to gain from compacting yet");
+        assert_eq!(
+            state.pending.len(),
+            4,
+            "nothing to gain from compacting yet"
+        );
     }
 
     /// The point of the whole exercise: an unsyncable queue stops growing, and
@@ -1249,7 +1535,10 @@ mod compaction_tests {
 
         compact_pending_documents(&mut state, MAX_PENDING_PER_DOCUMENT);
         let after_first = state.pending.len();
-        assert_eq!(compact_pending_documents(&mut state, MAX_PENDING_PER_DOCUMENT), 0);
+        assert_eq!(
+            compact_pending_documents(&mut state, MAX_PENDING_PER_DOCUMENT),
+            0
+        );
         assert_eq!(state.pending.len(), after_first);
     }
 
@@ -1264,7 +1553,10 @@ mod compaction_tests {
             state.push_pending(edit(workspace, document, sequence, vec![0xff, 0xff, 0xff]));
         }
 
-        assert_eq!(compact_pending_documents(&mut state, MAX_PENDING_PER_DOCUMENT), 0);
+        assert_eq!(
+            compact_pending_documents(&mut state, MAX_PENDING_PER_DOCUMENT),
+            0
+        );
         assert_eq!(state.pending.len(), 40);
     }
 }

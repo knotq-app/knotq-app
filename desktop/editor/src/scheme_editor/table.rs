@@ -79,7 +79,6 @@ pub(super) struct TableControlHitbox {
     pub(super) kind: TableControlKind,
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;

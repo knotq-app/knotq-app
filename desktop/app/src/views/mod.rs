@@ -17,6 +17,7 @@ pub mod daily_queue;
 pub mod date_popover;
 pub mod editor_context_menu;
 pub mod event_popup;
+pub mod marker_family_picker;
 pub mod modals;
 pub mod repeat_popover;
 pub mod scheme_color_picker;
@@ -24,7 +25,6 @@ pub mod scheme_view;
 pub mod search;
 pub mod settings;
 pub mod sidebar;
-pub mod marker_family_picker;
 #[cfg(feature = "accounts")]
 pub mod sync_account;
 #[cfg(not(feature = "accounts"))]

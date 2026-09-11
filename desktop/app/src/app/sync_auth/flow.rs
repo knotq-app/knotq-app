@@ -303,9 +303,7 @@ pub(super) fn sync_account_settings_from_session(
     session: LoginResponse,
 ) -> Result<SyncAccountSettings> {
     if session.refresh_token.is_empty() {
-        return Err(anyhow!(knotq_l10n::t(
-            "sync.error.missing_refresh_token"
-        )));
+        return Err(anyhow!(knotq_l10n::t("sync.error.missing_refresh_token")));
     }
     Ok(SyncAccountSettings {
         api_base,

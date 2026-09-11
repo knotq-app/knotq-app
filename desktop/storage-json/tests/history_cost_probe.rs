@@ -74,9 +74,18 @@ fn probe_history_store_cost() {
         walkdir_bytes(&history) as f64 / 1e9
     );
     println!("sweep took                 {sweep_ms:.0} ms");
-    println!("save, unswept store        {:8.1} ms (median of 7)", median_ms(with));
-    println!("save, swept store          {:8.1} ms (median of 7)", median_ms(swept));
-    println!("save, no store at all      {:8.1} ms (median of 7)", median_ms(without));
+    println!(
+        "save, unswept store        {:8.1} ms (median of 7)",
+        median_ms(with)
+    );
+    println!(
+        "save, swept store          {:8.1} ms (median of 7)",
+        median_ms(swept)
+    );
+    println!(
+        "save, no store at all      {:8.1} ms (median of 7)",
+        median_ms(without)
+    );
 }
 
 fn walkdir_bytes(dir: &std::path::Path) -> u64 {
@@ -151,8 +160,14 @@ fn probe_crdt_state_save_split() {
         bytes as f64 / 1_048_576.0,
         json.len() as f64 / 1_048_576.0
     );
-    println!("encode (base64 + serde)    {:8.1} ms (median of 7)", median_ms(encode));
-    println!("write_atomic + fsync       {:8.1} ms (median of 7)", median_ms(write));
+    println!(
+        "encode (base64 + serde)    {:8.1} ms (median of 7)",
+        median_ms(encode)
+    );
+    println!(
+        "write_atomic + fsync       {:8.1} ms (median of 7)",
+        median_ms(write)
+    );
 }
 
 /// What a save costs now that only the edited document's state is rewritten.
@@ -189,8 +204,18 @@ fn probe_crdt_state_incremental_save() {
         edited.push(start.elapsed().as_secs_f64() * 1000.0);
     }
 
-    println!("{} documents, {:.1} MB", states.len(), bytes as f64 / 1_048_576.0);
+    println!(
+        "{} documents, {:.1} MB",
+        states.len(),
+        bytes as f64 / 1_048_576.0
+    );
     println!("first save (migration)     {migrate:8.1} ms");
-    println!("save, nothing changed      {:8.1} ms (median of 7)", median_ms(unchanged));
-    println!("save, one document edited  {:8.1} ms (median of 7)", median_ms(edited));
+    println!(
+        "save, nothing changed      {:8.1} ms (median of 7)",
+        median_ms(unchanged)
+    );
+    println!(
+        "save, one document edited  {:8.1} ms (median of 7)",
+        median_ms(edited)
+    );
 }

@@ -1,11 +1,11 @@
 use chrono::{DateTime, Datelike, Local, NaiveDate, Utc};
 use knotq_commands::DateKind;
-use knotq_rrule::ical::{parse_rrule_until, parse_rrule_weekdays};
 use knotq_model::TimeFormat;
 use knotq_model::{
     CalendarDateTime, Item, ItemMarker, OccurrenceId, OccurrenceOverrideStatus, Recurrence,
     RepeatEnd, RepeatWeekday, SimpleRecurrence,
 };
+use knotq_rrule::ical::{parse_rrule_until, parse_rrule_weekdays};
 use std::collections::BTreeSet;
 
 use knotq_date_util::{format_contextual_date, format_contextual_datetime, format_time};
@@ -174,7 +174,10 @@ fn format_simple_repeat_annotation(repeat: &SimpleRecurrence, reference_year: i3
             } else {
                 format!(
                     "{}{suffix}",
-                    knotq_l10n::t_with("editor.repeat.every_days", &[("count", &interval.to_string())])
+                    knotq_l10n::t_with(
+                        "editor.repeat.every_days",
+                        &[("count", &interval.to_string())]
+                    )
                 )
             }
         }
@@ -187,7 +190,10 @@ fn format_simple_repeat_annotation(repeat: &SimpleRecurrence, reference_year: i3
             } else {
                 format!(
                     "{}{days}{suffix}",
-                    knotq_l10n::t_with("editor.repeat.every_weeks", &[("count", &interval.to_string())])
+                    knotq_l10n::t_with(
+                        "editor.repeat.every_weeks",
+                        &[("count", &interval.to_string())]
+                    )
                 )
             }
         }
@@ -197,7 +203,10 @@ fn format_simple_repeat_annotation(repeat: &SimpleRecurrence, reference_year: i3
             } else {
                 format!(
                     "{}{suffix}",
-                    knotq_l10n::t_with("editor.repeat.every_months", &[("count", &interval.to_string())])
+                    knotq_l10n::t_with(
+                        "editor.repeat.every_months",
+                        &[("count", &interval.to_string())]
+                    )
                 )
             }
         }
@@ -207,7 +216,10 @@ fn format_simple_repeat_annotation(repeat: &SimpleRecurrence, reference_year: i3
             } else {
                 format!(
                     "{}{suffix}",
-                    knotq_l10n::t_with("editor.repeat.every_years", &[("count", &interval.to_string())])
+                    knotq_l10n::t_with(
+                        "editor.repeat.every_years",
+                        &[("count", &interval.to_string())]
+                    )
                 )
             }
         }
@@ -217,9 +229,10 @@ fn format_simple_repeat_annotation(repeat: &SimpleRecurrence, reference_year: i3
 fn repeat_end_suffix(end: &RepeatEnd, reference_year: i32) -> String {
     match end {
         RepeatEnd::Never => String::new(),
-        RepeatEnd::Count(count) => {
-            knotq_l10n::t_with("editor.repeat.times_suffix", &[("count", &count.to_string())])
-        }
+        RepeatEnd::Count(count) => knotq_l10n::t_with(
+            "editor.repeat.times_suffix",
+            &[("count", &count.to_string())],
+        ),
         RepeatEnd::Until(until) => {
             let date = until.with_timezone(&Local).date_naive();
             knotq_l10n::t_with(
@@ -238,20 +251,29 @@ fn repeat_exception_suffix(repeat: &Recurrence, reference_year: i32) -> String {
     if !skip_dates.is_empty() {
         parts.push(knotq_l10n::t_with(
             "editor.repeat.skip_suffix",
-            &[("dates", &format_contextual_dates(skip_dates, reference_year))],
+            &[(
+                "dates",
+                &format_contextual_dates(skip_dates, reference_year),
+            )],
         ));
     }
     if !special_dates.is_empty() {
         parts.push(knotq_l10n::t_with(
             "editor.repeat.special_suffix",
-            &[("dates", &format_contextual_dates(special_dates, reference_year))],
+            &[(
+                "dates",
+                &format_contextual_dates(special_dates, reference_year),
+            )],
         ));
     }
 
     if parts.is_empty() {
         String::new()
     } else {
-        knotq_l10n::t_with("editor.repeat.parts_suffix", &[("parts", &parts.join("; "))])
+        knotq_l10n::t_with(
+            "editor.repeat.parts_suffix",
+            &[("parts", &parts.join("; "))],
+        )
     }
 }
 

@@ -4,6 +4,34 @@ use super::super::*;
 use super::helpers::{add_root_folder, add_root_scheme, stored_updates};
 use chrono::NaiveDate;
 use knotq_model::{daily_queue_scheme_id, Item, NodeRef, ReplicaId, DAILY_QUEUE_COLOR_INDEX};
+use std::collections::HashSet;
+
+#[test]
+fn scoped_full_snapshot_only_encodes_requested_documents() {
+    let mut workspace = Workspace::new();
+    let first = add_root_scheme(&mut workspace, "First");
+    let second = add_root_scheme(&mut workspace, "Second");
+    workspace
+        .schemes
+        .get_mut(&first)
+        .unwrap()
+        .items
+        .push(Item::new("one"));
+    workspace
+        .schemes
+        .get_mut(&second)
+        .unwrap()
+        .items
+        .push(Item::new("two"));
+    workspace.ensure_sync_metadata();
+
+    let docs = WorkspaceCrdtDocuments::try_new(&workspace).unwrap();
+    let requested = HashSet::from([workspace.scheme_sync[&first].id]);
+    let updates = docs.full_snapshot_updates_for_documents(&requested).updates;
+
+    assert_eq!(updates.len(), 1);
+    assert_eq!(updates[0].document, workspace.scheme_sync[&first].id);
+}
 
 #[test]
 fn restore_and_materialization_include_lazy_daily_queue_documents() {
@@ -46,6 +74,66 @@ fn restore_and_materialization_include_lazy_daily_queue_documents() {
         repaired.schemes[&daily_id].items[0].text(),
         "persisted outside the launch window"
     );
+}
+
+#[test]
+fn lazy_restore_defers_existing_scheme_until_it_is_touched() {
+    let mut workspace = Workspace::new();
+    let mut scheme = Scheme::new("Plan", 0);
+    scheme.items.push(Item::new("Persisted content"));
+    let scheme_id = scheme.id;
+    workspace.schemes.insert(scheme_id, scheme);
+    workspace.ensure_sync_metadata();
+
+    let source = WorkspaceCrdtDocuments::try_new(&workspace).unwrap();
+    let states = source.document_states();
+    let mut restored =
+        WorkspaceCrdtDocuments::from_states_lazy(&workspace, ReplicaId::new(), &states).unwrap();
+
+    assert!(restored.is_deferred(scheme_id));
+    assert_eq!(restored.document_population().live_schemes, 0);
+    assert_eq!(restored.document_population().deferred_schemes, 1);
+    assert_eq!(
+        restored.persisted_state_vectors_v1(),
+        source.state_vectors_v1(),
+        "state vectors can be recovered from deferred update metadata without hydration"
+    );
+
+    let mut edited = workspace.clone();
+    edited.schemes.get_mut(&scheme_id).unwrap().items[0].set_text("Edited");
+    restored.sync_changes(
+        &edited,
+        &WorkspaceCrdtChangeSet::default().touch_scheme(scheme_id),
+    );
+    assert!(!restored.is_deferred(scheme_id));
+    assert_eq!(restored.document_population().live_schemes, 1);
+}
+
+#[test]
+fn deferred_full_snapshot_replaces_bytes_without_hydrating() {
+    let mut workspace = Workspace::new();
+    let mut scheme = Scheme::new("Plan", 0);
+    scheme.items.push(Item::new("Before"));
+    let scheme_id = scheme.id;
+    workspace.schemes.insert(scheme_id, scheme);
+    workspace.ensure_sync_metadata();
+
+    let source = WorkspaceCrdtDocuments::try_new(&workspace).unwrap();
+    let states = source.document_states();
+    let document = workspace.scheme_sync[&scheme_id].id;
+    let mut restored =
+        WorkspaceCrdtDocuments::from_states_lazy(&workspace, ReplicaId::new(), &states).unwrap();
+
+    let mut remote_workspace = workspace.clone();
+    remote_workspace.schemes.get_mut(&scheme_id).unwrap().items[0].set_text("After");
+    let remote = WorkspaceCrdtDocuments::try_new(&remote_workspace).unwrap();
+    let remote_state = remote.document_states().remove(&document).unwrap();
+
+    assert!(restored.is_deferred(scheme_id));
+    assert!(restored.replace_deferred_full_state(document, &remote_state));
+    assert!(restored.is_deferred(scheme_id));
+    assert_eq!(restored.document_states()[&document], remote_state);
+    assert_eq!(restored.document_population().live_schemes, 0);
 }
 
 #[test]

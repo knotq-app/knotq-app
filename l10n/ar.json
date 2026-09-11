@@ -525,6 +525,8 @@
   "mobile.search.no_results": "لا توجد نتائج.",
   "mobile.search.no_results_detail": "لا يوجد شيء يطابق «{query}».",
   "mobile.search.screen_title": "البحث",
+  "mobile.search.searching": "جارٍ البحث…",
+  "mobile.workspace.loading": "جارٍ تحميل مساحة العمل…",
   "mobile.settings.archived_items": "العناصر المؤرشفة",
   "mobile.settings.assignment_reminders_title": "تذكيرات المهام",
   "mobile.settings.cancel_sync_subscription_confirm": "إلغاء الاشتراك",

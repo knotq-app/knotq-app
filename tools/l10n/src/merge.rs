@@ -56,7 +56,11 @@ pub fn run(l10n_dir: &Path) -> Result<()> {
     }
 
     if !conflicts.is_empty() {
-        bail!("conflicting values for {} key(s):\n{}", conflicts.len(), conflicts.join("\n"));
+        bail!(
+            "conflicting values for {} key(s):\n{}",
+            conflicts.len(),
+            conflicts.join("\n")
+        );
     }
 
     write_catalog(&en_path, &merged)?;

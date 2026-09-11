@@ -30,6 +30,10 @@ struct ServerCounters {
     /// Documents flagged by the most recent integrity-bearing pull (see the
     /// `integrity_state_vectors` branch of `pull`).
     last_integrity_mismatches: usize,
+    /// Documents served as state-vector deltas by the most recent pull(s).
+    /// This proves the Rust engine tests are exercising the optimized response
+    /// shape rather than silently accepting only complete merged states.
+    delta_pull_documents: usize,
     /// Subset of the above where the client DID submit a state vector but it did
     /// not match the server's re-derived one — i.e. the stored bytes changed the
     /// document's state vector out from under a device that had it. A missing
@@ -231,6 +235,10 @@ impl TestServer {
         self.counters.borrow().last_integrity_vector_disagreements
     }
 
+    pub fn delta_pull_documents(&self) -> usize {
+        self.counters.borrow().delta_pull_documents
+    }
+
     /// Corrupt the personal workspace document on the server by replacing its
     /// CRDT state with garbage bytes.  Used to test that workspace-level
     /// corruption causes the pull to return Err.
@@ -248,17 +256,45 @@ impl SyncTransport for TestServer {
     fn pull(&self, request: &BatchPullRequest) -> anyhow::Result<BatchPullResponse> {
         self.counters.borrow_mut().pull_calls += 1;
         let documents = self.documents.borrow();
+        let requested_vectors: HashMap<DocumentId, &DocumentPullStateVector> = request
+            .state_vectors
+            .iter()
+            .map(|entry| (entry.document, entry))
+            .collect();
+        let mut delta_pull_documents = 0usize;
         let pulled: Vec<PulledCrdtDocument> = documents
             .iter()
             .filter(|(id, doc)| doc.seq > request.cursors.get(*id).copied().unwrap_or(0))
-            .map(|(id, doc)| PulledCrdtDocument {
-                document: *id,
-                kind: doc.kind,
-                seq: doc.seq,
-                epoch: doc.epoch,
-                state_v1: doc.state_v1.clone(),
+            .map(|(id, doc)| {
+                let (state_v1, state_v1_is_delta) = requested_vectors
+                    .get(id)
+                    .filter(|hint| hint.epoch == doc.epoch)
+                    .and_then(|hint| {
+                        let update = Update::decode_v1(&doc.state_v1).ok()?;
+                        let state_vector = StateVector::decode_v1(&hint.state_vector_v1).ok()?;
+                        let server_doc = Doc::new();
+                        {
+                            let mut txn = server_doc.transact_mut();
+                            txn.apply_update(update).ok()?;
+                        }
+                        let delta = server_doc.transact().encode_diff_v1(&state_vector);
+                        Some((delta, true))
+                    })
+                    .unwrap_or_else(|| (doc.state_v1.clone(), false));
+                if state_v1_is_delta {
+                    delta_pull_documents += 1;
+                }
+                PulledCrdtDocument {
+                    document: *id,
+                    kind: doc.kind,
+                    seq: doc.seq,
+                    epoch: doc.epoch,
+                    state_v1,
+                    state_v1_is_delta,
+                }
             })
             .collect();
+        self.counters.borrow_mut().delta_pull_documents += delta_pull_documents;
         let known_documents = documents.iter().map(|(id, doc)| (*id, doc.seq)).collect();
 
         // Mirror the backend's pull integrity check: only on a caught-up pull

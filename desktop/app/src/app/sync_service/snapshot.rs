@@ -10,7 +10,7 @@ use knotq_storage_json::{
 use knotq_sync::{
     batch_pull_and_apply, batch_push_pending, queue_account_switch_reseed,
     queue_workspace_bootstrap_updates, CrdtDocumentUpdate, LocalSyncState, PendingCrdtEdit,
-    WorkspaceCrdtChangeSet, WorkspaceCrdtDocuments,
+    SkippedDocument, WorkspaceCrdtChangeSet, WorkspaceCrdtDocuments,
 };
 
 use super::http::normalize_api_base;
@@ -44,8 +44,8 @@ pub(super) fn sync_snapshot(snapshot: SyncSnapshot) -> Result<SyncRunResult> {
     // Capture the workspace document's id before adopting the account's canonical
     // identity, so an account switch can carry its content to the new id below.
     let previous_workspace_document_id = workspace.sync.id;
-    let local_workspace_changed =
-        workspace.canonicalize_personal_sync_identity(server_workspace_id);
+    let (_local_workspace_repair_needed, local_workspace_changed) =
+        workspace.canonicalize_personal_sync_identity_with_change(server_workspace_id);
     workspace.ensure_sync_metadata();
 
     let mut local_state = load_local_sync_state(&path).unwrap_or_default();
@@ -139,26 +139,16 @@ pub(super) fn sync_snapshot(snapshot: SyncSnapshot) -> Result<SyncRunResult> {
         workspace,
         snapshot.replica_id,
     )?;
-    // Log skipped documents (per-document errors that did not block the pull).
-    for skipped in &pull.skipped {
-        if skipped.unknown_scheme_document {
-            eprintln!(
-                "sync: ignored orphan document {} (no workspace index entry)",
-                skipped.document
-            );
-        } else {
-            eprintln!(
-                "sync: skipped document {}: {}",
-                skipped.document, skipped.reason
-            );
-        }
-    }
+    log_skipped_documents(&pull.skipped);
     let mut workspace = pull.workspace;
     let remote_updates_applied = pull.remote_updates_applied;
-    let mut repaired_workspace_changed =
-        workspace.canonicalize_personal_sync_identity(server_workspace_id);
-    repaired_workspace_changed |= workspace.normalize_one_level_folders();
-    repaired_workspace_changed |= workspace.normalize_item_markers();
+    let (repaired_identity, repaired_identity_changed) =
+        workspace.canonicalize_personal_sync_identity_with_change(server_workspace_id);
+    let repaired_folders = workspace.normalize_one_level_folders();
+    let repaired_markers = workspace.normalize_item_markers();
+    let repaired_workspace_changed = repaired_identity || repaired_folders || repaired_markers;
+    let repaired_workspace_persist_changed =
+        repaired_identity_changed || repaired_folders || repaired_markers;
     if repaired_workspace_changed {
         queue_repair_crdt_updates(
             &mut local_state,
@@ -226,7 +216,7 @@ pub(super) fn sync_snapshot(snapshot: SyncSnapshot) -> Result<SyncRunResult> {
     // documents, whose pushed snapshots must share identity with future local diffs.
     if remote_updates_applied > 0
         || local_workspace_changed
-        || repaired_workspace_changed
+        || repaired_workspace_persist_changed
         || !healed_documents.is_empty()
     {
         save_workspace(&path, &workspace)?;
@@ -487,6 +477,54 @@ fn merge_pending(local_state: &mut LocalSyncState, pending: Vec<PendingCrdtEdit>
     }
 }
 
+/// Keep expected orphan traffic from drowning out actionable sync failures.
+/// Orphans are normal after a remote deletion or while an index/content pair
+/// is converging, but a materialization gap is not: it means the server sent a
+/// document that the local workspace index references but the client could not
+/// turn into a live CRDT document. Preserve the detailed error for every
+/// non-benign skip and emit a bounded sample for the expected case.
+fn log_skipped_documents(skipped: &[SkippedDocument]) {
+    let orphan_documents: Vec<String> = skipped
+        .iter()
+        .filter(|skipped| skipped.unknown_scheme_document)
+        .map(|skipped| skipped.document.to_string())
+        .collect();
+    if !orphan_documents.is_empty() {
+        let sample = orphan_documents
+            .iter()
+            .take(3)
+            .cloned()
+            .collect::<Vec<_>>()
+            .join(", ");
+        let suffix = if orphan_documents.len() > 3 {
+            ", …"
+        } else {
+            ""
+        };
+        eprintln!(
+            "sync: ignored {} orphan document(s) (no workspace index entry); sample={}{}",
+            orphan_documents.len(),
+            sample,
+            suffix
+        );
+    }
+
+    for skipped in skipped
+        .iter()
+        .filter(|skipped| !skipped.unknown_scheme_document)
+    {
+        let category = if skipped.deferred {
+            "materialization gap"
+        } else {
+            "skipped document"
+        };
+        eprintln!(
+            "sync: {category} {} ({:?}): {}",
+            skipped.document, skipped.kind, skipped.reason
+        );
+    }
+}
+
 #[cfg(test)]
 mod configure_local_state_tests {
     use super::configure_local_state;
@@ -562,5 +600,39 @@ mod configure_local_state_tests {
             1,
             "a normal re-sync of the same account must not discard cursors"
         );
+    }
+}
+
+#[cfg(test)]
+mod skipped_document_logging_tests {
+    use super::log_skipped_documents;
+    use knotq_model::{DocumentId, SyncDocumentKind};
+    use knotq_sync::SkippedDocument;
+
+    // This test is intentionally a smoke test for the diagnostic partitioning:
+    // it exercises the same values that caused the desktop runtime's noisy
+    // orphan output, while ensuring non-benign gaps still take the detailed
+    // branch without panicking. Log text is verified manually in the runtime
+    // smoke loop because stderr capture is platform-specific in this crate.
+    #[test]
+    fn partitions_orphans_and_materialization_gaps_without_panicking() {
+        let skipped = vec![
+            SkippedDocument {
+                document: DocumentId::new(),
+                kind: SyncDocumentKind::Scheme,
+                unknown_scheme_document: true,
+                deferred: false,
+                reason: "deleted remotely".to_string(),
+            },
+            SkippedDocument {
+                document: DocumentId::new(),
+                kind: SyncDocumentKind::Scheme,
+                unknown_scheme_document: false,
+                deferred: true,
+                reason: "pulled but did not materialize".to_string(),
+            },
+        ];
+
+        log_skipped_documents(&skipped);
     }
 }

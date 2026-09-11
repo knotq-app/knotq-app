@@ -501,6 +501,8 @@
   "mobile.search.no_results": "Brak wyników.",
   "mobile.search.no_results_detail": "Nic nie pasuje do „{query}”.",
   "mobile.search.screen_title": "Wyszukiwanie",
+  "mobile.search.searching": "Wyszukiwanie…",
+  "mobile.workspace.loading": "Ładowanie obszaru roboczego…",
   "mobile.settings.archived_items": "Elementy zarchiwizowane",
   "mobile.settings.assignment_reminders_title": "Przypomnienia zadań",
   "mobile.settings.cancel_sync_subscription_confirm": "Anuluj subskrypcję",

@@ -465,6 +465,8 @@
   "mobile.search.no_results": "Không có kết quả.",
   "mobile.search.no_results_detail": "Không có gì khớp với \"{query}\".",
   "mobile.search.screen_title": "Tìm kiếm",
+  "mobile.search.searching": "Đang tìm kiếm…",
+  "mobile.workspace.loading": "Đang tải không gian làm việc…",
   "mobile.settings.archived_items": "Các mục được lưu trữ",
   "mobile.settings.assignment_reminders_title": "Nhắc nhở bài tập",
   "mobile.settings.cancel_sync_subscription_confirm": "Hủy Đăng ký",

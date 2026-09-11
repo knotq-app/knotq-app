@@ -465,6 +465,8 @@
   "mobile.search.no_results": "검색 결과 없습니다.",
   "mobile.search.no_results_detail": "\"{query}\"와 일치하는 항목 없습니다.",
   "mobile.search.screen_title": "검색",
+  "mobile.search.searching": "검색 중…",
+  "mobile.workspace.loading": "작업 공간을 불러오는 중…",
   "mobile.settings.archived_items": "아카이브된 항목",
   "mobile.settings.assignment_reminders_title": "할당 리마인더",
   "mobile.settings.cancel_sync_subscription_confirm": "구독 취소",

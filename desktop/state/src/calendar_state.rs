@@ -53,7 +53,10 @@ impl RetainedCompletedItems {
     /// When the earliest-completed entry expires — the wakeup deadline for a
     /// timeline task that wants to re-render right as a row ages out.
     pub fn next_expiry(&self) -> Option<DateTime<Utc>> {
-        self.completed_at.values().min().map(|at| *at + retention_ttl())
+        self.completed_at
+            .values()
+            .min()
+            .map(|at| *at + retention_ttl())
     }
 
     /// Drop entries past the TTL; returns how many were removed (non-zero means

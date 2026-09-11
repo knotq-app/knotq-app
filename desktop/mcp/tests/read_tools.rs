@@ -120,8 +120,14 @@ fn list_upcoming_starts_at_the_given_instant_and_expands_repeats() {
         assert!(o["start"].as_str().unwrap() >= "2026-09-01T12:00:00Z");
     }
     // The daily standup repeats, so it shows more than once in a 10-item window.
-    let standups = occurrences.iter().filter(|o| o["text"] == "standup").count();
-    assert!(standups > 1, "expected the daily repeat to expand, got {standups}");
+    let standups = occurrences
+        .iter()
+        .filter(|o| o["text"] == "standup")
+        .count();
+    assert!(
+        standups > 1,
+        "expected the daily repeat to expand, got {standups}"
+    );
 }
 
 #[test]
@@ -247,9 +253,7 @@ fn an_over_large_limit_is_capped_rather_than_refused() {
 #[test]
 fn reads_are_allowed_in_read_only_mode() {
     let f = Fixture::new();
-    assert!(f
-        .call_as("list_schemes", json!({}), true)
-        .is_ok());
+    assert!(f.call_as("list_schemes", json!({}), true).is_ok());
 }
 
 #[test]

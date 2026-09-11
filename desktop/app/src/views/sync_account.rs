@@ -77,10 +77,14 @@ impl KnotQApp {
             Some(false)
         );
         let needs_verification = !account.supports_sync && known_unverified;
-        let resend_in_progress =
-            matches!(self.email_verification_resend, EmailVerificationResend::InProgress);
-        let resend_sent =
-            matches!(self.email_verification_resend, EmailVerificationResend::Sent);
+        let resend_in_progress = matches!(
+            self.email_verification_resend,
+            EmailVerificationResend::InProgress
+        );
+        let resend_sent = matches!(
+            self.email_verification_resend,
+            EmailVerificationResend::Sent
+        );
         // Account-action errors (cancel/re-enable/checkout) surface here, since those
         // actions dismiss their prompt immediately rather than holding it open.
         let error = match &self.sync_auth_status {
@@ -104,7 +108,12 @@ impl KnotQApp {
                 cx,
             ))
             .when(needs_verification, |column| {
-                column.child(email_verification_notice(resend_in_progress, resend_sent, t, cx))
+                column.child(email_verification_notice(
+                    resend_in_progress,
+                    resend_sent,
+                    t,
+                    cx,
+                ))
             })
             .when_some(error, |column, message| {
                 column.child(
@@ -227,11 +236,11 @@ fn email_verification_notice(
                     sync_cta_bg()
                 }))
                 .when(!disabled, |s| {
-                    s.cursor_pointer().hover(|s| s.opacity(0.85)).on_click(
-                        cx.listener(|this, _: &ClickEvent, _window, cx| {
+                    s.cursor_pointer()
+                        .hover(|s| s.opacity(0.85))
+                        .on_click(cx.listener(|this, _: &ClickEvent, _window, cx| {
                             this.resend_email_verification(cx);
-                        }),
-                    )
+                        }))
                 })
                 .child(label),
         )

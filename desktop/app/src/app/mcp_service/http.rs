@@ -30,7 +30,9 @@ pub(crate) struct HttpRequest {
 
 impl HttpRequest {
     pub fn header(&self, name: &str) -> Option<&str> {
-        self.headers.get(&name.to_ascii_lowercase()).map(String::as_str)
+        self.headers
+            .get(&name.to_ascii_lowercase())
+            .map(String::as_str)
     }
 
     pub fn content_length(&self) -> Option<usize> {
@@ -220,7 +222,7 @@ pub(crate) fn json_response(status: u16, reason: &str, body: &str) -> String {
          Connection: close\r\n\
          \r\n\
          {body}",
-        body.as_bytes().len(),
+        body.len(),
     )
 }
 
@@ -277,14 +279,21 @@ mod tests {
 
     #[test]
     fn only_post_to_the_mcp_path_is_admitted() {
-        assert_eq!(admit(&post("Authorization: Bearer s3cret-token\r\n", "{}"), TOKEN), Ok(()));
+        assert_eq!(
+            admit(&post("Authorization: Bearer s3cret-token\r\n", "{}"), TOKEN),
+            Ok(())
+        );
 
-        let wrong_path = request("POST /admin HTTP/1.1\r\nAuthorization: Bearer s3cret-token\r\n\r\n");
+        let wrong_path =
+            request("POST /admin HTTP/1.1\r\nAuthorization: Bearer s3cret-token\r\n\r\n");
         assert_eq!(admit(&wrong_path, TOKEN), Err(Rejection::NotFound));
 
         let wrong_method =
             request("GET /mcp HTTP/1.1\r\nAuthorization: Bearer s3cret-token\r\n\r\n");
-        assert_eq!(admit(&wrong_method, TOKEN), Err(Rejection::MethodNotAllowed));
+        assert_eq!(
+            admit(&wrong_method, TOKEN),
+            Err(Rejection::MethodNotAllowed)
+        );
     }
 
     #[test]
@@ -344,7 +353,10 @@ mod tests {
             Some("https://127.0.0.1"),
             Some("http://[::1]:1234"),
         ] {
-            assert!(origin_is_acceptable(allowed), "{allowed:?} should be allowed");
+            assert!(
+                origin_is_acceptable(allowed),
+                "{allowed:?} should be allowed"
+            );
         }
         for refused in [
             Some("https://evil.example"),
@@ -354,7 +366,10 @@ mod tests {
             Some("http://0.0.0.0"),
             Some("http://10.0.0.1"),
         ] {
-            assert!(!origin_is_acceptable(refused), "{refused:?} should be refused");
+            assert!(
+                !origin_is_acceptable(refused),
+                "{refused:?} should be refused"
+            );
         }
     }
 
@@ -363,7 +378,9 @@ mod tests {
     #[test]
     fn a_hostname_that_merely_starts_with_localhost_is_not_loopback() {
         assert!(!origin_is_acceptable(Some("http://localhost.evil.example")));
-        assert!(!origin_is_acceptable(Some("http://127.0.0.1.evil.example:80")));
+        assert!(!origin_is_acceptable(Some(
+            "http://127.0.0.1.evil.example:80"
+        )));
     }
 
     #[test]
@@ -378,7 +395,7 @@ mod tests {
             .parse()
             .unwrap();
         // Bytes, not characters — a char count here truncates the body.
-        assert_eq!(declared, body.as_bytes().len());
+        assert_eq!(declared, body.len());
         assert!(declared > body.chars().count());
     }
 

@@ -489,6 +489,8 @@
   "mobile.search.no_results": "אין תוצאות.",
   "mobile.search.no_results_detail": "כלום לא התאים „{query}“.",
   "mobile.search.screen_title": "חיפוש",
+  "mobile.search.searching": "מחפש…",
+  "mobile.workspace.loading": "טוען את סביבת העבודה…",
   "mobile.settings.archived_items": "פריטים בארכיון",
   "mobile.settings.assignment_reminders_title": "תזכורות יעדים",
   "mobile.settings.cancel_sync_subscription_confirm": "בטל הרשמה",

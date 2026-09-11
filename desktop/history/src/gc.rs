@@ -98,7 +98,9 @@ pub(crate) fn wait_for_background_sweep() {
 fn is_due(workspace_dir: &Path, now: DateTime<Utc>) -> bool {
     match read_gc_state(workspace_dir).last_sweep {
         // A clock that moved backwards must not defer the sweep indefinitely.
-        Some(last) => now < last || now.signed_duration_since(last) >= Duration::hours(SWEEP_INTERVAL_HOURS),
+        Some(last) => {
+            now < last || now.signed_duration_since(last) >= Duration::hours(SWEEP_INTERVAL_HOURS)
+        }
         None => true,
     }
 }
@@ -130,7 +132,9 @@ fn sweep_with_grace(
         match read_snapshot_record(workspace_dir, id) {
             Ok(record) => retained_blobs.extend(record.entries.into_iter().filter_map(|e| e.blob)),
             Err(err) => {
-                eprintln!("workspace history sweep skipping blobs: unreadable snapshot {id}: {err:#}");
+                eprintln!(
+                    "workspace history sweep skipping blobs: unreadable snapshot {id}: {err:#}"
+                );
                 blob_set_is_complete = false;
             }
         }
@@ -188,7 +192,11 @@ fn sweep_dir(dir: &Path, grace: Duration, keep: impl Fn(&str) -> bool) -> Result
         let Some(name) = entry.file_name().to_str().map(ToOwned::to_owned) else {
             continue;
         };
-        if !entry.file_type().map(|kind| kind.is_file()).unwrap_or(false) {
+        if !entry
+            .file_type()
+            .map(|kind| kind.is_file())
+            .unwrap_or(false)
+        {
             continue;
         }
         if keep(&name) {

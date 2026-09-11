@@ -9,7 +9,10 @@ use serde_json::{json, Value};
 
 use crate::args::Args;
 use crate::error::ToolError;
-use crate::view::{daily_queue_dates, folder_summary, item_view, occurrence_view, scheme_summary, scheme_summary_with};
+use crate::view::{
+    daily_queue_dates, folder_summary, item_view, occurrence_view, scheme_summary,
+    scheme_summary_with,
+};
 use crate::ToolContext;
 
 pub fn list_schemes(args: &Args, ctx: &ToolContext) -> Result<Value, ToolError> {
@@ -158,9 +161,9 @@ pub fn list_calendar(args: &Args, ctx: &ToolContext) -> Result<Value, ToolError>
 pub fn get_daily_queue(args: &Args, ctx: &ToolContext) -> Result<Value, ToolError> {
     let date = match args.opt_str("date")? {
         None => ctx.today,
-        Some(s) => s.parse::<NaiveDate>().map_err(|_| {
-            ToolError::invalid("`date` must be a calendar date as YYYY-MM-DD")
-        })?,
+        Some(s) => s
+            .parse::<NaiveDate>()
+            .map_err(|_| ToolError::invalid("`date` must be a calendar date as YYYY-MM-DD"))?,
     };
     let Some(scheme_id) = ctx.workspace.daily_queue.get(&date).copied() else {
         return Ok(json!({ "date": date, "scheme": Value::Null, "items": [] }));

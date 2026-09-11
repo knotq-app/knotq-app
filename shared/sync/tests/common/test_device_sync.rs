@@ -147,6 +147,12 @@ impl TestDevice {
             &self.crdt_states,
         )
         .expect("reload store crdt");
+        // Persist the vector checkpoint only after the merged CRDT and cursors
+        // have both reached a successful sync boundary. This mirrors the mobile
+        // driver's durable recovery cache and lets the delta test exercise the
+        // optimized response without reconstructing a vector from an arbitrary
+        // cursor/CRDT pairing.
+        self.checkpoint_integrity_vectors();
         Ok(())
     }
 
@@ -261,7 +267,17 @@ impl TestDevice {
             &self.crdt_states,
         )
         .expect("reload store crdt");
+        self.checkpoint_integrity_vectors();
         Ok(())
+    }
+
+    fn checkpoint_integrity_vectors(&mut self) {
+        for (document, state_vector_v1) in self.store_crdt.persisted_state_vectors_v1() {
+            self.local_state.integrity_state_vectors.insert(
+                document,
+                base64::engine::general_purpose::STANDARD.encode(state_vector_v1),
+            );
+        }
     }
 
     /// Remote latest after the most recent sync (cursors map). Useful for

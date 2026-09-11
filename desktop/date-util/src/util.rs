@@ -74,11 +74,35 @@ pub fn snapped_calendar_datetime(date: NaiveDate, hour: f32) -> DateTime<Utc> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use chrono::{Datelike, Timelike};
 
     #[test]
     fn add_months_clamps_month_end() {
         let dt = Utc.with_ymd_and_hms(2024, 1, 31, 9, 0, 0).unwrap();
         assert_eq!(add_months_exact(dt, 1).date_naive().day(), 29);
         assert_eq!(add_months_exact(dt, 2).date_naive().day(), 31);
+    }
+
+    #[test]
+    fn local_date_repeat_until_utc_round_trips_to_the_requested_local_day() {
+        let date = NaiveDate::from_ymd_opt(2026, 11, 1).unwrap();
+        let utc = local_date_repeat_until_utc(date).expect("valid local date");
+        let local = utc.with_timezone(&Local);
+
+        assert_eq!(local.date_naive(), date);
+        assert_eq!(local.hour(), 23);
+        assert_eq!(local.minute(), 59);
+        assert_eq!(local.second(), 59);
+    }
+
+    #[test]
+    fn snapped_calendar_datetime_rolls_24_hours_into_the_next_local_day() {
+        let date = NaiveDate::from_ymd_opt(2026, 6, 15).unwrap();
+        let utc = snapped_calendar_datetime(date, 24.0);
+        let local = utc.with_timezone(&Local);
+
+        assert_eq!(local.date_naive(), date + Duration::days(1));
+        assert_eq!(local.hour(), 0);
+        assert_eq!(local.minute(), 0);
     }
 }

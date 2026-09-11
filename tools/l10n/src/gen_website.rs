@@ -56,6 +56,9 @@ pub fn run(catalogs: &Catalogs, config: &TargetConfig) -> Result<()> {
     );
     let path = config.website_i18n_dir.join("locales.js");
     fs::write(&path, script).with_context(|| format!("writing {}", path.display()))?;
-    println!("wrote website catalogs under {}", config.website_i18n_dir.display());
+    println!(
+        "wrote website catalogs under {}",
+        config.website_i18n_dir.display()
+    );
     Ok(())
 }

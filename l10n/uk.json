@@ -501,6 +501,8 @@
   "mobile.search.no_results": "Немає результатів.",
   "mobile.search.no_results_detail": "Нічого не збігається з «{query}».",
   "mobile.search.screen_title": "Пошук",
+  "mobile.search.searching": "Пошук…",
+  "mobile.workspace.loading": "Завантаження робочого простору…",
   "mobile.settings.archived_items": "Архівовані завдання",
   "mobile.settings.assignment_reminders_title": "Нагадування про завдання",
   "mobile.settings.cancel_sync_subscription_confirm": "Скасувати підписку",

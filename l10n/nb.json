@@ -477,6 +477,8 @@
   "mobile.search.no_results": "Ingen resultater.",
   "mobile.search.no_results_detail": "Ingenting samsvarte med «{query}».",
   "mobile.search.screen_title": "Søk",
+  "mobile.search.searching": "Søker…",
+  "mobile.workspace.loading": "Laster arbeidsområde…",
   "mobile.settings.archived_items": "Arkiverte elementer",
   "mobile.settings.assignment_reminders_title": "Oppgaveremindere",
   "mobile.settings.cancel_sync_subscription_confirm": "Avbryt abonnement",

@@ -527,6 +527,13 @@ impl Harness {
         self.require_in_memory_server().push_calls()
     }
 
+    /// Number of document payloads the in-memory server has returned as
+    /// state-vector deltas. In-memory only; used to ensure the Rust engine's
+    /// optimized pull path is covered by convergence tests.
+    pub fn server_delta_pull_documents(&self) -> usize {
+        self.require_in_memory_server().delta_pull_documents()
+    }
+
     /// In-memory only.
     pub fn server_document_count(&self) -> usize {
         self.require_in_memory_server().document_count()

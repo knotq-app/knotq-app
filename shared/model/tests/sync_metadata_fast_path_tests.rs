@@ -36,7 +36,7 @@ impl Rng {
     }
 
     fn chance(&mut self, one_in: u64) -> bool {
-        self.next_u64() % one_in == 0
+        self.next_u64().is_multiple_of(one_in)
     }
 }
 
@@ -367,7 +367,8 @@ fn memoized_daily_queue_ids_match_a_fresh_derivation() {
     // thread derives its own and they must agree.
     let date = NaiveDate::from_ymd_opt(2026, 8, 16).unwrap();
     let (scheme, document) = (daily_queue_scheme_id(date), daily_queue_document_id(date));
-    let handle = std::thread::spawn(move || (daily_queue_scheme_id(date), daily_queue_document_id(date)));
+    let handle =
+        std::thread::spawn(move || (daily_queue_scheme_id(date), daily_queue_document_id(date)));
     assert_eq!(handle.join().unwrap(), (scheme, document));
 }
 

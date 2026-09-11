@@ -20,7 +20,10 @@ pub(in crate::scheme_editor) fn build_buffer(items: &[Item]) -> (String, Vec<Edi
 ///
 /// The reuse decision is [`same_item`], so a reused row is by construction a
 /// row a fresh build would have produced identically.
-pub(in crate::scheme_editor) fn rebuild_rows_into(items: &[Item], rows: &mut Vec<EditorRow>) -> bool {
+pub(in crate::scheme_editor) fn rebuild_rows_into(
+    items: &[Item],
+    rows: &mut Vec<EditorRow>,
+) -> bool {
     let mut writer = RowWriter {
         rows,
         next: 0,
@@ -145,7 +148,8 @@ fn push_clean_display_line(out: &mut String, text: &str) {
 
 pub(in crate::scheme_editor) fn display_line_for_row(row: &EditorRow) -> String {
     if item_has_block_object(&row.item) {
-        return clean_display_line_text(&item_inline_text_with_block_objects(&row.item)).into_owned();
+        return clean_display_line_text(&item_inline_text_with_block_objects(&row.item))
+            .into_owned();
     }
     clean_display_line_text(&row.item.text()).into_owned()
 }
@@ -264,7 +268,12 @@ mod tests {
             vec![edited.clone(), remarked.clone(), c.clone()],
             vec![edited.clone(), remarked.clone(), indented.clone()],
             // insert at the front, the middle, the end
-            vec![text_item("new"), edited.clone(), remarked.clone(), indented.clone()],
+            vec![
+                text_item("new"),
+                edited.clone(),
+                remarked.clone(),
+                indented.clone(),
+            ],
             vec![edited.clone(), text_item("mid"), remarked.clone()],
             vec![edited.clone(), remarked.clone(), text_item("tail")],
             // delete

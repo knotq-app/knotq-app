@@ -50,7 +50,9 @@ fn the_next_sync_pulls_the_devices_own_document_back() {
     h.sync(D0);
 
     let document = h.device(D0).workspace.scheme_sync[&scheme].id;
-    let (server_seq, _) = h.server_document_head(document).expect("document on server");
+    let (server_seq, _) = h
+        .server_document_head(document)
+        .expect("document on server");
 
     // Nothing changed anywhere; this sync exists only to absorb the echo.
     h.sync(D0);

@@ -6,7 +6,11 @@ use crate::theme_gpui::text_selection_rgba;
 use super::super::{block_object_ranges, SchemeEditor, EMPTY_SELECTION_WIDTH};
 
 impl SchemeEditor {
-    pub(in crate::scheme_editor) fn paint_selection(&self, text_origin: Point<Pixels>, window: &mut Window) {
+    pub(in crate::scheme_editor) fn paint_selection(
+        &self,
+        text_origin: Point<Pixels>,
+        window: &mut Window,
+    ) {
         let (start, end) = self.selection.ordered();
         let selection_bg = text_selection_rgba(self.theme);
         for row in start.row..=end.row {
@@ -83,7 +87,11 @@ impl SchemeEditor {
         }
     }
 
-    pub(in crate::scheme_editor) fn paint_block_object_selection(&self, bounds: Bounds<Pixels>, window: &mut Window) {
+    pub(in crate::scheme_editor) fn paint_block_object_selection(
+        &self,
+        bounds: Bounds<Pixels>,
+        window: &mut Window,
+    ) {
         let (start, end) = self.selection.ordered();
         let selection_bg = text_selection_rgba(self.theme);
         for row in start.row..=end.row {

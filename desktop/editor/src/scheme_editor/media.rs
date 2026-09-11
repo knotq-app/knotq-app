@@ -4,8 +4,7 @@ use std::sync::Arc;
 
 use crate::assets::image_asset_path;
 use gpui::{
-    px, size, ClipboardEntry, ClipboardItem, Image, ImageFormat as GpuiImageFormat,
-    Pixels,
+    px, size, ClipboardEntry, ClipboardItem, Image, ImageFormat as GpuiImageFormat, Pixels,
 };
 use image::GenericImageView;
 use knotq_model::{ImageAssetFormat, ImageInline};
@@ -86,7 +85,9 @@ pub(super) fn media_rejection_message(rejections: &[(Option<String>, MediaError)
     let lines = rejections
         .iter()
         .map(|(name, error)| {
-            let label = name.as_deref().unwrap_or_else(|| knotq_l10n::t("editor.media.fallback_label"));
+            let label = name
+                .as_deref()
+                .unwrap_or_else(|| knotq_l10n::t("editor.media.fallback_label"));
             knotq_l10n::t_with(
                 "editor.media.rejected_line",
                 &[("label", label), ("reason", &short_media_reason(error))],
@@ -117,7 +118,9 @@ fn single_media_rejection_message(name: Option<&str>, error: &MediaError) -> Str
         MediaError::UnsupportedFormat => {
             knotq_l10n::t_with("editor.media.unsupported_format", &[("subject", &subject)])
         }
-        MediaError::IoFailed => knotq_l10n::t_with("editor.media.io_failed", &[("subject", &subject)]),
+        MediaError::IoFailed => {
+            knotq_l10n::t_with("editor.media.io_failed", &[("subject", &subject)])
+        }
     }
 }
 
@@ -130,7 +133,9 @@ fn short_media_reason(error: &MediaError) -> String {
                 ("limit", &megabytes(MAX_IMAGE_ASSET_BYTES)),
             ],
         ),
-        MediaError::UnsupportedFormat => knotq_l10n::t("editor.media.reason_unsupported").to_string(),
+        MediaError::UnsupportedFormat => {
+            knotq_l10n::t("editor.media.reason_unsupported").to_string()
+        }
         MediaError::IoFailed => knotq_l10n::t("editor.media.reason_io_failed").to_string(),
     }
 }

@@ -356,7 +356,10 @@ mod tests {
     #[test]
     fn rows_added_by_a_longer_document_always_reshape() {
         let mut cache = cache_of(&["alpha"]);
-        cache.begin(&ids_for(&["alpha", "beta", "gamma"]), &gpui::font("Helvetica"));
+        cache.begin(
+            &ids_for(&["alpha", "beta", "gamma"]),
+            &gpui::font("Helvetica"),
+        );
 
         assert_eq!(cache.len(), 3);
         assert!(cache.row_is_unchanged(0, &view("alpha")));
@@ -465,7 +468,9 @@ mod tests {
             let mut applied = old_ids.clone();
             applied.splice(
                 splice.at..splice.at + splice.removed,
-                new_ids[splice.at..splice.at + splice.inserted].iter().copied(),
+                new_ids[splice.at..splice.at + splice.inserted]
+                    .iter()
+                    .copied(),
             );
 
             assert_eq!(applied, new_ids, "{old:?} -> {new:?} via {splice:?}");

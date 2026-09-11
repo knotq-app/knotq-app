@@ -4,7 +4,10 @@ use super::super::*;
 use super::*;
 
 impl SchemeEditor {
-    pub(in crate::scheme_editor) fn table_control_at(&self, position: Point<Pixels>) -> Option<TableControlHitbox> {
+    pub(in crate::scheme_editor) fn table_control_at(
+        &self,
+        position: Point<Pixels>,
+    ) -> Option<TableControlHitbox> {
         self.table_control_hitboxes
             .iter()
             .copied()

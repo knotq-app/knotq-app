@@ -147,7 +147,10 @@ impl KnotQApp {
         t: Theme,
         cx: &mut Context<Self>,
     ) -> gpui::AnyElement {
-        let editor = self.scheme_editor.as_ref().map(|(_, editor)| editor.clone());
+        let editor = self
+            .scheme_editor
+            .as_ref()
+            .map(|(_, editor)| editor.clone());
         div()
             .id(("marker-family-row", family as usize))
             .h(px(ROW_HEIGHT))
@@ -231,8 +234,14 @@ mod tests {
     fn a_single_glyph_family_previews_as_one_glyph() {
         assert_eq!(family_preview(MarkerFamily::Discs, ItemMarker::Bullet), "●");
         assert_eq!(family_preview(MarkerFamily::Rings, ItemMarker::Bullet), "○");
-        assert_eq!(family_preview(MarkerFamily::Squares, ItemMarker::Bullet), "▪");
-        assert_eq!(family_preview(MarkerFamily::Dashes, ItemMarker::Bullet), "–");
+        assert_eq!(
+            family_preview(MarkerFamily::Squares, ItemMarker::Bullet),
+            "▪"
+        );
+        assert_eq!(
+            family_preview(MarkerFamily::Dashes, ItemMarker::Bullet),
+            "–"
+        );
         assert_eq!(
             family_preview(MarkerFamily::Decimal, ItemMarker::Numbered),
             "1."
@@ -244,10 +253,7 @@ mod tests {
     fn every_offered_family_has_a_label() {
         for marker in [ItemMarker::Bullet, ItemMarker::Numbered] {
             for family in MarkerFamily::choices_for(marker) {
-                assert!(
-                    !family_label(*family).is_empty(),
-                    "{family:?} has no label"
-                );
+                assert!(!family_label(*family).is_empty(), "{family:?} has no label");
             }
         }
     }

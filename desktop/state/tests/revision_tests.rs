@@ -259,7 +259,11 @@ fn direct_mutation_routes_bump_both_revisions() {
 
     let before = revisions(&state);
     state.mark_scheme_dirty(scheme);
-    assert_ne!(before.content, state.content_revision(), "mark_scheme_dirty");
+    assert_ne!(
+        before.content,
+        state.content_revision(),
+        "mark_scheme_dirty"
+    );
     assert_ne!(
         before.schedule,
         state.schedule_revision(),
@@ -269,7 +273,11 @@ fn direct_mutation_routes_bump_both_revisions() {
     let before = revisions(&state);
     state.mark_index_dirty();
     assert_ne!(before.content, state.content_revision(), "mark_index_dirty");
-    assert_ne!(before.schedule, state.schedule_revision(), "mark_index_dirty");
+    assert_ne!(
+        before.schedule,
+        state.schedule_revision(),
+        "mark_index_dirty"
+    );
 
     let before = revisions(&state);
     state.mark_direct_workspace_dirty();
@@ -504,7 +512,13 @@ fn every_scheme_that_changed_reports_a_moved_revision() {
                 to: 1,
             },
         ),
-        ("DeleteItem", Command::DeleteItem { scheme: second, item }),
+        (
+            "DeleteItem",
+            Command::DeleteItem {
+                scheme: second,
+                item,
+            },
+        ),
         (
             "RenameScheme",
             Command::RenameScheme {
@@ -574,10 +588,7 @@ fn a_folder_scoped_change_invalidates_every_scheme() {
         state.scheme_schedule_revision(second),
     ];
     state
-        .apply_prechecked_local_command(
-            Command::DeleteScheme { id: first },
-            CommandOrigin::User,
-        )
+        .apply_prechecked_local_command(Command::DeleteScheme { id: first }, CommandOrigin::User)
         .unwrap();
     assert_ne!(before[0], state.scheme_schedule_revision(first));
     assert_ne!(

@@ -4,9 +4,7 @@
 //! trusting the classification, apply the command and check.
 
 use knotq_commands::{Command, CommandOrigin, WorkspaceCommandExt};
-use knotq_model::{
-    CalendarRecurrence, Item, ItemMarker, NodeRef, Scheme, SchemeId, Workspace,
-};
+use knotq_model::{CalendarRecurrence, Item, ItemMarker, NodeRef, Scheme, SchemeId, Workspace};
 
 fn workspace_with_rich_items() -> (Workspace, SchemeId) {
     let mut workspace = Workspace::new();
@@ -277,10 +275,7 @@ fn nested_batches_are_classified_by_their_contents() {
     assert!(Command::Batch(vec![text(), text()]).changes_only_item_text());
     assert!(Command::Batch(vec![Command::Batch(vec![text()]), text()]).changes_only_item_text());
     assert!(!Command::Batch(vec![
-        Command::Batch(vec![
-            text(),
-            Command::DeleteItem { scheme, item },
-        ]),
+        Command::Batch(vec![text(), Command::DeleteItem { scheme, item },]),
         text(),
     ])
     .changes_only_item_text());

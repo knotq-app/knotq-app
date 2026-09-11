@@ -61,8 +61,7 @@ fn diagnose() {
                         match rebuilt.schemes.get(id) {
                             None => missing += 1,
                             Some(r) => {
-                                item_delta +=
-                                    r.items.len() as i64 - disk.items.len() as i64;
+                                item_delta += r.items.len() as i64 - disk.items.len() as i64;
                             }
                         }
                     }

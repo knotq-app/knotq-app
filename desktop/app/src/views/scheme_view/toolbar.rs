@@ -27,7 +27,13 @@ fn toolbar_marker_family_chevron(
     // The slot is always this width, active or not, so switching the
     // selection to a line with a different marker never reflows the rest of
     // the toolbar — only whether it's visible/clickable changes.
-    let slot = div().id(id).w(px(12.0)).h(px(23.0)).flex().items_center().justify_center();
+    let slot = div()
+        .id(id)
+        .w(px(12.0))
+        .h(px(23.0))
+        .flex()
+        .items_center()
+        .justify_center();
     if !active {
         return slot.into_any_element();
     }

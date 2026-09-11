@@ -4,9 +4,7 @@ use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, HashMap, HashSet};
 use uuid::Uuid;
 
-use crate::{
-    default_workspace_sync, FolderId, Scheme, SchemeId, SyncDocumentMeta, WorkspaceId,
-};
+use crate::{default_workspace_sync, FolderId, Scheme, SchemeId, SyncDocumentMeta, WorkspaceId};
 
 mod archive;
 mod lookup;

@@ -465,6 +465,8 @@
   "mobile.search.no_results": "ไม่มีผลลัพธ์",
   "mobile.search.no_results_detail": "ไม่มีสิ่งใดตรงกับ \"{query}\"",
   "mobile.search.screen_title": "ค้นหา",
+  "mobile.search.searching": "กำลังค้นหา…",
+  "mobile.workspace.loading": "กำลังโหลดพื้นที่ทำงาน…",
   "mobile.settings.archived_items": "รายการที่เก็บถาวร",
   "mobile.settings.assignment_reminders_title": "การแจ้งเตือนงานมอบหมาย",
   "mobile.settings.cancel_sync_subscription_confirm": "ยกเลิกการสมัครสมาชิก",

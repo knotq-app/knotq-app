@@ -63,7 +63,11 @@ fn overdue_query_surfaces_recurring_capped_at_five() {
 
     let events = indexed.calendar_query().overdue(as_of);
 
-    assert_eq!(events.len(), 5, "recurring overdue should be capped at five");
+    assert_eq!(
+        events.len(),
+        5,
+        "recurring overdue should be capped at five"
+    );
     assert!(events.iter().all(|event| event.item_id == item_id));
     // All are in the past and within the recent walk-back window (no ancient ones).
     for event in &events {
@@ -89,7 +93,11 @@ fn overdue_query_surfaces_recurring_monthly_within_window() {
 
     let events = indexed.calendar_query().overdue(as_of);
 
-    assert_eq!(events.len(), 5, "monthly recurring overdue should surface, capped at five");
+    assert_eq!(
+        events.len(),
+        5,
+        "monthly recurring overdue should surface, capped at five"
+    );
     assert!(events.iter().all(|event| event.item_id == item_id));
 }
 

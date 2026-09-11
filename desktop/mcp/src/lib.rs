@@ -103,6 +103,11 @@ impl<'a> ToolContext<'a> {
 
 /// What a tool call produced.
 #[derive(Debug)]
+// `Write` carries the command needed by the caller and the structured response
+// in one value. Boxing it would add an allocation to every MCP write; MCP calls
+// are already serialized at the command boundary, so keep the representation
+// direct and make the size tradeoff explicit.
+#[allow(clippy::large_enum_variant)]
 pub enum Outcome {
     /// A read. Nothing to apply.
     Read(Value),
@@ -132,9 +137,12 @@ impl Outcome {
 /// Does not mutate anything, ever — a write comes back as a command for the
 /// caller to apply. See the module docs for why that separation is the whole
 /// point.
-pub fn call_tool(name: &str, arguments: Option<&Value>, ctx: &ToolContext) -> Result<Outcome, ToolError> {
-    let definition =
-        schema::find(name).ok_or_else(|| ToolError::UnknownTool(name.to_string()))?;
+pub fn call_tool(
+    name: &str,
+    arguments: Option<&Value>,
+    ctx: &ToolContext,
+) -> Result<Outcome, ToolError> {
+    let definition = schema::find(name).ok_or_else(|| ToolError::UnknownTool(name.to_string()))?;
     if definition.writes && ctx.read_only {
         return Err(ToolError::refused(format!(
             "`{name}` changes the workspace, and this server is in read-only mode; \
@@ -167,7 +175,10 @@ pub fn call_tool(name: &str, arguments: Option<&Value>, ctx: &ToolContext) -> Re
         // `schema::find` already matched the name, so a miss here means a tool
         // was advertised and never wired up. Fail loudly in development.
         other => {
-            debug_assert!(false, "tool `{other}` is advertised but has no implementation");
+            debug_assert!(
+                false,
+                "tool `{other}` is advertised but has no implementation"
+            );
             Err(ToolError::UnknownTool(other.to_string()))
         }
     }

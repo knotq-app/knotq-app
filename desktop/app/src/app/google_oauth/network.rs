@@ -211,8 +211,8 @@ pub(crate) fn wait_for_oauth_callback<T>(
                 // blocking, with a timeout so a silent client cannot wedge us.
                 let _ = stream.set_nonblocking(false);
                 let _ = stream.set_read_timeout(Some(CALLBACK_READ_TIMEOUT));
-                let outcome = read_oauth_callback(&mut stream, expected_state)
-                    .and_then(|code| finish(&code));
+                let outcome =
+                    read_oauth_callback(&mut stream, expected_state).and_then(|code| finish(&code));
                 let body = match &outcome {
                     Ok((_, body)) => body.clone(),
                     Err(err) => failure_body(err),
@@ -766,6 +766,7 @@ fn open_browser_with(url: &str, opener: impl FnOnce(&str) -> std::io::Result<()>
 }
 
 #[cfg(test)]
+#[allow(clippy::items_after_test_module)]
 mod browser_command_tests {
     use std::cell::RefCell;
     use std::io;

@@ -477,6 +477,8 @@
   "mobile.search.no_results": "Sin resultados.",
   "mobile.search.no_results_detail": "Nada coincidió con \"{query}\".",
   "mobile.search.screen_title": "Búsqueda",
+  "mobile.search.searching": "Buscando…",
+  "mobile.workspace.loading": "Cargando el espacio de trabajo…",
   "mobile.settings.archived_items": "Elementos archivados",
   "mobile.settings.assignment_reminders_title": "Recordatorios de tareas",
   "mobile.settings.cancel_sync_subscription_confirm": "Cancelar suscripción",

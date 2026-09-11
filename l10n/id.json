@@ -465,6 +465,8 @@
   "mobile.search.no_results": "Tidak ada hasil.",
   "mobile.search.no_results_detail": "Tidak ada yang cocok dengan \"{query}\".",
   "mobile.search.screen_title": "Pencarian",
+  "mobile.search.searching": "Mencari…",
+  "mobile.workspace.loading": "Memuat ruang kerja…",
   "mobile.settings.archived_items": "Item arsip",
   "mobile.settings.assignment_reminders_title": "Pengingat tugas",
   "mobile.settings.cancel_sync_subscription_confirm": "Batalkan Langganan",

@@ -50,13 +50,19 @@ pub fn parse_entries(path: &Path) -> Result<BTreeMap<String, Entry>> {
                 let mut variants = BTreeMap::new();
                 for (category, v) in forms {
                     let Value::String(s) = v else {
-                        bail!("{}: {key}: plural variant {category} must be a string", path.display());
+                        bail!(
+                            "{}: {key}: plural variant {category} must be a string",
+                            path.display()
+                        );
                     };
                     variants.insert(category, s);
                 }
                 Entry::Plural(variants)
             }
-            _ => bail!("{}: {key}: value must be a string or plural object", path.display()),
+            _ => bail!(
+                "{}: {key}: value must be a string or plural object",
+                path.display()
+            ),
         };
         entries.insert(key, entry);
     }
@@ -69,7 +75,10 @@ pub fn load_all(l10n_dir: &Path) -> Result<Catalogs> {
     )
     .context("parsing locales.json")?;
     let mut locales = Vec::new();
-    for entry in registry.as_array().context("locales.json must be an array")? {
+    for entry in registry
+        .as_array()
+        .context("locales.json must be an array")?
+    {
         locales.push(LocaleInfo {
             code: entry["code"]
                 .as_str()
@@ -161,11 +170,15 @@ pub struct TargetConfig {
 
 impl TargetConfig {
     pub fn load(l10n_dir: &Path, root: &Path) -> Result<Self> {
-        let raw = fs::read_to_string(l10n_dir.join("config.json"))
-            .context("reading l10n/config.json")?;
+        let raw =
+            fs::read_to_string(l10n_dir.join("config.json")).context("reading l10n/config.json")?;
         let value: Value = serde_json::from_str(&raw).context("parsing l10n/config.json")?;
         let path = |key: &str| -> Result<PathBuf> {
-            Ok(root.join(value[key].as_str().with_context(|| format!("config.json missing {key}"))?))
+            Ok(root.join(
+                value[key]
+                    .as_str()
+                    .with_context(|| format!("config.json missing {key}"))?,
+            ))
         };
         Ok(Self {
             ios_xcstrings: path("ios_xcstrings")?,

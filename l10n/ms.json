@@ -465,6 +465,8 @@
   "mobile.search.no_results": "Tiada hasil.",
   "mobile.search.no_results_detail": "Tiada yang sepadan \"{query}\".",
   "mobile.search.screen_title": "Carian",
+  "mobile.search.searching": "Mencari…",
+  "mobile.workspace.loading": "Memuatkan ruang kerja…",
   "mobile.settings.archived_items": "Item yang diarkibkan",
   "mobile.settings.assignment_reminders_title": "Peringatan tugasan",
   "mobile.settings.cancel_sync_subscription_confirm": "Batal Langganan",

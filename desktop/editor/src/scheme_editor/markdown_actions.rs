@@ -47,8 +47,9 @@ impl SchemeEditor {
         // after it, so continued typing stays within the emphasized run.
         if !already_wrapped {
             let cursor_offset = start + replacement.len() - delimiter.len();
-            self.selection =
-                TextSelection::collapsed(self.clamp_location(self.offset_to_location(cursor_offset)));
+            self.selection = TextSelection::collapsed(
+                self.clamp_location(self.offset_to_location(cursor_offset)),
+            );
             self.scroll_to_cursor(cx);
             cx.notify();
         }

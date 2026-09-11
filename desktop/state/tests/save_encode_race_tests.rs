@@ -23,6 +23,8 @@ use knotq_sync::WorkspaceCrdtDocuments;
 /// finishes before anything can observe it.
 const FILLER_LINES: usize = 2000;
 
+type EncodedDocuments = HashMap<DocumentId, Arc<[u8]>>;
+
 fn store_with_lines(lines: &[&str]) -> (WorkspaceStore, SchemeId, Vec<ItemId>) {
     let mut workspace = Workspace::new();
     let mut scheme = Scheme::new("Notes", 0);
@@ -102,10 +104,7 @@ fn scheme_lines(store: &WorkspaceStore, scheme: SchemeId) -> Vec<String> {
 /// when the returned barrier is released.
 fn background_encode(
     handles: HashMap<DocumentId, knotq_sync::DocumentStateHandle>,
-) -> (
-    Arc<Barrier>,
-    std::thread::JoinHandle<HashMap<DocumentId, Arc<[u8]>>>,
-) {
+) -> (Arc<Barrier>, std::thread::JoinHandle<EncodedDocuments>) {
     let gate = Arc::new(Barrier::new(2));
     let thread_gate = Arc::clone(&gate);
     let joined = std::thread::spawn(move || {

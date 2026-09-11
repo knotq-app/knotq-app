@@ -129,7 +129,10 @@ pub(super) fn repeat_summary(recurrence: Option<&Recurrence>, time_format: TimeF
     if parts.is_empty() {
         knotq_l10n::t("event.repeat.custom_rule").to_string()
     } else {
-        knotq_l10n::t_with("event.repeat.custom_summary", &[("parts", &parts.join(" · "))])
+        knotq_l10n::t_with(
+            "event.repeat.custom_summary",
+            &[("parts", &parts.join(" · "))],
+        )
     }
 }
 

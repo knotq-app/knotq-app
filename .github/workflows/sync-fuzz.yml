@@ -34,6 +34,9 @@ on:
         required: false
         default: "80"
 
+permissions:
+  contents: read
+
 concurrency:
   group: sync-fuzz-${{ github.ref }}
   cancel-in-progress: true

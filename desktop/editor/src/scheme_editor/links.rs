@@ -92,7 +92,11 @@ fn preceding_is_url_char(line: &str, index: usize) -> bool {
 }
 
 fn char_len_at(line: &str, index: usize) -> usize {
-    line[index..].chars().next().map(char::len_utf8).unwrap_or(1)
+    line[index..]
+        .chars()
+        .next()
+        .map(char::len_utf8)
+        .unwrap_or(1)
 }
 
 #[cfg(test)]
@@ -108,13 +112,22 @@ mod tests {
 
     #[test]
     fn detects_bare_https_url() {
-        assert_eq!(detected("see https://example.com now"), vec!["https://example.com"]);
+        assert_eq!(
+            detected("see https://example.com now"),
+            vec!["https://example.com"]
+        );
     }
 
     #[test]
     fn trims_trailing_sentence_punctuation() {
-        assert_eq!(detected("go to https://example.com."), vec!["https://example.com"]);
-        assert_eq!(detected("(https://example.com)"), vec!["https://example.com"]);
+        assert_eq!(
+            detected("go to https://example.com."),
+            vec!["https://example.com"]
+        );
+        assert_eq!(
+            detected("(https://example.com)"),
+            vec!["https://example.com"]
+        );
     }
 
     #[test]

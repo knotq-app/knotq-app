@@ -22,16 +22,17 @@ pub use crdt::{
 };
 pub use documents::{scheme_documents, sync_documents};
 pub use engine::{
-    batch_pull_and_apply, batch_push_pending, build_squash_proposal, PullOutcome, PushedDocument,
-    SkippedDocument, SquashProposal, SyncPushEpochStale, SyncPushRejected, SyncTransport,
-    PUSH_MAX_DOCUMENTS_PER_REQUEST, PUSH_MAX_RAW_UPDATE_BYTES_PER_REQUEST,
-    PUSH_MAX_UPDATES_PER_DOCUMENT, SQUASH_MIN_RATIO, SQUASH_MIN_STATE_BYTES,
-    SYNC_PUSH_EPOCH_STALE_CODE,
+    batch_pull_and_apply, batch_pull_and_apply_with_full_integrity_check,
+    batch_pull_and_apply_with_integrity_check, batch_pull_and_apply_with_integrity_documents,
+    batch_pull_and_apply_with_persisted_integrity_vectors, batch_push_pending,
+    build_squash_proposal, PullOutcome, PushedDocument, SkippedDocument, SquashProposal,
+    SyncPushEpochStale, SyncPushRejected, SyncTransport, PUSH_MAX_DOCUMENTS_PER_REQUEST,
+    PUSH_MAX_RAW_UPDATE_BYTES_PER_REQUEST, PUSH_MAX_UPDATES_PER_DOCUMENT, SQUASH_MIN_RATIO,
+    SQUASH_MIN_STATE_BYTES, SYNC_PUSH_EPOCH_STALE_CODE,
 };
 pub use local_state::{
     compact_pending_documents, queue_account_switch_reseed, queue_workspace_bootstrap_updates,
-    DocumentSyncCursor, LocalSyncState, MediaSyncCursor, PendingCrdtEdit,
-    MAX_PENDING_PER_DOCUMENT,
+    DocumentSyncCursor, LocalSyncState, MediaSyncCursor, PendingCrdtEdit, MAX_PENDING_PER_DOCUMENT,
 };
 
 /// Serde codec that represents CRDT update bytes as a base64 string rather than
@@ -153,7 +154,11 @@ pub struct PersistedDocumentState {
 /// Generation 6 clears media upload cursors once so clients re-upload local image
 /// bytes after the media-sync recovery. CRDT metadata can converge while raw image
 /// objects are absent, especially after a durable-object/object-store reset.
-pub const SYNC_STATE_RECOVERY_VERSION: u32 = 6;
+/// Generation 7 accompanies the bounded pull-loop/materialization-gap fix: clients
+/// that may have advanced cursors past deferred Daily Queue documents must perform
+/// one idempotent full repull so those documents are retained in the deferred CRDT
+/// store instead of remaining silently absent forever.
+pub const SYNC_STATE_RECOVERY_VERSION: u32 = 7;
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq, Serialize, Deserialize)]
 #[serde(transparent)]
@@ -482,11 +487,29 @@ pub struct BatchPullRequest {
     /// deployed before integrity verification.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub integrity_state_vectors: Vec<DocumentStateVector>,
+    /// State vectors for documents this replica already owns. When the server
+    /// supports delta pulls it can return only the structs after these vectors
+    /// instead of re-sending each document's full merged state. This is a
+    /// performance hint, not an integrity proof: a server that does not
+    /// understand it ignores the field and continues returning full states.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub state_vectors: Vec<DocumentPullStateVector>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct DocumentStateVector {
     pub document: DocumentId,
+    #[serde(with = "base64_bytes")]
+    pub state_vector_v1: Vec<u8>,
+}
+
+/// The state-vector hint accompanying an ordinary pull. The epoch prevents a
+/// delta from being generated against a pre-squash history; an epoch mismatch
+/// must receive the server's complete replacement state.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct DocumentPullStateVector {
+    pub document: DocumentId,
+    pub epoch: u64,
     #[serde(with = "base64_bytes")]
     pub state_vector_v1: Vec<u8>,
 }
@@ -503,8 +526,16 @@ pub struct PulledCrdtDocument {
     /// pre-epoch servers, which is epoch 0.
     #[serde(default)]
     pub epoch: u64,
+    /// Usually the complete merged state, which can repair a missing local
+    /// base. Delta-capable servers may set `state_v1_is_delta` and return only
+    /// the structs after the request's state vector instead.
     #[serde(with = "base64_bytes")]
     pub state_v1: Vec<u8>,
+    /// True when `state_v1` is a Yjs update containing only structs missing
+    /// from the request's state vector. It is still applied with the normal
+    /// merge path. Old servers omit this field and continue to send full state.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub state_v1_is_delta: bool,
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
@@ -839,6 +870,7 @@ mod tests {
             cursors: HashMap::from([(document, 7)]),
             client_protocol_version: CLIENT_SYNC_PROTOCOL_VERSION,
             integrity_state_vectors: Vec::new(),
+            state_vectors: Vec::new(),
         };
         let push = BatchPushRequest {
             replica_id,

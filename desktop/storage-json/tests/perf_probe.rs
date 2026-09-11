@@ -24,7 +24,9 @@ fn probe_persistence_costs() {
     let path = dir.join("workspace.json");
 
     let start = Instant::now();
-    let workspace = load_workspace(&path).expect("load workspace").expect("workspace present");
+    let workspace = load_workspace(&path)
+        .expect("load workspace")
+        .expect("workspace present");
     println!(
         "load_workspace                {:8.1} ms   ({} schemes, {} items)",
         ms(start),
@@ -54,11 +56,17 @@ fn probe_persistence_costs() {
     let start = Instant::now();
     save_workspace_incremental(&path, &workspace, &[first].into_iter().collect())
         .expect("incremental save");
-    println!("save_workspace_incremental    {:8.1} ms   (1 scheme)", ms(start));
+    println!(
+        "save_workspace_incremental    {:8.1} ms   (1 scheme)",
+        ms(start)
+    );
 
     let start = Instant::now();
     knotq_storage_json::record_workspace_snapshot(&dir).expect("history snapshot");
-    println!("record_workspace_snapshot     {:8.1} ms   (throttled: may be a no-op)", ms(start));
+    println!(
+        "record_workspace_snapshot     {:8.1} ms   (throttled: may be a no-op)",
+        ms(start)
+    );
 
     // The CRDT state sits beside the workspace directory, and both the restore at
     // startup and every save go through it.
@@ -74,5 +82,8 @@ fn probe_persistence_costs() {
 
     let start = Instant::now();
     save_crdt_state(&path, &states).expect("save crdt state");
-    println!("save_crdt_state               {:8.1} ms   (every save)", ms(start));
+    println!(
+        "save_crdt_state               {:8.1} ms   (every save)",
+        ms(start)
+    );
 }

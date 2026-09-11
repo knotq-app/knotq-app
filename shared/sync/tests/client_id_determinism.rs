@@ -10,9 +10,7 @@
 
 use std::collections::HashSet;
 
-use knotq_model::{
-    set_deterministic_id_seed, Item, NodeRef, Scheme, Workspace,
-};
+use knotq_model::{set_deterministic_id_seed, Item, NodeRef, Scheme, Workspace};
 use knotq_sync::WorkspaceCrdtDocuments;
 
 fn workspace_with_schemes(count: usize) -> Workspace {
@@ -39,10 +37,7 @@ fn encoded_under_seed(seed: u64) -> Vec<Vec<u8>> {
     let workspace = workspace_with_schemes(4);
     let docs = WorkspaceCrdtDocuments::try_new(&workspace).expect("build documents");
     let states = docs.document_states();
-    let mut out: Vec<Vec<u8>> = states
-        .into_values()
-        .map(|state| state.to_vec())
-        .collect();
+    let mut out: Vec<Vec<u8>> = states.into_values().map(|state| state.to_vec()).collect();
     out.sort();
     set_deterministic_id_seed(None);
     out

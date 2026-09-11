@@ -46,6 +46,7 @@ use std::cell::RefCell;
 use std::collections::{BTreeMap, HashMap};
 
 use anyhow::anyhow;
+use base64::Engine as _;
 use chrono::{Duration, NaiveDate, Utc};
 use knotq_model::{
     daily_queue_displaced_item_id, daily_queue_scheme_id, CalendarProvider, DocumentId, Folder,
@@ -56,9 +57,10 @@ use knotq_model::{
 use knotq_sync::{
     batch_pull_and_apply, batch_push_pending, queue_workspace_bootstrap_updates,
     validate_crdt_update_sequence, BatchPullRequest, BatchPullResponse, BatchPushRequest,
-    BatchPushResponse, CrdtDocumentUpdate, LocalSyncState, NotificationScheduleSnapshot,
-    PendingCrdtEdit, PulledCrdtDocument, PushDocumentUpdates, PushedCrdtDocument, SyncPushRejected,
-    SyncTransport, WorkspaceCrdtChangeSet, WorkspaceCrdtDocuments, MAX_SYNC_MEDIA_BYTES,
+    BatchPushResponse, CrdtDocumentUpdate, DocumentPullStateVector, LocalSyncState,
+    NotificationScheduleSnapshot, PendingCrdtEdit, PulledCrdtDocument, PushDocumentUpdates,
+    PushedCrdtDocument, SyncPushRejected, SyncTransport, WorkspaceCrdtChangeSet,
+    WorkspaceCrdtDocuments, MAX_SYNC_MEDIA_BYTES,
 };
 use uuid::Uuid;
 use yrs::updates::decoder::Decode;

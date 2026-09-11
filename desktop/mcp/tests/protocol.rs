@@ -17,7 +17,10 @@ fn initialize_advertises_tools_and_the_protocol_revision() {
         panic!("initialize must answer directly");
     };
     assert_eq!(response["id"], 1);
-    assert_eq!(response["result"]["protocolVersion"], protocol::PROTOCOL_VERSION);
+    assert_eq!(
+        response["result"]["protocolVersion"],
+        protocol::PROTOCOL_VERSION
+    );
     assert_eq!(response["result"]["serverInfo"]["name"], "knotq");
     assert!(response["result"]["capabilities"]["tools"].is_object());
 }
@@ -63,7 +66,8 @@ fn tools_call_is_routed_out_for_evaluation_rather_than_answered_here() {
         arguments,
     } = route(
         r#"{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"list_schemes","arguments":{"include_archived":true}}}"#,
-    ) else {
+    )
+    else {
         panic!("tools/call must be handed to the workspace");
     };
     assert_eq!(id, json!(3));
@@ -99,8 +103,7 @@ fn unparseable_input_produces_a_parse_error_against_a_null_id() {
 
 #[test]
 fn a_wrong_jsonrpc_version_is_rejected_but_a_missing_one_is_tolerated() {
-    let Routed::Respond(response) =
-        route(r#"{"jsonrpc":"1.0","id":6,"method":"tools/list"}"#)
+    let Routed::Respond(response) = route(r#"{"jsonrpc":"1.0","id":6,"method":"tools/list"}"#)
     else {
         panic!("expected a direct answer");
     };
@@ -163,7 +166,10 @@ fn a_write_is_marked_changed_and_a_no_op_is_not() {
             }),
         ),
     );
-    assert_eq!(changed["result"]["structuredContent"]["changed"], json!(true));
+    assert_eq!(
+        changed["result"]["structuredContent"]["changed"],
+        json!(true)
+    );
 
     let unchanged = protocol::tool_call_response(
         json!(2),
@@ -201,10 +207,8 @@ fn a_refusal_is_a_successful_call_flagged_as_an_error() {
 
 #[test]
 fn a_client_side_mistake_is_a_real_jsonrpc_error() {
-    let response = protocol::tool_call_response(
-        json!(1),
-        Err(ToolError::UnknownTool("nope".into())),
-    );
+    let response =
+        protocol::tool_call_response(json!(1), Err(ToolError::UnknownTool("nope".into())));
     assert!(response.get("result").is_none());
     assert_eq!(response["error"]["code"], protocol::METHOD_NOT_FOUND);
 }
@@ -265,11 +269,16 @@ fn the_writes_flag_matches_what_each_tool_actually_does() {
             Err(ref e) if e.to_string().contains("read-only mode")
         );
         assert_eq!(
-            refused_when_read_only, tool.writes,
+            refused_when_read_only,
+            tool.writes,
             "`{}` is marked writes={} but read-only mode {} it",
             tool.name,
             tool.writes,
-            if refused_when_read_only { "blocks" } else { "allows" }
+            if refused_when_read_only {
+                "blocks"
+            } else {
+                "allows"
+            }
         );
     }
 }

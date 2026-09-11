@@ -86,8 +86,8 @@ impl RawSocketFactory for TungsteniteFactory {
         // ClientRequestBuilder adds the WebSocket handshake headers; we add auth.
         let request =
             ClientRequestBuilder::new(uri).with_header("Authorization", format!("Bearer {token}"));
-        let (socket, _response) = tungstenite::connect(request)
-            .map_err(|err| io::Error::other(err.to_string()))?;
+        let (socket, _response) =
+            tungstenite::connect(request).map_err(|err| io::Error::other(err.to_string()))?;
         Ok(Box::new(TungsteniteSocket { socket }))
     }
 }
@@ -180,6 +180,7 @@ mod tests {
             cursors: Default::default(),
             client_protocol_version: knotq_sync::CLIENT_SYNC_PROTOCOL_VERSION,
             integrity_state_vectors: Default::default(),
+            state_vectors: Default::default(),
         };
         let response = client.request_pull(&request);
         assert!(

@@ -24,9 +24,7 @@ impl<'a> Args<'a> {
     }
 
     fn get(&self, name: &str) -> Option<&'a Value> {
-        self.value
-            .get(name)
-            .filter(|v| !v.is_null())
+        self.value.get(name).filter(|v| !v.is_null())
     }
 
     /// True when the caller mentioned the key at all — including explicitly as
@@ -53,7 +51,9 @@ impl<'a> Args<'a> {
         match self.get(name) {
             None => Ok(None),
             Some(Value::Bool(b)) => Ok(Some(*b)),
-            Some(_) => Err(ToolError::invalid(format!("`{name}` must be true or false"))),
+            Some(_) => Err(ToolError::invalid(format!(
+                "`{name}` must be true or false"
+            ))),
         }
     }
 

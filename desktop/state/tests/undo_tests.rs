@@ -161,7 +161,10 @@ fn cross_scheme_undo_skips_when_inverse_no_longer_applies() {
     // Later, item B is deleted from B's own view (a scheme-local edit), which
     // invalidates the cross-scheme step's B leg.
     focus(&mut state, b);
-    state.apply_command(Command::DeleteItem { scheme: b, item: ib });
+    state.apply_command(Command::DeleteItem {
+        scheme: b,
+        item: ib,
+    });
 
     // The cross-scheme step is global, so it's undone from the calendar — but
     // its inverse can no longer apply (B's item is gone). It must be skipped,
@@ -238,7 +241,15 @@ fn global_and_scheme_edits_to_same_item_stay_consistent() {
 /// plus per-scheme isolation and scoped redo-clearing, all at once.
 #[test]
 fn randomized_per_scheme_undo_redo_round_trip() {
-    for seed in [0x9e3779b9u64, 0x1234_5678, 0xdead_beef, 0xface_cafe, 1, 7, 99] {
+    for seed in [
+        0x9e3779b9u64,
+        0x1234_5678,
+        0xdead_beef,
+        0xface_cafe,
+        1,
+        7,
+        99,
+    ] {
         randomized_round_trip_with_seed(seed);
     }
 }

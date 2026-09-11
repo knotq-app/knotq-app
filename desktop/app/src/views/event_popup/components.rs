@@ -112,7 +112,10 @@ pub(super) fn notification_menu(
     cx: &mut Context<KnotQApp>,
 ) -> gpui::AnyElement {
     let options = vec![
-        (knotq_l10n::t("event.notification.at_time").to_string(), Some(0)),
+        (
+            knotq_l10n::t("event.notification.at_time").to_string(),
+            Some(0),
+        ),
         (
             knotq_l10n::t("event.notification.option.5_min_before").to_string(),
             Some(5 * 60),

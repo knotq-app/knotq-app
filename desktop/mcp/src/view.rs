@@ -156,7 +156,10 @@ pub fn occurrence_view(hit: &OccurrenceWithContext, workspace: &Workspace) -> Oc
 }
 
 /// Folder names from the root down to (but not including) the node itself.
-pub fn folder_path(workspace: &Workspace, mut folder: Option<knotq_model::FolderId>) -> Vec<String> {
+pub fn folder_path(
+    workspace: &Workspace,
+    mut folder: Option<knotq_model::FolderId>,
+) -> Vec<String> {
     let mut path = Vec::new();
     // The root folder is the workspace container, not a user-visible folder, so
     // it is never part of a path. Bound the walk by folder count: a cycle here
@@ -226,10 +229,7 @@ pub fn scheme_summary_with(
     }
 }
 
-pub fn parent_of_scheme(
-    workspace: &Workspace,
-    scheme: SchemeId,
-) -> Option<knotq_model::FolderId> {
+pub fn parent_of_scheme(workspace: &Workspace, scheme: SchemeId) -> Option<knotq_model::FolderId> {
     workspace
         .folders
         .values()

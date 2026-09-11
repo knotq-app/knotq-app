@@ -79,12 +79,7 @@ fn simulated_sync_run_edit_item(
         WorkspaceCrdtDocuments::from_states(snapshot_workspace, other_device, snapshot_states)
             .unwrap();
     let mut result_workspace = snapshot_workspace.clone();
-    result_workspace
-        .schemes
-        .get_mut(&scheme_id)
-        .unwrap()
-        .items[item_index]
-        .set_text(new_text);
+    result_workspace.schemes.get_mut(&scheme_id).unwrap().items[item_index].set_text(new_text);
     let outcome = run_docs.sync_changes(
         &result_workspace,
         &WorkspaceCrdtChangeSet::default().touch_scheme(scheme_id),

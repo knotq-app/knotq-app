@@ -18,7 +18,9 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use anyhow::anyhow;
-use knotq_sync::ws::{RawSocket, RawSocketFactory, WsCallbacks, WsClient, WsConfig, WsRequestError};
+use knotq_sync::ws::{
+    RawSocket, RawSocketFactory, WsCallbacks, WsClient, WsConfig, WsRequestError,
+};
 use knotq_sync::{
     BatchPullRequest, BatchPullResponse, BatchPushRequest, BatchPushResponse, SyncPushRejected,
     SyncTransport,
@@ -98,10 +100,14 @@ impl SyncTransport for WsTransport {
             .map_err(|error| anyhow!("ws pull: {error}"))
     }
     fn push(&self, request: &BatchPushRequest) -> anyhow::Result<BatchPushResponse> {
-        self.client.request_push(request).map_err(|error| match error {
-            WsRequestError::Server { code, .. } => anyhow::Error::new(SyncPushRejected { code }),
-            other => anyhow!("ws push: {other}"),
-        })
+        self.client
+            .request_push(request)
+            .map_err(|error| match error {
+                WsRequestError::Server { code, .. } => {
+                    anyhow::Error::new(SyncPushRejected { code })
+                }
+                other => anyhow!("ws push: {other}"),
+            })
     }
 }
 
@@ -128,8 +134,7 @@ impl MixedTransport {
     fn use_ws(&self) -> bool {
         self.counter
             .fetch_add(1, std::sync::atomic::Ordering::SeqCst)
-            % 2
-            == 0
+            .is_multiple_of(2)
     }
 }
 

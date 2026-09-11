@@ -489,6 +489,8 @@
   "mobile.search.no_results": "Niciun rezultat.",
   "mobile.search.no_results_detail": "Nimic nu se potrivește cu „{query}”.",
   "mobile.search.screen_title": "Căutare",
+  "mobile.search.searching": "Se caută…",
+  "mobile.workspace.loading": "Se încarcă spațiul de lucru…",
   "mobile.settings.archived_items": "Elemente arhivate",
   "mobile.settings.assignment_reminders_title": "Reamintiri de atribuții",
   "mobile.settings.cancel_sync_subscription_confirm": "Anulează abonament",

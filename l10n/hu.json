@@ -477,6 +477,8 @@
   "mobile.search.no_results": "Nincs találat.",
   "mobile.search.no_results_detail": "Semmi sem felel meg a „{query}“ keresésnek.",
   "mobile.search.screen_title": "Keresés",
+  "mobile.search.searching": "Keresés…",
+  "mobile.workspace.loading": "Munkaterület betöltése…",
   "mobile.settings.archived_items": "Archivált elemek",
   "mobile.settings.assignment_reminders_title": "Hozzárendelési emlékeztetők",
   "mobile.settings.cancel_sync_subscription_confirm": "Előfizetés lemondása",

@@ -146,7 +146,10 @@ fn google_oauth_error_timeout() -> &'static str {
 }
 
 fn google_oauth_error_access_denied() -> String {
-    knotq_l10n::t_with("google.oauth.error.provider_error", &[("error", "access_denied")])
+    knotq_l10n::t_with(
+        "google.oauth.error.provider_error",
+        &[("error", "access_denied")],
+    )
 }
 
 /// Whether a failed browser flow was the user's own doing — they cancelled from

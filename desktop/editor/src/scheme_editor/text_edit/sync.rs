@@ -114,8 +114,7 @@ impl SchemeEditor {
             .iter()
             .map(|row| clean_line_text(row.item.content.as_text().unwrap_or("")))
             .collect();
-        let new_text_lines: Vec<Cow<'_, str>> =
-            new_text.split('\n').map(clean_line_text).collect();
+        let new_text_lines: Vec<Cow<'_, str>> = new_text.split('\n').map(clean_line_text).collect();
         let old_refs: Vec<&str> = old_text_lines.iter().map(|line| line.as_ref()).collect();
         let new_refs: Vec<&str> = new_text_lines.iter().map(|line| line.as_ref()).collect();
         let change = line_change(&old_refs, &new_refs);

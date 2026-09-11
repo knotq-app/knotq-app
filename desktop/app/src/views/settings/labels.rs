@@ -11,6 +11,12 @@ pub(super) fn theme_mode_label(mode: ThemeMode) -> &'static str {
         ThemeMode::Dark => tr("settings.appearance.theme_dark"),
         ThemeMode::Light => tr("settings.appearance.theme_light"),
         ThemeMode::System => tr("settings.appearance.theme_system"),
+        ThemeMode::RosePineMoon => "Moonlit",
+        ThemeMode::CatppuccinMocha => "Espresso",
+        ThemeMode::TokyoNight => "Blue Hour",
+        ThemeMode::Parchment => "Parchment",
+        ThemeMode::RosePineDawn => "Dawn",
+        ThemeMode::CatppuccinLatte => "Cream",
     }
 }
 

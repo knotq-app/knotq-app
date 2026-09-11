@@ -4,8 +4,8 @@ use chrono::NaiveDate;
 
 use crate::{
     daily_queue_document_id, daily_queue_scheme_id, daily_queue_sync_metadata,
-    folder_sync_metadata, scheme_content_sync_metadata,
-    CrdtBackend, DocumentId, FolderId, SchemeId, SyncDocumentKind, WorkspaceId,
+    folder_sync_metadata, scheme_content_sync_metadata, CrdtBackend, DocumentId, FolderId,
+    SchemeId, SyncDocumentKind, WorkspaceId,
 };
 
 use super::{
@@ -35,9 +35,11 @@ impl Workspace {
         let daily_queue_ids: HashSet<SchemeId> = self.daily_queue.values().copied().collect();
 
         // No binding may outlive its scheme (the `retain` in the repair pass).
-        if self.scheme_sync.keys().any(|id| {
-            !self.schemes.contains_key(id) && !daily_queue_ids.contains(id)
-        }) {
+        if self
+            .scheme_sync
+            .keys()
+            .any(|id| !self.schemes.contains_key(id) && !daily_queue_ids.contains(id))
+        {
             return false;
         }
 
@@ -51,7 +53,10 @@ impl Workspace {
             true
         };
         if !self.schemes.keys().copied().all(&scheme_binding_is_current)
-            || !daily_queue_ids.iter().copied().all(&scheme_binding_is_current)
+            || !daily_queue_ids
+                .iter()
+                .copied()
+                .all(&scheme_binding_is_current)
         {
             return false;
         }
@@ -181,29 +186,62 @@ impl Workspace {
         changed
     }
 
-    pub fn canonicalize_personal_sync_identity(&mut self, workspace_id: WorkspaceId) -> bool {
-        let mut changed = false;
+    /// Canonicalize the account identity and return `(repair_needed, changed)`.
+    ///
+    /// These are intentionally different signals. A canonicalization can be a
+    /// semantic no-op in the plain workspace while still telling the CRDT layer
+    /// to reconcile its document set (for example, an archived origin already
+    /// pointing at the canonical root). Callers that decide whether to emit a
+    /// CRDT repair must use the first value; callers that decide whether to
+    /// rewrite workspace files should use the second.
+    pub fn canonicalize_personal_sync_identity_with_change(
+        &mut self,
+        workspace_id: WorkspaceId,
+    ) -> (bool, bool) {
+        let before_metadata = self.clone_without_schemes();
+        let mut repair_needed = false;
         if self.id != workspace_id {
             self.id = workspace_id;
-            changed = true;
+            repair_needed = true;
         }
         let document_id = DocumentId(workspace_id.0);
         if self.sync.id != document_id {
             self.sync.id = document_id;
-            changed = true;
+            repair_needed = true;
         }
-        changed |=
+        let (root_repair, _root_changed) =
             self.canonicalize_root_folder_id(personal_workspace_root_folder_id(workspace_id));
-        changed |= self.canonicalize_daily_queue_ids();
-        changed | self.ensure_sync_metadata()
+        repair_needed |= root_repair;
+        let daily_repair = self.canonicalize_daily_queue_ids();
+        repair_needed |= daily_repair;
+        repair_needed |= self.ensure_sync_metadata();
+
+        // `canonicalize_daily_queue_ids` reports every scheme mutation it makes,
+        // while the remaining identity work is represented in the cheap
+        // metadata-only clone. No item content is cloned on the normal path.
+        let workspace_changed = daily_repair || self.clone_without_schemes() != before_metadata;
+        (repair_needed, workspace_changed)
     }
 
-    fn canonicalize_root_folder_id(&mut self, expected_root: FolderId) -> bool {
+    pub fn canonicalize_personal_sync_identity(&mut self, workspace_id: WorkspaceId) -> bool {
+        self.canonicalize_personal_sync_identity_with_change(workspace_id)
+            .0
+    }
+
+    fn canonicalize_root_folder_id(&mut self, expected_root: FolderId) -> (bool, bool) {
+        // Keep a CRDT-repair signal separate from the actual workspace mutation
+        // signal. In particular, archived-origin reassignment remains a repair
+        // signal even when the origin already contains the canonical root.
+        let mut repair_needed = false;
+        let before_root = self.root;
+        let before_folders = self.folders.clone();
+        let before_folder_sync = self.folder_sync.clone();
+        let before_deleted_scheme_origins = self.deleted_scheme_origins.clone();
+        let before_deleted_folder_origins = self.deleted_folder_origins.clone();
         let old_root = self.root;
-        let mut changed = false;
         if self.root != expected_root {
             self.root = expected_root;
-            changed = true;
+            repair_needed = true;
         }
 
         let merge_roots: HashSet<FolderId> = self
@@ -234,7 +272,7 @@ impl Workspace {
             if let Some(folder) = self.folders.remove(id) {
                 root_children.extend(folder.children);
                 expanded |= folder.expanded;
-                changed = true;
+                repair_needed = true;
             }
         }
 
@@ -256,8 +294,9 @@ impl Workspace {
                 || folder.expanded != expanded
         });
         if root_needs_insert {
-            changed = true;
+            repair_needed = true;
         }
+
         self.folders.insert(
             expected_root,
             Folder {
@@ -273,7 +312,7 @@ impl Workspace {
             if folder.id == expected_root {
                 if folder.parent.is_some() {
                     folder.parent = None;
-                    changed = true;
+                    repair_needed = true;
                 }
             } else if folder.parent == Some(old_root)
                 || folder
@@ -281,7 +320,7 @@ impl Workspace {
                     .is_some_and(|parent| merge_roots.contains(&parent))
             {
                 folder.parent = Some(expected_root);
-                changed = true;
+                repair_needed = true;
             }
 
             let old_children = folder.children.clone();
@@ -297,31 +336,40 @@ impl Workspace {
             }));
             if folder.children != new_children {
                 folder.children = new_children;
-                changed = true;
+                repair_needed = true;
             }
         }
 
         if old_root != expected_root && self.folder_sync.remove(&old_root).is_some() {
-            changed = true;
+            repair_needed = true;
         }
         for id in &merge_roots {
             if self.folder_sync.remove(id).is_some() {
-                changed = true;
+                repair_needed = true;
             }
         }
         for origin in self.deleted_scheme_origins.values_mut() {
             if origin.folder == old_root || merge_roots.contains(&origin.folder) {
-                origin.folder = expected_root;
-                changed = true;
+                repair_needed = true;
+                if origin.folder != expected_root {
+                    origin.folder = expected_root;
+                }
             }
         }
         for origin in self.deleted_folder_origins.values_mut() {
             if origin.parent == old_root || merge_roots.contains(&origin.parent) {
-                origin.parent = expected_root;
-                changed = true;
+                repair_needed = true;
+                if origin.parent != expected_root {
+                    origin.parent = expected_root;
+                }
             }
         }
-        changed
+        let changed = self.root != before_root
+            || self.folders != before_folders
+            || self.folder_sync != before_folder_sync
+            || self.deleted_scheme_origins != before_deleted_scheme_origins
+            || self.deleted_folder_origins != before_deleted_folder_origins;
+        (repair_needed, changed)
     }
 
     fn canonicalize_daily_queue_ids(&mut self) -> bool {
@@ -411,9 +459,7 @@ impl Workspace {
 
 #[cfg(test)]
 mod sync_metadata_fast_path_tests {
-    use crate::{
-        daily_queue_scheme_id, CrdtBackend, Scheme, SyncDocumentKind, Workspace,
-    };
+    use crate::{daily_queue_scheme_id, CrdtBackend, Scheme, SyncDocumentKind, Workspace};
     use chrono::NaiveDate;
 
     /// `sync_metadata_is_current` gates `ensure_sync_metadata`, so a workspace it
@@ -457,11 +503,7 @@ mod sync_metadata_fast_path_tests {
         let other_id = scheme.id;
         workspace.schemes.insert(other_id, scheme);
         workspace.ensure_sync_metadata();
-        workspace
-            .scheme_sync
-            .get_mut(&other_id)
-            .unwrap()
-            .kind = SyncDocumentKind::Folder;
+        workspace.scheme_sync.get_mut(&other_id).unwrap().kind = SyncDocumentKind::Folder;
         assert_agrees("binding with the wrong kind", &workspace);
         workspace.ensure_sync_metadata();
 

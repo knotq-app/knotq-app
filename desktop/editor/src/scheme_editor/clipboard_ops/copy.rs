@@ -122,7 +122,11 @@ impl SchemeEditor {
         self.copy_selection_to_clipboard(cx);
     }
 
-    pub(in crate::scheme_editor) fn cut(&mut self, window: Option<&mut Window>, cx: &mut Context<Self>) {
+    pub(in crate::scheme_editor) fn cut(
+        &mut self,
+        window: Option<&mut Window>,
+        cx: &mut Context<Self>,
+    ) {
         if self.read_only {
             self.copy_selection_to_clipboard(cx);
             return;

@@ -183,7 +183,7 @@ fn read_request(stream: &mut TcpStream) -> Result<super::http::HttpRequest, Reje
     }
     // The head arrived with only part of the body attached; the rest is still
     // on the wire. A single read is never guaranteed to hold a whole request.
-    while request.body.as_bytes().len() < expected {
+    while request.body.len() < expected {
         match stream.read(&mut chunk) {
             Ok(0) => break,
             Ok(n) => {
@@ -272,7 +272,7 @@ mod tests {
         fn post(&self, body: &str, extra_headers: &str) -> String {
             self.request(&format!(
                 "POST /mcp HTTP/1.1\r\nHost: 127.0.0.1\r\n{extra_headers}Content-Length: {}\r\n\r\n{body}",
-                body.as_bytes().len()
+                body.len()
             ))
         }
 

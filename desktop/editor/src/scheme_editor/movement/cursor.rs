@@ -61,7 +61,12 @@ impl SchemeEditor {
         self.move_cursor_to(target, select, cx);
     }
 
-    pub(in crate::scheme_editor) fn move_vertical(&mut self, delta: isize, select: bool, cx: &mut Context<Self>) {
+    pub(in crate::scheme_editor) fn move_vertical(
+        &mut self,
+        delta: isize,
+        select: bool,
+        cx: &mut Context<Self>,
+    ) {
         if self.line_map.line_count() == 0 {
             let row_count = self.render_line_count();
             let row = (self.selection.head.row as isize + delta)
@@ -75,7 +80,11 @@ impl SchemeEditor {
         self.move_cursor_to(target, select, cx);
     }
 
-    pub(in crate::scheme_editor) fn move_word_left(&mut self, select: bool, cx: &mut Context<Self>) {
+    pub(in crate::scheme_editor) fn move_word_left(
+        &mut self,
+        select: bool,
+        cx: &mut Context<Self>,
+    ) {
         let offset = self.location_to_offset(self.selection.head);
         let target = self.clamp_horizontal(
             self.selection.head,
@@ -84,7 +93,11 @@ impl SchemeEditor {
         self.move_cursor_to(target, select, cx);
     }
 
-    pub(in crate::scheme_editor) fn move_word_right(&mut self, select: bool, cx: &mut Context<Self>) {
+    pub(in crate::scheme_editor) fn move_word_right(
+        &mut self,
+        select: bool,
+        cx: &mut Context<Self>,
+    ) {
         let offset = self.location_to_offset(self.selection.head);
         let target = self.clamp_horizontal(
             self.selection.head,
@@ -93,7 +106,11 @@ impl SchemeEditor {
         self.move_cursor_to(target, select, cx);
     }
 
-    pub(in crate::scheme_editor) fn move_line_start(&mut self, select: bool, cx: &mut Context<Self>) {
+    pub(in crate::scheme_editor) fn move_line_start(
+        &mut self,
+        select: bool,
+        cx: &mut Context<Self>,
+    ) {
         let row = self.selection.head.row;
         self.move_cursor_to(
             TextLocation {
@@ -117,7 +134,11 @@ impl SchemeEditor {
         );
     }
 
-    pub(in crate::scheme_editor) fn move_document_start(&mut self, select: bool, cx: &mut Context<Self>) {
+    pub(in crate::scheme_editor) fn move_document_start(
+        &mut self,
+        select: bool,
+        cx: &mut Context<Self>,
+    ) {
         if let Some((first, _)) = self.cell_line_span(self.selection.head.row) {
             self.move_cursor_to(TextLocation { row: first, col: 0 }, select, cx);
             return;
@@ -125,7 +146,11 @@ impl SchemeEditor {
         self.move_cursor_to(TextLocation { row: 0, col: 0 }, select, cx);
     }
 
-    pub(in crate::scheme_editor) fn move_document_end(&mut self, select: bool, cx: &mut Context<Self>) {
+    pub(in crate::scheme_editor) fn move_document_end(
+        &mut self,
+        select: bool,
+        cx: &mut Context<Self>,
+    ) {
         if let Some((_, last)) = self.cell_line_span(self.selection.head.row) {
             self.move_cursor_to(
                 TextLocation {
@@ -159,7 +184,11 @@ impl SchemeEditor {
         cx.notify();
     }
 
-    pub(in crate::scheme_editor) fn clamp_horizontal(&self, from: TextLocation, to: TextLocation) -> TextLocation {
+    pub(in crate::scheme_editor) fn clamp_horizontal(
+        &self,
+        from: TextLocation,
+        to: TextLocation,
+    ) -> TextLocation {
         if to.row == from.row {
             return to;
         }

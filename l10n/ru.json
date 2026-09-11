@@ -501,6 +501,8 @@
   "mobile.search.no_results": "Нет результатов.",
   "mobile.search.no_results_detail": "Ничего не соответствует «{query}».",
   "mobile.search.screen_title": "Поиск",
+  "mobile.search.searching": "Поиск…",
+  "mobile.workspace.loading": "Загрузка рабочего пространства…",
   "mobile.settings.archived_items": "Архивированные элементы",
   "mobile.settings.assignment_reminders_title": "Напоминания о заданиях",
   "mobile.settings.cancel_sync_subscription_confirm": "Отменить подписку",

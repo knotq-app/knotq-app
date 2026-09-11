@@ -871,3 +871,19 @@ fn replay_seed() {
     let steps = env_usize("KNOTQ_FUZZ_STEPS", 120);
     run_seed(seed, accounts, devices, steps);
 }
+
+#[test]
+#[ignore = "triage helper; runs one restart seed chosen by KNOTQ_REPRO_SEED"]
+fn replay_restart_seed() {
+    let seed = env_usize("KNOTQ_REPRO_SEED", 585) as u64;
+    let steps = env_usize("KNOTQ_FUZZ_STEPS", 400);
+    run_seed_restart(seed, 3, 4, steps);
+}
+
+#[test]
+#[ignore = "triage helper; runs one compaction seed chosen by KNOTQ_REPRO_SEED"]
+fn replay_compaction_seed() {
+    let seed = env_usize("KNOTQ_REPRO_SEED", 527) as u64;
+    let steps = env_usize("KNOTQ_FUZZ_STEPS", 400);
+    run_seed_compaction(seed, 2, 4, steps);
+}

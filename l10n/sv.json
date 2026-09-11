@@ -477,6 +477,8 @@
   "mobile.search.no_results": "Inga resultat.",
   "mobile.search.no_results_detail": "Ingenting matchade \"{query}\".",
   "mobile.search.screen_title": "Sök",
+  "mobile.search.searching": "Söker…",
+  "mobile.workspace.loading": "Läser in arbetsyta…",
   "mobile.settings.archived_items": "Arkiverade uppgifter",
   "mobile.settings.assignment_reminders_title": "Påminnelser för uppdrag",
   "mobile.settings.cancel_sync_subscription_confirm": "Avbryt prenumeration",

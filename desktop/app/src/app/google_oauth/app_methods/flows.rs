@@ -37,7 +37,10 @@ impl KnotQApp {
         cx.notify();
     }
 
-    pub(super) fn finish_google_oauth_task(&mut self, cancel_token: Option<&Arc<AtomicBool>>) -> bool {
+    pub(super) fn finish_google_oauth_task(
+        &mut self,
+        cancel_token: Option<&Arc<AtomicBool>>,
+    ) -> bool {
         if let Some(cancel_token) = cancel_token {
             match self.google_oauth_cancel_token.as_ref() {
                 Some(current) if Arc::ptr_eq(current, cancel_token) => {

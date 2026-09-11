@@ -5,7 +5,10 @@ use crate::line_map::TextLocation;
 use super::super::{buffer::HEADER_ROW, SchemeEditor, ANNOTATION_BAR_GAP};
 
 impl SchemeEditor {
-    pub(in crate::scheme_editor) fn location_for_local_point(&self, local: Point<Pixels>) -> TextLocation {
+    pub(in crate::scheme_editor) fn location_for_local_point(
+        &self,
+        local: Point<Pixels>,
+    ) -> TextLocation {
         if self.line_map.line_count() == 0 {
             return TextLocation { row: 0, col: 0 };
         }
@@ -208,7 +211,11 @@ impl SchemeEditor {
             }
             // Only keep walking back through the trailing table's own cell rows;
             // a non-cell, non-block row means the last line isn't a block.
-            if !self.rows.get(row).is_some_and(|editor_row| editor_row.path.is_cell()) {
+            if !self
+                .rows
+                .get(row)
+                .is_some_and(|editor_row| editor_row.path.is_cell())
+            {
                 break;
             }
         }

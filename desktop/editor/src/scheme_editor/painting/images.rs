@@ -122,7 +122,11 @@ impl SchemeEditor {
         None
     }
 
-    pub(in crate::scheme_editor) fn image_max_width_for_row(&self, row: usize, line: &SchemeItemLine) -> Pixels {
+    pub(in crate::scheme_editor) fn image_max_width_for_row(
+        &self,
+        row: usize,
+        line: &SchemeItemLine,
+    ) -> Pixels {
         let text_width = line.text.size(line.line_height()).width.max(px(120.0));
         (self
             .last_bounds
@@ -131,7 +135,11 @@ impl SchemeEditor {
         .max(px(120.0))
     }
 
-    pub(in crate::scheme_editor) fn marker_left_for_text_left(&self, item: &Item, text_left: Pixels) -> Pixels {
+    pub(in crate::scheme_editor) fn marker_left_for_text_left(
+        &self,
+        item: &Item,
+        text_left: Pixels,
+    ) -> Pixels {
         if item.marker == ItemMarker::Blank {
             text_left
         } else {
@@ -165,7 +173,10 @@ impl SchemeEditor {
         height
     }
 
-    pub(in crate::scheme_editor) fn image_for_media(&mut self, media: &ImageInline) -> Option<Arc<Image>> {
+    pub(in crate::scheme_editor) fn image_for_media(
+        &mut self,
+        media: &ImageInline,
+    ) -> Option<Arc<Image>> {
         if let Some(cached) = self.image_cache.get(&media.asset) {
             return cached.clone();
         }

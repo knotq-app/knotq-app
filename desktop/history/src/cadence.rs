@@ -50,11 +50,7 @@ impl SnapshotCadence {
     /// Records a snapshot that was successfully written. This is deliberately
     /// separate from `is_due`: a transient filesystem failure must retry on the
     /// next save rather than silently suppress history for a full interval.
-    pub(crate) fn recorded(
-        &mut self,
-        workspace_dir: &Path,
-        now: DateTime<Utc>,
-    ) {
+    pub(crate) fn recorded(&mut self, workspace_dir: &Path, now: DateTime<Utc>) {
         self.last.insert(workspace_dir.to_path_buf(), now);
     }
 }

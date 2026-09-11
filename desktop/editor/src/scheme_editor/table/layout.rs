@@ -16,7 +16,11 @@ impl SchemeEditor {
         grid_left_content_for_indent(self.row_indent_x(anchor_row))
     }
 
-    pub(in crate::scheme_editor) fn table_content_width(&self, anchor_row: usize, wrap_width: Pixels) -> Pixels {
+    pub(in crate::scheme_editor) fn table_content_width(
+        &self,
+        anchor_row: usize,
+        wrap_width: Pixels,
+    ) -> Pixels {
         table_content_width_for_indent(wrap_width, self.row_indent_x(anchor_row))
     }
 

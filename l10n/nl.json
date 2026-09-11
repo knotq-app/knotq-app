@@ -477,6 +477,8 @@
   "mobile.search.no_results": "Geen resultaten.",
   "mobile.search.no_results_detail": "Niets kwam overeen met \"{query}\".",
   "mobile.search.screen_title": "Zoeken",
+  "mobile.search.searching": "Zoeken…",
+  "mobile.workspace.loading": "Werkruimte laden…",
   "mobile.settings.archived_items": "Gearchiveerde items",
   "mobile.settings.assignment_reminders_title": "Taakherinneringen",
   "mobile.settings.cancel_sync_subscription_confirm": "Abonnement annuleren",

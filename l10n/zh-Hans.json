@@ -465,6 +465,8 @@
   "mobile.search.no_results": "无结果。",
   "mobile.search.no_results_detail": "没有匹配「{query}」的结果。",
   "mobile.search.screen_title": "搜索",
+  "mobile.search.searching": "正在搜索…",
+  "mobile.workspace.loading": "正在加载工作区…",
   "mobile.settings.archived_items": "已存档的项目",
   "mobile.settings.assignment_reminders_title": "任务提醒",
   "mobile.settings.cancel_sync_subscription_confirm": "取消订阅",

@@ -50,7 +50,13 @@ impl SchemeEditor {
         };
         let mut shaped = window
             .text_system()
-            .shape_text(SharedString::new(label.clone()), px(12.0), &[run], None, None)
+            .shape_text(
+                SharedString::new(label.clone()),
+                px(12.0),
+                &[run],
+                None,
+                None,
+            )
             .unwrap_or_default();
         let Some(text_line) = shaped.pop() else {
             return;
@@ -95,7 +101,11 @@ impl SchemeEditor {
     /// Records clickable regions for any URLs on `row`. A link that wraps across
     /// visual lines gets one hitbox per wrapped segment. The painted underline
     /// and color come from the layout's text runs; this only does hit-testing.
-    pub(in crate::scheme_editor) fn register_link_hitboxes(&mut self, row: usize, line_origin: Point<Pixels>) {
+    pub(in crate::scheme_editor) fn register_link_hitboxes(
+        &mut self,
+        row: usize,
+        line_origin: Point<Pixels>,
+    ) {
         let Some(range) = self.line_range(row) else {
             return;
         };

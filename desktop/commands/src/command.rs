@@ -1,9 +1,9 @@
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
-use knotq_model::{MarkerFamily, 
-    DeletedFolderOrigin, DeletedSchemeOrigin, Folder, FolderId, Item, ItemId, ItemMarker, NodeRef,
-    OccurrenceId, Recurrence, Scheme, SchemeId, SchemeSource,
+use knotq_model::{
+    DeletedFolderOrigin, DeletedSchemeOrigin, Folder, FolderId, Item, ItemId, ItemMarker,
+    MarkerFamily, NodeRef, OccurrenceId, Recurrence, Scheme, SchemeId, SchemeSource,
 };
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]

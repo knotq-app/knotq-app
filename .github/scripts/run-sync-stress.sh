@@ -69,7 +69,10 @@ cleanup() {
     for _ in 1 2 3 4 5; do kill -0 "${WRANGLER_PID}" 2>/dev/null || break; sleep 1; done
     kill -9 "${WRANGLER_PID}" 2>/dev/null || true
   fi
-  [ "${WROTE_DEV_VARS}" -eq 1 ] && rm -f "${DEV_VARS}"
+  if [ "${WROTE_DEV_VARS}" -eq 1 ]; then
+    rm -f "${DEV_VARS}"
+  fi
+  return 0
 }
 trap cleanup EXIT INT TERM
 

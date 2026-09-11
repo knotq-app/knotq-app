@@ -133,6 +133,25 @@ fn canonical_personal_sync_identity_uses_account_workspace_id() {
 }
 
 #[test]
+fn canonical_personal_sync_identity_is_stable_for_archived_root_origins() {
+    let mut workspace = Workspace::new();
+    let archived = Scheme::new("Archived", 0);
+    let archived_id = archived.id;
+    let root = workspace.root;
+    workspace.schemes.insert(archived_id, archived);
+    workspace.mark_scheme_deleted_from(archived_id, root, 0);
+    workspace.ensure_sync_metadata();
+    workspace.canonicalize_personal_sync_identity(workspace.id);
+    let before = workspace.clone();
+
+    let (repair_needed, workspace_changed) =
+        workspace.canonicalize_personal_sync_identity_with_change(workspace.id);
+    assert!(repair_needed);
+    assert!(!workspace_changed);
+    assert_eq!(workspace, before);
+}
+
+#[test]
 fn canonical_personal_sync_identity_merges_duplicate_roots() {
     let account_workspace = WorkspaceId::new();
     let mut workspace = Workspace::new();

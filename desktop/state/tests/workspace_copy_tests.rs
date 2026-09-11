@@ -312,7 +312,10 @@ fn carried_over_schemes_stay_readable_and_editable() {
             CommandOrigin::User,
         )
         .unwrap();
-    assert_eq!(state.workspace.schemes[&ids[3]].items[2].text(), "late edit");
+    assert_eq!(
+        state.workspace.schemes[&ids[3]].items[2].text(),
+        "late edit"
+    );
     assert_eq!(&state.workspace, state.store_workspace());
 }
 
@@ -343,7 +346,11 @@ fn a_direct_mutation_survives_the_next_command() {
         .unwrap();
 
     assert_eq!(
-        state.workspace.schemes[&ids[1]].items.last().unwrap().text(),
+        state.workspace.schemes[&ids[1]]
+            .items
+            .last()
+            .unwrap()
+            .text(),
         "added directly",
         "a direct mutation was lost when an unrelated command refreshed the copy"
     );

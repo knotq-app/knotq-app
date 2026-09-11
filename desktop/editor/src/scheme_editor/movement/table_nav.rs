@@ -1,7 +1,10 @@
 use super::super::*;
 
 impl SchemeEditor {
-    pub(in crate::scheme_editor) fn table_boundary_horizontal_target(&self, forward: bool) -> Option<TextLocation> {
+    pub(in crate::scheme_editor) fn table_boundary_horizontal_target(
+        &self,
+        forward: bool,
+    ) -> Option<TextLocation> {
         let head = self.selection.head;
         let row = head.row.min(self.rows.len().saturating_sub(1));
         let col = head.col.min(self.line_len(row));
@@ -50,7 +53,10 @@ impl SchemeEditor {
         None
     }
 
-    pub(in crate::scheme_editor) fn insert_trailing_line_after_table_boundary(&mut self, cx: &mut Context<Self>) -> bool {
+    pub(in crate::scheme_editor) fn insert_trailing_line_after_table_boundary(
+        &mut self,
+        cx: &mut Context<Self>,
+    ) -> bool {
         if self.read_only {
             return false;
         }
@@ -128,7 +134,11 @@ impl SchemeEditor {
         Some((first, last))
     }
 
-    pub(in crate::scheme_editor) fn vertical_target(&self, cur: TextLocation, delta: isize) -> TextLocation {
+    pub(in crate::scheme_editor) fn vertical_target(
+        &self,
+        cur: TextLocation,
+        delta: isize,
+    ) -> TextLocation {
         let prefer_x = self.visual_point_for_location(cur).x;
         let pick = |row: usize| TextLocation {
             row,

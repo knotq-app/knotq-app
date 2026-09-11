@@ -432,6 +432,7 @@ fn atomic_batch_rejection_and_server_gate() {
             cursors: HashMap::new(),
             client_protocol_version: knotq_sync::CLIENT_SYNC_PROTOCOL_VERSION,
             integrity_state_vectors: Vec::new(),
+            state_vectors: Vec::new(),
         })
         .expect("pull after rejection");
     let persisted = pull.documents.iter().any(|d| d.document == doc_id);

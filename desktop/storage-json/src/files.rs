@@ -370,6 +370,14 @@ fn ensure_workspace_gitignore(base_dir: &Path) -> Result<()> {
 }
 
 fn record_history_snapshot(base_dir: &Path) {
+    // Mobile has no history UI/API. Do not make its sync path scan and hash the
+    // entire workspace (or surface dangling desktop-history refs in the mobile
+    // log); desktop remains the authoritative history consumer and keeps the
+    // synchronous capture behavior below.
+    #[cfg(any(target_os = "android", target_os = "ios"))]
+    let _ = base_dir;
+
+    #[cfg(not(any(target_os = "android", target_os = "ios")))]
     if let Err(err) = knotq_history::record_workspace_snapshot(base_dir) {
         eprintln!("workspace history snapshot failed: {err:#}");
     }

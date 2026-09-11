@@ -103,16 +103,22 @@ pub fn record_workspace_snapshot(workspace_dir: &Path) -> Result<()> {
 
     let now = Utc::now();
     let due = {
-        let mut guard = CADENCE.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-        guard
-            .get_or_insert_with(SnapshotCadence::default)
-            .is_due(workspace_dir, now, min_snapshot_interval())
+        let mut guard = CADENCE
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        guard.get_or_insert_with(SnapshotCadence::default).is_due(
+            workspace_dir,
+            now,
+            min_snapshot_interval(),
+        )
     };
     if !due {
         return Ok(());
     }
     record_workspace_snapshot_at(workspace_dir, now)?;
-    let mut guard = CADENCE.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    let mut guard = CADENCE
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     guard
         .get_or_insert_with(SnapshotCadence::default)
         .recorded(workspace_dir, now);
@@ -311,6 +317,28 @@ mod tests {
         let snapshots = list_workspace_snapshots(&workspace_dir).unwrap();
         assert_eq!(snapshots.len(), 1);
         assert_eq!(snapshots[0].timestamp, first_time);
+
+        crate::gc::wait_for_background_sweep();
+        fs::remove_dir_all(workspace_dir).unwrap();
+    }
+
+    #[test]
+    fn listing_repairs_a_dangling_snapshot_ref() {
+        let workspace_dir = unique_temp_dir("knotq-history-dangling-ref");
+        fs::create_dir_all(&workspace_dir).unwrap();
+        fs::write(workspace_dir.join("workspace.json"), "one").unwrap();
+        record_workspace_snapshot_at(&workspace_dir, Utc::now()).unwrap();
+
+        let mut manifest = crate::store::read_manifest(&workspace_dir).unwrap();
+        let snapshot_id = manifest.refs.values().next().unwrap().clone();
+        fs::remove_file(
+            crate::store::snapshot_dir(&workspace_dir).join(format!("{snapshot_id}.json")),
+        )
+        .unwrap();
+
+        assert!(list_workspace_snapshots(&workspace_dir).unwrap().is_empty());
+        manifest = crate::store::read_manifest(&workspace_dir).unwrap();
+        assert!(manifest.refs.is_empty());
 
         crate::gc::wait_for_background_sweep();
         fs::remove_dir_all(workspace_dir).unwrap();

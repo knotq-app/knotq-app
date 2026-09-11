@@ -40,6 +40,27 @@ fn event_notifications_fire_at_start_time() {
 }
 
 #[test]
+fn notification_query_window_is_half_open_at_its_end() {
+    let start = Utc.with_ymd_and_hms(2026, 5, 10, 12, 1, 0).unwrap();
+    let workspace = workspace_with_item(Item::new("just outside").with_start(start));
+
+    let notes = compute_due_notifications_with_lead_times(
+        &workspace,
+        NotificationLeadTimes {
+            event_offset_secs: 0,
+            ..NotificationLeadTimes::default()
+        },
+        start - Duration::minutes(1),
+        start,
+    );
+
+    assert!(
+        notes.is_empty(),
+        "an event exactly at the query end must be handled by the next window only"
+    );
+}
+
+#[test]
 fn event_without_an_explicit_end_still_gets_a_definite_expiry() {
     // Events normally carry both a start and an end, but a synthetic/degenerate
     // occurrence (e.g. an anchor-less recurring expansion) can reach the

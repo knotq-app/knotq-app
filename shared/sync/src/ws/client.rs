@@ -208,6 +208,13 @@ impl WsClient {
         self.shared.connected.load(Ordering::SeqCst)
     }
 
+    /// True after the client has been asked to stop. A transport wrapper can use
+    /// this to discard a socket that timed out and let its owner create a fresh
+    /// connection instead of keeping a dead supervisor around forever.
+    pub fn is_stopped(&self) -> bool {
+        self.shared.stop.load(Ordering::SeqCst)
+    }
+
     /// Send a pull over the socket and block for the typed response.
     pub fn request_pull(
         &self,
@@ -556,6 +563,7 @@ mod tests {
                 cursors: Default::default(),
                 client_protocol_version: crate::CLIENT_SYNC_PROTOCOL_VERSION,
                 integrity_state_vectors: Default::default(),
+                state_vectors: Default::default(),
             };
             client.request_pull(&req)
         });
@@ -631,6 +639,17 @@ mod tests {
     }
 
     #[test]
+    fn shutdown_marks_client_stopped_for_transport_replacement() {
+        let (client, _servers, _) = start_with(WsCallbacks::noop());
+        wait_connected(&client);
+        assert!(!client.is_stopped());
+
+        client.shutdown();
+
+        assert!(client.is_stopped());
+    }
+
+    #[test]
     fn maps_a_server_error_frame_to_a_server_error() {
         let (client, servers, _) = start_with(WsCallbacks::noop());
         wait_connected(&client);
@@ -698,6 +717,7 @@ mod tests {
                 cursors: Default::default(),
                 client_protocol_version: crate::CLIENT_SYNC_PROTOCOL_VERSION,
                 integrity_state_vectors: Default::default(),
+                state_vectors: Default::default(),
             };
             req_client.request_pull(&req)
         });

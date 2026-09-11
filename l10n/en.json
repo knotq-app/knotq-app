@@ -477,6 +477,8 @@
   "mobile.search.no_results": "No results.",
   "mobile.search.no_results_detail": "Nothing matched “{query}”.",
   "mobile.search.screen_title": "Search",
+  "mobile.search.searching": "Searching…",
+  "mobile.workspace.loading": "Loading workspace…",
   "mobile.settings.archived_items": "Archived items",
   "mobile.settings.assignment_reminders_title": "Assignment reminders",
   "mobile.settings.cancel_sync_subscription_confirm": "Cancel Subscription",

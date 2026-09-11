@@ -477,6 +477,8 @@
   "mobile.search.no_results": "Κανένα αποτέλεσμα.",
   "mobile.search.no_results_detail": "Κανένα αποτέλεσμα για «{query}».",
   "mobile.search.screen_title": "Αναζήτηση",
+  "mobile.search.searching": "Αναζήτηση…",
+  "mobile.workspace.loading": "Φόρτωση χώρου εργασίας…",
   "mobile.settings.archived_items": "Αρχειοθετημένα στοιχεία",
   "mobile.settings.assignment_reminders_title": "Υπενθυμίσεις εργασιών",
   "mobile.settings.cancel_sync_subscription_confirm": "Ακύρωση συνδρομής",

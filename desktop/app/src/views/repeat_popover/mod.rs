@@ -85,7 +85,7 @@ mod recurrence;
 mod render;
 mod until_calendar;
 
-use crate::views::{repeat_end_for_local_date, UNTIL_CALENDAR_HEIGHT, UNTIL_CALENDAR_WIDTH};
 use self::components::*;
 use self::recurrence::*;
 use self::until_calendar::*;
+use crate::views::{repeat_end_for_local_date, UNTIL_CALENDAR_HEIGHT, UNTIL_CALENDAR_WIDTH};

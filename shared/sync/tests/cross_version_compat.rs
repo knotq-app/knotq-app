@@ -95,7 +95,11 @@ fn newer_persisted_crdt_state_with_unknown_fields_keeps_its_documents() {
     });
     let parsed: PersistedCrdtState =
         serde_json::from_value(json).expect("a v2 CRDT-state file must not read as empty");
-    assert_eq!(parsed.documents.len(), 1, "the document must survive the parse");
+    assert_eq!(
+        parsed.documents.len(),
+        1,
+        "the document must survive the parse"
+    );
     assert_eq!(parsed.documents[0].document, doc);
 }
 
@@ -290,7 +294,9 @@ fn a_document_epoch_from_the_future_does_not_panic() {
     let document = producer.workspace.scheme_sync[&scheme].id;
 
     let mut device = fresh_device(account);
-    device.try_sync(&server).expect("device learns the scheme at epoch 0");
+    device
+        .try_sync(&server)
+        .expect("device learns the scheme at epoch 0");
 
     let future = FutureEpochPull {
         inner: &server,

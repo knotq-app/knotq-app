@@ -38,7 +38,10 @@ pub(crate) fn rotate_snapshots(workspace_dir: &Path, now: DateTime<Utc>) -> Resu
     Ok(())
 }
 
-pub(crate) fn retention_bucket(timestamp: DateTime<Utc>, now: DateTime<Utc>) -> Option<RetentionBucket> {
+pub(crate) fn retention_bucket(
+    timestamp: DateTime<Utc>,
+    now: DateTime<Utc>,
+) -> Option<RetentionBucket> {
     let age = now.signed_duration_since(timestamp);
     let (tier, step_secs) = if age <= Duration::hours(1) {
         ("m5", 5 * 60)

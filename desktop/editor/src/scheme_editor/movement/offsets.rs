@@ -14,7 +14,11 @@ impl SchemeEditor {
         (start.row.min(last), end.row.min(last))
     }
 
-    pub(in crate::scheme_editor) fn emit_commands(&mut self, commands: Vec<Command>, cx: &mut Context<Self>) {
+    pub(in crate::scheme_editor) fn emit_commands(
+        &mut self,
+        commands: Vec<Command>,
+        cx: &mut Context<Self>,
+    ) {
         if let Some(cmd) = Command::from_vec(commands) {
             cx.emit(EditorEvent::Command(cmd));
             self.reset_cursor_blink(cx);
@@ -57,7 +61,10 @@ impl SchemeEditor {
         self.text.line_range(row)
     }
 
-    pub(in crate::scheme_editor) fn table_object_range_for_row(&self, row: usize) -> Option<Range<usize>> {
+    pub(in crate::scheme_editor) fn table_object_range_for_row(
+        &self,
+        row: usize,
+    ) -> Option<Range<usize>> {
         let editor_row = self.rows.get(row)?;
         if !editor_row.path.is_table_anchor() || !editor_row.item.has_table() {
             return None;
@@ -74,7 +81,11 @@ impl SchemeEditor {
         offset_to_location_with(self.text.len(), self.text.line_ranges(), offset)
     }
 
-    pub(in crate::scheme_editor) fn offset_to_location_in(&self, text: &str, offset: usize) -> TextLocation {
+    pub(in crate::scheme_editor) fn offset_to_location_in(
+        &self,
+        text: &str,
+        offset: usize,
+    ) -> TextLocation {
         offset_to_location_with(text.len(), &line_ranges(text), offset)
     }
 

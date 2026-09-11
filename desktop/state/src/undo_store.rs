@@ -369,7 +369,10 @@ mod tests {
         store.push_undo(entry(delete(a), UndoScope::Global));
 
         // The global view takes the most recent global/workspace step (global).
-        assert_eq!(store.take_undo(UndoScope::Workspace).unwrap().scope, UndoScope::Global);
+        assert_eq!(
+            store.take_undo(UndoScope::Workspace).unwrap().scope,
+            UndoScope::Global
+        );
         // The scheme's own private edit is reachable only from the scheme.
         assert_eq!(
             store.take_undo(UndoScope::Scheme(a)).unwrap().scope,

@@ -74,10 +74,15 @@ pub fn rename_scheme(args: &Args, ctx: &ToolContext) -> Result<Outcome, ToolErro
     let scheme = ctx.writable_scheme(id)?;
     let name = args.req_str("name")?.to_string();
     if scheme.name == name {
-        return Ok(Outcome::unchanged(json!({ "scheme_id": id.to_string(), "name": name })));
+        return Ok(Outcome::unchanged(
+            json!({ "scheme_id": id.to_string(), "name": name }),
+        ));
     }
     Ok(Outcome::Write {
-        command: Command::RenameScheme { id, name: name.clone() },
+        command: Command::RenameScheme {
+            id,
+            name: name.clone(),
+        },
         response: json!({ "scheme_id": id.to_string(), "name": name }),
     })
 }
@@ -118,10 +123,15 @@ pub fn rename_folder(args: &Args, ctx: &ToolContext) -> Result<Outcome, ToolErro
     let folder = ctx.folder(id)?;
     let name = args.req_str("name")?.to_string();
     if folder.name == name {
-        return Ok(Outcome::unchanged(json!({ "folder_id": id.to_string(), "name": name })));
+        return Ok(Outcome::unchanged(
+            json!({ "folder_id": id.to_string(), "name": name }),
+        ));
     }
     Ok(Outcome::Write {
-        command: Command::RenameFolder { id, name: name.clone() },
+        command: Command::RenameFolder {
+            id,
+            name: name.clone(),
+        },
         response: json!({ "folder_id": id.to_string(), "name": name }),
     })
 }
@@ -455,8 +465,16 @@ pub fn set_item_recurrence(args: &Args, ctx: &ToolContext) -> Result<Outcome, To
             // line already carries: those record edits the user made to
             // individual instances, and dropping them would silently resurrect
             // occurrences they had deleted or moved.
-            rdates: item.repeats.as_ref().map(|r| r.rdates.clone()).unwrap_or_default(),
-            exdates: item.repeats.as_ref().map(|r| r.exdates.clone()).unwrap_or_default(),
+            rdates: item
+                .repeats
+                .as_ref()
+                .map(|r| r.rdates.clone())
+                .unwrap_or_default(),
+            exdates: item
+                .repeats
+                .as_ref()
+                .map(|r| r.exdates.clone())
+                .unwrap_or_default(),
             overrides: item
                 .repeats
                 .as_ref()

@@ -465,6 +465,8 @@
   "mobile.search.no_results": "沒有結果。",
   "mobile.search.no_results_detail": "沒有符合「{query}」的項目。",
   "mobile.search.screen_title": "搜尋",
+  "mobile.search.searching": "正在搜尋…",
+  "mobile.workspace.loading": "正在載入工作區…",
   "mobile.settings.archived_items": "已存檔的項目",
   "mobile.settings.assignment_reminders_title": "代辦事項提醒",
   "mobile.settings.cancel_sync_subscription_confirm": "取消訂閱",

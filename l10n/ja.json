@@ -465,6 +465,8 @@
   "mobile.search.no_results": "結果なし。",
   "mobile.search.no_results_detail": "「{query}」に一致するものはありません。",
   "mobile.search.screen_title": "検索",
+  "mobile.search.searching": "検索中…",
+  "mobile.workspace.loading": "ワークスペースを読み込んでいます…",
   "mobile.settings.archived_items": "アーカイブされたアイテム",
   "mobile.settings.assignment_reminders_title": "アサイン リマインダー",
   "mobile.settings.cancel_sync_subscription_confirm": "サブスクリプションをキャンセル",

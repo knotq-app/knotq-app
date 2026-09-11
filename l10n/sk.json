@@ -489,6 +489,8 @@
   "mobile.search.no_results": "Žiadne výsledky.",
   "mobile.search.no_results_detail": "Nič sa nezhoduje s „{query}“.",
   "mobile.search.screen_title": "Hľadať",
+  "mobile.search.searching": "Vyhľadávanie…",
+  "mobile.workspace.loading": "Načítava sa pracovný priestor…",
   "mobile.settings.archived_items": "Archivované položky",
   "mobile.settings.assignment_reminders_title": "Pripomenutia na úlohy",
   "mobile.settings.cancel_sync_subscription_confirm": "Zrušiť predplatné",

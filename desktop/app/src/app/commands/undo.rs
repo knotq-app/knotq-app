@@ -22,7 +22,8 @@ impl KnotQApp {
     }
 
     pub(crate) fn discard_pending_creation_undo(&mut self, item_id: ItemId) -> bool {
-        if !pending_creation_undo_matches(self.undo_store.last_undo().map(|e| &e.inverse), item_id) {
+        if !pending_creation_undo_matches(self.undo_store.last_undo().map(|e| &e.inverse), item_id)
+        {
             return false;
         }
         self.undo_store.discard_last_undo();

@@ -60,9 +60,6 @@ mod repeat_weekdays;
 mod scope_dialog;
 mod until_calendar;
 
-use crate::views::{
-    repeat_end_for_local_date, FOLDER_ICON_SIZE, UNTIL_CALENDAR_HEIGHT, UNTIL_CALENDAR_WIDTH,
-};
 use self::components::*;
 use self::formatting::*;
 use self::layer::*;
@@ -71,3 +68,6 @@ use self::repeat_menu::*;
 use self::repeat_weekdays::*;
 use self::scope_dialog::*;
 use self::until_calendar::*;
+use crate::views::{
+    repeat_end_for_local_date, FOLDER_ICON_SIZE, UNTIL_CALENDAR_HEIGHT, UNTIL_CALENDAR_WIDTH,
+};

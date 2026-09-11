@@ -477,6 +477,8 @@
   "mobile.search.no_results": "कोई परिणाम नहीं।",
   "mobile.search.no_results_detail": "कुछ भी \"{query}\" से मेल नहीं खाता।",
   "mobile.search.screen_title": "खोज",
+  "mobile.search.searching": "खोज रहा है…",
+  "mobile.workspace.loading": "वर्कस्पेस लोड हो रहा है…",
   "mobile.settings.archived_items": "संग्रहीत वस्तुएं",
   "mobile.settings.assignment_reminders_title": "कार्य अनुस्मारक",
   "mobile.settings.cancel_sync_subscription_confirm": "सदस्यता रद्द करें",

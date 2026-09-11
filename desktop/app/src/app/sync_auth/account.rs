@@ -467,7 +467,8 @@ impl KnotQApp {
                 let (tx, rx) = mpsc::channel();
                 std::thread::spawn(move || {
                     let _ = tx.send(
-                        resend_email_verification_backend(&account).map_err(|err| format!("{err:#}")),
+                        resend_email_verification_backend(&account)
+                            .map_err(|err| format!("{err:#}")),
                     );
                 });
                 let result = loop {
@@ -753,9 +754,9 @@ fn resend_email_verification_backend(account: &SyncAccountSettings) -> Result<()
         .call()
     {
         Ok(_) => Ok(()),
-        Err(ureq::Error::Status(429, _)) => Err(anyhow!(knotq_l10n::t(
-            "sync.error.resend_rate_limited"
-        ))),
+        Err(ureq::Error::Status(429, _)) => {
+            Err(anyhow!(knotq_l10n::t("sync.error.resend_rate_limited")))
+        }
         Err(ureq::Error::Status(_, response)) => Err(anyhow!(account_action_error_message(
             &login_error_code(response, "resend_failed")
         ))),
@@ -777,16 +778,12 @@ fn refresh_account_status_backend(mut account: SyncAccountSettings) -> Result<Sy
     }
 
     let Some(refresh_token) = account.refresh_token.clone() else {
-        return Err(anyhow!(knotq_l10n::t(
-            "sync.error.session_expired_reauth"
-        )));
+        return Err(anyhow!(knotq_l10n::t("sync.error.session_expired_reauth")));
     };
     let tokens = match refresh_sync_backend(&account.api_base, &refresh_token) {
         Ok(tokens) => tokens,
         Err(RefreshError::Unauthorized) => {
-            return Err(anyhow!(knotq_l10n::t(
-                "sync.error.session_expired_reauth"
-            )));
+            return Err(anyhow!(knotq_l10n::t("sync.error.session_expired_reauth")));
         }
         Err(RefreshError::Transient(error)) => return Err(error),
     };

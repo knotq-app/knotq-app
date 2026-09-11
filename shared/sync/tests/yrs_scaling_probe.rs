@@ -6,8 +6,8 @@
 
 use std::time::Instant;
 
-use yrs::types::text::TextPrelim;
 use yrs::types::map::MapPrelim;
+use yrs::types::text::TextPrelim;
 use yrs::{Doc, Map, Transact};
 
 fn ms(start: Instant) -> f64 {
@@ -18,7 +18,10 @@ fn ms(start: Instant) -> f64 {
 #[ignore = "measurement; run with --ignored --nocapture"]
 fn probe_yrs_map_insert_scaling() {
     println!();
-    println!("{:>7} | {:>14} {:>18} {:>16}", "items", "flat inserts", "nested map+text", "per item (us)");
+    println!(
+        "{:>7} | {:>14} {:>18} {:>16}",
+        "items", "flat inserts", "nested map+text", "per item (us)"
+    );
     for &n in &[500usize, 1_000, 2_000, 4_000, 8_000] {
         // A: n flat string entries in one map.
         let doc = Doc::new();
@@ -43,7 +46,11 @@ fn probe_yrs_map_insert_scaling() {
                 let entry = map.insert(&mut txn, i.to_string(), MapPrelim::default());
                 entry.insert(&mut txn, "schema", "knotq.item.v1");
                 entry.insert(&mut txn, "position", "a0");
-                entry.insert(&mut txn, "text", TextPrelim::new("lorem ipsum dolor sit amet"));
+                entry.insert(
+                    &mut txn,
+                    "text",
+                    TextPrelim::new("lorem ipsum dolor sit amet"),
+                );
             }
         }
         let nested = ms(start);

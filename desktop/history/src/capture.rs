@@ -7,7 +7,7 @@ use crate::gc::sweep_in_background_if_due;
 use crate::retention::{retention_bucket, rotate_snapshots};
 use crate::store::{
     ensure_history_store, history_store_exists, read_manifest, read_snapshot_record, store_blob,
-    update_ref, write_snapshot_record,
+    update_ref, write_manifest, write_snapshot_record,
 };
 use crate::support::{hex_digest, sha256_hex, stored_path, validate_relative_path};
 use crate::{
@@ -156,16 +156,39 @@ pub(crate) fn list_internal_snapshots(workspace_dir: &Path) -> Result<Vec<Intern
     if !history_store_exists(workspace_dir) {
         return Ok(Vec::new());
     }
-    let manifest = read_manifest(workspace_dir)?;
+    let mut manifest = read_manifest(workspace_dir)?;
     let mut snapshots = Vec::new();
-    for (refname, id) in manifest.refs {
-        let snapshot = read_snapshot_record(workspace_dir, &id)
-            .with_context(|| format!("read history snapshot {id} for {refname}"))?;
-        snapshots.push(InternalSnapshot {
-            id: snapshot.id,
-            timestamp: snapshot.timestamp,
-            content_hash: snapshot.content_hash,
-        });
+    let mut dangling_refs = Vec::new();
+    for (refname, id) in &manifest.refs {
+        match read_snapshot_record(workspace_dir, id) {
+            Ok(snapshot) => snapshots.push(InternalSnapshot {
+                id: snapshot.id,
+                timestamp: snapshot.timestamp,
+                content_hash: snapshot.content_hash,
+            }),
+            Err(error)
+                if error.chain().any(|cause| {
+                    cause
+                        .downcast_ref::<io::Error>()
+                        .is_some_and(|io_error| io_error.kind() == io::ErrorKind::NotFound)
+                }) =>
+            {
+                // A GC/crash can leave a manifest ref behind after its record
+                // disappears. The record is already unrecoverable, so remove
+                // only this dangling ref and keep valid history usable.
+                dangling_refs.push(refname.clone());
+            }
+            Err(error) => {
+                return Err(error)
+                    .with_context(|| format!("read history snapshot {id} for {refname}"));
+            }
+        }
+    }
+    if !dangling_refs.is_empty() {
+        for refname in dangling_refs {
+            manifest.refs.remove(&refname);
+        }
+        write_manifest(workspace_dir, &manifest).context("repair dangling history refs")?;
     }
     Ok(snapshots)
 }

@@ -1,4 +1,6 @@
-use knotq_model::{MarkerFamily, Item, ItemId, ItemMarker, OccurrenceId, Recurrence, SchemeId, Workspace};
+use knotq_model::{
+    Item, ItemId, ItemMarker, MarkerFamily, OccurrenceId, Recurrence, SchemeId, Workspace,
+};
 
 use crate::invariants::CommandError;
 use crate::{ChangeSet, Command, CommandReceipt, DateKind};

@@ -118,7 +118,11 @@ impl<'a> CalendarQuery<'a> {
                 let mut occurrences = self.expander.expand(item, window);
                 occurrences.retain(|occurrence| occurrence.start.or(occurrence.end) < Some(as_of));
                 occurrences.sort_by_key(|occurrence| occurrence.start.or(occurrence.end));
-                for occurrence in occurrences.into_iter().rev().take(MAX_OVERDUE_PER_RECURRING) {
+                for occurrence in occurrences
+                    .into_iter()
+                    .rev()
+                    .take(MAX_OVERDUE_PER_RECURRING)
+                {
                     push(occurrence);
                 }
             } else {

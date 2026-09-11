@@ -93,11 +93,7 @@ impl SchemeEditor {
         // The same splice is applied to the line map and to the shape cache, so
         // "row `n` is unchanged" always refers to the line still sitting at row
         // `n`.
-        let row_ids = self
-            .rows
-            .iter()
-            .map(|row| row.item.id)
-            .collect::<Vec<_>>();
+        let row_ids = self.rows.iter().map(|row| row.item.id).collect::<Vec<_>>();
         let splice = self.shape_cache.begin(&row_ids, &font);
         self.line_map
             .splice_rows(splice.at, splice.removed, splice.inserted);
@@ -297,7 +293,11 @@ impl SchemeEditor {
                 .with_block_height(block_height)
                 .with_block_suffix(block_suffix, px(6.0))
                 .in_grid(is_cell)
-                .with_layout_mapping(hidden_prefix.len(), collapsed, line_range.len()),
+                .with_layout_mapping(
+                    hidden_prefix.len(),
+                    collapsed,
+                    line_range.len(),
+                ),
             );
         }
 

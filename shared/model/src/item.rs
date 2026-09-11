@@ -650,7 +650,6 @@ impl MarkerFamily {
     }
 }
 
-
 /// 1 -> a, 26 -> z, 27 -> aa, in the spreadsheet-column style. Zero is not a
 /// valid ordinal, so it falls back to the number rather than an empty label.
 fn alphabetic_ordinal(ordinal: usize, upper: bool) -> String {
@@ -677,9 +676,19 @@ fn roman_ordinal(ordinal: usize, upper: bool) -> String {
         return ordinal.to_string();
     }
     const TABLE: [(usize, &str); 13] = [
-        (1000, "m"), (900, "cm"), (500, "d"), (400, "cd"), (100, "c"),
-        (90, "xc"), (50, "l"), (40, "xl"), (10, "x"), (9, "ix"),
-        (5, "v"), (4, "iv"), (1, "i"),
+        (1000, "m"),
+        (900, "cm"),
+        (500, "d"),
+        (400, "cd"),
+        (100, "c"),
+        (90, "xc"),
+        (50, "l"),
+        (40, "xl"),
+        (10, "x"),
+        (9, "ix"),
+        (5, "v"),
+        (4, "iv"),
+        (1, "i"),
     ];
     let mut n = ordinal;
     let mut out = String::new();
@@ -689,7 +698,11 @@ fn roman_ordinal(ordinal: usize, upper: bool) -> String {
             n -= value;
         }
     }
-    if upper { out.to_uppercase() } else { out }
+    if upper {
+        out.to_uppercase()
+    } else {
+        out
+    }
 }
 
 fn marker_base(value: &str) -> Option<&str> {
@@ -928,7 +941,10 @@ mod marker_family_tests {
     fn alternating_flips_between_adjacent_depths() {
         let b = ItemMarker::Bullet;
         assert_eq!(MarkerFamily::Alternating.glyph_at(b, 0), MarkerGlyph::Disc);
-        assert_eq!(MarkerFamily::Alternating.glyph_at(b, 1), MarkerGlyph::Circle);
+        assert_eq!(
+            MarkerFamily::Alternating.glyph_at(b, 1),
+            MarkerGlyph::Circle
+        );
         assert_eq!(MarkerFamily::Alternating.glyph_at(b, 2), MarkerGlyph::Disc);
     }
 
@@ -1017,7 +1033,10 @@ mod marker_family_tests {
         fancy.marker = ItemMarker::Bullet;
         fancy.marker_family = MarkerFamily::Squares;
         let json = serde_json::to_string(&fancy).unwrap();
-        assert!(json.contains("squares"), "family missing from output: {json}");
+        assert!(
+            json.contains("squares"),
+            "family missing from output: {json}"
+        );
     }
 
     #[test]

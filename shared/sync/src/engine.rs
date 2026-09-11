@@ -14,15 +14,14 @@
 use std::collections::{HashMap, HashSet};
 
 use anyhow::{anyhow, Context, Result};
+use base64::Engine as _;
 use chrono::Utc;
-use knotq_model::{
-    DocumentId, OperationId, ReplicaId, SyncDocumentKind, Workspace, WorkspaceId,
-};
+use knotq_model::{DocumentId, OperationId, ReplicaId, SyncDocumentKind, Workspace, WorkspaceId};
 
 use crate::{
-    BatchPullRequest, BatchPushRequest, DocumentStateVector, LocalSyncState, NotificationScheduleSnapshot,
-    PendingCrdtEdit, PulledCrdtDocument, PushDocumentUpdates, StoredCrdtUpdate,
-    WorkspaceCrdtDocuments,
+    BatchPullRequest, BatchPushRequest, DocumentPullStateVector, DocumentStateVector,
+    LocalSyncState, NotificationScheduleSnapshot, PendingCrdtEdit, PulledCrdtDocument,
+    PushDocumentUpdates, StoredCrdtUpdate, WorkspaceCrdtDocuments,
 };
 
 /// A document that was included in a pull response but could not be applied
@@ -38,6 +37,10 @@ pub struct SkippedDocument {
     /// index (orphan or deleted-scheme content doc). Callers can suppress noisy
     /// logging for these — they are expected in normal operation.
     pub unknown_scheme_document: bool,
+    /// True when the document is intentionally deferred by lazy loading (for
+    /// example an off-window historical Daily Queue page), rather than failing
+    /// to decode or materialize.
+    pub deferred: bool,
     pub reason: String,
 }
 
@@ -105,7 +108,23 @@ impl std::error::Error for SyncPushEpochStale {}
 pub struct PullOutcome {
     pub workspace: Workspace,
     pub remote_updates_applied: usize,
+    /// Number of pull responses consumed by this call, including the final
+    /// caught-up response. Useful for distinguishing one slow request from a
+    /// server page sequence in platform diagnostics.
+    pub pull_requests: usize,
+    /// Number and raw base64-decoded size of merged document states returned by
+    /// the server during this call. These counters are diagnostics only; they
+    /// do not affect convergence or cursor advancement.
+    pub remote_documents_received: usize,
+    /// Number of returned document states marked by the server as state-vector
+    /// deltas. Full states remain a safe compatibility fallback.
+    pub remote_delta_documents: usize,
+    pub remote_state_bytes: usize,
     pub remote_latest: HashMap<DocumentId, u64>,
+    /// CRDT document ids whose merged state changed during this pull. Drivers
+    /// use this to persist only affected scheme files/state instead of doing a
+    /// whole-workspace rewrite after every batched pull.
+    pub changed_documents: HashSet<DocumentId>,
     /// Documents that arrived in the pull response but could not be applied
     /// locally. Their cursors were advanced anyway — see [`SkippedDocument`].
     pub skipped: Vec<SkippedDocument>,
@@ -116,7 +135,13 @@ pub struct PullOutcome {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct PushedDocument {
     pub document: DocumentId,
+    pub kind: SyncDocumentKind,
     pub through_local_sequence: u64,
+    /// Exact server head returned for this push. A caller may use this as a
+    /// post-push pull cursor only after retaining the integrity proof: a
+    /// concurrent push can still make the acknowledged head incomplete from
+    /// this replica's point of view.
+    pub server_sequence: u64,
 }
 
 /// Pull the whole workspace and apply every changed document's merged state.
@@ -133,14 +158,157 @@ pub fn batch_pull_and_apply(
     workspace: Workspace,
     replica_id: ReplicaId,
 ) -> Result<PullOutcome> {
+    batch_pull_and_apply_with_integrity_check(
+        transport,
+        crdt_docs,
+        local_state,
+        workspace,
+        replica_id,
+        true,
+    )
+}
+
+/// Pull and apply with an explicit integrity-proof decision.
+///
+/// The proof is intentionally opt-in at the caller boundary: it walks every
+/// locally materialized CRDT document and is appropriate for startup recovery
+/// and immediately after pushing local edits, but not for every websocket wake.
+pub fn batch_pull_and_apply_with_integrity_check(
+    transport: &dyn SyncTransport,
+    crdt_docs: &mut WorkspaceCrdtDocuments,
+    local_state: &mut LocalSyncState,
+    workspace: Workspace,
+    replica_id: ReplicaId,
+    run_integrity_check: bool,
+) -> Result<PullOutcome> {
+    batch_pull_and_apply_with_integrity_documents_inner(
+        transport,
+        crdt_docs,
+        local_state,
+        workspace,
+        replica_id,
+        run_integrity_check,
+        None,
+        None,
+        false,
+    )
+}
+
+/// Pull and apply with a full integrity proof, including documents currently
+/// held as lazy bytes. This is reserved for interrupted-sync recovery; the
+/// normal compatibility wrapper intentionally keeps deferred documents lazy.
+pub fn batch_pull_and_apply_with_full_integrity_check(
+    transport: &dyn SyncTransport,
+    crdt_docs: &mut WorkspaceCrdtDocuments,
+    local_state: &mut LocalSyncState,
+    workspace: Workspace,
+    replica_id: ReplicaId,
+    run_integrity_check: bool,
+) -> Result<PullOutcome> {
+    batch_pull_and_apply_with_integrity_documents_inner(
+        transport,
+        crdt_docs,
+        local_state,
+        workspace,
+        replica_id,
+        run_integrity_check,
+        None,
+        None,
+        true,
+    )
+}
+
+/// Pull with a startup integrity proof backed by vectors persisted at the last
+/// durable checkpoint. This keeps deferred scheme histories lazy: the client
+/// can still detect a server-side state change without decoding every cold
+/// document just to reconstruct its vector.
+pub fn batch_pull_and_apply_with_persisted_integrity_vectors(
+    transport: &dyn SyncTransport,
+    crdt_docs: &mut WorkspaceCrdtDocuments,
+    local_state: &mut LocalSyncState,
+    workspace: Workspace,
+    replica_id: ReplicaId,
+    run_integrity_check: bool,
+    persisted_vectors: Option<&HashMap<DocumentId, String>>,
+) -> Result<PullOutcome> {
+    batch_pull_and_apply_with_integrity_documents_inner(
+        transport,
+        crdt_docs,
+        local_state,
+        workspace,
+        replica_id,
+        run_integrity_check,
+        None,
+        persisted_vectors,
+        false,
+    )
+}
+
+/// Pull and apply with an optional integrity proof limited to selected
+/// documents. A full proof (`documents == None`) is used for startup recovery;
+/// a selected proof is used after a push so a one-character edit does not
+/// decode and hash every scheme in the workspace.
+pub fn batch_pull_and_apply_with_integrity_documents(
+    transport: &dyn SyncTransport,
+    crdt_docs: &mut WorkspaceCrdtDocuments,
+    local_state: &mut LocalSyncState,
+    workspace: Workspace,
+    replica_id: ReplicaId,
+    run_integrity_check: bool,
+    documents: Option<&HashSet<DocumentId>>,
+) -> Result<PullOutcome> {
+    batch_pull_and_apply_with_integrity_documents_inner(
+        transport,
+        crdt_docs,
+        local_state,
+        workspace,
+        replica_id,
+        run_integrity_check,
+        documents,
+        None,
+        false,
+    )
+}
+
+// This pipeline keeps the transport, durable sync state, CRDT documents, and
+// integrity-proof options explicit because each has a distinct failure and
+// persistence contract. A parameter object would obscure those boundaries at
+// the most correctness-sensitive call site.
+#[allow(clippy::too_many_arguments)]
+fn batch_pull_and_apply_with_integrity_documents_inner(
+    transport: &dyn SyncTransport,
+    crdt_docs: &mut WorkspaceCrdtDocuments,
+    local_state: &mut LocalSyncState,
+    workspace: Workspace,
+    replica_id: ReplicaId,
+    run_integrity_check: bool,
+    documents: Option<&HashSet<DocumentId>>,
+    persisted_vectors: Option<&HashMap<DocumentId, String>>,
+    hydrate_all_deferred_for_integrity: bool,
+) -> Result<PullOutcome> {
     let mut workspace = workspace;
     let mut remote_updates_applied = 0;
+    let mut pull_requests = 0;
+    let mut remote_documents_received = 0;
+    let mut remote_delta_documents = 0;
+    let mut remote_state_bytes = 0;
     let mut authoritative_remote_latest: Option<HashMap<DocumentId, u64>> = None;
     let mut all_skipped: Vec<SkippedDocument> = Vec::new();
-    // A state-vector proof is tiny compared with a merged document. It catches
-    // the otherwise-undetectable case where persisted CRDT bytes were damaged
-    // while their sequence cursors still equal the server's heads.
-    let mut integrity_check_pending = true;
+    let mut changed_documents: HashSet<DocumentId> = HashSet::new();
+    // A state-vector proof is tiny compared with a merged document, but it still
+    // walks every decoded document on a caught-up pull. Never put that workspace-
+    // wide work on the local-edit path: pending edits are about to be pushed, so
+    // their state vectors are expected to differ from the server's until the push
+    // completes. The next caught-up sync performs the proof once the local queue
+    // is empty. This keeps a one-character edit to one ordinary pull request,
+    // rather than turning it into a scan of hundreds of documents.
+    let mut integrity_check_pending = run_integrity_check && local_state.pending.is_empty();
+    // Keep a private, mutable copy so a deferred proof can refresh the vectors
+    // for documents that were just merged. The durable startup cache describes
+    // the pre-pull state; reusing it after a changed page would report a false
+    // mismatch for the very update we just accepted.
+    let mut persisted_vectors_for_request = persisted_vectors.cloned();
+    let mut integrity_recheck_requested = false;
     // Hard backstop against a pull loop that cannot make progress (e.g. a
     // document that never materializes, so its cursor keeps getting reset). One
     // page per document plus the deferred integrity re-check is a handful of
@@ -165,6 +333,20 @@ pub fn batch_pull_and_apply(
     // cursor where `mark_pulled` advanced it so the server stops re-sending it,
     // and surface it as a skipped document.
     let mut pulled_this_call: HashSet<DocumentId> = HashSet::new();
+    // Integrity mismatches are authoritative after the caller has had a chance
+    // to push pending local edits. The next returned full state must replace the
+    // local document, not merge it — otherwise locally durable-but-unqueued CRDT
+    // content survives forever even though the server is the chosen authority.
+    let mut integrity_repair_documents: HashSet<DocumentId> = HashSet::new();
+    if integrity_check_pending {
+        if let Some(documents) = documents {
+            crdt_docs.state_vectors_v1_for_documents(documents);
+        } else if persisted_vectors.is_some() {
+            // The vectors are already persisted; do not hydrate cold histories.
+        } else if hydrate_all_deferred_for_integrity {
+            crdt_docs.hydrate_all_deferred();
+        }
+    }
     let mut pull_loop_iteration = 0u32;
     loop {
         pull_loop_iteration += 1;
@@ -176,6 +358,75 @@ pub fn batch_pull_and_apply(
             );
             break;
         }
+        let request_integrity_state_vectors = if integrity_check_pending {
+            let state_vectors = documents
+                .map(|documents| crdt_docs.state_vectors_v1_for_documents(documents))
+                .or_else(|| {
+                    persisted_vectors_for_request.as_ref().map(|vectors| {
+                        vectors
+                            .iter()
+                            .filter_map(|(document, encoded)| {
+                                base64::engine::general_purpose::STANDARD
+                                    .decode(encoded)
+                                    .ok()
+                                    .map(|state_vector_v1| (*document, state_vector_v1))
+                            })
+                            .collect()
+                    })
+                })
+                .unwrap_or_else(|| crdt_docs.state_vectors_v1());
+            state_vectors
+                .into_iter()
+                .map(|(document, state_vector_v1)| DocumentStateVector {
+                    document,
+                    state_vector_v1,
+                })
+                .collect()
+        } else {
+            Vec::new()
+        };
+        let integrity_scope: Option<HashSet<DocumentId>> = integrity_check_pending.then(|| {
+            request_integrity_state_vectors
+                .iter()
+                .map(|entry| entry.document)
+                .collect()
+        });
+        // Give a delta-capable server the state vector for every document whose
+        // local CRDT history is already durable and whose cursor has advanced.
+        // Use the vectors persisted at the last durable checkpoint instead of
+        // re-encoding every live/deferred CRDT document on every pull. A stale
+        // checkpoint vector is still a safe Yjs target: the response may contain
+        // a few already-present structs, but merging them is idempotent. A missing
+        // vector (new document, repaired document, or older local state) makes the
+        // server return the complete merged state as before.
+        let known_document_ids = crdt_docs.known_document_ids();
+        let pull_state_vectors = if !local_state.integrity_state_vectors.is_empty() {
+            local_state
+                .integrity_state_vectors
+                .iter()
+                .filter_map(|(document, encoded)| {
+                    let cursor = local_state.document_cursors.get(document)?;
+                    if cursor.last_pulled_sequence == 0 || !known_document_ids.contains(document) {
+                        return None;
+                    }
+                    let state_vector_v1 = base64::engine::general_purpose::STANDARD
+                        .decode(encoded)
+                        .ok()?;
+                    Some(DocumentPullStateVector {
+                        document: *document,
+                        epoch: cursor.epoch,
+                        state_vector_v1,
+                    })
+                })
+                .collect()
+        } else {
+            // No checkpoint means no delta hint. In particular, do not derive a
+            // hint from the current CRDT merely because a cursor exists: after an
+            // account switch or an interrupted persistence boundary, that CRDT
+            // can belong to a different server lineage. The first pull must be a
+            // complete state; a later durable checkpoint can opt into deltas.
+            Vec::new()
+        };
         let request = BatchPullRequest {
             replica_id,
             cursors: local_state
@@ -184,41 +435,54 @@ pub fn batch_pull_and_apply(
                 .map(|cursor| (cursor.document, cursor.last_pulled_sequence))
                 .collect(),
             client_protocol_version: crate::CLIENT_SYNC_PROTOCOL_VERSION,
-            integrity_state_vectors: integrity_check_pending
-                .then(|| {
-                    crdt_docs
-                        .state_vectors_v1()
-                        .into_iter()
-                        .map(|(document, state_vector_v1)| DocumentStateVector {
-                            document,
-                            state_vector_v1,
-                        })
-                        .collect()
-                })
-                .unwrap_or_default(),
+            integrity_state_vectors: request_integrity_state_vectors,
+            state_vectors: pull_state_vectors,
         };
         let response = transport.pull(&request)?;
+        pull_requests += 1;
+        remote_documents_received += response.documents.len();
+        remote_delta_documents += response
+            .documents
+            .iter()
+            .filter(|document| document.state_v1_is_delta)
+            .count();
+        remote_state_bytes += response
+            .documents
+            .iter()
+            .map(|document| document.state_v1.len())
+            .sum::<usize>();
         if let Some(mismatches) = &response.integrity_mismatches {
             integrity_check_pending = false;
-            // The server flags a document as a mismatch whenever the client did
-            // not submit a state vector for it — and the client deliberately
-            // omits vectors for *deferred* documents (off-window Daily Queue
-            // days it owns as undecoded bytes: `state_vectors_v1` skips them so
-            // the first pull of a session need not decode the user's whole
-            // history). Those are not damaged and re-pulling them is a livelock:
-            // the client re-applies the bytes, re-defers them, sends no vector
-            // again, and the next integrity check flags them again. Only reset
-            // the cursor for a mismatched document the client does NOT already
-            // own in some form — those are the ones a re-pull can actually fix.
-            let owned = crdt_docs.known_document_ids();
+            // A mismatch caused by a local edit is expected: the local CRDT is
+            // ahead of the server until its pending update is pushed. Leave those
+            // documents alone so the normal push phase sends local work before we
+            // consider any remote re-pull. A mismatch with no pending local work
+            // is actionable when it belongs to this proof's submitted scope,
+            // including when that document is currently deferred. Hydrating a
+            // reported deferred document turns that one history into a real
+            // local doc, so the pull can merge it and the caller can persist/
+            // reindex the repaired content.
             let actionable: Vec<DocumentId> = mismatches
                 .iter()
                 .copied()
-                .filter(|document| !owned.contains(document))
+                // Older production servers interpreted a scoped proof as if
+                // omitted documents were mismatches. Those ids are outside
+                // this proof and must never trigger a cursor reset/re-download
+                // on the client. New servers return only in-scope ids, so this
+                // is both a compatibility guard and the correct scoped-proof
+                // semantics.
+                .filter(|document| {
+                    integrity_scope
+                        .as_ref()
+                        .is_some_and(|scope| scope.contains(document))
+                })
+                .filter(|document| !local_state.has_pending_for_document(*document))
                 .collect();
             if !actionable.is_empty() {
-                for document in &actionable {
-                    local_state.reset_pull_cursor(*document);
+                for document in actionable {
+                    crdt_docs.hydrate_deferred_document(document);
+                    integrity_repair_documents.insert(document);
+                    local_state.reset_pull_cursor(document);
                 }
                 // The backend has identified the exact bad documents. Fetch
                 // only those full states; no workspace-wide reset is needed.
@@ -249,20 +513,58 @@ pub fn batch_pull_and_apply(
         // local document, which is already an exact copy.
         let needs_adoption = |doc: &PulledCrdtDocument| {
             doc.kind == SyncDocumentKind::Scheme
-                && local_state
-                    .document_cursors
-                    .get(&doc.document)
-                    .is_some_and(|cursor| cursor.epoch != doc.epoch)
+                && (integrity_repair_documents.contains(&doc.document)
+                    || local_state
+                        .document_cursors
+                        .get(&doc.document)
+                        .is_some_and(|cursor| cursor.epoch != doc.epoch))
         };
         let (adoptions, merges): (Vec<&PulledCrdtDocument>, Vec<&PulledCrdtDocument>) = response
             .documents
             .iter()
             .partition(|doc| needs_adoption(doc));
 
-        let updates: Vec<StoredCrdtUpdate> = merges
-            .iter()
-            .map(|doc| pulled_document_as_update(workspace_id, doc))
-            .collect();
+        // A complete snapshot for an off-window deferred scheme can be stored
+        // as bytes without hydrating that historical Yjs document. This is the
+        // common cold-mobile catch-up case: the document must be retained and
+        // its cursor advanced, but it cannot affect the currently materialized
+        // workspace. Keep visible schemes, deltas, and documents with pending
+        // local work on the normal merge path.
+        let mut updates = Vec::with_capacity(merges.len());
+        for doc in merges {
+            let deferred_scheme = (doc.kind == SyncDocumentKind::Scheme
+                && !doc.state_v1_is_delta
+                && !local_state.has_pending_for_document(doc.document))
+            .then(|| {
+                workspace
+                    .scheme_sync
+                    .iter()
+                    .find_map(|(scheme_id, meta)| (meta.id == doc.document).then_some(*scheme_id))
+            })
+            .flatten()
+            .filter(|scheme_id| {
+                // Only a zero-cursor bootstrap may replace deferred bytes
+                // without a Yjs merge. An established document can have a
+                // locally durable/index state that must be reconciled through
+                // the normal path, even when the server response is a full
+                // merged snapshot.
+                let document = workspace.scheme_sync[scheme_id].id;
+                local_state
+                    .document_cursors
+                    .get(&document)
+                    .is_none_or(|cursor| cursor.last_pulled_sequence == 0)
+            })
+            .filter(|scheme_id| !workspace.schemes.contains_key(scheme_id));
+            if let Some(_scheme_id) = deferred_scheme {
+                if crdt_docs.replace_deferred_full_state(doc.document, &doc.state_v1) {
+                    remote_updates_applied += 1;
+                    changed_documents.insert(doc.document);
+                    local_state.mark_deferred_materialization(doc.document);
+                }
+                continue;
+            }
+            updates.push(pulled_document_as_update(workspace_id, doc));
+        }
         // `apply_remote_updates` applies workspace-kind updates (and re-materializes)
         // before scheme-kind ones, so a scheme created on another device — whose
         // workspace-index entry and scheme document arrive in the same response — is
@@ -283,6 +585,30 @@ pub fn batch_pull_and_apply(
         remote_updates_applied += outcome.applied;
         workspace = outcome.workspace;
 
+        changed_documents.extend(outcome.changed_documents.iter().copied());
+
+        // If the server had to return a changed page before it could evaluate
+        // the proof, refresh those entries in the request-local cache. The
+        // second request must prove the post-merge state, not the pre-pull
+        // vectors loaded from durable storage.
+        if integrity_check_pending && response.integrity_check_deferred {
+            if let Some(cached_vectors) = persisted_vectors_for_request.as_mut() {
+                let changed_page_documents: HashSet<DocumentId> = response
+                    .documents
+                    .iter()
+                    .map(|document| document.document)
+                    .collect();
+                for (document, state_vector_v1) in
+                    crdt_docs.state_vectors_v1_for_documents(&changed_page_documents)
+                {
+                    cached_vectors.insert(
+                        document,
+                        base64::engine::general_purpose::STANDARD.encode(state_vector_v1),
+                    );
+                }
+            }
+        }
+
         // Apply the epoch adoptions AFTER the merged updates, so a workspace-
         // index update arriving in the same response has already registered the
         // scheme (the adoption resolves the scheme through the workspace index).
@@ -297,8 +623,10 @@ pub fn batch_pull_and_apply(
                 touched.as_ref(),
             ) {
                 Ok((adopted_workspace, rescue)) => {
+                    integrity_repair_documents.remove(&doc.document);
                     workspace = adopted_workspace;
                     remote_updates_applied += 1;
+                    changed_documents.insert(doc.document);
                     // The old pending deltas are unusable against the adopted
                     // document (stale epoch); the rescue re-expresses them.
                     local_state
@@ -335,6 +663,7 @@ pub fn batch_pull_and_apply(
                         document: doc.document,
                         kind: doc.kind,
                         unknown_scheme_document: unknown,
+                        deferred: false,
                         reason: format!("epoch adoption: {err:#}"),
                     });
                 }
@@ -365,6 +694,7 @@ pub fn batch_pull_and_apply(
                     document: doc.document,
                     kind: doc.kind,
                     unknown_scheme_document: err.unknown_scheme_document,
+                    deferred: false,
                     reason: err.message.clone(),
                 });
             }
@@ -429,6 +759,7 @@ pub fn batch_pull_and_apply(
                 document,
                 kind,
                 unknown_scheme_document: false,
+                deferred: true,
                 reason: "pulled but did not materialize into a local CRDT document".to_string(),
             });
         }
@@ -441,10 +772,16 @@ pub fn batch_pull_and_apply(
             // it a one-shot, so a document that keeps coming back cannot keep
             // this deferred re-check alive and spin the loop. Older servers omit
             // the flag and are unaffected.
-            if integrity_check_pending && response.integrity_check_deferred {
-                integrity_check_pending = false;
+            if integrity_check_pending
+                && response.integrity_check_deferred
+                && !integrity_recheck_requested
+            {
+                integrity_recheck_requested = true;
                 continue;
             }
+            // A server that keeps returning changed pages has not given us
+            // a caught-up proof opportunity yet. Spend the one re-check
+            // budget and finish the pull; the next sync can try again.
             break;
         }
     }
@@ -475,6 +812,17 @@ pub fn batch_pull_and_apply(
     // pushed. The repair must keep that content, not treat the empty document
     // as authoritative — so only an empty CRDT document for an already-synced
     // scheme is trusted here.
+    // On the ordinary mobile wake path, an empty response means there was no
+    // new remote CRDT state to reconcile and the previous successful cycle has
+    // already persisted the workspace/CRDT pair. Rebuilding the visible
+    // workspace here would turn every idle websocket nudge into a local scan.
+    // Keep the verification for recovery/integrity pulls and for any response
+    // that actually carried documents; those are the boundaries where stale
+    // materialization can be introduced. The legacy wrapper still passes
+    // `run_integrity_check = true`, so desktop and diagnostic callers retain
+    // their existing no-op repair behavior.
+    let should_verify_materialization =
+        run_integrity_check || remote_documents_received > 0 || !changed_documents.is_empty();
     let synced_scheme_documents: HashSet<DocumentId> = local_state
         .document_cursors
         .values()
@@ -487,12 +835,14 @@ pub fn batch_pull_and_apply(
             .get(scheme_id)
             .is_some_and(|meta| synced_scheme_documents.contains(&meta.id))
     };
-    let materialized = crdt_docs
-        .materialized_workspace_repair(&workspace, &scheme_document_is_synced)
-        .context("verify workspace materialization after sync pull")?;
-    if materialized != workspace {
-        workspace = materialized;
-        remote_updates_applied += 1;
+    if should_verify_materialization {
+        let materialized = crdt_docs
+            .materialized_workspace_repair(&workspace, &scheme_document_is_synced)
+            .context("verify workspace materialization after sync pull")?;
+        if materialized != workspace {
+            workspace = materialized;
+            remote_updates_applied += 1;
+        }
     }
 
     let remote_latest = authoritative_remote_latest.unwrap_or_else(|| {
@@ -505,7 +855,12 @@ pub fn batch_pull_and_apply(
     Ok(PullOutcome {
         workspace,
         remote_updates_applied,
+        pull_requests,
+        remote_documents_received,
+        remote_delta_documents,
+        remote_state_bytes,
         remote_latest,
+        changed_documents,
         skipped: all_skipped,
     })
 }
@@ -521,6 +876,10 @@ pub fn batch_pull_and_apply(
 /// the bad pending edits for affected documents and re-queues a full snapshot from
 /// `crdt_docs`, then retries once.  Each document is reseeded at most once per call
 /// — a second rejection for a reseeded document is returned as an error.
+// The push path intentionally receives the independent durable state, transport,
+// CRDT documents, workspace view, and notification snapshot separately: callers
+// persist/clear them at different points when a batch partially succeeds.
+#[allow(clippy::too_many_arguments)]
 pub fn batch_push_pending(
     transport: &dyn SyncTransport,
     local_state: &mut LocalSyncState,
@@ -546,17 +905,23 @@ pub fn batch_push_pending(
         let push_result = transport.push(&request);
         match push_result {
             Ok(response) => {
-                let accepted_by_document: HashMap<DocumentId, usize> = response
+                let response_by_document: HashMap<DocumentId, (usize, u64)> = response
                     .documents
                     .iter()
-                    .map(|doc| (doc.document, doc.accepted))
+                    .map(|doc| (doc.document, (doc.accepted, doc.seq)))
                     .collect();
                 for (sent, ack) in request.documents.iter().zip(acks.iter()) {
-                    let accepted = accepted_by_document.get(&ack.document).copied();
-                    if accepted != Some(sent.updates.len()) {
+                    let Some((accepted, server_sequence)) =
+                        response_by_document.get(&ack.document).copied()
+                    else {
                         return Err(anyhow!(
-                            "sync backend accepted {:?}/{} updates for {}",
-                            accepted,
+                            "sync backend omitted push acknowledgement for {}",
+                            ack.document
+                        ));
+                    };
+                    if accepted != sent.updates.len() {
+                        return Err(anyhow!(
+                            "sync backend accepted {accepted}/{} updates for {}",
                             sent.updates.len(),
                             ack.document
                         ));
@@ -566,7 +931,9 @@ pub fn batch_push_pending(
                     local_state.mark_pushed_edits(ack.document, &ack.sent_edits);
                     pushed.push(PushedDocument {
                         document: ack.document,
+                        kind: sent.kind,
                         through_local_sequence: ack.through_local_sequence,
+                        server_sequence,
                     });
                 }
             }
@@ -636,7 +1003,9 @@ pub fn batch_push_pending(
                     // the reseed shares identity (clientID + clocks) with this
                     // device's incremental diffs — same rationale as
                     // queue_workspace_bootstrap_updates.
-                    let snapshot_updates = crdt_docs.full_snapshot_updates();
+                    let snapshot_documents = HashSet::from([ack.document]);
+                    let snapshot_updates =
+                        crdt_docs.full_snapshot_updates_for_documents(&snapshot_documents);
                     for update in snapshot_updates.updates {
                         if update.document != ack.document {
                             continue;
@@ -869,6 +1238,9 @@ fn pulled_document_as_update(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::{BatchPullResponse, BatchPushResponse, PushedCrdtDocument};
+    use std::cell::RefCell;
+    use std::collections::VecDeque;
 
     fn schedule() -> NotificationScheduleSnapshot {
         let now = Utc::now();
@@ -908,6 +1280,185 @@ mod tests {
             .flat_map(|doc| doc.updates.iter())
             .map(Vec::len)
             .sum()
+    }
+
+    struct PushAckTransport {
+        server_sequence: u64,
+    }
+
+    impl SyncTransport for PushAckTransport {
+        fn pull(&self, _request: &BatchPullRequest) -> Result<BatchPullResponse> {
+            Ok(BatchPullResponse::default())
+        }
+
+        fn push(&self, request: &BatchPushRequest) -> Result<BatchPushResponse> {
+            Ok(BatchPushResponse {
+                documents: request
+                    .documents
+                    .iter()
+                    .map(|document| PushedCrdtDocument {
+                        document: document.document,
+                        seq: self.server_sequence,
+                        accepted: document.updates.len(),
+                    })
+                    .collect(),
+                ..BatchPushResponse::default()
+            })
+        }
+    }
+
+    struct DeferredIntegrityTransport {
+        requests: RefCell<Vec<BatchPullRequest>>,
+        responses: RefCell<VecDeque<BatchPullResponse>>,
+    }
+
+    impl SyncTransport for DeferredIntegrityTransport {
+        fn pull(&self, request: &BatchPullRequest) -> Result<BatchPullResponse> {
+            self.requests.borrow_mut().push(request.clone());
+            self.responses
+                .borrow_mut()
+                .pop_front()
+                .ok_or_else(|| anyhow!("test transport ran out of pull responses"))
+        }
+
+        fn push(&self, _request: &BatchPushRequest) -> Result<BatchPushResponse> {
+            Ok(BatchPushResponse::default())
+        }
+    }
+
+    #[test]
+    fn deferred_integrity_pull_rechecks_once_after_changed_documents() {
+        let mut workspace = Workspace::new();
+        let mut scheme = knotq_model::Scheme::new("Plan", 0);
+        scheme.items.push(knotq_model::Item::new("remote"));
+        let scheme_id = scheme.id;
+        workspace.schemes.insert(scheme_id, scheme);
+        workspace.ensure_sync_metadata();
+        let document = workspace.scheme_sync[&scheme_id].id;
+        let crdt = WorkspaceCrdtDocuments::try_new(&workspace).unwrap();
+        let state_v1 = crdt.document_states()[&document].to_vec();
+        let transport = DeferredIntegrityTransport {
+            requests: RefCell::new(Vec::new()),
+            responses: RefCell::new(VecDeque::from([
+                BatchPullResponse {
+                    documents: vec![PulledCrdtDocument {
+                        document,
+                        kind: SyncDocumentKind::Scheme,
+                        seq: 1,
+                        epoch: 0,
+                        state_v1,
+                        state_v1_is_delta: false,
+                    }],
+                    known_documents: Some(HashMap::from([(document, 1)])),
+                    integrity_check_deferred: true,
+                    ..BatchPullResponse::default()
+                },
+                BatchPullResponse {
+                    known_documents: Some(HashMap::from([(document, 1)])),
+                    integrity_mismatches: Some(Vec::new()),
+                    ..BatchPullResponse::default()
+                },
+            ])),
+        };
+        let mut local_crdt = WorkspaceCrdtDocuments::try_new(&workspace).unwrap();
+        let mut local_state = LocalSyncState::default();
+
+        batch_pull_and_apply(
+            &transport,
+            &mut local_crdt,
+            &mut local_state,
+            workspace,
+            ReplicaId::new(),
+        )
+        .unwrap();
+
+        let requests = transport.requests.into_inner();
+        assert_eq!(
+            requests.len(),
+            2,
+            "changed page must get one caught-up proof retry"
+        );
+        assert!(!requests[0].integrity_state_vectors.is_empty());
+        assert!(!requests[1].integrity_state_vectors.is_empty());
+    }
+
+    #[test]
+    fn ordinary_pull_does_not_infer_delta_hint_without_checkpoint() {
+        let mut workspace = Workspace::new();
+        let mut scheme = knotq_model::Scheme::new("Plan", 0);
+        scheme.items.push(knotq_model::Item::new("local"));
+        let scheme_id = scheme.id;
+        workspace.schemes.insert(scheme_id, scheme);
+        workspace.ensure_sync_metadata();
+        let document = workspace.scheme_sync[&scheme_id].id;
+        let transport = DeferredIntegrityTransport {
+            requests: RefCell::new(Vec::new()),
+            responses: RefCell::new(VecDeque::from([BatchPullResponse {
+                known_documents: Some(HashMap::from([(document, 1)])),
+                ..BatchPullResponse::default()
+            }])),
+        };
+        let mut local_crdt = WorkspaceCrdtDocuments::try_new(&workspace).unwrap();
+        let mut local_state = LocalSyncState::default();
+        // Model an install upgraded from the cursor-only protocol: it knows the
+        // server sequence but has not yet populated the new vector cache. A
+        // cursor alone is not enough to prove that the local CRDT belongs to
+        // the same server/account lineage, so this first pull must be full.
+        local_state.mark_pulled(document, SyncDocumentKind::Scheme, 1, 0);
+
+        batch_pull_and_apply(
+            &transport,
+            &mut local_crdt,
+            &mut local_state,
+            workspace,
+            ReplicaId::new(),
+        )
+        .unwrap();
+
+        let requests = transport.requests.into_inner();
+        assert_eq!(requests.len(), 1);
+        assert!(requests[0].state_vectors.is_empty());
+        assert!(!local_state.integrity_state_vectors.contains_key(&document));
+    }
+
+    #[test]
+    fn scoped_integrity_ignores_legacy_server_mismatches_outside_scope() {
+        let mut workspace = Workspace::new();
+        let mut scheme = knotq_model::Scheme::new("Plan", 0);
+        scheme.items.push(knotq_model::Item::new("local"));
+        let scheme_id = scheme.id;
+        workspace.schemes.insert(scheme_id, scheme);
+        workspace.ensure_sync_metadata();
+        let document = workspace.scheme_sync[&scheme_id].id;
+        let unrelated = DocumentId::new();
+        let crdt = WorkspaceCrdtDocuments::try_new(&workspace).unwrap();
+        let transport = DeferredIntegrityTransport {
+            requests: RefCell::new(Vec::new()),
+            responses: RefCell::new(VecDeque::from([BatchPullResponse {
+                // A pre-scoped-proof backend reports omitted heads as
+                // mismatches. The client must not reset/re-pull this document.
+                integrity_mismatches: Some(vec![unrelated]),
+                known_documents: Some(HashMap::from([(document, 1)])),
+                ..BatchPullResponse::default()
+            }])),
+        };
+        let mut local_crdt = crdt;
+        let mut local_state = LocalSyncState::default();
+        let scope = HashSet::from([document]);
+
+        batch_pull_and_apply_with_integrity_documents(
+            &transport,
+            &mut local_crdt,
+            &mut local_state,
+            workspace,
+            ReplicaId::new(),
+            true,
+            Some(&scope),
+        )
+        .unwrap();
+
+        assert!(local_state.document_cursors.is_empty());
+        assert_eq!(transport.requests.into_inner().len(), 1);
     }
 
     #[test]
@@ -984,5 +1535,43 @@ mod tests {
         assert_eq!(request.documents[0].document, first);
         assert!(raw_request_bytes(&request) <= PUSH_MAX_RAW_UPDATE_BYTES_PER_REQUEST);
         assert_eq!(acks[0].through_local_sequence, 1);
+    }
+
+    #[test]
+    fn accepted_push_records_server_head_for_post_push_cursor_optimization() {
+        let workspace_id = WorkspaceId::new();
+        let replica_id = ReplicaId::new();
+        let document = DocumentId::new();
+        let mut state = LocalSyncState {
+            workspace_id: Some(workspace_id),
+            replica_id: Some(replica_id),
+            ..LocalSyncState::default()
+        };
+        state.push_pending(pending(workspace_id, replica_id, document, 7, 1));
+        let workspace = Workspace::new();
+        let mut crdt = WorkspaceCrdtDocuments::try_new(&workspace).unwrap();
+        let transport = PushAckTransport {
+            server_sequence: 42,
+        };
+        let mut pushed = Vec::new();
+
+        batch_push_pending(
+            &transport,
+            &mut state,
+            replica_id,
+            &schedule(),
+            false,
+            &mut pushed,
+            &mut crdt,
+            &workspace,
+        )
+        .unwrap();
+
+        assert_eq!(pushed.len(), 1);
+        assert_eq!(pushed[0].document, document);
+        assert_eq!(pushed[0].kind, SyncDocumentKind::Scheme);
+        assert_eq!(pushed[0].through_local_sequence, 7);
+        assert_eq!(pushed[0].server_sequence, 42);
+        assert!(state.pending.is_empty());
     }
 }

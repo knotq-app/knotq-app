@@ -89,8 +89,8 @@ fn changes_for(command: &Command) -> WorkspaceCrdtChangeSet {
 fn agent_call(device: &mut TestDevice, name: &str, args: Value) -> Value {
     let indexed = IndexedWorkspace::build(device.workspace.clone());
     let ctx = ToolContext::new(&indexed, now(), today(), TimeFormat::default(), false);
-    let outcome = call_tool(name, Some(&args), &ctx)
-        .unwrap_or_else(|e| panic!("tool `{name}` failed: {e}"));
+    let outcome =
+        call_tool(name, Some(&args), &ctx).unwrap_or_else(|e| panic!("tool `{name}` failed: {e}"));
     match outcome {
         Outcome::Read(v) | Outcome::Unchanged(v) => v,
         Outcome::Write { command, response } => {
@@ -162,8 +162,14 @@ fn concurrent_agent_and_human_edits_both_survive() {
     human.try_sync(&server).unwrap();
 
     let settled = texts(&human, scheme);
-    assert!(settled.contains(&"from the agent".to_string()), "{settled:?}");
-    assert!(settled.contains(&"from the human".to_string()), "{settled:?}");
+    assert!(
+        settled.contains(&"from the agent".to_string()),
+        "{settled:?}"
+    );
+    assert!(
+        settled.contains(&"from the human".to_string()),
+        "{settled:?}"
+    );
     assert_eq!(settled.len(), 3);
     assert!(agent_device.converges_with(&human));
 }

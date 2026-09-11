@@ -477,6 +477,8 @@
   "mobile.search.no_results": "Ei tuloksia.",
   "mobile.search.no_results_detail": "Mikään ei vastannut hakua \"{query}\".",
   "mobile.search.screen_title": "Haku",
+  "mobile.search.searching": "Haetaan…",
+  "mobile.workspace.loading": "Työtilaa ladataan…",
   "mobile.settings.archived_items": "Arkistoidut kohteet",
   "mobile.settings.assignment_reminders_title": "Tehtävämuistutukset",
   "mobile.settings.cancel_sync_subscription_confirm": "Peruuta tilaus",

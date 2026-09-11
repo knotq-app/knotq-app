@@ -164,6 +164,10 @@ const AUTO_SCROLL_MIN_THRESHOLD: f32 = -15.0;
 const AUTO_SCROLL_MAX_THRESHOLD: f32 = 70.0;
 
 #[derive(Clone, Debug)]
+// `Command` is the common event and is deliberately stored inline to avoid a
+// heap allocation for every keystroke/command emitted by the editor. The less
+// frequent menu events are smaller; keep this hot-path representation explicit.
+#[allow(clippy::large_enum_variant)]
 pub enum EditorEvent {
     Command(Command),
     OpenDatePicker {

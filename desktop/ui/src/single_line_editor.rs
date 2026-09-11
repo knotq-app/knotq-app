@@ -3,8 +3,8 @@ use std::time::Duration as StdDuration;
 
 use gpui::prelude::*;
 use gpui::{
-    div, App, Bounds, Context, CursorStyle, EventEmitter, FocusHandle, IntoElement,
-    MouseButton, Pixels, Render, Rgba, ShapedLine, SharedString, Subscription, Task, Window,
+    div, App, Bounds, Context, CursorStyle, EventEmitter, FocusHandle, IntoElement, MouseButton,
+    Pixels, Render, Rgba, ShapedLine, SharedString, Subscription, Task, Window,
 };
 use gpui_component::ActiveTheme;
 

@@ -172,11 +172,7 @@ impl SchemeEditor {
         let old_top = reconstruct_top_level(&self.rows);
         top_indices.sort_unstable();
         top_indices.dedup();
-        top_indices.retain(|index| {
-            old_top
-                .get(*index)
-                .is_some_and(item_has_block_object)
-        });
+        top_indices.retain(|index| old_top.get(*index).is_some_and(item_has_block_object));
         if top_indices.is_empty() {
             return false;
         }

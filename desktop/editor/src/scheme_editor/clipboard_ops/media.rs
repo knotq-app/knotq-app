@@ -3,7 +3,11 @@ use super::super::*;
 use super::{insert_images_at_text_col, persist_image_files};
 
 impl SchemeEditor {
-    pub(in crate::scheme_editor) fn insert_image_from_picker(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    pub(in crate::scheme_editor) fn insert_image_from_picker(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         if self.read_only {
             return;
         }

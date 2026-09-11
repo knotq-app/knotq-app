@@ -74,8 +74,7 @@ fn reference_scan(
                 {
                     continue;
                 }
-                let retained_done =
-                    occ.state.is_done() && retained(scheme.id, item.id, &occ.id);
+                let retained_done = occ.state.is_done() && retained(scheme.id, item.id, &occ.id);
                 if when < now && occ.state.is_done() && !retained_done {
                     continue;
                 }
@@ -105,8 +104,7 @@ fn reference_scan(
             }
 
             for occ in recurring_overdue_occurrences(item, today_start) {
-                let retained_done =
-                    occ.state.is_done() && retained(scheme.id, item.id, &occ.id);
+                let retained_done = occ.state.is_done() && retained(scheme.id, item.id, &occ.id);
                 if occ.state.is_done() && !retained_done {
                     continue;
                 }
@@ -140,8 +138,7 @@ fn reference_scan(
             }
 
             let is_done = item.single_state().is_done();
-            let retained_done =
-                is_done && retained(scheme.id, item.id, &OccurrenceId::Single);
+            let retained_done = is_done && retained(scheme.id, item.id, &OccurrenceId::Single);
             if item.repeats.is_none() && (!is_done || retained_done) {
                 let kind = item.kind();
                 if !matches!(kind, ItemKind::Assignment | ItemKind::Reminder) {
@@ -424,27 +421,15 @@ fn the_two_phase_pipeline_matches_the_single_pass_scan() {
         let retained = |scheme: SchemeId, item: ItemId, occurrence: &OccurrenceId| {
             let mut hash = format!("{scheme:?}{item:?}{occurrence:?}")
                 .bytes()
-                .fold(0u64, |acc, byte| acc.wrapping_mul(31).wrapping_add(byte as u64));
+                .fold(0u64, |acc, byte| {
+                    acc.wrapping_mul(31).wrapping_add(byte as u64)
+                });
             hash ^= seed;
             hash % 3 == 0
         };
 
-        let expected = reference_scan(
-            &schemes,
-            now,
-            today_start,
-            horizon,
-            time_format,
-            &retained,
-        );
-        let actual = pipeline_scan(
-            &schemes,
-            now,
-            today_start,
-            horizon,
-            time_format,
-            &retained,
-        );
+        let expected = reference_scan(&schemes, now, today_start, horizon, time_format, &retained);
+        let actual = pipeline_scan(&schemes, now, today_start, horizon, time_format, &retained);
 
         assert_eq!(
             fingerprint(&expected),
@@ -844,9 +829,7 @@ fn realistic_workspace(anchor: chrono::DateTime<Utc>) -> Vec<(RefScheme, Vec<Ite
                     // A year back and a year forward: real workspaces are mostly
                     // history, and history is mostly finished.
                     let when = anchor
-                        + Duration::minutes(
-                            rng.below(2 * 365 * 24 * 60) as i64 - 365 * 24 * 60,
-                        );
+                        + Duration::minutes(rng.below(2 * 365 * 24 * 60) as i64 - 365 * 24 * 60);
                     if has_start {
                         item.start = Some(when);
                     }
@@ -1018,7 +1001,9 @@ fn phase_one_over_the_whole_workspace_is_affordable() {
     let started = std::time::Instant::now();
     let candidates: usize = schemes
         .iter()
-        .map(|(_, items)| std::hint::black_box(scheme_candidates(items, today_start, expand_to)).len())
+        .map(|(_, items)| {
+            std::hint::black_box(scheme_candidates(items, today_start, expand_to)).len()
+        })
         .sum();
     let full_rebuild = started.elapsed();
     println!("phase 1 over the whole workspace: {full_rebuild:?}, {candidates} candidates");
@@ -1192,7 +1177,9 @@ fn the_hour_of_the_day_never_changes_what_phase_one_produced() {
     // dependency on the current time, the day-keyed cache silently goes stale.
     let today_start = local_midnight_today();
     let mut rng = Rng::new(31337);
-    let items: Vec<Item> = (0..400).map(|_| random_item(&mut rng, today_start)).collect();
+    let items: Vec<Item> = (0..400)
+        .map(|_| random_item(&mut rng, today_start))
+        .collect();
     let baseline = scheme_candidates(&items, today_start, expansion_horizon(today_start));
 
     for hour in 0..24 {

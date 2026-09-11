@@ -74,14 +74,26 @@ pub fn run(l10n_dir: &Path) -> Result<()> {
             locale.code,
             total - missing,
             total,
-            if missing > 0 { "  (missing keys fall back to English)" } else { "" }
+            if missing > 0 {
+                "  (missing keys fall back to English)"
+            } else {
+                ""
+            }
         );
     }
 
     if !errors.is_empty() {
-        bail!("{} validation error(s):\n  {}", errors.len(), errors.join("\n  "));
+        bail!(
+            "{} validation error(s):\n  {}",
+            errors.len(),
+            errors.join("\n  ")
+        );
     }
-    println!("catalogs valid: {} keys, {} locales", english.len(), catalogs.locales.len());
+    println!(
+        "catalogs valid: {} keys, {} locales",
+        english.len(),
+        catalogs.locales.len()
+    );
     Ok(())
 }
 
@@ -90,11 +102,15 @@ fn check_entry_shape(locale: &str, key: &str, entry: &Entry, errors: &mut Vec<St
         return;
     };
     if !forms.contains_key("other") {
-        errors.push(format!("{locale}: {key}: plural entry missing required category `other`"));
+        errors.push(format!(
+            "{locale}: {key}: plural entry missing required category `other`"
+        ));
     }
     for (category, pattern) in forms {
         if !PLURAL_CATEGORIES.contains(&category.as_str()) {
-            errors.push(format!("{locale}: {key}: unknown plural category {category:?}"));
+            errors.push(format!(
+                "{locale}: {key}: unknown plural category {category:?}"
+            ));
         }
         for name in placeholders(pattern) {
             if name != "count" {
