@@ -719,6 +719,17 @@ impl WorkspaceCrdtDocuments {
         true
     }
 
+    /// Whether `document` is owned only as lazy, undecoded bytes. Deferred
+    /// documents intentionally omit a state vector from integrity probes; a
+    /// mismatch for one is expected and must not trigger a pull loop. A live
+    /// document, including an empty shell, is different: it participates in
+    /// integrity checks and can be repaired by re-pulling.
+    pub fn owns_deferred_document(&self, document: DocumentId) -> bool {
+        self.deferred
+            .values()
+            .any(|deferred| deferred.document == document)
+    }
+
     /// Counts of decoded vs deferred scheme documents, for structural tests and
     /// load-cost assertions: cold restore and a caught-up pull must keep the
     /// deferred count proportional to the user's history rather than decoding it.

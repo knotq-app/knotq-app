@@ -1,4 +1,4 @@
-use chrono::Datelike;
+use chrono::{Datelike, Local};
 use knotq_model::{Item, RepeatWeekday};
 
 pub const ALL_WEEKDAYS_FROM_SUNDAY: [RepeatWeekday; 7] = [
@@ -39,7 +39,7 @@ pub fn default_weekday_for_item(item: &Item) -> RepeatWeekday {
     item.start
         .or(item.end)
         .or(item.available)
-        .map(|dt| dt.weekday().num_days_from_monday())
+        .map(|dt| dt.with_timezone(&Local).weekday().num_days_from_monday())
         .map(repeat_weekday_from_index)
         .unwrap_or(RepeatWeekday::Mon)
 }

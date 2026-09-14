@@ -109,6 +109,7 @@ pub(crate) struct ImportedGoogleCalendar {
     items: Vec<Item>,
     deleted: Vec<GoogleExternalEventKey>,
     recurrence_exdates: Vec<GoogleRecurrenceExdate>,
+    calendar_deleted: bool,
 }
 
 #[derive(Clone, Copy)]

@@ -1,4 +1,4 @@
-use chrono::{DateTime, Datelike, Duration, TimeZone, Timelike, Utc};
+use chrono::{DateTime, Datelike, Duration, Local, NaiveDate, TimeZone, Timelike, Utc};
 
 use knotq_model::{Item, ItemKind, Occurrence, OccurrenceId, RepeatWeekday, SimpleRecurrence};
 
@@ -74,8 +74,14 @@ pub(crate) fn expand_weekly(
     selected.sort_unstable();
     selected.dedup();
 
-    let anchor_week_start = ctx.anchor.date_naive()
-        - Duration::days(ctx.anchor.weekday().num_days_from_monday() as i64);
+    // RRULE weekdays describe calendar dates in the user's local timezone, not
+    // UTC weekdays. This matters for events late in the day: Monday 9 PM in
+    // New York is Tuesday 1 AM UTC, but it must continue to recur on Monday.
+    // Construct each occurrence in Local so DST changes preserve the wall-clock
+    // time as well.
+    let anchor_local = ctx.anchor.with_timezone(&Local);
+    let anchor_week_start = anchor_local.date_naive()
+        - Duration::days(anchor_local.weekday().num_days_from_monday() as i64);
     let mut out = Vec::new();
     let mut cycle = first_weekly_cycle(ctx, anchor_week_start);
     let interval = interval_weeks.max(1);
@@ -84,24 +90,14 @@ pub(crate) fn expand_weekly(
 
     loop {
         let week_start = anchor_week_start + Duration::weeks(cycle as i64);
-        if week_start > ctx.to.date_naive() + Duration::weeks(1) {
+        if week_start > ctx.to.with_timezone(&Local).date_naive() + Duration::weeks(1) {
             break;
         }
 
         if cycle.is_multiple_of(interval) {
             for weekday in &selected {
                 let day = week_start + Duration::days(weekday.num_days_from_monday() as i64);
-                let Some(current) = Utc
-                    .with_ymd_and_hms(
-                        day.year(),
-                        day.month(),
-                        day.day(),
-                        ctx.anchor.hour(),
-                        ctx.anchor.minute(),
-                        ctx.anchor.second(),
-                    )
-                    .single()
-                else {
+                let Some(current) = local_datetime_to_utc(day, anchor_local.time()) else {
                     continue;
                 };
                 if current < ctx.anchor {
@@ -179,7 +175,9 @@ fn first_linear_day_index(ctx: ExpansionCtx<'_>, interval_days: usize) -> usize 
 }
 
 fn first_weekly_cycle(ctx: ExpansionCtx<'_>, anchor_week_start: chrono::NaiveDate) -> usize {
-    let target = effective_search_start(ctx).date_naive();
+    let target = effective_search_start(ctx)
+        .with_timezone(&Local)
+        .date_naive();
     if target <= anchor_week_start {
         return 0;
     }
@@ -201,23 +199,22 @@ fn weekly_generated_before_cycle(
 
     for weekday in selected {
         let day = anchor_week_start + Duration::days(weekday.num_days_from_monday() as i64);
-        let current = Utc
-            .with_ymd_and_hms(
-                day.year(),
-                day.month(),
-                day.day(),
-                anchor.hour(),
-                anchor.minute(),
-                anchor.second(),
-            )
-            .single()
-            .unwrap_or(anchor);
+        let current =
+            local_datetime_to_utc(day, anchor.with_timezone(&Local).time()).unwrap_or(anchor);
         if current < anchor {
             generated = generated.saturating_sub(1);
         }
     }
 
     generated
+}
+
+fn local_datetime_to_utc(date: NaiveDate, time: chrono::NaiveTime) -> Option<DateTime<Utc>> {
+    Local
+        .from_local_datetime(&date.and_time(time))
+        .earliest()
+        .or_else(|| Local.from_local_datetime(&date.and_time(time)).latest())
+        .map(|datetime| datetime.with_timezone(&Utc))
 }
 
 fn first_month_step(ctx: ExpansionCtx<'_>, month_stride: usize) -> usize {

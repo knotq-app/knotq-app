@@ -477,6 +477,7 @@ fn batch_pull_and_apply_with_integrity_documents_inner(
                         .is_some_and(|scope| scope.contains(document))
                 })
                 .filter(|document| !local_state.has_pending_for_document(*document))
+                .filter(|document| !crdt_docs.owns_deferred_document(*document))
                 .collect();
             if !actionable.is_empty() {
                 for document in actionable {
@@ -678,6 +679,18 @@ fn batch_pull_and_apply_with_integrity_documents_inner(
             .iter()
             .map(|e| (e.document, e))
             .collect();
+        // An unknown scheme document can be a transient ordering issue: the
+        // content page may arrive before the workspace-index page that binds
+        // it.  Keep that distinction for the re-convergence pass below.  A
+        // generic materialization failure should not be retried indefinitely,
+        // but an unknown document must be fetched again once its index entry is
+        // present or the device can remain permanently empty at a matching
+        // cursor.
+        let unknown_scheme_documents: HashSet<DocumentId> = errored_document_ids
+            .values()
+            .filter(|error| error.unknown_scheme_document)
+            .map(|error| error.document)
+            .collect();
 
         for doc in &response.documents {
             pulled_this_call.insert(doc.document);
@@ -731,7 +744,9 @@ fn batch_pull_and_apply_with_integrity_documents_inner(
                 .document_cursors
                 .get(&meta.id)
                 .is_some_and(|cursor| cursor.last_pulled_sequence > 0);
-            if pulled_this_call.contains(&meta.id) || ever_pulled {
+            let needs_index_ordering_retry =
+                was_skipped && unknown_scheme_documents.contains(&meta.id) && missing_locally;
+            if (pulled_this_call.contains(&meta.id) || ever_pulled) && !needs_index_ordering_retry {
                 // Its full state has already come down (this call, or an earlier
                 // sync — its cursor is advanced) and it is still not a live local
                 // document. That is a workspace-index inconsistency (the index

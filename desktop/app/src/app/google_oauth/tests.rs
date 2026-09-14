@@ -1,3 +1,4 @@
+
 use super::*;
 
 fn account() -> GoogleOAuthAccount {
@@ -50,6 +51,7 @@ fn imported_calendar() -> ImportedGoogleCalendar {
         items: Vec::new(),
         deleted: Vec::new(),
         recurrence_exdates: Vec::new(),
+        calendar_deleted: false,
     }
 }
 
@@ -574,6 +576,7 @@ fn incremental_sync_adds_exception_exdates_to_existing_recurring_parent() {
                 event_id: "series-1".to_string(),
                 original_start: CalendarDateTime::utc(dt("2026-06-19T20:00:00Z")),
             }],
+            calendar_deleted: false,
         },
     );
 
@@ -600,6 +603,7 @@ fn google_calendar_metadata_preserves_existing_local_color() {
             items: Vec::new(),
             deleted: Vec::new(),
             recurrence_exdates: Vec::new(),
+            calendar_deleted: false,
         },
         false,
     );
@@ -757,6 +761,7 @@ fn incremental_sync_updates_and_removes_matching_external_items() {
                 instance_id: None,
             }],
             recurrence_exdates: Vec::new(),
+            calendar_deleted: false,
         },
     );
 
@@ -791,6 +796,7 @@ fn incremental_sync_without_item_changes_is_stable() {
             items: vec![imported],
             deleted: Vec::new(),
             recurrence_exdates: Vec::new(),
+            calendar_deleted: false,
         },
     );
 
@@ -825,6 +831,7 @@ fn incremental_sync_preserves_local_completion_state_for_same_event_time() {
             items: vec![imported],
             deleted: Vec::new(),
             recurrence_exdates: Vec::new(),
+            calendar_deleted: false,
         },
     );
 
@@ -857,6 +864,7 @@ fn full_sync_preserves_local_completion_state_for_same_event_time() {
             items: vec![imported],
             deleted: Vec::new(),
             recurrence_exdates: Vec::new(),
+            calendar_deleted: false,
         },
     );
 
@@ -892,6 +900,7 @@ fn sync_resets_completion_state_when_event_time_changes() {
             items: vec![imported],
             deleted: Vec::new(),
             recurrence_exdates: Vec::new(),
+            calendar_deleted: false,
         },
     );
 
