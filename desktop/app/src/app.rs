@@ -42,6 +42,7 @@ mod workspace_ops;
 
 // Re-export public initialization helpers used by main.rs.
 pub use bootstrap::load_or_default_settings;
+pub(crate) use google_oauth::open_browser;
 pub use settings::{apply_language_setting, initial_window_bounds};
 
 use std::collections::HashMap;
@@ -611,6 +612,8 @@ pub struct KnotQApp {
     pub trash_expanded: bool,
     pub pending_delete: Option<DeleteConfirmation>,
     pub notice_modal: Option<NoticeModal>,
+    /// One-time, non-blocking invitation to share feedback in the KnotQ Discord.
+    pub community_prompt_visible: bool,
     pub sidebar_context_menu: Option<SidebarContextMenu>,
     /// Memoized rows for the upcoming panel. Deriving them scans every item in
     /// every scheme, and the root view re-renders on every keystroke.

@@ -1239,7 +1239,7 @@ fn pulled_document_as_update(
 mod tests {
     use super::*;
     use crate::{BatchPullResponse, BatchPushResponse, PushedCrdtDocument};
-    use std::cell::RefCell;
+    use std::cell::{Cell, RefCell};
     use std::collections::VecDeque;
 
     fn schedule() -> NotificationScheduleSnapshot {
@@ -1326,6 +1326,46 @@ mod tests {
         }
     }
 
+    /// Replays the same unmaterializable scheme page on every pull. This is the
+    /// production failure mode behind the old "Sync now never does anything"
+    /// symptom: the workspace index binds the document, but the local CRDT has
+    /// no scheme node for it, so the old engine reset the cursor and asked for
+    /// the same page forever. A desktop manual-sync signal queued behind that
+    /// run could not be consumed until this returned.
+    struct RepeatingMaterializationGapTransport {
+        pull_calls: Cell<usize>,
+        document: DocumentId,
+        state_v1: Vec<u8>,
+    }
+
+    impl SyncTransport for RepeatingMaterializationGapTransport {
+        fn pull(&self, _request: &BatchPullRequest) -> Result<BatchPullResponse> {
+            let call = self.pull_calls.get() + 1;
+            self.pull_calls.set(call);
+            if call > 4 {
+                return Err(anyhow!(
+                    "materialization-gap regression: pull loop did not terminate"
+                ));
+            }
+            Ok(BatchPullResponse {
+                documents: vec![PulledCrdtDocument {
+                    document: self.document,
+                    kind: SyncDocumentKind::Scheme,
+                    seq: 1,
+                    epoch: 0,
+                    state_v1: self.state_v1.clone(),
+                    state_v1_is_delta: false,
+                }],
+                known_documents: Some(HashMap::from([(self.document, 1)])),
+                ..BatchPullResponse::default()
+            })
+        }
+
+        fn push(&self, _request: &BatchPushRequest) -> Result<BatchPushResponse> {
+            Ok(BatchPushResponse::default())
+        }
+    }
+
     #[test]
     fn deferred_integrity_pull_rechecks_once_after_changed_documents() {
         let mut workspace = Workspace::new();
@@ -1380,6 +1420,60 @@ mod tests {
         );
         assert!(!requests[0].integrity_state_vectors.is_empty());
         assert!(!requests[1].integrity_state_vectors.is_empty());
+    }
+
+    #[test]
+    fn materialization_gap_finishes_so_manual_sync_can_run_again() {
+        // Build a valid server scheme snapshot, then give the client only the
+        // durable workspace-index binding. This is intentionally an older or
+        // partially restored workspace: the scheme is named in `scheme_sync`,
+        // but its local CRDT document cannot be materialized.
+        let mut indexed_workspace = Workspace::new();
+        let mut scheme = knotq_model::Scheme::new("Older scheme", 0);
+        scheme.items.push(knotq_model::Item::new("remote"));
+        let scheme_id = scheme.id;
+        indexed_workspace.schemes.insert(scheme_id, scheme);
+        indexed_workspace.ensure_sync_metadata();
+        let document = indexed_workspace.scheme_sync[&scheme_id].id;
+        let server_state = WorkspaceCrdtDocuments::try_new(&indexed_workspace)
+            .unwrap()
+            .document_states()[&document]
+            .to_vec();
+
+        let mut stale_workspace = indexed_workspace;
+        stale_workspace.schemes.remove(&scheme_id);
+        let mut local_crdt = WorkspaceCrdtDocuments::try_new(&stale_workspace).unwrap();
+        assert!(!local_crdt.known_document_ids().contains(&document));
+
+        let transport = RepeatingMaterializationGapTransport {
+            pull_calls: Cell::new(0),
+            document,
+            state_v1: server_state,
+        };
+        let mut local_state = LocalSyncState::default();
+
+        let outcome = batch_pull_and_apply(
+            &transport,
+            &mut local_crdt,
+            &mut local_state,
+            stale_workspace,
+            ReplicaId::new(),
+        )
+        .expect("a non-materializable scheme must not wedge the pull");
+
+        assert_eq!(
+            outcome.pull_requests, 1,
+            "manual Sync now must get a completed pull to run after this one"
+        );
+        assert_eq!(transport.pull_calls.get(), 1);
+        assert!(outcome
+            .skipped
+            .iter()
+            .any(|skipped| skipped.document == document && skipped.deferred));
+        assert_eq!(
+            local_state.document_cursors[&document].last_pulled_sequence, 1,
+            "the failed materialization must advance the cursor instead of resetting it"
+        );
     }
 
     #[test]

@@ -211,3 +211,23 @@ impl NotificationBatch {
         }
     }
 }
+
+#[cfg(all(test, feature = "accounts"))]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn manual_sync_signal_is_not_lost_behind_a_local_change() {
+        let (bus, receivers) = AppServiceBus::new();
+
+        // This is the ordering that matters when the user clicks Sync now while
+        // the normal edit debounce is already queued. The scheduler consumes the
+        // Immediate signal next and shortens the wait to its immediate window.
+        bus.signal_sync_local_change();
+        bus.signal_sync();
+
+        assert_eq!(receivers.sync_rx.try_recv(), Ok(SyncSignal::LocalChange));
+        assert_eq!(receivers.sync_rx.try_recv(), Ok(SyncSignal::Immediate));
+        assert!(receivers.sync_rx.try_recv().is_err());
+    }
+}

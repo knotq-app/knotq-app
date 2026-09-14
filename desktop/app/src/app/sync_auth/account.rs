@@ -180,9 +180,10 @@ impl KnotQApp {
                 // The cancel response only carries entitlement, not the new
                 // lifecycle, so re-read account status to surface the cancelled
                 // (won't-renew) state and its period end right away.
-                if supports_sync {
-                    self.refresh_account_status_quiet(cx);
-                }
+                // Re-read the lifecycle even when cancellation immediately turns
+                // sync off; the cancel response only carries the entitlement bit,
+                // while account/status owns provider/state/period metadata.
+                self.refresh_account_status_quiet(cx);
             }
             Err(message) => {
                 self.sync_auth_status = SyncAuthStatus::Error(message);
@@ -248,6 +249,9 @@ impl KnotQApp {
                 self.sync_account_action = None;
                 self.sync_auth_status = SyncAuthStatus::Idle;
                 self.save_app_settings();
+                // Keep the visible card in lockstep with the backend response and
+                // pick up the refreshed subscription lifecycle immediately.
+                self.refresh_account_status_quiet(cx);
             }
             Err(message) => {
                 self.sync_auth_status = SyncAuthStatus::Error(message);

@@ -272,6 +272,8 @@ impl KnotQApp {
             sync_account: self.settings.sync_account.clone(),
             language: self.settings.language.clone(),
             onboarding_completed: self.settings.onboarding_completed,
+            community_prompt_first_launch_at: self.settings.community_prompt_first_launch_at,
+            community_prompted: self.settings.community_prompted,
             last_view: self.settings.last_view,
             last_scheme_id: self.settings.last_scheme_id,
             // There is no desktop UI for the MCP server yet, so carry the loaded

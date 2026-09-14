@@ -200,6 +200,98 @@ fn onboarding_account_choice(
 }
 
 impl KnotQApp {
+    pub(crate) fn dismiss_community_prompt(&mut self, cx: &mut Context<Self>) {
+        self.community_prompt_visible = false;
+        cx.notify();
+    }
+
+    pub(crate) fn open_community_prompt(&mut self, cx: &mut Context<Self>) {
+        self.community_prompt_visible = false;
+        if let Err(error) = crate::app::open_browser("https://discord.gg/zyeHB77scg") {
+            eprintln!("could not open KnotQ Discord: {error:#}");
+        }
+        cx.notify();
+    }
+
+    pub(crate) fn render_community_prompt(
+        &mut self,
+        cx: &mut Context<Self>,
+    ) -> Option<gpui::AnyElement> {
+        if !self.community_prompt_visible {
+            return None;
+        }
+        let t = self.theme();
+        Some(
+            div()
+                .id("community-prompt")
+                .absolute()
+                .right(px(16.0))
+                .bottom(px(16.0))
+                .w(px(340.0))
+                .bg(token_hsla(t.bg_modal))
+                .border_1()
+                .border_color(token_rgba(t.border_overlay))
+                .rounded(px(8.0))
+                .shadow_lg()
+                .p(px(14.0))
+                .flex()
+                .flex_col()
+                .gap(px(9.0))
+                .child(
+                    div()
+                        .text_size(px(14.0))
+                        .font_weight(gpui::FontWeight::SEMIBOLD)
+                        .text_color(token_hsla(t.text_primary))
+                        .child(knotq_l10n::t("community.prompt.title")),
+                )
+                .child(
+                    div()
+                        .text_size(px(12.0))
+                        .line_height(px(18.0))
+                        .text_color(token_hsla(t.text_muted))
+                        .child(knotq_l10n::t("community.prompt.body")),
+                )
+                .child(
+                    div()
+                        .flex()
+                        .justify_end()
+                        .gap(px(8.0))
+                        .child(
+                            div()
+                                .id("community-prompt-later")
+                                .px(px(10.0))
+                                .py(px(5.0))
+                                .rounded(px(5.0))
+                                .text_size(px(12.0))
+                                .text_color(token_hsla(t.text_muted))
+                                .cursor_pointer()
+                                .on_click(cx.listener(|this, _: &ClickEvent, _window, cx| {
+                                    this.dismiss_community_prompt(cx);
+                                }))
+                                .child(knotq_l10n::t("community.prompt.later")),
+                        )
+                        .child(
+                            div()
+                                .id("community-prompt-join")
+                                .px(px(10.0))
+                                .py(px(5.0))
+                                .rounded(px(5.0))
+                                .bg(token_rgba(t.text_highlight))
+                                .text_size(px(12.0))
+                                .font_weight(gpui::FontWeight::SEMIBOLD)
+                                .text_color(token_hsla(0xffffffff))
+                                .cursor_pointer()
+                                .hover(|s| s.bg(token_rgba(0xe66f1fff)))
+                                .on_click(cx.listener(|this, _: &ClickEvent, _window, cx| {
+                                    this.open_community_prompt(cx);
+                                }))
+                                .child(knotq_l10n::t("community.prompt.join")),
+                        ),
+                )
+                .into_any_element(),
+        )
+    }
+
     pub(crate) fn dismiss_notice_modal(&mut self, cx: &mut Context<Self>) {
         if self.notice_modal.take().is_some() {
             cx.notify();

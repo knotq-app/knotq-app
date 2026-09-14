@@ -21,7 +21,15 @@ mod common;
 
 use chrono::NaiveDate;
 use common::{Rng, TestDevice, TestServer};
-use knotq_model::{FolderId, Item, SchemeId, Workspace, WorkspaceId};
+use knotq_model::{
+    DocumentId, FolderId, Item, ReplicaId, SchemeId, SyncDocumentKind, Workspace, WorkspaceId,
+};
+use knotq_sync::{
+    batch_pull_and_apply, BatchPullRequest, BatchPullResponse, BatchPushRequest, BatchPushResponse,
+    PulledCrdtDocument, SyncTransport, WorkspaceCrdtDocuments,
+};
+use std::cell::Cell;
+use std::collections::HashMap;
 
 fn fresh_device(account: WorkspaceId) -> TestDevice {
     let mut base = Workspace::new();
@@ -554,6 +562,102 @@ fn run_seed(seed: u64, num_accounts: usize, num_devices: usize, steps: usize) {
     }
     world.settle();
     world.assert_invariants(seed);
+}
+
+/// A transport that keeps returning the same valid scheme snapshot even after
+/// the client advances its cursor. This models the old pull-loop wedge: the
+/// workspace index binds a scheme, but the local CRDT cannot materialize it, so
+/// resetting the cursor only replays the same page forever. The transport stops
+/// after a few calls so the old implementation fails quickly instead of hanging
+/// the test process.
+struct RepeatingMaterializationGapTransport {
+    pull_calls: Cell<usize>,
+    document: DocumentId,
+    state_v1: Vec<u8>,
+}
+
+impl SyncTransport for RepeatingMaterializationGapTransport {
+    fn pull(&self, _request: &BatchPullRequest) -> anyhow::Result<BatchPullResponse> {
+        let call = self.pull_calls.get() + 1;
+        self.pull_calls.set(call);
+        if call > 4 {
+            return Err(anyhow::anyhow!(
+                "materialization-gap fuzz case did not terminate"
+            ));
+        }
+        Ok(BatchPullResponse {
+            documents: vec![PulledCrdtDocument {
+                document: self.document,
+                kind: SyncDocumentKind::Scheme,
+                seq: 1,
+                epoch: 0,
+                state_v1: self.state_v1.clone(),
+                state_v1_is_delta: false,
+            }],
+            known_documents: Some(HashMap::from([(self.document, 1)])),
+            ..BatchPullResponse::default()
+        })
+    }
+
+    fn push(&self, _request: &BatchPushRequest) -> anyhow::Result<BatchPushResponse> {
+        Ok(BatchPushResponse::default())
+    }
+}
+
+/// Seeded coverage for the exact materialization-gap shape. The ordinary model
+/// fuzzer exercises the real server and device lifecycle; this smaller sweep
+/// deliberately supplies the pathological repeated page that is otherwise rare
+/// in random operation sequences, and proves every seed remains bounded.
+#[test]
+fn materialization_gap_fuzz_is_bounded() {
+    let seeds = env_usize("KNOTQ_FUZZ_SEEDS", 24) as u64;
+    for seed in 0..seeds {
+        let mut indexed_workspace = Workspace::new();
+        let mut scheme = knotq_model::Scheme::new(&format!("Older scheme {seed}"), 0);
+        for item in 0..=seed % 3 {
+            scheme
+                .items
+                .push(Item::new(&format!("remote-{seed}-{item}")));
+        }
+        let scheme_id = scheme.id;
+        indexed_workspace.schemes.insert(scheme_id, scheme);
+        indexed_workspace.ensure_sync_metadata();
+        let document = indexed_workspace.scheme_sync[&scheme_id].id;
+        let server_state = WorkspaceCrdtDocuments::try_new(&indexed_workspace)
+            .unwrap()
+            .document_states()[&document]
+            .to_vec();
+
+        // Keep the durable binding but remove the materialized scheme body.
+        let mut stale_workspace = indexed_workspace;
+        stale_workspace.schemes.remove(&scheme_id);
+        let mut local_crdt = WorkspaceCrdtDocuments::try_new(&stale_workspace).unwrap();
+        let transport = RepeatingMaterializationGapTransport {
+            pull_calls: Cell::new(0),
+            document,
+            state_v1: server_state,
+        };
+        let mut local_state = knotq_sync::LocalSyncState::default();
+
+        let outcome = batch_pull_and_apply(
+            &transport,
+            &mut local_crdt,
+            &mut local_state,
+            stale_workspace,
+            ReplicaId::new(),
+        )
+        .unwrap_or_else(|error| panic!("seed {seed}: materialization gap wedged: {error:#}"));
+
+        assert_eq!(
+            outcome.pull_requests, 1,
+            "seed {seed}: repeated materialization gap should finish in one pull"
+        );
+        assert_eq!(transport.pull_calls.get(), 1);
+        assert_eq!(
+            local_state.document_cursors[&document].last_pulled_sequence, 1,
+            "seed {seed}: cursor must advance past the unmaterializable page"
+        );
+    }
 }
 
 /// Undo, redo *and* restarts in the same world — the combination that is hardest

@@ -9,7 +9,6 @@ mod views;
 
 use std::borrow::Cow;
 
-#[cfg(feature = "accounts")]
 use chrono::{Duration as ChronoDuration, Utc};
 use gpui::prelude::*;
 use gpui::{
@@ -58,6 +57,18 @@ const UPCOMING_W: f32 = 258.0;
 impl Render for KnotQApp {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         crate::frame_log::count(&crate::frame_log::RENDERS);
+        if !self.show_onboarding
+            && !self.community_prompt_visible
+            && !self.settings.community_prompted
+            && self
+                .settings
+                .community_prompt_first_launch_at
+                .is_some_and(|first| Utc::now() - first >= ChronoDuration::days(7))
+        {
+            self.community_prompt_visible = true;
+            self.settings.community_prompted = true;
+            self.save_app_settings();
+        }
         if self._appearance_subscription.is_none() {
             self._appearance_subscription = Some(cx.observe_window_appearance(
                 window,
@@ -70,13 +81,17 @@ impl Render for KnotQApp {
         if self._window_activation_subscription.is_none() {
             self._window_activation_subscription = Some(cx.observe_window_activation(
                 window,
-                |this: &mut KnotQApp, window, _cx| {
+                |this: &mut KnotQApp, window, cx| {
                     let was_active = this.window_is_active;
                     this.window_is_active = window.is_window_active();
                     // The catch-up-on-resume sync is part of account sync, which is
                     // compiled out without the `accounts` feature.
                     #[cfg(feature = "accounts")]
                     if !was_active && this.window_is_active {
+                        // Store-managed cancellation/resumption happens outside the
+                        // desktop process. Refresh as soon as the user returns so
+                        // the Settings card reflects the provider's new state.
+                        this.refresh_account_status_quiet(cx);
                         let now = Utc::now();
                         // No focus repoll while the socket is live — the persistent
                         // WebSocket's `changed` nudges + the on-(re)connect catch-up
@@ -355,6 +370,9 @@ impl Render for KnotQApp {
         }
         if let Some(onboarding) = self.render_onboarding(window, cx) {
             root = root.child(onboarding);
+        }
+        if let Some(community) = self.render_community_prompt(cx) {
+            root = root.child(community);
         }
         root
     }

@@ -553,7 +553,15 @@ impl WorkspaceCrdtDocuments {
             let state = states
                 .get(&meta.id)
                 .map(AsRef::as_ref)
-                .filter(|state: &&[u8]| !state.is_empty());
+                // Yrs encodes an empty document as the canonical two-byte
+                // update `[0, 0]`. It is not a usable persisted snapshot: for
+                // a deferred scheme it would later be re-emitted as a
+                // schema-less full snapshot, and the backend correctly rejects
+                // that with `crdt_schema_invalid`. Treat both that form and a
+                // zero-length blob as missing. Materialized schemes still get
+                // an empty live document below so normal reconciliation can
+                // rebuild their schema from the plain workspace.
+                .filter(|state: &&[u8]| !update_v1_is_empty(state));
             if workspace.schemes.contains_key(id) && !defer_materialized_schemes {
                 // The loader materialized this scheme (every scheme on desktop;
                 // the visible date window on mobile), so decoding it is already

@@ -77,6 +77,30 @@ fn restore_and_materialization_include_lazy_daily_queue_documents() {
 }
 
 #[test]
+fn empty_lazy_daily_state_is_not_reseeded_as_schema_less_document() {
+    let date = NaiveDate::from_ymd_opt(2026, 9, 1).unwrap();
+    let daily_id = daily_queue_scheme_id(date);
+    let mut workspace = Workspace::new();
+    workspace.daily_queue.insert(date, daily_id);
+    workspace.ensure_sync_metadata();
+
+    // Mobile keeps historical Daily Queue bodies out of `workspace.schemes`.
+    // Reproduce a stale persisted state from the old client: the binding is
+    // still valid, but the body is only Yrs' canonical empty update.
+    let document = workspace.scheme_sync[&daily_id].id;
+    let states = HashMap::from([(document, vec![0, 0])]);
+    let restored =
+        WorkspaceCrdtDocuments::from_states(&workspace, ReplicaId::new(), &states).unwrap();
+
+    assert!(!restored.known_document_ids().contains(&document));
+    assert!(!restored.document_states().contains_key(&document));
+    assert!(restored
+        .full_snapshot_updates_for_documents(&HashSet::from([document]))
+        .updates
+        .is_empty());
+}
+
+#[test]
 fn lazy_restore_defers_existing_scheme_until_it_is_touched() {
     let mut workspace = Workspace::new();
     let mut scheme = Scheme::new("Plan", 0);

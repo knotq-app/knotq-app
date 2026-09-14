@@ -128,6 +128,12 @@ pub struct AppSettings {
     pub language: Option<String>,
     #[serde(default)]
     pub onboarding_completed: bool,
+    /// Local, one-time community invitation shown after a week of use. This is
+    /// deliberately device-local metadata, not workspace content.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub community_prompt_first_launch_at: Option<DateTime<Utc>>,
+    #[serde(default)]
+    pub community_prompted: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_view: Option<SavedView>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -154,6 +160,8 @@ impl Default for AppSettings {
             sync_account: None,
             language: None,
             onboarding_completed: false,
+            community_prompt_first_launch_at: None,
+            community_prompted: false,
             last_view: None,
             last_scheme_id: None,
             mcp: McpSettings::default(),

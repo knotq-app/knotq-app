@@ -25,7 +25,12 @@ impl KnotQApp {
         let initial_dirty = true;
         let settings_bootstrap = load_settings_bootstrap();
         let settings_save_blocked_reason = settings_bootstrap.save_blocked_reason;
-        let settings = settings_bootstrap.settings;
+        let mut settings = settings_bootstrap.settings;
+        let community_prompt_needs_first_launch_save =
+            settings.community_prompt_first_launch_at.is_none();
+        if community_prompt_needs_first_launch_save {
+            settings.community_prompt_first_launch_at = Some(Utc::now());
+        }
         let needs_onboarding = !settings.onboarding_completed;
         // Always start with the short tutorial. The sign-in / stay-local prompt is
         // surfaced only after the guide finishes (and skipped entirely if the user
@@ -141,6 +146,7 @@ impl KnotQApp {
             trash_expanded: false,
             pending_delete: None,
             notice_modal: None,
+            community_prompt_visible: false,
             sidebar_context_menu: None,
             upcoming_cache: None,
             editor_context_menu: None,
@@ -242,6 +248,9 @@ impl KnotQApp {
         // deleted in the meantime falls back to the default Union view.
         if !needs_onboarding {
             app.restore_last_screen(cx);
+        }
+        if community_prompt_needs_first_launch_save {
+            app.save_app_settings();
         }
         app
     }
