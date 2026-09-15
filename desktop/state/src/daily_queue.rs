@@ -4,8 +4,7 @@ use chrono::{DateTime, Datelike, Duration, Local, LocalResult, NaiveDate, TimeZo
 use knotq_commands::Command;
 use knotq_l10n::t;
 use knotq_model::{
-    daily_queue_displaced_item_id, DocumentId, Item, ItemId, ItemMarker, NodeRef, Scheme, SchemeId,
-    SyncDocumentKind, SyncDocumentMeta, Workspace,
+    daily_queue_displaced_item_id, Item, ItemId, ItemMarker, NodeRef, Scheme, SchemeId, Workspace,
 };
 
 #[derive(Clone, Debug)]
@@ -181,21 +180,9 @@ pub fn make_default_workspace() -> Workspace {
 /// the user renamed, and render a localized label instead of the stored name.
 pub fn make_default_workspace_for_date(today: NaiveDate) -> Workspace {
     let mut workspace = Workspace::new();
-    insert_root_scheme(
-        &mut workspace,
-        make_start_here_scheme(today),
-        fixed_document_id("00000000-0000-8000-8000-000000000201"),
-    );
-    insert_root_scheme(
-        &mut workspace,
-        make_scheduling_scheme(today),
-        fixed_document_id("00000000-0000-8000-8000-000000000202"),
-    );
-    insert_root_scheme(
-        &mut workspace,
-        make_projects_scheme(today),
-        fixed_document_id("00000000-0000-8000-8000-000000000203"),
-    );
+    insert_root_scheme(&mut workspace, make_start_here_scheme(today));
+    insert_root_scheme(&mut workspace, make_scheduling_scheme(today));
+    insert_root_scheme(&mut workspace, make_projects_scheme(today));
 
     let yesterday = today - Duration::days(1);
     let mut past_daily = Scheme::new(
@@ -238,12 +225,16 @@ pub fn make_default_workspace_for_date(today: NaiveDate) -> Workspace {
     workspace
 }
 
-fn insert_root_scheme(workspace: &mut Workspace, scheme: Scheme, sync_document_id: DocumentId) {
+fn insert_root_scheme(workspace: &mut Workspace, scheme: Scheme) {
     let scheme_id = scheme.id;
     workspace.schemes.insert(scheme_id, scheme);
-    workspace
-        .scheme_sync
-        .insert(scheme_id, fixed_scheme_sync(sync_document_id));
+    // The same binding a re-mint produces (`scheme_content_document_id` maps the
+    // starter schemes to their seeded documents), so a dropped binding comes back
+    // identical on every device.
+    workspace.scheme_sync.insert(
+        scheme_id,
+        knotq_model::scheme_content_sync_metadata(scheme_id),
+    );
     if let Some(root) = workspace.folders.get_mut(&workspace.root) {
         root.children.push(NodeRef::Scheme(scheme_id));
     }
@@ -527,10 +518,6 @@ fn fixed_scheme_id(id: &str) -> SchemeId {
     id.parse().expect("valid fixed starter scheme id")
 }
 
-fn fixed_document_id(id: &str) -> DocumentId {
-    id.parse().expect("valid fixed starter document id")
-}
-
 fn fixed_item_id(id: &str) -> ItemId {
     id.parse().expect("valid fixed starter item id")
 }
@@ -539,12 +526,6 @@ fn fixed_item(id: &str, text: &str) -> Item {
     let mut item = Item::new(text);
     item.id = fixed_item_id(id);
     item
-}
-
-fn fixed_scheme_sync(document_id: DocumentId) -> SyncDocumentMeta {
-    let mut meta = SyncDocumentMeta::local(SyncDocumentKind::Scheme);
-    meta.id = document_id;
-    meta
 }
 
 fn local_dt(date: NaiveDate, hour: u32, minute: u32) -> DateTime<Utc> {

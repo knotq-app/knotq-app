@@ -164,3 +164,42 @@ fn an_existing_binding_is_never_rewritten() {
         "an existing folder binding must be preserved across the upgrade"
     );
 }
+
+/// The starter workspace seeds its root schemes onto fixed documents. A binding
+/// re-minted for one of them must land on that same document, or the device that
+/// re-mints writes the scheme's content where no other device looks (deep
+/// production fuzz, seed 10004).
+#[test]
+fn starter_schemes_rebind_to_their_seeded_documents() {
+    for (scheme, document) in [
+        (
+            "00000000-0000-8000-8000-000000000101",
+            "00000000-0000-8000-8000-000000000201",
+        ),
+        (
+            "00000000-0000-8000-8000-000000000102",
+            "00000000-0000-8000-8000-000000000202",
+        ),
+        (
+            "00000000-0000-8000-8000-000000000103",
+            "00000000-0000-8000-8000-000000000203",
+        ),
+    ] {
+        let scheme = knotq_model::SchemeId(scheme.parse().unwrap());
+        let document: uuid::Uuid = document.parse().unwrap();
+        assert_eq!(scheme_content_document_id(scheme).0, document);
+
+        let mut workspace = Workspace::new();
+        let mut starter = Scheme::new("Starter", 0);
+        starter.id = scheme;
+        workspace
+            .folders
+            .get_mut(&workspace.root)
+            .unwrap()
+            .children
+            .push(knotq_model::NodeRef::Scheme(scheme));
+        workspace.schemes.insert(scheme, starter);
+        workspace.ensure_sync_metadata();
+        assert_eq!(workspace.scheme_sync[&scheme].id.0, document);
+    }
+}
