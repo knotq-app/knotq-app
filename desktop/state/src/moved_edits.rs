@@ -176,14 +176,21 @@ impl AppState {
                 }
             }
         }
-        let count = commands.len();
-        if count > 0
-            && self
-                .apply_prechecked_local_command(Command::Batch(commands), CommandOrigin::User)
-                .is_err()
-        {
-            return 0;
+        // One command per line: a line whose re-apply is refused must not take
+        // the others down with it.
+        let mut applied = 0;
+        for command in commands {
+            let item = match &command {
+                Command::ReplaceItem { item, .. } => item.id,
+                _ => continue,
+            };
+            match self.apply_prechecked_local_command(command, CommandOrigin::User) {
+                Ok(_) => applied += 1,
+                Err(err) => eprintln!(
+                    "sync: could not re-apply this device's edit to moved line {item}: {err:?}"
+                ),
+            }
         }
-        count
+        applied
     }
 }
