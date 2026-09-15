@@ -635,6 +635,31 @@ impl YrsJsonDocument {
                 schemes.push(entry);
             }
         }
+        // The index's root can have no folder node of its own — two histories
+        // merged on an account switch with one root id winning `meta.root` while
+        // the other's node is gone. Nodes whose parent is missing were re-homed
+        // under the root above; without a folder to hold them they would belong
+        // to no folder at all, and normalization drops every such scheme (the
+        // identity repair then wrote that as the account's index, deleting the
+        // schemes for every device). Give the root its folder.
+        if !folder_ids.contains(&root_key) {
+            let children = children_by_parent
+                .get(&root_key)
+                .map(|kids| {
+                    kids.iter()
+                        .map(|(_, child_id)| node_ref_for(child_id))
+                        .collect::<anyhow::Result<Vec<_>>>()
+                })
+                .transpose()?
+                .unwrap_or_default();
+            folders.push(Folder {
+                id: root,
+                name: "root".to_string(),
+                parent: None,
+                children,
+                expanded: true,
+            });
+        }
         folders.sort_by_key(|folder| folder.id.to_string());
         schemes.sort_by_key(|scheme| scheme.id.to_string());
 

@@ -285,6 +285,60 @@ fn reidentified_workspace_merges_local_and_server_schemes_without_mismatch() {
     );
 }
 
+/// The index's root can end up with no folder node of its own: the first sync
+/// after an account switch merges two histories, one root id wins `meta.root`,
+/// and the other's node is gone. Nodes whose parent is missing are re-homed under
+/// the root — which then had no folder to hold them, so they sat in no folder at
+/// all and normalization dropped every one of them. The identity repair wrote
+/// that as the account's index and deleted the schemes for every device (deep
+/// production fuzz, seeds 3 and 6).
+#[test]
+fn schemes_under_a_root_with_no_folder_node_stay_under_the_root() {
+    use yrs::updates::decoder::Decode;
+    use yrs::{Doc, Map, ReadTxn, Transact, Update};
+
+    let mut workspace = Workspace::new();
+    let first = add_root_scheme(&mut workspace, "First");
+    let second = add_root_scheme(&mut workspace, "Second");
+    workspace.ensure_sync_metadata();
+    let docs = WorkspaceCrdtDocuments::try_new(&workspace).unwrap();
+
+    // Delete the root folder's node from the index, as a raw update.
+    let state = docs.document_states()[&workspace.sync.id].clone();
+    let scratch = Doc::new();
+    scratch
+        .transact_mut()
+        .apply_update(Update::decode_v1(&state).unwrap())
+        .unwrap();
+    let before = scratch.transact().state_vector();
+    scratch
+        .get_or_insert_map("nodes")
+        .remove(&mut scratch.transact_mut(), &workspace.root.to_string());
+    let deletion = scratch.transact().encode_diff_v1(&before);
+    docs.workspace.apply_update_v1(&deletion).unwrap();
+
+    let mut materialized = docs
+        .materialized_workspace_repair(&workspace, &|_| false)
+        .unwrap();
+    let root = materialized
+        .folders
+        .get(&materialized.root)
+        .expect("the materialized workspace has its root folder");
+    for scheme in [first, second] {
+        assert!(
+            root.children.contains(&NodeRef::Scheme(scheme)),
+            "scheme {scheme} is not under the root"
+        );
+    }
+    materialized.normalize_one_level_folders();
+    for scheme in [first, second] {
+        assert!(
+            materialized.schemes.contains_key(&scheme),
+            "normalization dropped scheme {scheme}"
+        );
+    }
+}
+
 #[test]
 fn remote_workspace_materialization_keeps_trash_and_daily_queue_out_of_sidebar() {
     let mut source = Workspace::new();
