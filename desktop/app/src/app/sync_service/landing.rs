@@ -29,6 +29,23 @@ pub(super) fn clear_pushed_edits(
     state.drop_unbound_pending_crdt_edits();
 }
 
+/// The line edits still queued before a landing clears what the run pushed, so
+/// a line another device moved to another scheme can keep them (see
+/// [`reassert_local_item_edits`]).
+pub(super) fn capture_local_item_edits(state: &AppState) -> knotq_state::LocalItemEdits {
+    state.capture_local_item_edits()
+}
+
+/// After landing: re-apply this device's line edits to lines another device
+/// moved to a different scheme, whose moved copy lost them. Returns whether any
+/// line changed.
+pub(super) fn reassert_local_item_edits(
+    state: &mut AppState,
+    captured: knotq_state::LocalItemEdits,
+) -> bool {
+    state.reassert_local_item_edits(captured) > 0
+}
+
 /// Whether a run's result has to be landed on the live workspace at all.
 pub(super) fn run_changed_workspace(
     remote_updates_applied: usize,

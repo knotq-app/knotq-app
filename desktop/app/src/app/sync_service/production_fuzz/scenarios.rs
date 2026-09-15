@@ -606,6 +606,96 @@ fn a_save_while_a_sync_is_in_flight_cannot_bring_a_moved_line_back() {
     world.settle_and_assert();
 }
 
+/// Deep production fuzz, seeds 10000 and 10005: a line is retyped on one device
+/// while another moves it to a different scheme (carry-over does exactly this).
+/// Each scheme is its own document, so the move deletes the line from its source
+/// and inserts a copy — carrying the text the moving device saw — into the
+/// target. The retype landed on the source copy and was lost for every device.
+#[test]
+fn a_line_retyped_while_another_device_moves_it_keeps_the_new_text() {
+    let mut world = world(90_018, 1);
+    let a = world.add_device(Some(0));
+    world.sync(a, 0);
+    let b = world.add_device(Some(0));
+    world.sync(b, 0);
+    world.sync(a, 0);
+    let (source, target, line) = {
+        let workspace = world.devices[a].as_ref().unwrap().state.workspace.clone();
+        let mut schemes: Vec<_> = workspace
+            .schemes
+            .values()
+            .filter(|scheme| {
+                !workspace.daily_queue.values().any(|id| *id == scheme.id)
+                    && scheme.items.len() >= 2
+            })
+            .map(|scheme| scheme.id)
+            .collect();
+        schemes.sort();
+        let source = schemes[0];
+        (
+            source,
+            schemes[1],
+            workspace.scheme(source).unwrap().items[0].id,
+        )
+    };
+    // Device b retypes the line and does not sync yet.
+    world.local(b, |device, _| {
+        device
+            .state
+            .apply_command(Command::UpdateItemText {
+                scheme: source,
+                item: line,
+                text: "retyped on b".to_string(),
+            })
+            .expect("retype line");
+    });
+    // Device a moves the same line to another scheme and syncs.
+    world.local(a, |device, _| {
+        let workspace = device.state.workspace.clone();
+        let moved = workspace
+            .scheme(source)
+            .unwrap()
+            .item(line)
+            .unwrap()
+            .clone();
+        let position = workspace.scheme(target).unwrap().items.len();
+        device
+            .state
+            .apply_command(Command::Batch(vec![
+                Command::DeleteItem {
+                    scheme: source,
+                    item: line,
+                },
+                Command::InsertItem {
+                    scheme: target,
+                    position,
+                    item: moved,
+                },
+            ]))
+            .expect("move line");
+    });
+    world.sync(a, 0);
+    // Device b pulls the move; its own retype has to survive the landing.
+    world.sync(b, 0);
+    // b pushes what it re-applied, and a pulls it.
+    world.sync(b, 0);
+    world.sync(a, 0);
+    for index in [b, a] {
+        let workspace = &world.devices[index].as_ref().unwrap().state.workspace;
+        let holders: Vec<_> = workspace
+            .schemes
+            .values()
+            .filter_map(|scheme| scheme.item(line).map(|item| (scheme.id, item.text())))
+            .collect();
+        assert_eq!(
+            holders,
+            vec![(target, "retyped on b".to_string())],
+            "device {index}: the moved line should be in its target scheme with b's text"
+        );
+    }
+    world.settle_and_assert();
+}
+
 #[test]
 fn new_install_relaunched_before_its_first_sync_joins_the_account() {
     let mut world = world(90_002, 1);

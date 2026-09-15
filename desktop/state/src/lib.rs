@@ -4,6 +4,7 @@ mod dates;
 mod dispatch;
 mod events;
 mod external;
+mod moved_edits;
 mod notification_state;
 mod selection;
 mod session;
@@ -30,6 +31,7 @@ pub use dates::{
 pub use dispatch::CommandDispatcher;
 pub use events::{AppEvent, EventBus};
 pub use external::{ExternalModification, ExternalModificationQueue};
+pub use moved_edits::LocalItemEdits;
 pub use notification_state::{reschedule_notifications, NotificationState};
 pub use selection::{Selection, View};
 pub use session::{EditorSession, EditorSessions, SchemeEditorMenuState};

@@ -14,7 +14,10 @@ use knotq_storage_json::{
     save_workspace_incremental, WorkspaceLoadOptions,
 };
 
-use super::super::landing::{adopt_sync_workspace, clear_pushed_edits, run_changed_workspace};
+use super::super::landing::{
+    adopt_sync_workspace, capture_local_item_edits, clear_pushed_edits, reassert_local_item_edits,
+    run_changed_workspace,
+};
 use super::super::snapshot::sync_snapshot_in;
 use super::super::{SyncEnvironment, SyncRunResult, SyncSnapshot};
 use super::backend::Account;
@@ -312,6 +315,7 @@ impl DesktopDevice {
         self.run_in_flight = false;
         match run.result {
             Ok(result) => {
+                let local_item_edits = capture_local_item_edits(&self.state);
                 clear_pushed_edits(&mut self.state, &result.pushed, run.watermark);
                 if run_changed_workspace(
                     result.remote_updates_applied,
@@ -323,6 +327,7 @@ impl DesktopDevice {
                         result.crdt_states,
                         run.watermark,
                     );
+                    reassert_local_item_edits(&mut self.state, local_item_edits);
                 }
                 let _ = self.save();
                 None

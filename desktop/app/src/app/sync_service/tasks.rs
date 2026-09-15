@@ -391,6 +391,7 @@ async fn run_sync_attempt(
                 if squash_attempted {
                     app.last_squash_attempt_at = Some(Utc::now());
                 }
+                let local_item_edits = super::landing::capture_local_item_edits(&app.state);
                 super::landing::clear_pushed_edits(&mut app.state, &pushed, local_edit_watermark);
                 // Cache the schedule this run used against the generation it was
                 // computed at, so the next run can skip recomputing it when nothing
@@ -436,6 +437,9 @@ async fn run_sync_attempt(
                         workspace,
                         crdt_states,
                         local_edit_watermark,
+                    ) | super::landing::reassert_local_item_edits(
+                        &mut app.state,
+                        local_item_edits,
                     );
                     crate::frame_log::count(&crate::frame_log::WORKSPACE_REPLACED);
                     // The CRDT documents advanced even on an echo, so the save
