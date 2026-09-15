@@ -33,8 +33,9 @@ pub use engine::{
     SQUASH_MIN_STATE_BYTES, SYNC_PUSH_EPOCH_STALE_CODE,
 };
 pub use local_state::{
-    compact_pending_documents, queue_account_switch_reseed, queue_workspace_bootstrap_updates,
-    DocumentSyncCursor, LocalSyncState, MediaSyncCursor, PendingCrdtEdit, MAX_PENDING_PER_DOCUMENT,
+    compact_pending_documents, fold_pending_edits_into_state, queue_account_switch_reseed,
+    queue_workspace_bootstrap_updates, DocumentSyncCursor, LocalSyncState, MediaSyncCursor,
+    PendingCrdtEdit, MAX_PENDING_PER_DOCUMENT,
 };
 
 /// Serde codec that represents CRDT update bytes as a base64 string rather than

@@ -10,8 +10,8 @@ use chrono::NaiveDate;
 use knotq_model::{AppSettings, Workspace};
 use knotq_state::{daily_queue_default_window_start, AppState};
 use knotq_storage_json::{
-    load_crdt_state, load_workspace_with_options, run_pending_upgrades, save_pending_crdt_edits,
-    save_workspace, save_workspace_incremental, WorkspaceLoadOptions,
+    load_workspace_with_options, run_pending_upgrades, save_pending_crdt_edits, save_workspace,
+    save_workspace_incremental, WorkspaceLoadOptions,
 };
 
 use super::super::landing::{adopt_sync_workspace, clear_pushed_edits, run_changed_workspace};
@@ -103,7 +103,7 @@ impl DesktopDevice {
             "device {index}: workspace load failed: {:?}",
             bootstrap.save_blocked_reason
         );
-        let crdt_states = load_crdt_state(&workspace_path).unwrap_or_default();
+        let crdt_states = crate::app::constructor::restored_crdt_states(&workspace_path);
         let initial_sequence = crate::app::constructor::restored_initial_sequence(&workspace_path);
         let state = AppState::new(
             bootstrap.workspace,

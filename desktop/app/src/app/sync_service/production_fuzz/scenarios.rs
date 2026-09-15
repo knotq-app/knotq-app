@@ -198,6 +198,63 @@ fn starter_lines_edited_before_the_first_sync_join_the_account_once() {
     }
 }
 
+/// Fuzz seed 3: the app dies after the save task wrote the pending queue but
+/// before it wrote the CRDT state. The relaunched session must not author its
+/// next edit beside the queued one it never saw — pushing the queue would then
+/// let the stale edit win and revert what the user typed after the relaunch.
+/// Client ids are random, so each round is a fresh coin flip on `HEAD`.
+#[test]
+fn an_edit_after_a_crash_between_the_queue_and_crdt_saves_is_kept() {
+    let mut world = world(90_012, 1);
+    let a = world.add_device(Some(0));
+    world.sync(a, 0);
+    for round in 0..6 {
+        let (scheme, item) = world.local(a, |device, _| {
+            let today = device.today();
+            let day = open_day(device, today);
+            add_line(device, day, "typed");
+            let item = device
+                .state
+                .workspace
+                .scheme(day)
+                .unwrap()
+                .items
+                .last()
+                .unwrap()
+                .id;
+            (day, item)
+        });
+        world.sync(a, 0);
+        let retype = |world: &mut World, text: String| {
+            world.local(a, |device, _| {
+                device
+                    .state
+                    .apply_command(Command::UpdateItemText { scheme, item, text })
+                    .expect("retype line");
+            });
+        };
+        retype(&mut world, format!("queued {round}"));
+        let device = world.devices[a].take().unwrap();
+        world.devices[a] = Some(device.crash(CrashPoint::AfterPending));
+        retype(&mut world, format!("after relaunch {round}"));
+        world.sync(a, 0);
+        let text = world.devices[a]
+            .as_ref()
+            .unwrap()
+            .state
+            .workspace
+            .scheme(scheme)
+            .and_then(|scheme| scheme.item(item))
+            .map(|item| item.text());
+        assert_eq!(
+            text,
+            Some(format!("after relaunch {round}")),
+            "round {round}"
+        );
+    }
+    world.settle_and_assert();
+}
+
 #[test]
 fn new_install_relaunched_before_its_first_sync_joins_the_account() {
     let mut world = world(90_002, 1);

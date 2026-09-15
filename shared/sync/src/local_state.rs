@@ -4,12 +4,49 @@ use chrono::{DateTime, Utc};
 use knotq_model::{DocumentId, OperationId, ReplicaId, SyncDocumentKind, Workspace, WorkspaceId};
 use serde::{Deserialize, Serialize};
 use yrs::updates::{decoder::Decode, encoder::Encode};
-use yrs::Update;
+use yrs::{Doc, ReadTxn, StateVector, Transact, Update};
 
 use crate::{
     validate_crdt_update_sequence, CrdtDocumentUpdate, PushUpdatesRequest, SyncDocumentRef,
     WorkspaceCrdtDocuments, SYNC_STATE_RECOVERY_VERSION,
 };
+
+/// The persisted state of `document` with the queued `pending` edits to it
+/// applied, or `None` when it already held every one of them.
+///
+/// The save task writes the pending queue before the CRDT state, so a crash
+/// between the two leaves queued edits the saved document never saw. A session
+/// restored from that state authors its next edits concurrently with them, and
+/// once the queue is pushed a stale queued edit can win and revert what the user
+/// did since. Applying an update the document already holds changes nothing, so
+/// this only fills that gap — including in data directories an older build left
+/// this way. A document with no saved state is left to the sync that seeds it.
+pub fn fold_pending_edits_into_state<'a>(
+    document: DocumentId,
+    state: &[u8],
+    pending: impl IntoIterator<Item = &'a PendingCrdtEdit>,
+) -> Option<Vec<u8>> {
+    let mut edits: Vec<&PendingCrdtEdit> = pending
+        .into_iter()
+        .filter(|edit| edit.document == document)
+        .collect();
+    if edits.is_empty() || state.is_empty() {
+        return None;
+    }
+    edits.sort_by_key(|edit| edit.local_sequence);
+    let doc = Doc::new();
+    let mut txn = doc.transact_mut();
+    txn.apply_update(Update::decode_v1(state).ok()?).ok()?;
+    let before = txn.encode_state_as_update_v1(&StateVector::default());
+    for edit in edits {
+        // One unreadable queued edit must not cost the others.
+        if let Ok(update) = Update::decode_v1(&edit.update_v1) {
+            let _ = txn.apply_update(update);
+        }
+    }
+    let after = txn.encode_state_as_update_v1(&StateVector::default());
+    (after != before).then_some(after)
+}
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct PendingCrdtEdit {
@@ -1558,5 +1595,110 @@ mod compaction_tests {
             0
         );
         assert_eq!(state.pending.len(), 40);
+    }
+}
+
+#[cfg(test)]
+mod fold_pending_tests {
+    use super::{fold_pending_edits_into_state, PendingCrdtEdit};
+    use chrono::Utc;
+    use knotq_model::{DocumentId, OperationId, ReplicaId, SyncDocumentKind, WorkspaceId};
+    use yrs::updates::decoder::Decode;
+    use yrs::{Doc, Map, ReadTxn, StateVector, Transact, Update};
+
+    fn state_of(doc: &Doc) -> Vec<u8> {
+        doc.transact()
+            .encode_state_as_update_v1(&StateVector::default())
+    }
+
+    fn restore(state: &[u8]) -> Doc {
+        let doc = Doc::new();
+        doc.transact_mut()
+            .apply_update(Update::decode_v1(state).unwrap())
+            .unwrap();
+        doc
+    }
+
+    /// Set `value` on the doc and encode just that change.
+    fn set(doc: &Doc, value: &str) -> Vec<u8> {
+        let before = doc.transact().state_vector();
+        let map = doc.get_or_insert_map("item");
+        map.insert(&mut doc.transact_mut(), "text", value);
+        doc.transact().encode_diff_v1(&before)
+    }
+
+    fn value(doc: &Doc) -> String {
+        let map = doc.get_or_insert_map("item");
+        let txn = doc.transact();
+        map.get(&txn, "text").unwrap().to_string(&txn)
+    }
+
+    fn edit(document: DocumentId, sequence: u64, update_v1: Vec<u8>) -> PendingCrdtEdit {
+        PendingCrdtEdit {
+            operation_id: OperationId::new(),
+            workspace_id: WorkspaceId::new(),
+            replica_id: ReplicaId::new(),
+            local_sequence: sequence,
+            created_at: Utc::now(),
+            document,
+            kind: SyncDocumentKind::Scheme,
+            update_v1,
+            touched_items: Vec::new(),
+        }
+    }
+
+    /// The saved state lacks a queued edit (a crash between the queue and CRDT
+    /// saves). Restoring without the fold authors the next edit beside the
+    /// queued one, which can then win; with the fold it always follows it.
+    #[test]
+    fn an_edit_after_restoring_follows_the_queued_edit_the_saved_state_missed() {
+        let document = DocumentId::new();
+        for _ in 0..32 {
+            let session = Doc::new();
+            set(&session, "saved");
+            let saved = state_of(&session);
+            let queued = set(&session, "queued");
+            let pending = [edit(document, 1, queued.clone())];
+
+            let folded = fold_pending_edits_into_state(document, &saved, &pending)
+                .expect("the saved state missed the queued edit");
+            let relaunched = restore(&folded);
+            assert_eq!(value(&relaunched), "queued");
+            let after = set(&relaunched, "after relaunch");
+
+            // The queue is pushed alongside the new edit, in either order.
+            for order in [[&queued, &after], [&after, &queued]] {
+                let merged = restore(&folded);
+                for update in order {
+                    merged
+                        .transact_mut()
+                        .apply_update(Update::decode_v1(update).unwrap())
+                        .unwrap();
+                }
+                assert_eq!(value(&merged), "after relaunch");
+            }
+        }
+    }
+
+    #[test]
+    fn folding_changes_nothing_the_saved_state_already_holds() {
+        let document = DocumentId::new();
+        let session = Doc::new();
+        let first = set(&session, "first");
+        let second = set(&session, "second");
+        let saved = state_of(&session);
+        let pending = [
+            edit(document, 2, second),
+            edit(document, 1, first),
+            // Another document's edit and an unreadable one are ignored.
+            edit(DocumentId::new(), 3, set(&Doc::new(), "elsewhere")),
+            edit(document, 4, vec![0xff, 0x00, 0x13]),
+        ];
+        assert_eq!(
+            fold_pending_edits_into_state(document, &saved, &pending),
+            None
+        );
+        // A document with no saved state is left for the sync that seeds it.
+        assert_eq!(fold_pending_edits_into_state(document, &[], &pending), None);
     }
 }

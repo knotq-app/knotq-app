@@ -35,6 +35,29 @@ pub(crate) fn restored_initial_sequence(workspace_path: &std::path::Path) -> u64
     max_pending.max(max_pushed) + 1
 }
 
+/// The saved CRDT states a launch restores, with the saved pending queue folded
+/// in: a crash between the queue and CRDT saves (or an older build that left the
+/// two apart) must not let the next session edit beside a queued edit it never
+/// saw (see [`knotq_sync::fold_pending_edits_into_state`]).
+pub(crate) fn restored_crdt_states(
+    workspace_path: &std::path::Path,
+) -> HashMap<knotq_model::DocumentId, Vec<u8>> {
+    let mut states = load_crdt_state(workspace_path).unwrap_or_default();
+    let sync_state = load_local_sync_state(workspace_path).unwrap_or_default();
+    if sync_state.pending.is_empty() {
+        return states;
+    }
+    for (document, state) in &mut states {
+        if let Some(folded) =
+            knotq_sync::fold_pending_edits_into_state(*document, state, &sync_state.pending)
+        {
+            eprintln!("restore: applied queued edits missing from the saved state of {document}");
+            *state = folded;
+        }
+    }
+    states
+}
+
 impl KnotQApp {
     pub fn new(cx: &mut Context<Self>) -> Self {
         let bootstrap = load_or_seed();
@@ -106,7 +129,7 @@ impl KnotQApp {
         // identity survives this restart instead of being rebuilt from plain data.
         // This stays active even when account sync is hidden/compiled out, so a
         // future sync-capable build can reuse the local CRDT history.
-        let crdt_states = load_crdt_state(&workspace_path()).unwrap_or_default();
+        let crdt_states = restored_crdt_states(&workspace_path());
 
         let initial_sequence = restored_initial_sequence(&workspace_path());
 

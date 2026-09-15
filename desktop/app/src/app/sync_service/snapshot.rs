@@ -96,11 +96,28 @@ pub(super) fn sync_snapshot_in(
     // deterministic identity plus its newest local edits — never rebuilt from plain
     // data. Disk fills documents the in-memory store doesn't hold (e.g. archived /
     // off-screen Daily Queue schemes loaded by `workspace_for_background_sync`).
+    // The store restored the documents it holds with the queue folded in; a
+    // document only on disk (a day off screen) did not pass through it, so fold
+    // the queue into that one here (`restored_crdt_states`).
+    let store_documents: std::collections::HashSet<knotq_model::DocumentId> =
+        snapshot.crdt_states.keys().copied().collect();
     let mut crdt_states: std::collections::HashMap<knotq_model::DocumentId, std::sync::Arc<[u8]>> =
         load_crdt_state(path)
             .unwrap_or_default()
             .into_iter()
-            .map(|(document, state)| (document, std::sync::Arc::from(state)))
+            .map(|(document, state)| {
+                let state = if store_documents.contains(&document) {
+                    state
+                } else {
+                    knotq_sync::fold_pending_edits_into_state(
+                        document,
+                        &state,
+                        &local_state.pending,
+                    )
+                    .unwrap_or(state)
+                };
+                (document, std::sync::Arc::from(state))
+            })
             .collect();
     // Encode HERE, on the background sync thread: these handles were taken on the
     // UI thread precisely so this cost lands off main.
