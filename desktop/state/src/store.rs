@@ -436,10 +436,17 @@ impl WorkspaceStore {
         &mut self,
         document: DocumentId,
         through_local_sequence: u64,
+        snapshot_watermark: u64,
     ) -> usize {
         let mut cleared = 0;
         for operation in &mut self.pending_operations {
-            if operation.sequence > through_local_sequence {
+            // Only an operation the run's snapshot held can have been pushed. The
+            // run queues edits of its own under sequences past the store's, so an
+            // edit made while it was in flight can share or undercut a pushed
+            // sequence without ever having been sent.
+            if operation.sequence > through_local_sequence
+                || operation.sequence >= snapshot_watermark
+            {
                 continue;
             }
             let before = operation.crdt_updates.len();

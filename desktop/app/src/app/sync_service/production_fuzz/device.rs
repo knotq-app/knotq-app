@@ -297,7 +297,7 @@ impl DesktopDevice {
     pub(super) fn land_sync(&mut self, run: InFlightSync) -> Option<anyhow::Error> {
         match run.result {
             Ok(result) => {
-                clear_pushed_edits(&mut self.state, &result.pushed);
+                clear_pushed_edits(&mut self.state, &result.pushed, run.watermark);
                 if run_changed_workspace(
                     result.remote_updates_applied,
                     result.local_workspace_changed,

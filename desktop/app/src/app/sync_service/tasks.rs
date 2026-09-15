@@ -391,7 +391,7 @@ async fn run_sync_attempt(
                 if squash_attempted {
                     app.last_squash_attempt_at = Some(Utc::now());
                 }
-                super::landing::clear_pushed_edits(&mut app.state, &pushed);
+                super::landing::clear_pushed_edits(&mut app.state, &pushed, local_edit_watermark);
                 // Cache the schedule this run used against the generation it was
                 // computed at, so the next run can skip recomputing it when nothing
                 // schedule-relevant has changed since. If an edit bumped the

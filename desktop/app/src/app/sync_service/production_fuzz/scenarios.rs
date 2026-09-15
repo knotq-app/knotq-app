@@ -310,6 +310,70 @@ fn a_first_sync_with_an_in_flight_edit_leaves_no_second_root_folder() {
     world.settle_and_assert();
 }
 
+/// KNOWN GAP — kept runnable so the fix can be proven against it.
+///
+/// Fuzz seed 1: a fresh install recolours a scheme while its first sync is in
+/// flight, and the colour never reaches the account.
+///
+/// Part of it is fixed: landing used to clear the in-flight edit as pushed
+/// because the run pushed through the same sequence under an edit of its own
+/// (`in_flight_landing_tests`). What remains is the workspace index. A
+/// never-synced install has no saved index state, so its first index write is a
+/// full population authored under a random client id — with the new colour
+/// already in it. The account's index is an equally full population from
+/// another device, so every scheme entry is a concurrent pair and the account's
+/// entry can win on client id alone. The fix mirrors scheme content: populate
+/// the index from the pre-edit workspace under a deterministic client id, then
+/// write the edit as a delta after it.
+#[test]
+#[ignore = "known gap: a never-synced install's index population loses to the account's on first sign-in"]
+fn an_edit_made_while_a_sync_is_in_flight_is_pushed() {
+    let mut world = world(90_014, 1);
+    let a = world.add_device(Some(0));
+    world.sync(a, 0);
+    let b = world.add_device(Some(0));
+    let run = {
+        let device = world.devices[b].as_mut().unwrap();
+        device.run_sync(&world.accounts[0], false)
+    }
+    .expect("signed in");
+    let recoloured = world.local(b, |device, _| {
+        let workspace = device.state.workspace.clone();
+        let scheme = workspace
+            .schemes
+            .values()
+            .filter(|scheme| !workspace.daily_queue.values().any(|id| *id == scheme.id))
+            .min_by_key(|scheme| scheme.id)
+            .expect("a starter scheme")
+            .id;
+        device
+            .state
+            .apply_command(Command::SetSchemeColor {
+                id: scheme,
+                color_index: 7,
+            })
+            .expect("recolour scheme");
+        scheme
+    });
+    let error = world.devices[b].as_mut().unwrap().land_sync(run);
+    assert!(error.is_none(), "first sync failed: {error:?}");
+    world.sync(b, 0);
+    world.sync(a, 0);
+    let colour = world.devices[a]
+        .as_ref()
+        .unwrap()
+        .state
+        .workspace
+        .scheme(recoloured)
+        .map(|scheme| scheme.color_index);
+    assert_eq!(
+        colour,
+        Some(7),
+        "the colour chosen during the sync never reached the other device"
+    );
+    world.settle_and_assert();
+}
+
 #[test]
 fn new_install_relaunched_before_its_first_sync_joins_the_account() {
     let mut world = world(90_002, 1);

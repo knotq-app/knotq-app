@@ -419,9 +419,10 @@ impl AppState {
         &mut self,
         document: DocumentId,
         through_local_sequence: u64,
+        snapshot_watermark: u64,
     ) -> usize {
         self.store
-            .clear_pushed_crdt_edits(document, through_local_sequence)
+            .clear_pushed_crdt_edits(document, through_local_sequence, snapshot_watermark)
     }
 
     /// Hand the app's save bookkeeping (which files are dirty) to the store. The
