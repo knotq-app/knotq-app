@@ -832,6 +832,29 @@ fn a_line_retyped_before_a_relaunch_keeps_its_text_when_another_device_moves_it(
             })
             .expect("retype line");
     });
+    // One more command after the retype: a deferred CRDT flush attaches its
+    // updates to the NEWEST queued operation, so the retype's bytes ride on this
+    // later one. A record describing only its own operation's command loses the
+    // retype entirely.
+    world.local(b, |device, _| {
+        let indented = device
+            .state
+            .workspace
+            .scheme(source)
+            .unwrap()
+            .items
+            .last()
+            .unwrap()
+            .id;
+        device
+            .state
+            .apply_command(Command::SetItemIndent {
+                scheme: source,
+                item: indented,
+                indent: 1,
+            })
+            .expect("indent another line");
+    });
     let _ = world.devices[b].as_mut().unwrap().save();
     world.relaunch(b);
     world.local(a, |device, _| {

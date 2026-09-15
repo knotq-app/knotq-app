@@ -206,10 +206,19 @@ impl AppState {
     /// the pending queue so the record survives a relaunch.
     pub fn queued_item_fields(&self) -> HashMap<OperationId, Vec<QueuedItemFields>> {
         let mut out = HashMap::new();
+        // A deferred CRDT flush attaches its updates to the NEWEST operation
+        // (`WorkspaceStore::flush_crdt`), so one queued edit's bytes can carry
+        // the commands of every operation since the previous flush. Recording
+        // only an operation's own command loses the rest of them — the edit is
+        // queued, but nothing says which fields it changed (deep production
+        // fuzz, seed 10000: a line retyped two commands before a relaunch).
+        let mut pending: HashMap<ItemId, EditedFields> = HashMap::new();
         for operation in self.store.pending_operations() {
-            let mut fields: HashMap<ItemId, EditedFields> = HashMap::new();
-            record(&mut fields, &operation.command);
-            let mut records: Vec<QueuedItemFields> = fields
+            record(&mut pending, &operation.command);
+            if operation.crdt_updates.is_empty() {
+                continue;
+            }
+            let mut records: Vec<QueuedItemFields> = std::mem::take(&mut pending)
                 .into_iter()
                 .filter(|(_, edited)| edited.any())
                 .map(|(item, edited)| QueuedItemFields {
@@ -219,7 +228,11 @@ impl AppState {
                 .collect();
             if !records.is_empty() {
                 records.sort_by(|left, right| left.item.cmp(&right.item));
-                out.insert(operation.id, records);
+                out.entry(operation.id)
+                    .and_modify(|existing: &mut Vec<QueuedItemFields>| {
+                        existing.extend(records.iter().cloned())
+                    })
+                    .or_insert(records);
             }
         }
         out
