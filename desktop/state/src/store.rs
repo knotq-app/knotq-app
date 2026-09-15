@@ -120,6 +120,9 @@ pub struct WorkspaceStore {
     // about to replace/discard it) must call `flush_crdt` first so no deferred
     // edit is ever silently lost.
     deferred_crdt: WorkspaceCrdtChangeSet,
+    /// `next_sequence` when `deferred_crdt` last went from empty to non-empty:
+    /// the oldest operation its updates may be attached to (see `flush_crdt`).
+    deferred_since: u64,
     // What a scheme held just before the first edit made while its CRDT document
     // had never been populated — a fresh install's starter schemes. The deferred
     // flush populates the document from it before writing the edit, so the edit
@@ -160,6 +163,7 @@ impl WorkspaceStore {
             // authoritative directory.
             crdt_save_scope: CrdtSaveScope::All,
             deferred_crdt: WorkspaceCrdtChangeSet::default(),
+            deferred_since: 0,
             population_bases: HashMap::new(),
         }
     }
@@ -204,7 +208,15 @@ impl WorkspaceStore {
         if outcome.updates.is_empty() {
             return;
         }
-        if let Some(latest) = self.pending_operations.back_mut() {
+        // Only an operation made after the deferral began may carry these
+        // updates. An older one can predate a sync run's snapshot, and landing
+        // that run clears it as pushed — taking these unsent updates with it.
+        let deferred_since = self.deferred_since;
+        if let Some(latest) = self
+            .pending_operations
+            .back_mut()
+            .filter(|latest| latest.sequence >= deferred_since)
+        {
             latest.crdt_updates.extend(outcome.updates);
         } else {
             self.pending_operations.push_back(StoreOperation {
@@ -339,10 +351,18 @@ impl WorkspaceStore {
         self.workspace.ensure_sync_metadata();
         self.dirty.index = true;
         self.index_stale = true;
-        self.deferred_crdt
-            .merge(WorkspaceCrdtChangeSet::default().workspace());
+        self.defer_crdt(WorkspaceCrdtChangeSet::default().workspace());
         self.flush_crdt();
         true
+    }
+
+    /// Queue CRDT reconciliation for the next `flush_crdt`, remembering which
+    /// operations the result may be attached to.
+    fn defer_crdt(&mut self, changes: WorkspaceCrdtChangeSet) {
+        if self.deferred_crdt.is_empty() {
+            self.deferred_since = self.next_sequence;
+        }
+        self.deferred_crdt.merge(changes);
     }
 
     pub fn workspace(&self) -> &Workspace {
@@ -672,8 +692,7 @@ impl WorkspaceStore {
         if repair_needed {
             self.dirty.index = true;
             self.index_stale = true;
-            self.deferred_crdt
-                .merge(WorkspaceCrdtChangeSet::default().workspace());
+            self.defer_crdt(WorkspaceCrdtChangeSet::default().workspace());
             self.flush_crdt();
             self.crdt_save_scope.widen_to_all();
         }
@@ -931,7 +950,7 @@ impl WorkspaceStore {
         // once, on the next flush, rather than once per character. Nothing is
         // lost: every reader/replacer of `self.crdt` calls `flush_crdt` first,
         // and the save scope is recorded there too.
-        self.deferred_crdt.merge(crdt_changes);
+        self.defer_crdt(crdt_changes);
         Vec::new()
     }
 
