@@ -432,6 +432,81 @@ fn a_folder_archived_just_before_a_sync_stays_in_the_trash() {
     world.settle_and_assert();
 }
 
+/// Fuzz seed 6: a sync run pulls and saves, then fails before landing (its push
+/// response is lost). The store never received what the run pulled, but the
+/// pull cursor moved past it. The next run must start from the saved state
+/// merged with the store's, not the store's alone — or the pulled change is
+/// dropped and the server never resends it.
+#[test]
+fn a_change_pulled_by_a_run_that_failed_before_landing_is_not_lost() {
+    let mut world = world(90_016, 1);
+    let a = world.add_device(Some(0));
+    world.sync(a, 0);
+    let b = world.add_device(Some(0));
+    world.sync(b, 0);
+    world.sync(a, 0);
+    let (scheme, line) = world.local(a, |device, _| {
+        let workspace = device.state.workspace.clone();
+        let scheme = workspace
+            .schemes
+            .values()
+            .filter(|scheme| {
+                !workspace.daily_queue.values().any(|id| *id == scheme.id)
+                    && scheme.items.len() >= 2
+            })
+            .min_by_key(|scheme| scheme.id)
+            .expect("a starter scheme with lines")
+            .clone();
+        let line = scheme.items[0].id;
+        device
+            .state
+            .apply_command(Command::DeleteItem {
+                scheme: scheme.id,
+                item: line,
+            })
+            .expect("delete line");
+        (scheme.id, line)
+    });
+    world.sync(a, 0);
+    // Device b has an unpushed edit elsewhere, so its run pushes; the server
+    // applies that push but the response never arrives.
+    world.local(b, |device, _| {
+        let today = device.today();
+        let day = open_day(device, today);
+        add_line(device, day, "pushed, response lost");
+    });
+    world.accounts[0].server.lose_next_push_responses(1);
+    let run = {
+        let device = world.devices[b].as_mut().unwrap();
+        device.run_sync(&world.accounts[0], false)
+    }
+    .expect("signed in");
+    let error = world.devices[b].as_mut().unwrap().land_sync(run);
+    assert!(
+        error.is_some(),
+        "the run should fail on its lost push response"
+    );
+    let run = {
+        let device = world.devices[b].as_mut().unwrap();
+        device.run_sync(&world.accounts[0], false)
+    }
+    .expect("signed in");
+    let error = world.devices[b].as_mut().unwrap().land_sync(run);
+    assert!(error.is_none(), "the retry failed: {error:?}");
+    let line_came_back = world.devices[b]
+        .as_ref()
+        .unwrap()
+        .state
+        .workspace
+        .scheme(scheme)
+        .is_some_and(|scheme| scheme.item(line).is_some());
+    assert!(
+        !line_came_back,
+        "a line deleted on another device is back after a run that failed before landing"
+    );
+    world.settle_and_assert();
+}
+
 #[test]
 fn new_install_relaunched_before_its_first_sync_joins_the_account() {
     let mut world = world(90_002, 1);

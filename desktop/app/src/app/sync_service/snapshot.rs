@@ -179,6 +179,10 @@ pub(super) fn sync_snapshot_in(
         snapshot.replica_id,
     )?;
     log_skipped_documents(&pull.skipped);
+    // What this pull changed locally. A run that fails after saving its cursors
+    // never lands, so these have to be pulled again (`forget_pull_of_failed_run`).
+    let pulled_changes: Vec<knotq_model::DocumentId> =
+        pull.changed_documents.iter().copied().collect();
     let mut workspace = pull.workspace;
     let remote_updates_applied = pull.remote_updates_applied;
     let locally_repaired_documents = pull.locally_repaired_documents;
@@ -284,6 +288,13 @@ pub(super) fn sync_snapshot_in(
         &mut crdt_docs,
         &workspace,
     );
+    if push_result.is_err() {
+        // The run returns the push error and never lands; see
+        // `forget_pull_of_failed_run`. Its acks above are still worth keeping.
+        for document in &pulled_changes {
+            local_state.reset_pull_cursor(*document);
+        }
+    }
     save_local_sync_state(path, &local_state)?;
     // The push's own self-heal may have repopulated a schema-less document after
     // the capture above; persist the healed state so this device's future diffs
@@ -306,15 +317,24 @@ pub(super) fn sync_snapshot_in(
             .entry(pushed_document.document)
             .or_insert(1);
     }
-    upload_local_media_assets(
+    if let Err(err) = upload_local_media_assets(
         client,
         image_dir,
         &mut local_state,
         &workspace,
         &media_remote_latest,
-    )?;
+    ) {
+        forget_pull_of_failed_run(path, &mut local_state, &pulled_changes);
+        return Err(err);
+    }
     save_local_sync_state(path, &local_state)?;
-    media_downloaded |= download_missing_media_assets(client, image_dir, &workspace)?;
+    match download_missing_media_assets(client, image_dir, &workspace) {
+        Ok(downloaded) => media_downloaded |= downloaded,
+        Err(err) => {
+            forget_pull_of_failed_run(path, &mut local_state, &pulled_changes);
+            return Err(err);
+        }
+    }
 
     // Post-run maintenance: propose at most one history squash when the run left
     // this device fully synced. The proposal replaces a bloated scheme document's
@@ -378,6 +398,26 @@ pub(super) fn sync_snapshot_in(
         notification_schedule,
         squash_attempted,
     })
+}
+
+/// A run that fails after saving its pull cursors never lands: the UI store keeps
+/// the state it had before the pull, and the next run starts from that state
+/// overlaid on the saved one. The server does not resend a document below its
+/// cursor, so what the failed pull brought in would be lost for good (production
+/// fuzz seed 6: a line another device moved stayed in its source scheme). Pull
+/// those documents again instead — only those, so a transient failure never
+/// forces a full re-download.
+fn forget_pull_of_failed_run(
+    path: &std::path::Path,
+    local_state: &mut LocalSyncState,
+    pulled: &[knotq_model::DocumentId],
+) {
+    for document in pulled {
+        local_state.reset_pull_cursor(*document);
+    }
+    if let Err(err) = save_local_sync_state(path, local_state) {
+        eprintln!("sync: could not persist re-pull cursors after a failed run: {err:#}");
+    }
 }
 
 /// Queue a re-identified workspace document's full state as a pending push, so a
