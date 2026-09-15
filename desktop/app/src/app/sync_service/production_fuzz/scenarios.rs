@@ -255,6 +255,61 @@ fn an_edit_after_a_crash_between_the_queue_and_crdt_saves_is_kept() {
     world.settle_and_assert();
 }
 
+/// KNOWN GAP — kept runnable so the fix can be proven against it.
+///
+/// Fuzz seed 5: a fresh install's first sync lands through the merge while an
+/// edit made during the run is still unpushed. That edit's index update names
+/// the pre-sign-in root, which must be folded into the account's root — not
+/// left behind as an empty second "root" folder in the sidebar.
+///
+/// Calling `reroot_pre_sign_in_edits` at the end of `merge_sync_crdt_states`
+/// (as `replace_from_sync` does) was tried twice and is far worse: its index
+/// repair loses folders and Daily lines across the production fuzz (9 -> 42
+/// violations on 2026-09-15). The re-root must happen inside the CRDT index
+/// without rewriting entries the store's plain workspace does not hold.
+#[test]
+#[ignore = "known gap: first-sync merge leaves the pre-sign-in root as a second root folder"]
+fn a_first_sync_with_an_in_flight_edit_leaves_no_second_root_folder() {
+    let mut world = world(90_013, 1);
+    let a = world.add_device(Some(0));
+    world.sync(a, 0);
+    let b = world.add_device(Some(0));
+    let run = {
+        let device = world.devices[b].as_mut().unwrap();
+        device.run_sync(&world.accounts[0], false)
+    }
+    .expect("signed in");
+    world.local(b, |device, _| {
+        let today = device.today();
+        let day = open_day(device, today);
+        add_line(device, day, "typed during the first sync");
+        create_scheme(device, "Made during the first sync");
+    });
+    let error = world.devices[b].as_mut().unwrap().land_sync(run);
+    assert!(error.is_none(), "first sync failed: {error:?}");
+    let stray_roots = |device: &DesktopDevice| -> Vec<String> {
+        let workspace = &device.state.workspace;
+        workspace
+            .folders
+            .values()
+            .filter(|folder| folder.id != workspace.root && folder.name == "root")
+            .map(|folder| folder.id.to_string())
+            .collect()
+    };
+    let landed = stray_roots(world.devices[b].as_ref().unwrap());
+    assert!(
+        landed.is_empty(),
+        "landing left a second root folder: {landed:?}"
+    );
+    world.relaunch(b);
+    let relaunched = stray_roots(world.devices[b].as_ref().unwrap());
+    assert!(
+        relaunched.is_empty(),
+        "relaunch kept a second root folder: {relaunched:?}"
+    );
+    world.settle_and_assert();
+}
+
 #[test]
 fn new_install_relaunched_before_its_first_sync_joins_the_account() {
     let mut world = world(90_002, 1);
