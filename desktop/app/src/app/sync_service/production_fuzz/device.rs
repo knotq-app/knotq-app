@@ -27,6 +27,10 @@ pub(super) struct DesktopDevice {
     pub(super) state: AppState,
     /// Which fuzz account the device is signed into, if any.
     pub(super) account: Option<usize>,
+    /// A sync run has returned and not landed. The save task defers while one is
+    /// in flight (see `services::tasks::spawn_save_task`), so no save — and no
+    /// partial save before a crash — can happen in that window.
+    run_in_flight: bool,
 }
 
 /// A sync run that has returned but not yet landed: the UI thread may apply
@@ -121,6 +125,7 @@ impl DesktopDevice {
             image_dir,
             state,
             account,
+            run_in_flight: false,
         }
     }
 
@@ -162,7 +167,7 @@ impl DesktopDevice {
 
     /// One run of the save task (`services::tasks::spawn_save_task`).
     pub(super) fn save(&mut self) -> anyhow::Result<()> {
-        if !self.state.is_dirty() {
+        if !self.state.is_dirty() || self.run_in_flight {
             return Ok(());
         }
         let pending = self.state.pending_crdt_edits();
@@ -219,8 +224,16 @@ impl DesktopDevice {
             workspace_path,
             mut state,
             account,
+            run_in_flight,
             ..
         } = self;
+        // The save task never runs while a sync is in flight, so a crash then
+        // cannot have written part of a save.
+        let point = if run_in_flight {
+            CrashPoint::BeforeSave
+        } else {
+            point
+        };
         match point {
             CrashPoint::BeforeSave => {}
             CrashPoint::AfterWorkspace | CrashPoint::AfterPending => {
@@ -289,12 +302,14 @@ impl DesktopDevice {
             },
             snapshot,
         );
+        self.run_in_flight = true;
         Some(InFlightSync { result, watermark })
     }
 
     /// Land a finished run the way the sync task's UI-thread closure does, then
     /// run the save it signals. Returns the run's error, if it failed.
     pub(super) fn land_sync(&mut self, run: InFlightSync) -> Option<anyhow::Error> {
+        self.run_in_flight = false;
         match run.result {
             Ok(result) => {
                 clear_pushed_edits(&mut self.state, &result.pushed, run.watermark);

@@ -507,6 +507,105 @@ fn a_change_pulled_by_a_run_that_failed_before_landing_is_not_lost() {
     world.settle_and_assert();
 }
 
+/// Deep production fuzz, seed 1: a sync run saves the pulled workspace (here,
+/// another device's move of a line), and before it lands the save task writes
+/// the store's older workspace over those files; then the app dies. On relaunch
+/// the plain files still show the line in its source scheme while the CRDT has
+/// it deleted there, and the next edit to that scheme re-expresses the stale
+/// copy — the moved line comes back in its source scheme for every device.
+#[test]
+fn a_save_while_a_sync_is_in_flight_cannot_bring_a_moved_line_back() {
+    let mut world = world(90_017, 1);
+    let a = world.add_device(Some(0));
+    world.sync(a, 0);
+    let b = world.add_device(Some(0));
+    world.sync(b, 0);
+    world.sync(a, 0);
+    let (source, target, line) = world.local(a, |device, _| {
+        let workspace = device.state.workspace.clone();
+        let mut schemes: Vec<_> = workspace
+            .schemes
+            .values()
+            .filter(|scheme| {
+                !workspace.daily_queue.values().any(|id| *id == scheme.id)
+                    && scheme.items.len() >= 2
+            })
+            .map(|scheme| scheme.id)
+            .collect();
+        schemes.sort();
+        let (source, target) = (schemes[0], schemes[1]);
+        let moved = workspace.scheme(source).unwrap().items[0].clone();
+        let position = workspace.scheme(target).unwrap().items.len();
+        device
+            .state
+            .apply_command(Command::Batch(vec![
+                Command::DeleteItem {
+                    scheme: source,
+                    item: moved.id,
+                },
+                Command::InsertItem {
+                    scheme: target,
+                    position,
+                    item: moved.clone(),
+                },
+            ]))
+            .expect("move line");
+        (source, target, moved.id)
+    });
+    world.sync(a, 0);
+
+    // Device b's run pulls the move and saves it; the save task runs before the
+    // run lands, and the app dies before the landing.
+    let run = {
+        let device = world.devices[b].as_mut().unwrap();
+        device.run_sync(&world.accounts[0], false)
+    }
+    .expect("signed in");
+    let _ = world.devices[b].as_mut().unwrap().save();
+    drop(run);
+    let device = world.devices[b].take().unwrap();
+    world.devices[b] = Some(device.crash(CrashPoint::AfterWorkspace));
+
+    // After relaunch, b edits the source scheme and syncs.
+    world.local(b, |device, _| {
+        let other = device
+            .state
+            .workspace
+            .scheme(source)
+            .unwrap()
+            .items
+            .iter()
+            .find(|item| item.id != line)
+            .expect("another line")
+            .id;
+        device
+            .state
+            .apply_command(Command::UpdateItemText {
+                scheme: source,
+                item: other,
+                text: "edited after the relaunch".to_string(),
+            })
+            .expect("edit the source scheme");
+    });
+    world.sync(b, 0);
+    world.sync(a, 0);
+    for index in [a, b] {
+        let workspace = &world.devices[index].as_ref().unwrap().state.workspace;
+        let holders: Vec<_> = workspace
+            .schemes
+            .values()
+            .filter(|scheme| scheme.item(line).is_some())
+            .map(|scheme| scheme.id)
+            .collect();
+        assert_eq!(
+            holders,
+            vec![target],
+            "device {index}: the moved line should be only in its target scheme"
+        );
+    }
+    world.settle_and_assert();
+}
+
 #[test]
 fn new_install_relaunched_before_its_first_sync_joins_the_account() {
     let mut world = world(90_002, 1);

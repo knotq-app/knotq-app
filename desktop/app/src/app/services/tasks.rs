@@ -68,6 +68,21 @@ pub(crate) fn spawn_save_task(
                         if !app.state.is_dirty() {
                             return None;
                         }
+                        // A sync run saves the pulled workspace, CRDT state and
+                        // cursors before it lands, and the store is behind those
+                        // files until it does. Writing the store's workspace now
+                        // would put older content back over what the run saved —
+                        // and if the app dies before the landing it stays there,
+                        // so the next edit re-expresses the stale copy (a moved
+                        // line came back in its source scheme). Nothing is marked
+                        // clean; try again after the next debounce.
+                        if matches!(
+                            app.sync_run_status,
+                            crate::app::SyncRunStatus::Running { .. }
+                        ) {
+                            app.service_bus.signal_save();
+                            return None;
+                        }
                         // Step timings behind KNOTQ_TYPING_TIMING: this whole
                         // block runs on the UI thread, so anything slow in it is
                         // a freeze the user feels, and the watchdog can only say
