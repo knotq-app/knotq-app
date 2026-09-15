@@ -381,6 +381,27 @@ impl YrsJsonDocument {
                 ("sync".to_string(), serde_json::to_string(&snapshot.sync)?),
             ],
         );
+        // A Daily Queue page that is still bound but not loaded — outside the
+        // date window this device loaded — is absent from `snapshot.schemes`.
+        // Keep its stored entry exactly as it is. Rewriting the nodes from the
+        // loaded schemes alone deleted it: the day's binding and lines survived
+        // but no device could materialize the day any more.
+        let mut listed: HashSet<String> = snapshot
+            .schemes
+            .iter()
+            .map(|scheme| scheme.id.to_string())
+            .collect();
+        let stored_nodes: HashMap<String, String> =
+            string_map_entries(&nodes, &txn).into_iter().collect();
+        for entry in &snapshot.daily_queue {
+            let id = entry.scheme.to_string();
+            if !listed.insert(id.clone()) {
+                continue;
+            }
+            if let Some(stored) = stored_nodes.get(&id) {
+                node_entries.push((id, stored.clone()));
+            }
+        }
         changed |= sync_string_map(&nodes, &mut txn, &node_entries);
         changed |= sync_string_map(&scheme_sync, &mut txn, &scheme_sync_entries);
         changed |= sync_string_map(&folder_sync, &mut txn, &folder_sync_entries);
