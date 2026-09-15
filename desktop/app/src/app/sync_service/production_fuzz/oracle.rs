@@ -59,6 +59,8 @@ pub(super) struct View {
     schemes: HashMap<SchemeId, String>,
     scheme_parent: HashMap<SchemeId, Option<FolderId>>,
     folder_parent: HashMap<FolderId, Option<FolderId>>,
+    /// The workspace's root folder: never user-visible, never losable.
+    root: Option<FolderId>,
     daily: BTreeMap<NaiveDate, SchemeId>,
     /// Item ids that occur more than once — never legitimate.
     duplicate_items: Vec<ItemId>,
@@ -73,6 +75,7 @@ impl View {
         // account on first sign-in — so it is recorded as "root", never as a
         // folder that can be lost or a parent that can change.
         let root = workspace.root;
+        view.root = Some(root);
         let label = |folder: Option<FolderId>| match folder {
             Some(id) if id == root => "root".to_string(),
             other => format!("{other:?}"),
@@ -348,7 +351,10 @@ impl Attribution {
             ));
         }
         for folder in before.folder_parent.keys() {
+            // A folder that became the root (the account's canonical root,
+            // adopted on first sign-in) is not a folder the user lost.
             if !after.folder_parent.contains_key(folder)
+                && after.root != Some(*folder)
                 && !self.folder_destroyed_or_under_destroyed(before, Some(*folder))
             {
                 violations.push(format!(
