@@ -206,10 +206,15 @@ impl DesktopDevice {
             workspace_path,
             mut state,
             account,
+            run_in_flight,
             ..
         } = self;
         // `flush_for_shutdown` first completes elapsed events; the world runs
         // that as a recorded local step (`World::relaunch`) before calling here.
+        // Like the app, a quit before the run lands forgets the run's pulls.
+        if run_in_flight {
+            crate::app::services::abandon_unlanded_sync_run(&workspace_path);
+        }
         crate::app::services::write_shutdown_workspace(&workspace_path, &mut state)
             .expect("shutdown flush");
         let settings = state.settings.clone();

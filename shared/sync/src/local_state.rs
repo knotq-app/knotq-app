@@ -172,6 +172,13 @@ pub struct LocalSyncState {
     /// enters the visible daily range. Older state files simply have no set.
     #[serde(default, skip_serializing_if = "HashSet::is_empty")]
     pub deferred_materialization_pending: HashSet<DocumentId>,
+    /// The documents the latest sync run pulled changes for, recorded when it
+    /// saves its cursors. The run lands them in the UI store afterwards; an app
+    /// that quits before that writes its older store over the run's files, so
+    /// the quit resets these cursors and the next sync pulls them again (see
+    /// `abandon_unlanded_sync_run`). Older state files simply have none.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub unlanded_pulls: Vec<DocumentId>,
 }
 
 impl LocalSyncState {

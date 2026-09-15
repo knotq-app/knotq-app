@@ -288,6 +288,8 @@ pub(super) fn sync_snapshot_in(
         &mut crdt_docs,
         &workspace,
     );
+    // Until this run lands, a quit abandons these pulls (`abandon_unlanded_sync_run`).
+    local_state.unlanded_pulls = pulled_changes.clone();
     if push_result.is_err() {
         // The run returns the push error and never lands; see
         // `forget_pull_of_failed_run`. Its acks above are still worth keeping.

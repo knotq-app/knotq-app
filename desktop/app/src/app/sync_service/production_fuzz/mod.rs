@@ -199,8 +199,16 @@ impl World {
         // pushes happened, but its result is never adopted.
         if self.config.chaos && self.rng.below(10) == 0 {
             drop(run);
-            self.log(format!("device {index} in-flight: crashed before landing"));
-            self.crash(index);
+            if self.rng.below(2) == 0 {
+                self.log(format!("device {index} in-flight: crashed before landing"));
+                self.crash(index);
+            } else {
+                // The user quits (or an update restarts the app) before the run
+                // lands; the flush writes the older store, so the run's pulls
+                // have to come in again.
+                self.log(format!("device {index} in-flight: quit before landing"));
+                self.relaunch(index);
+            }
             self.audit_server(account, index);
             return;
         }

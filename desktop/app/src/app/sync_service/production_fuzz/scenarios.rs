@@ -696,6 +696,100 @@ fn a_line_retyped_while_another_device_moves_it_keeps_the_new_text() {
     world.settle_and_assert();
 }
 
+/// A sync run saves another device's move of a line, and the user quits before
+/// the run lands. The shutdown flush writes the store's older workspace over the
+/// run's files, and with the run's cursors kept the move was never pulled again:
+/// the next edit to the source scheme brought the moved line back for every
+/// device. The quit now resets the cursors of the documents the run pulled.
+#[test]
+fn quitting_while_a_sync_is_in_flight_cannot_bring_a_moved_line_back() {
+    let mut world = world(90_019, 1);
+    let a = world.add_device(Some(0));
+    world.sync(a, 0);
+    let b = world.add_device(Some(0));
+    world.sync(b, 0);
+    world.sync(a, 0);
+    let (source, target, line) = world.local(a, |device, _| {
+        let workspace = device.state.workspace.clone();
+        let mut schemes: Vec<_> = workspace
+            .schemes
+            .values()
+            .filter(|scheme| {
+                !workspace.daily_queue.values().any(|id| *id == scheme.id)
+                    && scheme.items.len() >= 2
+            })
+            .map(|scheme| scheme.id)
+            .collect();
+        schemes.sort();
+        let (source, target) = (schemes[0], schemes[1]);
+        let moved = workspace.scheme(source).unwrap().items[0].clone();
+        let position = workspace.scheme(target).unwrap().items.len();
+        device
+            .state
+            .apply_command(Command::Batch(vec![
+                Command::DeleteItem {
+                    scheme: source,
+                    item: moved.id,
+                },
+                Command::InsertItem {
+                    scheme: target,
+                    position,
+                    item: moved.clone(),
+                },
+            ]))
+            .expect("move line");
+        (source, target, moved.id)
+    });
+    world.sync(a, 0);
+
+    // Device b's run pulls the move and saves it; the user quits before it lands.
+    let run = {
+        let device = world.devices[b].as_mut().unwrap();
+        device.run_sync(&world.accounts[0], false)
+    }
+    .expect("signed in");
+    drop(run);
+    world.relaunch(b);
+
+    world.local(b, |device, _| {
+        let other = device
+            .state
+            .workspace
+            .scheme(source)
+            .unwrap()
+            .items
+            .iter()
+            .find(|item| item.id != line)
+            .expect("another line")
+            .id;
+        device
+            .state
+            .apply_command(Command::UpdateItemText {
+                scheme: source,
+                item: other,
+                text: "edited after the relaunch".to_string(),
+            })
+            .expect("edit the source scheme");
+    });
+    world.sync(b, 0);
+    world.sync(a, 0);
+    for index in [a, b] {
+        let workspace = &world.devices[index].as_ref().unwrap().state.workspace;
+        let holders: Vec<_> = workspace
+            .schemes
+            .values()
+            .filter(|scheme| scheme.item(line).is_some())
+            .map(|scheme| scheme.id)
+            .collect();
+        assert_eq!(
+            holders,
+            vec![target],
+            "device {index}: the moved line should be only in its target scheme"
+        );
+    }
+    world.settle_and_assert();
+}
+
 #[test]
 fn new_install_relaunched_before_its_first_sync_joins_the_account() {
     let mut world = world(90_002, 1);
