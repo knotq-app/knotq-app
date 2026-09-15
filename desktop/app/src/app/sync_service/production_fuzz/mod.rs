@@ -378,7 +378,15 @@ impl World {
                     for index in &indexes {
                         self.sync(*index, 0);
                     }
-                    if self.converged(&indexes) {
+                    // Matching views are not enough: a device whose attempts
+                    // kept failing (injected connection drops) can look
+                    // converged while its edits are still queued. Keep going
+                    // until every queue is empty, or the rounds run out and
+                    // the leftover is reported as a wedge.
+                    let queues_empty = indexes.iter().all(|index| {
+                        self.devices[*index].as_mut().unwrap().pending_edit_count() == 0
+                    });
+                    if queues_empty && self.converged(&indexes) {
                         break;
                     }
                 }
