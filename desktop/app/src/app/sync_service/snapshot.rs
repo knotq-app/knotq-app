@@ -473,16 +473,39 @@ pub(super) fn workspace_for_background_sync(
 }
 
 fn overlay_current_workspace_for_sync(full: &mut Workspace, current: Workspace) {
-    full.id = current.id;
-    full.sync = current.sync;
-    full.root = current.root;
-    full.folders = current.folders;
-    full.scheme_sync = current.scheme_sync;
-    full.folder_sync = current.folder_sync;
-    full.daily_queue = current.daily_queue;
-    full.recently_deleted = current.recently_deleted;
-    full.deleted_scheme_origins = current.deleted_scheme_origins;
-    for (scheme_id, scheme) in current.schemes {
+    // Everything but `schemes` comes from the in-memory workspace: the saved
+    // files can be behind it whenever the save task has not run since an edit.
+    // Only `schemes` merges, because memory holds just the loaded days.
+    // Destructured exhaustively so a field added to `Workspace` has to be
+    // decided here: the folder archive was once left out, and a folder archived
+    // since the last save — in neither the tree nor the trash — was dropped from
+    // the account for every device (production fuzz seed 10005).
+    let Workspace {
+        id,
+        sync,
+        root,
+        folders,
+        schemes,
+        scheme_sync,
+        folder_sync,
+        daily_queue,
+        recently_deleted,
+        deleted_scheme_origins,
+        recently_deleted_folders,
+        deleted_folder_origins,
+    } = current;
+    full.id = id;
+    full.sync = sync;
+    full.root = root;
+    full.folders = folders;
+    full.scheme_sync = scheme_sync;
+    full.folder_sync = folder_sync;
+    full.daily_queue = daily_queue;
+    full.recently_deleted = recently_deleted;
+    full.deleted_scheme_origins = deleted_scheme_origins;
+    full.recently_deleted_folders = recently_deleted_folders;
+    full.deleted_folder_origins = deleted_folder_origins;
+    for (scheme_id, scheme) in schemes {
         full.schemes.insert(scheme_id, scheme);
     }
     full.normalize_one_level_folders();

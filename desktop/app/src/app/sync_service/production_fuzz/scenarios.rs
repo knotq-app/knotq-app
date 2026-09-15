@@ -374,6 +374,64 @@ fn an_edit_made_while_a_sync_is_in_flight_is_pushed() {
     world.settle_and_assert();
 }
 
+/// Fuzz seed 10005: a folder archived and synced before the save task runs.
+/// The run works on the saved workspace overlaid with the in-memory one, and
+/// the overlay did not carry the folder archive — so the run saw a folder that
+/// was in neither the tree nor the trash, dropped it, and pushed an index
+/// without it. The folder vanished for every device instead of moving to the
+/// trash, and a scheme another device had moved into it escaped to the root.
+#[test]
+fn a_folder_archived_just_before_a_sync_stays_in_the_trash() {
+    let mut world = world(90_015, 1);
+    let a = world.add_device(Some(0));
+    let folder = world.local(a, |device, _| {
+        let root = device.state.workspace.root;
+        device
+            .state
+            .apply_command(Command::CreateFolder {
+                parent: root,
+                name: "Archive me".to_string(),
+                position: None,
+            })
+            .expect("create folder");
+        device
+            .state
+            .workspace
+            .folders
+            .values()
+            .find(|folder| folder.name == "Archive me")
+            .expect("created folder")
+            .id
+    });
+    world.sync(a, 0);
+    let b = world.add_device(Some(0));
+    world.sync(b, 0);
+    world.local(a, |device, _| {
+        device
+            .state
+            .apply_command(Command::DeleteFolder { id: folder })
+            .expect("archive folder");
+    });
+    // No save between the archive and the sync.
+    let run = {
+        let device = world.devices[a].as_mut().unwrap();
+        device.run_sync(&world.accounts[0], false)
+    }
+    .expect("signed in");
+    let error = world.devices[a].as_mut().unwrap().land_sync(run);
+    assert!(error.is_none(), "sync failed: {error:?}");
+    world.sync(b, 0);
+    for index in [a, b] {
+        let workspace = &world.devices[index].as_ref().unwrap().state.workspace;
+        assert!(
+            workspace.folders.contains_key(&folder)
+                && workspace.recently_deleted_folders.contains(&folder),
+            "device {index}: the folder archived before the sync is not in the trash"
+        );
+    }
+    world.settle_and_assert();
+}
+
 #[test]
 fn new_install_relaunched_before_its_first_sync_joins_the_account() {
     let mut world = world(90_002, 1);
