@@ -9,11 +9,13 @@ use knotq_model::{DocumentId, Workspace};
 use knotq_state::AppState;
 use knotq_sync::PushedDocument;
 
-/// Drop the pending edits a run pushed.
+/// Drop the pending edits a run pushed, and any the run discarded because their
+/// document is no longer bound (see `drop_unbound_pending_crdt_edits`).
 pub(super) fn clear_pushed_edits(state: &mut AppState, pushed: &[PushedDocument]) {
     for pushed in pushed {
         state.clear_pushed_crdt_edits(pushed.document, pushed.through_local_sequence);
     }
+    state.drop_unbound_pending_crdt_edits();
 }
 
 /// Whether a run's result has to be landed on the live workspace at all.

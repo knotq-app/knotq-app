@@ -368,6 +368,11 @@ impl AppState {
         self.store.pending_crdt_edits()
     }
 
+    /// See [`WorkspaceStore::drop_unbound_pending_crdt_edits`].
+    pub fn drop_unbound_pending_crdt_edits(&mut self) -> usize {
+        self.store.drop_unbound_pending_crdt_edits()
+    }
+
     pub fn has_pending_crdt_edits(&mut self) -> bool {
         self.store.has_pending_crdt_edits()
     }

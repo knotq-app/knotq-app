@@ -463,3 +463,43 @@ fn replace_from_sync_reports_a_change_for_real_remote_content() {
     );
     assert_eq!(item_text(&state, scheme_id, item_id), "from-peer");
 }
+
+/// Production-fuzz seed 3: a scheme edited and then permanently deleted left
+/// its unpushed edit in the store. Every sync run discarded the edit (the
+/// document is no longer bound, so the server can never take it) but only its
+/// own copy, so the device reported unsynced work forever.
+#[test]
+fn edits_to_a_permanently_deleted_scheme_are_dropped_not_kept_forever() {
+    let (mut state, scheme_id) = app_state_with_scheme("Doomed");
+    let document = state.workspace.scheme_sync[&scheme_id].id;
+    state
+        .apply_command(Command::InsertItem {
+            scheme: scheme_id,
+            position: 0,
+            item: Item::new("edited before deleting"),
+        })
+        .unwrap();
+    assert!(
+        state
+            .pending_crdt_edits()
+            .iter()
+            .any(|edit| edit.document == document),
+        "the edit is pending for the scheme's document"
+    );
+
+    state
+        .apply_command(Command::DeleteScheme { id: scheme_id })
+        .unwrap();
+    state
+        .apply_command(Command::PermanentlyDeleteScheme { id: scheme_id })
+        .unwrap();
+    assert!(state.drop_unbound_pending_crdt_edits() > 0);
+    assert!(
+        state
+            .pending_crdt_edits()
+            .iter()
+            .all(|edit| edit.document != document),
+        "an edit to the deleted scheme's document is still pending"
+    );
+    assert_eq!(state.drop_unbound_pending_crdt_edits(), 0);
+}

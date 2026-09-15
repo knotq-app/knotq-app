@@ -453,6 +453,42 @@ impl WorkspaceStore {
         cleared
     }
 
+    /// Drop unpushed edits addressed to a document this workspace no longer binds
+    /// (a scheme permanently deleted after it was edited), returning how many.
+    ///
+    /// A sync run discards such an edit before pushing — the server has no base
+    /// for the document and never will — but it only discards its own copy. The
+    /// store's copy was handed to the next run, discarded again, and so on for
+    /// ever: the device reported unsynced work it could never push.
+    pub fn drop_unbound_pending_crdt_edits(&mut self) -> usize {
+        self.flush_crdt();
+        let workspace = &self.workspace;
+        let bound = |document: DocumentId| {
+            workspace.sync.id == document
+                || workspace
+                    .scheme_sync
+                    .values()
+                    .any(|meta| meta.id == document)
+                || workspace
+                    .folder_sync
+                    .values()
+                    .any(|meta| meta.id == document)
+        };
+        let mut dropped = 0;
+        for operation in &mut self.pending_operations {
+            let before = operation.crdt_updates.len();
+            operation
+                .crdt_updates
+                .retain(|update| bound(update.document));
+            dropped += before - operation.crdt_updates.len();
+        }
+        if dropped > 0 {
+            self.pending_operations
+                .retain(|operation| !operation.crdt_updates.is_empty());
+        }
+        dropped
+    }
+
     /// Replace the workspace while preserving the CRDT documents' stable Yjs identity
     /// (clientID + clocks). The CRDT is reconstructed from its own current state, so a
     /// direct (non-command) workspace mutation never mints a throwaway identity that
