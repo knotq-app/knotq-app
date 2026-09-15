@@ -188,6 +188,22 @@ impl World {
             let label = self.local(index, actions::random_local_action);
             self.log(format!("device {index} in-flight: {label}"));
         }
+        // The save task can run between a run's own save and its landing,
+        // writing the store's pre-landing workspace over the files the run
+        // just wrote.
+        if self.rng.below(4) == 0 {
+            let _ = self.devices[index].as_mut().unwrap().save();
+            self.log(format!("device {index} in-flight: saved"));
+        }
+        // The app can quit or crash before a finished run lands: the run's
+        // pushes happened, but its result is never adopted.
+        if self.config.chaos && self.rng.below(10) == 0 {
+            drop(run);
+            self.log(format!("device {index} in-flight: crashed before landing"));
+            self.crash(index);
+            self.audit_server(account, index);
+            return;
+        }
         let before = self.view(index);
         let error = self.devices[index].as_mut().unwrap().land_sync(run);
         let epoch_stale = error.as_ref().is_some_and(|err| {
