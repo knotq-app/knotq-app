@@ -738,6 +738,23 @@ impl WorkspaceStore {
         {
             return false;
         }
+        // The run's index can bind a scheme this store has loaded to a content
+        // document the store has never held — another device re-created the
+        // scheme's document. Merging only applies updates to documents the store
+        // already has, so that document would never be built here: the scheme
+        // would keep materializing from its old plain copy while every sync
+        // reported a change (deep production fuzz, seed 10004: lines deleted on
+        // every other device stayed on one device forever). Let the caller replace
+        // instead; that rebuilds the documents from the run's states.
+        let known_documents = self.crdt.known_document_ids();
+        if sync_workspace.scheme_sync.iter().any(|(scheme, meta)| {
+            meta.kind == SyncDocumentKind::Scheme
+                && self.workspace.schemes.contains_key(scheme)
+                && !known_documents.contains(&meta.id)
+                && crdt_states.contains_key(&meta.id)
+        }) {
+            return false;
+        }
         let received_at = Utc::now();
         // `crdt_states` always carries EVERY document, but a sync typically changes a
         // handful. Applying an unchanged document's full state is a costly no-op
