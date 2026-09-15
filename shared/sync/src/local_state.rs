@@ -48,6 +48,14 @@ pub fn fold_pending_edits_into_state<'a>(
     (after != before).then_some(after)
 }
 
+/// Which fields of one line a queued local edit changes, as an opaque bitmask
+/// owned by the desktop state (see `knotq_state::moved_edits`).
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct QueuedItemFields {
+    pub item: String,
+    pub fields: u32,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct PendingCrdtEdit {
     pub operation_id: OperationId,
@@ -140,6 +148,13 @@ pub struct LocalSyncState {
     pub last_media_reconciliation_at: Option<DateTime<Utc>>,
     #[serde(default)]
     pub pending: VecDeque<PendingCrdtEdit>,
+    /// Which fields of which lines each queued local edit changes, keyed by the
+    /// edit's operation id. The CRDT update does not say, and a relaunch empties
+    /// the in-memory operations that do — so a line another device moves to a
+    /// different scheme after the relaunch could not get this device's edit
+    /// re-applied. Absent in older files; entries whose edit is gone are pruned.
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub queued_item_fields: HashMap<OperationId, Vec<QueuedItemFields>>,
     /// Last applied recovery generation (see [`SYNC_STATE_RECOVERY_VERSION`]).
     /// Absent in older files, so it defaults to 0 and triggers the heal.
     #[serde(default)]
@@ -325,6 +340,48 @@ impl LocalSyncState {
         }
         self.clear_cursors_for_account_change();
         true
+    }
+
+    /// Record which line fields the queued edit `operation` changes.
+    pub fn record_queued_item_fields(
+        &mut self,
+        operation: OperationId,
+        fields: Vec<QueuedItemFields>,
+    ) {
+        if !fields.is_empty() {
+            self.queued_item_fields.insert(operation, fields);
+        }
+    }
+
+    /// Drop the field records of edits that are no longer queued.
+    pub fn prune_queued_item_fields(&mut self) {
+        if self.queued_item_fields.is_empty() {
+            return;
+        }
+        let queued: HashSet<OperationId> =
+            self.pending.iter().map(|edit| edit.operation_id).collect();
+        self.queued_item_fields
+            .retain(|operation, _| queued.contains(operation));
+    }
+
+    /// The union of the line fields every queued edit changes, one entry per
+    /// line, in a stable order.
+    pub fn queued_item_field_union(&self) -> Vec<QueuedItemFields> {
+        let mut union: std::collections::BTreeMap<String, u32> = std::collections::BTreeMap::new();
+        let queued: HashSet<OperationId> =
+            self.pending.iter().map(|edit| edit.operation_id).collect();
+        for (operation, fields) in &self.queued_item_fields {
+            if !queued.contains(operation) {
+                continue;
+            }
+            for field in fields {
+                *union.entry(field.item.clone()).or_default() |= field.fields;
+            }
+        }
+        union
+            .into_iter()
+            .map(|(item, fields)| QueuedItemFields { item, fields })
+            .collect()
     }
 
     pub fn push_pending(&mut self, edit: PendingCrdtEdit) {
@@ -837,8 +894,34 @@ pub fn compact_pending_documents(
         let Some(merged) = merge_document_pending(sync_state, document) else {
             continue;
         };
+        // The merged edit gets a new operation id: carry the field records of
+        // every edit it replaces over to it.
+        let mut carried: std::collections::BTreeMap<String, u32> =
+            std::collections::BTreeMap::new();
+        for edit in sync_state
+            .pending
+            .iter()
+            .filter(|edit| edit.document == document)
+        {
+            for field in sync_state
+                .queued_item_fields
+                .get(&edit.operation_id)
+                .into_iter()
+                .flatten()
+            {
+                *carried.entry(field.item.clone()).or_default() |= field.fields;
+            }
+        }
+        let merged_operation = merged.operation_id;
         sync_state.pending.retain(|edit| edit.document != document);
         sync_state.push_pending(merged);
+        sync_state.record_queued_item_fields(
+            merged_operation,
+            carried
+                .into_iter()
+                .map(|(item, fields)| QueuedItemFields { item, fields })
+                .collect(),
+        );
         compacted += 1;
     }
     if compacted > 0 {
@@ -1707,5 +1790,101 @@ mod fold_pending_tests {
         );
         // A document with no saved state is left for the sync that seeds it.
         assert_eq!(fold_pending_edits_into_state(document, &[], &pending), None);
+    }
+}
+
+#[cfg(test)]
+mod queued_item_field_tests {
+    use super::{compact_pending_documents, LocalSyncState, PendingCrdtEdit, QueuedItemFields};
+    use chrono::Utc;
+    use knotq_model::{DocumentId, OperationId, ReplicaId, SyncDocumentKind, WorkspaceId};
+    use yrs::{Doc, GetString, ReadTxn, Text, Transact};
+
+    fn edit(document: DocumentId, sequence: u64, doc: &Doc) -> PendingCrdtEdit {
+        let before = doc.transact().state_vector();
+        let text = doc.get_or_insert_text("body");
+        {
+            let mut txn = doc.transact_mut();
+            let len = text.len(&txn);
+            text.insert(&mut txn, len, "x");
+        }
+        let _ = text.get_string(&doc.transact());
+        PendingCrdtEdit {
+            operation_id: OperationId::new(),
+            workspace_id: WorkspaceId::new(),
+            replica_id: ReplicaId::new(),
+            local_sequence: sequence,
+            created_at: Utc::now(),
+            document,
+            kind: SyncDocumentKind::Scheme,
+            update_v1: doc.transact().encode_diff_v1(&before),
+            touched_items: Vec::new(),
+        }
+    }
+
+    fn field(item: &str, fields: u32) -> QueuedItemFields {
+        QueuedItemFields {
+            item: item.to_string(),
+            fields,
+        }
+    }
+
+    #[test]
+    fn records_are_pruned_with_their_edits_and_unioned_per_line() {
+        let document = DocumentId::new();
+        let doc = Doc::new();
+        let mut state = LocalSyncState::default();
+        let first = edit(document, 1, &doc);
+        let second = edit(document, 2, &doc);
+        state.record_queued_item_fields(first.operation_id, vec![field("line", 1)]);
+        state.record_queued_item_fields(
+            second.operation_id,
+            vec![field("line", 4), field("other", 2)],
+        );
+        state.push_pending(first.clone());
+        state.push_pending(second);
+        assert_eq!(
+            state.queued_item_field_union(),
+            vec![field("line", 5), field("other", 2)]
+        );
+
+        state.mark_pushed_edits(document, &[(first.operation_id, 1)]);
+        state.prune_queued_item_fields();
+        assert!(!state.queued_item_fields.contains_key(&first.operation_id));
+        assert_eq!(
+            state.queued_item_field_union(),
+            vec![field("line", 4), field("other", 2)]
+        );
+    }
+
+    #[test]
+    fn compaction_carries_records_to_the_merged_edit() {
+        let document = DocumentId::new();
+        let doc = Doc::new();
+        let mut state = LocalSyncState::default();
+        for sequence in 1..=3 {
+            let queued = edit(document, sequence, &doc);
+            state
+                .record_queued_item_fields(queued.operation_id, vec![field("line", 1 << sequence)]);
+            state.push_pending(queued);
+        }
+        assert_eq!(compact_pending_documents(&mut state, 2), 1);
+        state.prune_queued_item_fields();
+        assert_eq!(state.pending.len(), 1);
+        assert_eq!(state.queued_item_field_union(), vec![field("line", 0b1110)]);
+    }
+
+    #[test]
+    fn older_files_without_records_still_load_and_records_round_trip() {
+        let old = serde_json::to_string(&LocalSyncState::default()).unwrap();
+        assert!(!old.contains("queued_item_fields"));
+        let loaded: LocalSyncState = serde_json::from_str(&old).unwrap();
+        assert!(loaded.queued_item_fields.is_empty());
+
+        let mut state = LocalSyncState::default();
+        state.record_queued_item_fields(OperationId::new(), vec![field("line", 3)]);
+        let json = serde_json::to_string(&state).unwrap();
+        let back: LocalSyncState = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.queued_item_fields, state.queued_item_fields);
     }
 }

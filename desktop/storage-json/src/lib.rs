@@ -50,8 +50,8 @@ pub use settings::{
     SettingsLoadError,
 };
 pub use sync_state::{
-    load_local_sync_state, save_local_sync_state, save_pending_crdt_edits, sync_state_data_dir,
-    sync_state_path,
+    load_local_sync_state, save_local_sync_state, save_pending_crdt_edits,
+    save_pending_crdt_edits_with_item_fields, sync_state_data_dir, sync_state_path,
 };
 pub use upgrade::{
     data_layout_path, registered_migrations, run_pending_upgrades, DataLayoutRecord, DataPaths,

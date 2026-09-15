@@ -32,8 +32,11 @@ pub(super) fn clear_pushed_edits(
 /// The line edits still queued before a landing clears what the run pushed, so
 /// a line another device moved to another scheme can keep them (see
 /// [`reassert_local_item_edits`]).
-pub(super) fn capture_local_item_edits(state: &AppState) -> knotq_state::LocalItemEdits {
-    state.capture_local_item_edits()
+pub(super) fn capture_local_item_edits(
+    state: &AppState,
+    queued: &[knotq_sync::QueuedItemFields],
+) -> knotq_state::LocalItemEdits {
+    state.capture_local_item_edits(queued)
 }
 
 /// After landing: re-apply this device's line edits to lines another device

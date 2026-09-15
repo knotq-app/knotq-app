@@ -10,8 +10,8 @@ use chrono::NaiveDate;
 use knotq_model::{AppSettings, Workspace};
 use knotq_state::{daily_queue_default_window_start, AppState};
 use knotq_storage_json::{
-    load_workspace_with_options, run_pending_upgrades, save_pending_crdt_edits, save_workspace,
-    save_workspace_incremental, WorkspaceLoadOptions,
+    load_workspace_with_options, run_pending_upgrades, save_pending_crdt_edits_with_item_fields,
+    save_workspace, save_workspace_incremental, WorkspaceLoadOptions,
 };
 
 use super::super::landing::{
@@ -174,6 +174,7 @@ impl DesktopDevice {
             return Ok(());
         }
         let pending = self.state.pending_crdt_edits();
+        let queued_item_fields = self.state.queued_item_fields();
         let (scope, handles) = self.state.take_crdt_save_scope();
         let dirty_ids = std::mem::take(&mut self.state.dirty_schemes);
         self.state.index_dirty = false;
@@ -187,6 +188,7 @@ impl DesktopDevice {
             &workspace,
             &dirty_ids,
             &pending,
+            &queued_item_fields,
             scope,
             &crdt_states,
         );
@@ -253,7 +255,11 @@ impl DesktopDevice {
                     save_workspace_incremental(&workspace_path, &workspace, &dirty_ids)
                 };
                 if matches!(point, CrashPoint::AfterPending) {
-                    let _ = save_pending_crdt_edits(&workspace_path, &state.pending_crdt_edits());
+                    let _ = save_pending_crdt_edits_with_item_fields(
+                        &workspace_path,
+                        &state.pending_crdt_edits(),
+                        &state.queued_item_fields(),
+                    );
                 }
             }
         }
@@ -294,6 +300,7 @@ impl DesktopDevice {
             account: account_settings,
             replica_id: self.state.settings.replica_id,
             pending,
+            queued_item_fields: self.state.queued_item_fields(),
             crdt_states,
             notification_defaults: self.state.settings.notification_defaults,
             reuse_schedule: None,
@@ -320,7 +327,8 @@ impl DesktopDevice {
         self.run_in_flight = false;
         match run.result {
             Ok(result) => {
-                let local_item_edits = capture_local_item_edits(&self.state);
+                let local_item_edits =
+                    capture_local_item_edits(&self.state, &result.queued_item_fields);
                 clear_pushed_edits(&mut self.state, &result.pushed, run.watermark);
                 if run_changed_workspace(
                     result.remote_updates_applied,

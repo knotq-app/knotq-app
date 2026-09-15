@@ -87,6 +87,10 @@ pub(super) fn sync_snapshot_in(
         &snapshot.account,
     );
     merge_pending(&mut local_state, snapshot.pending);
+    for (operation, fields) in snapshot.queued_item_fields {
+        local_state.record_queued_item_fields(operation, fields);
+    }
+    local_state.prune_queued_item_fields();
 
     let transport = env.transport;
     let client = env.side_channel;
@@ -278,6 +282,8 @@ pub(super) fn sync_snapshot_in(
     // push below fails partway, so a transient push error never forces the next
     // sync to re-download every document from sequence zero. The merged workspace
     // above is already durable, so the cursor never runs ahead of it.
+    // The records of the edits about to be pushed, before the push clears them.
+    let queued_item_fields = local_state.queued_item_field_union();
     let push_result = batch_push_pending(
         transport,
         &mut local_state,
@@ -297,6 +303,7 @@ pub(super) fn sync_snapshot_in(
             local_state.reset_pull_cursor(*document);
         }
     }
+    local_state.prune_queued_item_fields();
     save_local_sync_state(path, &local_state)?;
     // The push's own self-heal may have repopulated a schema-less document after
     // the capture above; persist the healed state so this device's future diffs
@@ -393,6 +400,7 @@ pub(super) fn sync_snapshot_in(
         workspace,
         crdt_states: merged_crdt_states,
         pushed,
+        queued_item_fields,
         remote_updates_applied,
         remaining_pending: local_state.pending.len(),
         local_workspace_changed: local_workspace_changed || repaired_workspace_changed,

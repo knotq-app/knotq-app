@@ -11,7 +11,8 @@
 use std::collections::HashMap;
 
 use knotq_commands::{Command, CommandOrigin, DateKind};
-use knotq_model::{Item, ItemId, SchemeId, Workspace};
+use knotq_model::{Item, ItemId, OperationId, SchemeId, Workspace};
+use knotq_sync::QueuedItemFields;
 
 use crate::AppState;
 
@@ -31,6 +32,51 @@ struct EditedFields {
 }
 
 impl EditedFields {
+    /// The persisted form (see `LocalSyncState::queued_item_fields`). Bit
+    /// positions are stored on disk: append only.
+    fn bits(&self) -> u32 {
+        [
+            self.whole,
+            self.content,
+            self.marker,
+            self.marker_family,
+            self.indent,
+            self.start,
+            self.end,
+            self.available,
+            self.recurrence,
+            self.priority,
+            self.state,
+        ]
+        .iter()
+        .enumerate()
+        .fold(
+            0,
+            |bits, (bit, set)| if *set { bits | (1 << bit) } else { bits },
+        )
+    }
+
+    fn from_bits(bits: u32) -> Self {
+        let set = |bit: u32| bits & (1 << bit) != 0;
+        Self {
+            whole: set(0),
+            content: set(1),
+            marker: set(2),
+            marker_family: set(3),
+            indent: set(4),
+            start: set(5),
+            end: set(6),
+            available: set(7),
+            recurrence: set(8),
+            priority: set(9),
+            state: set(10),
+        }
+    }
+
+    fn union(&mut self, other: Self) {
+        *self = Self::from_bits(self.bits() | other.bits());
+    }
+
     fn any(&self) -> bool {
         self.whole
             || self.content
@@ -129,10 +175,20 @@ impl AppState {
     /// Record which fields of which lines this device's queued operations edit,
     /// with each line's scheme and value right now. Call it before a landing
     /// clears the operations the run pushed.
-    pub fn capture_local_item_edits(&self) -> LocalItemEdits {
+    pub fn capture_local_item_edits(&self, queued: &[QueuedItemFields]) -> LocalItemEdits {
         let mut fields: HashMap<ItemId, EditedFields> = HashMap::new();
         for operation in self.store.pending_operations() {
             record(&mut fields, &operation.command);
+        }
+        // Edits from before a relaunch are no longer store operations; the sync
+        // run hands back the field records persisted with them.
+        for record in queued {
+            if let Ok(item) = record.item.parse::<ItemId>() {
+                fields
+                    .entry(item)
+                    .or_default()
+                    .union(EditedFields::from_bits(record.fields));
+            }
         }
         let workspace = self.store.workspace();
         let edits = fields
@@ -144,6 +200,29 @@ impl AppState {
             })
             .collect();
         LocalItemEdits { edits }
+    }
+
+    /// Which line fields each queued store operation edits, for persisting with
+    /// the pending queue so the record survives a relaunch.
+    pub fn queued_item_fields(&self) -> HashMap<OperationId, Vec<QueuedItemFields>> {
+        let mut out = HashMap::new();
+        for operation in self.store.pending_operations() {
+            let mut fields: HashMap<ItemId, EditedFields> = HashMap::new();
+            record(&mut fields, &operation.command);
+            let mut records: Vec<QueuedItemFields> = fields
+                .into_iter()
+                .filter(|(_, edited)| edited.any())
+                .map(|(item, edited)| QueuedItemFields {
+                    item: item.to_string(),
+                    fields: edited.bits(),
+                })
+                .collect();
+            if !records.is_empty() {
+                records.sort_by(|left, right| left.item.cmp(&right.item));
+                out.insert(operation.id, records);
+            }
+        }
+        out
     }
 
     /// After a sync landed: a line this device edited that now sits in a

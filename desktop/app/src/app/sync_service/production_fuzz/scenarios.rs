@@ -790,6 +790,94 @@ fn quitting_while_a_sync_is_in_flight_cannot_bring_a_moved_line_back() {
     world.settle_and_assert();
 }
 
+/// Deep production fuzz, seed 10000 step 179: a line is retyped, the app is
+/// saved and relaunched before it syncs, and meanwhile another device moves the
+/// line to a different scheme. The relaunch emptied the store's queued
+/// operations, so landing no longer knew the line's text had been edited and the
+/// moved copy's older text won.
+#[test]
+fn a_line_retyped_before_a_relaunch_keeps_its_text_when_another_device_moves_it() {
+    let mut world = world(90_020, 1);
+    let a = world.add_device(Some(0));
+    world.sync(a, 0);
+    let b = world.add_device(Some(0));
+    world.sync(b, 0);
+    world.sync(a, 0);
+    let (source, target, line) = {
+        let workspace = world.devices[a].as_ref().unwrap().state.workspace.clone();
+        let mut schemes: Vec<_> = workspace
+            .schemes
+            .values()
+            .filter(|scheme| {
+                !workspace.daily_queue.values().any(|id| *id == scheme.id)
+                    && scheme.items.len() >= 2
+            })
+            .map(|scheme| scheme.id)
+            .collect();
+        schemes.sort();
+        let source = schemes[0];
+        (
+            source,
+            schemes[1],
+            workspace.scheme(source).unwrap().items[0].id,
+        )
+    };
+    world.local(b, |device, _| {
+        device
+            .state
+            .apply_command(Command::UpdateItemText {
+                scheme: source,
+                item: line,
+                text: "retyped before the relaunch".to_string(),
+            })
+            .expect("retype line");
+    });
+    let _ = world.devices[b].as_mut().unwrap().save();
+    world.relaunch(b);
+    world.local(a, |device, _| {
+        let workspace = device.state.workspace.clone();
+        let moved = workspace
+            .scheme(source)
+            .unwrap()
+            .item(line)
+            .unwrap()
+            .clone();
+        let position = workspace.scheme(target).unwrap().items.len();
+        device
+            .state
+            .apply_command(Command::Batch(vec![
+                Command::DeleteItem {
+                    scheme: source,
+                    item: line,
+                },
+                Command::InsertItem {
+                    scheme: target,
+                    position,
+                    item: moved,
+                },
+            ]))
+            .expect("move line");
+    });
+    world.sync(a, 0);
+    world.sync(b, 0);
+    world.sync(b, 0);
+    world.sync(a, 0);
+    for index in [b, a] {
+        let workspace = &world.devices[index].as_ref().unwrap().state.workspace;
+        let holders: Vec<_> = workspace
+            .schemes
+            .values()
+            .filter_map(|scheme| scheme.item(line).map(|item| (scheme.id, item.text())))
+            .collect();
+        assert_eq!(
+            holders,
+            vec![(target, "retyped before the relaunch".to_string())],
+            "device {index}: the moved line should be in its target scheme with b's text"
+        );
+    }
+    world.settle_and_assert();
+}
+
 #[test]
 fn new_install_relaunched_before_its_first_sync_joins_the_account() {
     let mut world = world(90_002, 1);

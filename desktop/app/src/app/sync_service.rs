@@ -164,6 +164,9 @@ struct SyncSnapshot {
     account: SyncAccountSettings,
     replica_id: ReplicaId,
     pending: Vec<PendingCrdtEdit>,
+    /// Which line fields each of `pending`'s store operations edits (see
+    /// `LocalSyncState::queued_item_fields`).
+    queued_item_fields: HashMap<knotq_model::OperationId, Vec<knotq_sync::QueuedItemFields>>,
     /// This device's current CRDT document state, so the background sync seeds its
     /// CRDT from the UI store's latest local edits (with the same stable identity)
     /// rather than from a possibly-staler on-disk copy. Shared, not copied: this
@@ -200,6 +203,9 @@ struct SyncRunResult {
     /// data).
     crdt_states: HashMap<DocumentId, std::sync::Arc<[u8]>>,
     pushed: Vec<PushedDocument>,
+    /// The line field records of the queued edits this run pushed, including ones
+    /// persisted before a relaunch, for landing's re-apply of moved lines.
+    queued_item_fields: Vec<knotq_sync::QueuedItemFields>,
     remote_updates_applied: usize,
     remaining_pending: usize,
     local_workspace_changed: bool,

@@ -348,6 +348,7 @@ async fn run_sync_attempt(
                 account,
                 replica_id: app.settings.replica_id,
                 pending,
+                queued_item_fields: app.state.queued_item_fields(),
                 crdt_states,
                 notification_defaults,
                 reuse_schedule,
@@ -387,11 +388,13 @@ async fn run_sync_attempt(
             let media_downloaded = result.media_downloaded;
             let notification_schedule = result.notification_schedule.clone();
             let squash_attempted = result.squash_attempted;
+            let queued_item_fields = result.queued_item_fields.clone();
             let _ = weak.update(cx, |app, cx| {
                 if squash_attempted {
                     app.last_squash_attempt_at = Some(Utc::now());
                 }
-                let local_item_edits = super::landing::capture_local_item_edits(&app.state);
+                let local_item_edits =
+                    super::landing::capture_local_item_edits(&app.state, &queued_item_fields);
                 super::landing::clear_pushed_edits(&mut app.state, &pushed, local_edit_watermark);
                 // Cache the schedule this run used against the generation it was
                 // computed at, so the next run can skip recomputing it when nothing

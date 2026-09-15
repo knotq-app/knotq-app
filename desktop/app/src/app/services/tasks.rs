@@ -8,7 +8,9 @@ use gpui::{Context, Task};
 use knotq_model::{ItemId, ItemKind, OccurrenceId, SchemeId, Workspace};
 use knotq_rrule::ItemOccurrenceExt;
 use knotq_state::CrdtSaveScope;
-use knotq_storage_json::{save_crdt_state, save_crdt_state_incremental, save_pending_crdt_edits};
+use knotq_storage_json::{
+    save_crdt_state, save_crdt_state_incremental, save_pending_crdt_edits_with_item_fields,
+};
 
 use super::{
     save_workspace, save_workspace_incremental, workspace_path, AppServiceBus, KnotQApp,
@@ -25,6 +27,7 @@ pub(crate) fn write_save_snapshot(
     workspace: &Workspace,
     dirty_ids: &std::collections::HashSet<SchemeId>,
     pending_crdt_edits: &[knotq_sync::PendingCrdtEdit],
+    queued_item_fields: &HashMap<knotq_model::OperationId, Vec<knotq_sync::QueuedItemFields>>,
     crdt_scope: CrdtSaveScope,
     crdt_states: &HashMap<knotq_model::DocumentId, std::sync::Arc<[u8]>>,
 ) -> anyhow::Result<()> {
@@ -37,7 +40,9 @@ pub(crate) fn write_save_snapshot(
     // restart restores them consistently (and with their stable identity)
     // rather than rebuilding.
     result
-        .and_then(|_| save_pending_crdt_edits(path, pending_crdt_edits))
+        .and_then(|_| {
+            save_pending_crdt_edits_with_item_fields(path, pending_crdt_edits, queued_item_fields)
+        })
         .and_then(|_| match crdt_scope {
             // Only a full save may remove a file, so it is the one that sweeps
             // documents that went away and retires the legacy blob.
@@ -90,6 +95,7 @@ pub(crate) fn spawn_save_task(
                         let step = crate::app::services::step_timing();
                         let t0 = std::time::Instant::now();
                         let pending_crdt_edits = app.state.pending_crdt_edits();
+                        let queued_item_fields = app.state.queued_item_fields();
                         let t_pending = t0.elapsed();
                         // Handles, not bytes. Serializing a large scheme's CRDT
                         // is several milliseconds and this block runs on the UI
@@ -126,6 +132,7 @@ pub(crate) fn spawn_save_task(
                             workspace_clone,
                             dirty_ids,
                             pending_crdt_edits,
+                            queued_item_fields,
                             crdt_scope,
                             crdt_state_handles,
                         ))
@@ -133,7 +140,14 @@ pub(crate) fn spawn_save_task(
                     .ok()
                     .flatten();
 
-                if let Some((ws, dirty_ids, pending_crdt_edits, crdt_scope, crdt_state_handles)) =
+                if let Some((
+                    ws,
+                    dirty_ids,
+                    pending_crdt_edits,
+                    queued_item_fields,
+                    crdt_scope,
+                    crdt_state_handles,
+                )) =
                     snapshot
                 {
                     let path = workspace_path();
@@ -153,6 +167,7 @@ pub(crate) fn spawn_save_task(
                                 &ws,
                                 &dirty_ids,
                                 &pending_crdt_edits,
+                                &queued_item_fields,
                                 crdt_scope,
                                 &crdt_states,
                             )
