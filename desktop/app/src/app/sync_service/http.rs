@@ -34,16 +34,16 @@ impl SyncTransport for SyncHttpClient {
     }
 }
 
-impl SyncHttpClient {
+impl super::SyncSideChannel for SyncHttpClient {
     /// `POST /v1/sync/squash` — propose a history squash. Every rejection
     /// (conflict, too-soon, content mismatch) is an expected, benign outcome
     /// the caller merely logs.
-    pub(super) fn squash(&self, request: &SquashDocumentRequest) -> Result<SquashDocumentResponse> {
+    fn squash(&self, request: &SquashDocumentRequest) -> Result<SquashDocumentResponse> {
         let url = format!("{}/v1/sync/squash", self.api_base);
         self.post_json(&url, request)
     }
 
-    pub(super) fn upload_media_asset(&self, media: SyncMediaAsset, bytes: &[u8]) -> Result<()> {
+    fn upload_media_asset(&self, media: SyncMediaAsset, bytes: &[u8]) -> Result<()> {
         let url = self.media_url(media);
         self.authorized(ureq::put(&url))
             .set("content-type", media_content_type(media.format))
@@ -52,7 +52,7 @@ impl SyncHttpClient {
         Ok(())
     }
 
-    pub(super) fn download_media_asset(&self, media: SyncMediaAsset) -> Result<Option<Vec<u8>>> {
+    fn download_media_asset(&self, media: SyncMediaAsset) -> Result<Option<Vec<u8>>> {
         let url = self.media_url(media);
         let response = match self.authorized(ureq::get(&url)).call() {
             Ok(response) => response,
@@ -84,7 +84,9 @@ impl SyncHttpClient {
         }
         Ok(Some(bytes))
     }
+}
 
+impl SyncHttpClient {
     fn media_url(&self, media: SyncMediaAsset) -> String {
         format!(
             "{}/v1/sync/documents/{}/media/{}",

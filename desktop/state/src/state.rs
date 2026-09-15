@@ -5,14 +5,14 @@ use knotq_commands::{ChangeSet, Command, CommandError, CommandOrigin, CommandRec
 use knotq_index::IndexedWorkspace;
 use knotq_model::{
     AppSettings, CalendarViewMode, CalendarWeekRange, DocumentId, NodeRef, NotificationDefaults,
-    SavedWindowPosition, SavedWindowSize, SchemeId, ThemeMode, TimeFormat, Workspace,
+    SavedWindowPosition, SavedWindowSize, Scheme, SchemeId, ThemeMode, TimeFormat, Workspace,
 };
 use knotq_sync::PendingCrdtEdit;
 
 use crate::{
     CrdtSaveScope, DailyQueueState, EditorSessions, EditorUndoGroup, EventBus, NotificationState,
     RetainedCompletedItems, Selection, UndoScope, UndoStore, View, WorkspaceDirtyState,
-    WorkspaceStore,
+    WorkspaceStore, WorkspaceView,
 };
 
 pub struct AppState {
@@ -31,9 +31,6 @@ pub struct AppState {
     pub(crate) daily_queue: DailyQueueState,
     pub(crate) notifications: NotificationState,
     pub(crate) event_bus: EventBus,
-    // True when app code has mutated `workspace` directly and the canonical store
-    // must be rebuilt before the next dispatched command.
-    direct_workspace_dirty: bool,
     // Monotonic counter bumped by every route that can change `workspace` or
     // `retained_completed`.
     content_revision: u64,
@@ -52,7 +49,11 @@ pub struct AppState {
 
     // Fields still read directly by knotq-app during the shell slimming phase.
     // Keep them synchronized when dispatching through state.
-    pub workspace: Workspace,
+    //
+    // The workspace is readable here but not writable: every change goes through
+    // the store (commands, sync landing, the named entry points below) so there
+    // is exactly one path by which content reaches the CRDT documents.
+    pub workspace: WorkspaceView,
     pub theme_mode: ThemeMode,
     pub system_theme_dark: bool,
     pub calendar_view: CalendarViewMode,
@@ -108,12 +109,11 @@ impl AppState {
             daily_queue: daily_queue.clone(),
             notifications,
             event_bus: EventBus::default(),
-            direct_workspace_dirty: false,
             content_revision: 0,
             schedule_revision: 0,
             scheme_schedule_revisions: HashMap::new(),
             all_schemes_schedule_revision: 0,
-            workspace,
+            workspace: WorkspaceView::new(workspace),
             theme_mode: settings.theme_mode,
             system_theme_dark: true,
             calendar_view: settings.calendar_view,
@@ -254,7 +254,6 @@ impl AppState {
     pub fn mark_dirty_from_command(&mut self, cmd: &Command) {
         self.store.mark_dirty_from_command(cmd);
         self.sync_workspace_from_store_dirty();
-        self.direct_workspace_dirty = true;
         self.bump_content_revision();
     }
 
@@ -263,7 +262,6 @@ impl AppState {
         self.store.mark_scheme_dirty(scheme_id);
         self.dirty_schemes.insert(scheme_id);
         self.index_dirty = true;
-        self.direct_workspace_dirty = true;
         self.bump_content_revision();
     }
 
@@ -271,13 +269,94 @@ impl AppState {
     pub fn mark_index_dirty(&mut self) {
         self.store.mark_index_dirty();
         self.index_dirty = true;
-        self.direct_workspace_dirty = true;
         self.bump_content_revision();
     }
 
-    pub fn mark_direct_workspace_dirty(&mut self) {
-        self.direct_workspace_dirty = true;
-        self.bump_content_revision();
+    /// Adopt Daily Queue schemes paged in from disk. Not an edit — see
+    /// [`WorkspaceStore::adopt_loaded_schemes`]. Returns whether any was adopted.
+    pub fn adopt_loaded_schemes(&mut self, schemes: Vec<Scheme>) -> bool {
+        self.sync_store_from_workspace();
+        if self.store.adopt_loaded_schemes(schemes) == 0 {
+            return false;
+        }
+        self.sync_workspace_from_store();
+        true
+    }
+
+    /// Normalize the workspace index and record it as an index edit. See
+    /// [`WorkspaceStore::repair_workspace_index`].
+    pub fn repair_workspace_index(&mut self) -> bool {
+        self.sync_store_from_workspace();
+        if !self.store.repair_workspace_index() {
+            return false;
+        }
+        self.sync_workspace_from_store();
+        true
+    }
+
+    /// Make `date`'s Daily Queue page exist and be ready to edit. The one way a
+    /// client brings a day into being.
+    ///
+    /// A day the index already binds but that is not in memory is loaded from
+    /// disk (`load_from_disk`) or, failing that, rebuilt from its CRDT document
+    /// before anything is created: an empty page written over a day whose rows
+    /// this device simply had not loaded would sync as a deletion of every row.
+    /// A load that errors or returns a scheme under the wrong id leaves the day
+    /// alone rather than guessing.
+    ///
+    /// Returns the day's scheme id and whether anything changed.
+    pub fn ensure_daily_queue(
+        &mut self,
+        date: NaiveDate,
+        load_from_disk: impl FnOnce() -> anyhow::Result<Option<Scheme>>,
+    ) -> Result<(SchemeId, bool), (SchemeId, String)> {
+        let mut changed = false;
+        if let Some(existing) = self.workspace.daily_queue_scheme_id(date) {
+            if self.workspace.scheme(existing).is_none() {
+                match load_from_disk() {
+                    Ok(Some(scheme)) if scheme.id == existing => {
+                        changed |= self.adopt_loaded_schemes(vec![scheme]);
+                    }
+                    Ok(Some(scheme)) => {
+                        return Err((
+                            existing,
+                            format!(
+                                "loaded with unexpected id {}, expected {existing}",
+                                scheme.id
+                            ),
+                        ));
+                    }
+                    Ok(None) => {
+                        self.sync_store_from_workspace();
+                        if self.store.materialize_scheme_from_crdt(existing) {
+                            self.sync_workspace_from_store();
+                            changed = true;
+                        }
+                    }
+                    Err(err) => return Err((existing, format!("load failed: {err:#}"))),
+                }
+            }
+            if self
+                .workspace
+                .scheme(existing)
+                .is_some_and(|scheme| !scheme.items.is_empty())
+            {
+                return Ok((existing, changed));
+            }
+        }
+        let fallback = self
+            .workspace
+            .daily_queue_scheme_id(date)
+            .unwrap_or_else(|| knotq_model::daily_queue_scheme_id(date));
+        match self
+            .apply_prechecked_local_command(Command::EnsureDailyQueue { date }, CommandOrigin::User)
+        {
+            Ok(receipt) => Ok((
+                receipt.touched.schemes.first().copied().unwrap_or(fallback),
+                true,
+            )),
+            Err(err) => Err((fallback, format!("ensure failed: {err}"))),
+        }
     }
 
     /// Returns true if any scheme or the index needs saving.
@@ -340,21 +419,16 @@ impl AppState {
             .clear_pushed_crdt_edits(document, through_local_sequence)
     }
 
+    /// Hand the app's save bookkeeping (which files are dirty) to the store. The
+    /// workspace itself cannot have drifted: `workspace` is read-only.
     pub fn sync_store_from_workspace(&mut self) {
         let dirty = WorkspaceDirtyState::from_parts(self.dirty_schemes.clone(), self.index_dirty);
-        if self.direct_workspace_dirty {
-            self.store
-                .replace_workspace(self.workspace.clone(), dirty, false);
-            self.direct_workspace_dirty = false;
-        } else {
-            self.store.replace_dirty_state(dirty);
-        }
+        self.store.replace_dirty_state(dirty);
     }
 
     pub fn sync_workspace_from_store(&mut self) {
-        self.workspace = self.store.workspace().clone();
+        self.workspace = WorkspaceView::new(self.store.workspace().clone());
         self.sync_workspace_from_store_dirty();
-        self.direct_workspace_dirty = false;
         self.bump_content_revision();
     }
 
@@ -372,7 +446,7 @@ impl AppState {
         touched: &ChangeSet,
         text_only: bool,
     ) {
-        let mut carried_over = std::mem::take(&mut self.workspace.schemes);
+        let mut carried_over = std::mem::take(&mut self.workspace.get_mut().schemes);
         let store = self.store.workspace();
         let mut next = store.clone_without_schemes();
         next.schemes.reserve(store.schemes.len());
@@ -393,9 +467,8 @@ impl AppState {
             &next, store,
             "reusing untouched schemes diverged from the store; `touched` under-reported"
         );
-        self.workspace = next;
+        self.workspace = WorkspaceView::new(next);
         self.sync_workspace_from_store_dirty();
-        self.direct_workspace_dirty = false;
         if text_only {
             self.bump_content_revision_text_only();
         } else if touched.folders.is_empty() {
@@ -464,7 +537,7 @@ impl AppState {
     }
 
     pub fn has_local_edits_since(&self, watermark: u64) -> bool {
-        self.direct_workspace_dirty || self.store.local_sequence_watermark() != watermark
+        self.store.local_sequence_watermark() != watermark
     }
 
     /// Merge a sync run's result into the live workspace, preserving edits
@@ -546,9 +619,7 @@ impl AppState {
         // remains the fallback if the incremental merge reports an invalid state.
         self.sync_store_from_workspace();
         if !self.store.merge_sync_crdt_states(&workspace, &crdt_states) {
-            let dirty = WorkspaceDirtyState::all(&workspace);
-            self.store
-                .replace_workspace_with_crdt_states(workspace, dirty, false, crdt_states);
+            self.store.replace_from_sync(workspace, crdt_states);
         }
         self.sync_workspace_from_store();
 

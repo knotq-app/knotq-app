@@ -38,7 +38,7 @@ fn selecting_scheme_updates_plain_selection() {
 }
 
 #[test]
-fn direct_workspace_mutation_syncs_before_next_command() {
+fn scheme_added_through_store_is_editable_by_next_command() {
     let mut state = test_state();
     let mut scheme = Scheme::new("Direct", 0);
     let scheme_id = scheme.id;
@@ -46,8 +46,17 @@ fn direct_workspace_mutation_syncs_before_next_command() {
     let item_id = item.id;
     scheme.items.push(item);
 
-    state.workspace.schemes.insert(scheme_id, scheme);
-    state.mark_scheme_dirty(scheme_id);
+    let root = state.workspace.root;
+    state
+        .apply_prechecked_local_command(
+            knotq_commands::Command::RestoreScheme {
+                folder: root,
+                position: 0,
+                scheme,
+            },
+            knotq_commands::CommandOrigin::User,
+        )
+        .unwrap();
 
     state.apply_editor_command(Command::UpdateItemText {
         scheme: scheme_id,

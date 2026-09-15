@@ -36,7 +36,7 @@ impl DailyQueueState {
 }
 
 pub fn daily_queue_scheme_name(date: NaiveDate) -> String {
-    format!("Daily {}", date.format("%Y-%m-%d"))
+    knotq_model::daily_queue_scheme_name(date)
 }
 
 pub fn daily_queue_carryover_command(

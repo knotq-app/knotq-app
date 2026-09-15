@@ -8,7 +8,7 @@ use knotq_commands::{
 };
 use knotq_index::IndexedWorkspace;
 use knotq_model::{
-    DocumentId, OperationId, ReplicaId, SchemeId, SyncDocumentKind, Workspace, WorkspaceId,
+    DocumentId, OperationId, ReplicaId, Scheme, SchemeId, SyncDocumentKind, Workspace, WorkspaceId,
 };
 use knotq_sync::{
     validate_crdt_update_sequence, CrdtDocumentUpdate, DocumentStateHandle, PendingCrdtEdit,
@@ -120,6 +120,11 @@ pub struct WorkspaceStore {
     // about to replace/discard it) must call `flush_crdt` first so no deferred
     // edit is ever silently lost.
     deferred_crdt: WorkspaceCrdtChangeSet,
+    // What a scheme held just before the first edit made while its CRDT document
+    // had never been populated — a fresh install's starter schemes. The deferred
+    // flush populates the document from it before writing the edit, so the edit
+    // lands as an edit (`WorkspaceCrdtDocuments::sync_changes_with_bases`).
+    population_bases: HashMap<SchemeId, Scheme>,
 }
 
 impl WorkspaceStore {
@@ -155,6 +160,7 @@ impl WorkspaceStore {
             // authoritative directory.
             crdt_save_scope: CrdtSaveScope::All,
             deferred_crdt: WorkspaceCrdtChangeSet::default(),
+            population_bases: HashMap::new(),
         }
     }
 
@@ -177,7 +183,10 @@ impl WorkspaceStore {
         // apart from 45 one-millisecond ones — and which of those it is decides
         // whether this is a stall worth chasing.
         let started = crdt_flush_timing().then(std::time::Instant::now);
-        let outcome = self.crdt.sync_changes(&self.workspace, &changes);
+        let bases = std::mem::take(&mut self.population_bases);
+        let outcome = self
+            .crdt
+            .sync_changes_with_bases(&self.workspace, &changes, &bases);
         if let Some(started) = started {
             let elapsed = started.elapsed().as_secs_f64() * 1000.0;
             eprintln!(
@@ -257,6 +266,83 @@ impl WorkspaceStore {
     /// failed after taking the scope.
     pub fn mark_all_crdt_documents_changed(&mut self) {
         self.crdt_save_scope.widen_to_all();
+    }
+
+    /// Put Daily Queue schemes paged in from disk into the workspace.
+    ///
+    /// Loading is not an edit: the content is already in the day's CRDT document
+    /// and on disk, so nothing is emitted. Only a scheme the index binds as a
+    /// day and that is not already present is adopted, so a load can never
+    /// overwrite live content. Returns how many were adopted.
+    pub fn adopt_loaded_schemes(&mut self, schemes: Vec<Scheme>) -> usize {
+        self.flush_crdt();
+        let mut adopted = 0;
+        for scheme in schemes {
+            let bound = self
+                .workspace
+                .daily_queue
+                .values()
+                .any(|id| *id == scheme.id);
+            if !bound || self.workspace.schemes.contains_key(&scheme.id) {
+                continue;
+            }
+            self.workspace.schemes.insert(scheme.id, scheme);
+            adopted += 1;
+        }
+        if adopted > 0 {
+            self.index_stale = true;
+        }
+        adopted
+    }
+
+    /// Rebuild a bound scheme that is missing from the workspace from its CRDT
+    /// document — a day whose file was never written or was lost. Returns
+    /// whether the scheme is present afterwards.
+    ///
+    /// This must run before anything creates the scheme afresh: an empty page
+    /// written over a document that still holds the day's rows diffs to a
+    /// deletion of every row, on every device.
+    pub fn materialize_scheme_from_crdt(&mut self, scheme_id: SchemeId) -> bool {
+        if self.workspace.schemes.contains_key(&scheme_id) {
+            return true;
+        }
+        self.flush_crdt();
+        self.crdt.request_deferred_recovery(scheme_id);
+        let materialized = match self
+            .crdt
+            .materialized_workspace_repair(&self.workspace, &|id| *id == scheme_id)
+        {
+            Ok(workspace) => workspace,
+            Err(err) => {
+                eprintln!("materialize scheme {scheme_id} from CRDT failed: {err:#}");
+                return false;
+            }
+        };
+        let Some(scheme) = materialized.schemes.get(&scheme_id).cloned() else {
+            return false;
+        };
+        self.workspace.schemes.insert(scheme_id, scheme);
+        self.index_stale = true;
+        self.dirty.schemes.insert(scheme_id);
+        self.crdt_save_scope.widen_to_all();
+        true
+    }
+
+    /// Normalize the workspace index (dangling archive entries, folder tree
+    /// shape) and record the result like any other index edit. Returns whether
+    /// anything changed.
+    pub fn repair_workspace_index(&mut self) -> bool {
+        self.flush_crdt();
+        if !self.workspace.normalize_one_level_folders() {
+            return false;
+        }
+        self.workspace.ensure_sync_metadata();
+        self.dirty.index = true;
+        self.index_stale = true;
+        self.deferred_crdt
+            .merge(WorkspaceCrdtChangeSet::default().workspace());
+        self.flush_crdt();
+        true
     }
 
     pub fn workspace(&self) -> &Workspace {
@@ -451,6 +537,7 @@ impl WorkspaceStore {
         self.workspace = workspace;
         self.index_stale = true;
         self.crdt = restored_workspace_crdt(&self.workspace, self.replica_id, &crdt_states);
+        self.population_bases.clear();
         // Every document is a fresh object built from bytes that need not match
         // what is on disk, and the workspace may have lost documents whose files
         // must be swept.
@@ -458,6 +545,94 @@ impl WorkspaceStore {
         self.dirty = dirty;
         if clear_pending_operations {
             self.pending_operations.clear();
+        }
+    }
+
+    /// The replace fallback for landing a sync run whose result could not be
+    /// merged into the live documents — the run re-identified the workspace
+    /// document (first sync after signing in), or the live documents were never
+    /// seeded (a fresh install). Adopts the run's documents wholesale, then
+    /// re-applies every still-unpushed local edit on top.
+    ///
+    /// Those edits stay queued and reach the server regardless, so showing them
+    /// now is exactly what this device converges to. Dropping them here made an
+    /// edit applied while the run was in flight vanish from the screen until a
+    /// later round trip. An edit to the workspace document authored under the
+    /// pre-sign-in document id is re-addressed to the new id, so it is pushed
+    /// to the account's workspace document rather than a stray one.
+    pub fn replace_from_sync<B: AsRef<[u8]>>(
+        &mut self,
+        workspace: Workspace,
+        crdt_states: HashMap<DocumentId, B>,
+    ) {
+        self.flush_crdt();
+        let previous_workspace_document = self.workspace.sync.id;
+        let dirty = WorkspaceDirtyState::all(&workspace);
+        self.replace_workspace_with_crdt_states(workspace, dirty, false, crdt_states);
+        let current_workspace_document = self.workspace.sync.id;
+        self.remap_pending_workspace_document(
+            previous_workspace_document,
+            current_workspace_document,
+        );
+        let received_at = Utc::now();
+        let updates: Vec<StoredCrdtUpdate> = self
+            .pending_operations
+            .iter()
+            .flat_map(|operation| operation.crdt_updates.iter())
+            .map(|update| StoredCrdtUpdate {
+                workspace_id: self.workspace.id,
+                document: update.document,
+                kind: update.kind,
+                replica_id: self.replica_id,
+                sequence: 0,
+                received_at,
+                update_v1: update.update_v1.clone(),
+            })
+            .collect();
+        if updates.is_empty() {
+            return;
+        }
+        let outcome = self.crdt.apply_remote_updates(&self.workspace, &updates);
+        for error in &outcome.workspace_errors {
+            eprintln!(
+                "re-applying unpushed edits after a sync replace: {}",
+                error.message
+            );
+        }
+        for error in &outcome.document_errors {
+            if !error.unknown_scheme_document {
+                eprintln!(
+                    "re-applying unpushed edits after a sync replace: {}",
+                    error.message
+                );
+            }
+        }
+        if outcome.workspace_is_ok() {
+            self.workspace = outcome.workspace;
+            self.index_stale = true;
+            self.dirty = WorkspaceDirtyState::all(&self.workspace);
+            self.crdt_save_scope.widen_to_all();
+        }
+        self.reroot_pre_sign_in_edits();
+    }
+
+    /// Edits authored before signing in still name the pre-sign-in root folder,
+    /// so merging or re-applying them brings that folder back as an ordinary
+    /// (visible) one beside the account's root. Re-root them exactly as the sync
+    /// run canonicalized its own snapshot, and record the repair like any index
+    /// edit so the server is re-rooted too.
+    fn reroot_pre_sign_in_edits(&mut self) {
+        let workspace_id = self.workspace.id;
+        let (repair_needed, _) = self
+            .workspace
+            .canonicalize_personal_sync_identity_with_change(workspace_id);
+        if repair_needed {
+            self.dirty.index = true;
+            self.index_stale = true;
+            self.deferred_crdt
+                .merge(WorkspaceCrdtChangeSet::default().workspace());
+            self.flush_crdt();
+            self.crdt_save_scope.widen_to_all();
         }
     }
 
@@ -489,6 +664,18 @@ impl WorkspaceStore {
         // `self.crdt` directly; anything deferred must land there first or it is
         // lost the moment `self.workspace` is overwritten with the merge result.
         self.flush_crdt();
+        // The run adopted the account's canonical workspace identity (first sign-in,
+        // or an account switch) while this store still holds the pre-sign-in one.
+        // Its workspace document then never matches ours: the merge would skip the
+        // index update as a "document id mismatch" and refuse the rest, and landing
+        // would fall back to replacing the workspace — which half-applies an edit
+        // made while the run was in flight (a line moved between schemes came back
+        // in both). Re-key our document first, exactly as the run re-keyed its own.
+        if sync_workspace.sync.id != self.workspace.sync.id
+            && !self.adopt_sync_workspace_identity(sync_workspace)
+        {
+            return false;
+        }
         let received_at = Utc::now();
         // `crdt_states` always carries EVERY document, but a sync typically changes a
         // handful. Applying an unchanged document's full state is a costly no-op
@@ -551,6 +738,61 @@ impl WorkspaceStore {
         true
     }
 
+    /// Move this store onto `sync_workspace`'s canonical identity: the workspace
+    /// document is re-keyed with its content (and history) intact, and unpushed
+    /// edits addressed to the old document follow it. Returns `false` when the
+    /// identities cannot be reconciled, so the caller falls back to a replace.
+    fn adopt_sync_workspace_identity(&mut self, sync_workspace: &Workspace) -> bool {
+        let previous_document = self.workspace.sync.id;
+        let mut workspace = self.workspace.clone();
+        workspace.canonicalize_personal_sync_identity_with_change(sync_workspace.id);
+        workspace.ensure_sync_metadata();
+        if workspace.sync.id != sync_workspace.sync.id {
+            return false;
+        }
+        if let Err(err) = self
+            .crdt
+            .reidentify_workspace_document(sync_workspace.sync.id)
+        {
+            eprintln!("sync merge: re-identify workspace document: {err:#}");
+            return false;
+        }
+        self.workspace = workspace;
+        self.remap_pending_workspace_document(previous_document, sync_workspace.sync.id);
+        self.dirty.index = true;
+        self.index_stale = true;
+        true
+    }
+
+    /// Point unpushed edits addressed to workspace document `from` at `to`.
+    fn remap_pending_workspace_document(&mut self, from: DocumentId, to: DocumentId) {
+        if from == to {
+            return;
+        }
+        for operation in &mut self.pending_operations {
+            for update in &mut operation.crdt_updates {
+                if update.document == from {
+                    update.document = to;
+                }
+            }
+        }
+    }
+
+    /// Remember what each scheme `command` writes holds right now, for schemes
+    /// whose CRDT document has never been populated (see `population_bases`).
+    fn record_population_bases(&mut self, command: &Command) {
+        for scheme_id in command.crdt_documents().schemes {
+            if self.population_bases.contains_key(&scheme_id)
+                || !self.crdt.scheme_document_is_unpopulated(scheme_id)
+            {
+                continue;
+            }
+            if let Some(scheme) = self.workspace.schemes.get(&scheme_id) {
+                self.population_bases.insert(scheme_id, scheme.clone());
+            }
+        }
+    }
+
     pub fn mark_dirty_from_command(&mut self, cmd: &Command) {
         self.dirty.index = true;
         collect_affected_schemes(cmd, &mut self.dirty.schemes);
@@ -582,6 +824,7 @@ impl WorkspaceStore {
         origin: CommandOrigin,
     ) -> Result<CommandReceipt, knotq_commands::CommandError> {
         let may_change_document_set = command_may_change_document_set(&command);
+        self.record_population_bases(&command);
         let receipt = self.workspace.apply(command.clone())?;
         let crdt_changes = crdt_change_set_for_command(&command);
         let crdt_updates =
@@ -609,6 +852,7 @@ impl WorkspaceStore {
         };
         let crdt_changes = crdt_change_set_for_command(&command);
         let may_change_document_set = command_may_change_document_set(&command);
+        self.record_population_bases(&command);
         let receipt = self.workspace.apply(command)?;
         self.after_workspace_change(&receipt.touched, crdt_changes, may_change_document_set);
         Ok(Some(receipt))
@@ -704,59 +948,10 @@ fn restored_workspace_crdt<B: AsRef<[u8]>>(
 }
 
 fn crdt_change_set_for_command(command: &Command) -> WorkspaceCrdtChangeSet {
-    let mut changes = WorkspaceCrdtChangeSet::default();
-    collect_crdt_changes(command, &mut changes);
-    changes
-}
-
-fn collect_crdt_changes(command: &Command, out: &mut WorkspaceCrdtChangeSet) {
-    match command {
-        Command::CreateFolder { .. }
-        | Command::RestoreFolder { .. }
-        | Command::RenameFolder { .. }
-        | Command::SetFolderExpanded { .. }
-        | Command::DeleteFolder { .. }
-        | Command::PermanentlyDeleteFolder { .. }
-        | Command::CreateScheme { .. }
-        | Command::RenameScheme { .. }
-        | Command::SetSchemeColor { .. }
-        | Command::SetSchemeGsync { .. }
-        | Command::SetSchemeSource { .. }
-        | Command::DeleteScheme { .. }
-        | Command::PermanentlyDeleteScheme { .. }
-        | Command::MoveNode { .. } => {
-            out.workspace = true;
-        }
-        Command::RestoreScheme { scheme, .. } | Command::RestoreDeletedScheme { scheme, .. } => {
-            out.workspace = true;
-            out.schemes.insert(scheme.id);
-        }
-        Command::RestoreDeletedFolder { schemes, .. } => {
-            out.workspace = true;
-            for scheme in schemes {
-                out.schemes.insert(scheme.id);
-            }
-        }
-        Command::InsertItem { scheme, .. }
-        | Command::UpdateItemText { scheme, .. }
-        | Command::ReplaceItem { scheme, .. }
-        | Command::SetItemIndent { scheme, .. }
-        | Command::SetItemMarker { scheme, .. }
-        | Command::SetItemMarkerFamily { scheme, .. }
-        | Command::SetItemDate { scheme, .. }
-        | Command::SetItemRecurrence { scheme, .. }
-        | Command::SetItemPriority { scheme, .. }
-        | Command::SetOccurrenceNotificationOffset { scheme, .. }
-        | Command::ToggleOccurrence { scheme, .. }
-        | Command::DeleteItem { scheme, .. }
-        | Command::ReorderItem { scheme, .. } => {
-            out.schemes.insert(*scheme);
-        }
-        Command::Batch(commands) => {
-            for command in commands {
-                collect_crdt_changes(command, out);
-            }
-        }
+    let documents = command.crdt_documents();
+    WorkspaceCrdtChangeSet {
+        workspace: documents.workspace,
+        schemes: documents.schemes.into_iter().collect(),
     }
 }
 
@@ -810,6 +1005,9 @@ fn command_may_change_document_set(command: &Command) -> bool {
         // state that `ensure_sync_metadata`'s daily-queue and stale-binding
         // checks reason about. Kept conservative: true.
         Command::MoveNode { .. } => true,
+
+        // Binds a day in `daily_queue` and may create its scheme.
+        Command::EnsureDailyQueue { .. } => true,
 
         // Folder/scheme metadata-only edits: rename, recolor, toggle
         // google-calendar sync, change source, toggle expanded. Verified
@@ -877,6 +1075,9 @@ pub(crate) fn collect_affected_schemes(cmd: &Command, out: &mut HashSet<SchemeId
             for scheme in schemes {
                 out.insert(scheme.id);
             }
+        }
+        Command::EnsureDailyQueue { date } => {
+            out.insert(knotq_model::daily_queue_scheme_id(*date));
         }
         Command::Batch(cmds) => {
             for cmd in cmds {

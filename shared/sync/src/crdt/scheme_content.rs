@@ -140,6 +140,21 @@ impl YrsSchemeDocument {
     }
 
     pub fn sync_scheme(&self, scheme: &Scheme) -> anyhow::Result<Option<CrdtDocumentUpdate>> {
+        self.sync_scheme_from_base(None, scheme)
+    }
+
+    /// [`Self::sync_scheme`] for a document that may never have been populated:
+    /// `base` is the scheme as it stood before the edits now being written. An
+    /// unpopulated document is populated from `base` first (deterministically, see
+    /// [`Self::populate`]), so those edits land as edits — a removed line becomes
+    /// a tombstone, a retyped line a text splice. Written straight onto the empty
+    /// document instead, the edited scheme is all brand-new content, which can
+    /// express neither. The population rides in the returned update.
+    pub fn sync_scheme_from_base(
+        &self,
+        base: Option<&Scheme>,
+        scheme: &Scheme,
+    ) -> anyhow::Result<Option<CrdtDocumentUpdate>> {
         // Take the delta from the writes themselves. `encode_diff_v1` — the
         // fallback — answers the same question by walking every block in the
         // document to rebuild its delete set, so publishing a one-character
@@ -157,6 +172,9 @@ impl YrsSchemeDocument {
             Some(guard) => Delta::Captured(guard),
             None => Delta::Diff(self.state_vector_v1()),
         };
+        if let Some(base) = base.filter(|_| self.is_unpopulated()) {
+            self.populate(base)?;
+        }
         let touched = self.replace_scheme(scheme)?;
         let update_v1 = match delta {
             Delta::Captured(guard) => guard.finish()?,
@@ -225,7 +243,54 @@ impl YrsSchemeDocument {
     /// Make the document match `scheme` exactly, returning the ids of the items
     /// the call actually wrote (created, content-spliced, metadata-rewritten, or
     /// tombstoned) — i.e. the items the resulting update touches.
+    ///
+    /// A document that has never been populated is first populated from `scheme`
+    /// itself, deterministically (see [`Self::populate`]).
     pub fn replace_scheme(&self, scheme: &Scheme) -> anyhow::Result<HashSet<String>> {
+        if self.is_unpopulated() {
+            self.populate(scheme)?;
+        }
+        self.replace_scheme_inner(scheme)
+    }
+
+    /// Whether nothing has ever been written to this document: no scheme schema
+    /// and no item entries, so no history another replica could have built on.
+    pub(crate) fn is_unpopulated(&self) -> bool {
+        let txn = self.doc.transact();
+        let has_schema = txn
+            .get_map("scheme_file")
+            .and_then(|metadata| metadata.get(&txn, "schema"))
+            .is_some();
+        let has_items = txn
+            .get_map("items_by_id")
+            .is_some_and(|items| items.len(&txn) > 0);
+        !has_schema && !has_items
+    }
+
+    /// Write `content` into this unpopulated document as one deterministic update:
+    /// built in a scratch document whose clientID is a hash of the document id and
+    /// the exact content (`stable_scheme_population_client_id`), then applied here.
+    /// Every replica populating this document from the same content — each
+    /// install's copy of the fixed-id starter lines, every device's first heal of a
+    /// scheme it has pulled nothing for — produces byte-identical operations, which
+    /// Yjs integrates once. Under a per-device identity each copy was concurrent
+    /// with every other: a line's text was inserted once per device, and a line
+    /// one device deleted came back from another device's copy.
+    fn populate(&self, content: &Scheme) -> anyhow::Result<()> {
+        // Through `Value`, whose object keys are ordered, so the key is a pure
+        // function of the content.
+        let key = serde_json::to_vec(&serde_json::to_value(content)?)?;
+        let client_id = super::encoding::stable_scheme_population_client_id(self.id, &key);
+        let scratch = Self::new_with_client_id(self.id, client_id);
+        scratch.replace_scheme_inner(content)?;
+        let population = scratch.encode_state_v1();
+        self.doc
+            .transact_mut()
+            .apply_update(Update::decode_v1(&population)?)?;
+        Ok(())
+    }
+
+    fn replace_scheme_inner(&self, scheme: &Scheme) -> anyhow::Result<HashSet<String>> {
         let mut touched: HashSet<String> = HashSet::new();
         // Keyed by `ItemId` (16 bytes, Copy) rather than its 36-character
         // string form. Every item in the scheme flows through this list, the
@@ -547,7 +612,7 @@ impl YrsSchemeDocument {
                 if stored_item.has_text
                     && !stored_item.deleted
                     && stored_item.position == *position
-                    && stored_item.snapshot_json == next_snapshot
+                    && stored_item.metadata_matches(&next_snapshot)
                 {
                     let new_content = normalize_inline_content(&item.content.to_inlines());
                     if stored_item.content == new_content
@@ -617,13 +682,20 @@ impl YrsSchemeDocument {
                     // Skipping it would leave the doc (and every peer) considering the
                     // item deleted while the local workspace shows it alive.
                     let metadata_changed = prev.is_none_or(|stored| {
-                        stored.snapshot_json != next_snapshot
+                        !stored.metadata_matches(&next_snapshot)
                             || stored.position != *position
                             || stored.deleted
                     });
                     if metadata_changed {
                         touched.insert(item_id.clone());
-                        write_item_metadata(&item_map, &mut txn, item, position, &next_snapshot)?;
+                        write_item_metadata(
+                            &item_map,
+                            &mut txn,
+                            item,
+                            position,
+                            &next_snapshot,
+                            prev,
+                        )?;
                     }
                 }
             }
@@ -636,6 +708,12 @@ impl YrsSchemeDocument {
                     id,
                     StoredItem {
                         position: position.clone(),
+                        meta: Some({
+                            let mut meta = item.clone();
+                            meta.content = ItemContent::default();
+                            meta
+                        }),
+                        meta_json: Some(next_snapshot.clone()),
                         snapshot_json: next_snapshot,
                         item: Some(item.clone()),
                         // Every branch that marks an item touched either writes
@@ -734,13 +812,14 @@ impl YrsSchemeDocument {
             // consistent across replicas instead of failing the whole scheme.
             .filter(|(_, entry)| !entry.deleted && !entry.snapshot_json.is_empty())
             .filter_map(|(_, entry)| {
-                // snapshot_json holds every non-content field; the ordered inline
-                // stream comes from the Text CRDT, which is the source of truth.
-                // Tolerate a partial: a snapshot that fails to parse is skipped rather
-                // than failing the whole scheme load. Every replica holds the same
-                // merged CRDT, so each skips the same item and they converge — matching
-                // the server's tolerant validation (see validate_scheme_document).
-                let mut item: Item = serde_json::from_str(&entry.snapshot_json).ok()?;
+                // Non-content fields come merged per field (`StoredItem::meta`); the
+                // ordered inline stream comes from the Text CRDT, which is the source
+                // of truth. Tolerate a partial: a snapshot that fails to parse is
+                // skipped rather than failing the whole scheme load. Every replica
+                // holds the same merged CRDT, so each skips the same item and they
+                // converge — matching the server's tolerant validation (see
+                // validate_scheme_document).
+                let mut item = entry.meta?;
                 item.content = ItemContent::from_inlines(entry.content);
                 Some(item)
             })
@@ -764,6 +843,19 @@ pub(crate) struct StoredItem {
     /// in the scheme, on every keystroke.
     item: Option<Item>,
     snapshot_json: String,
+    /// The item's non-content fields as they stand after merging: each field
+    /// from its own last-writer-wins key when the document has one, otherwise
+    /// from `snapshot_json` (documents written by builds that only ever read the
+    /// snapshot). `None` when the snapshot does not parse.
+    ///
+    /// Materializing per field is what lets two devices change *different*
+    /// attributes of one line at the same time: a whole-item snapshot is a single
+    /// last-writer-wins value, so the later write silently restored the earlier
+    /// device's field (`tests/concurrent_item_field_edits.rs`).
+    meta: Option<Item>,
+    /// `meta` serialized exactly as `item_snapshot_json` would serialize it, so
+    /// "does this item need writing?" stays a string comparison.
+    meta_json: Option<String>,
     /// Whether the stored entry actually carries a Text. An entry that lost its
     /// Text needs repairing even when every other field matches, so the
     /// unchanged-item fast path in `replace_scheme` must not fire without this.
@@ -827,9 +919,14 @@ pub(crate) fn read_stored_item(item_map: &MapRef, txn: &impl ReadTxn) -> StoredI
     let content = text_ref
         .map(|text| read_text_content(&text, txn))
         .unwrap_or_default();
+    let snapshot_json = str_field("snapshot_json");
+    let meta = materialize_item_meta(item_map, txn, &snapshot_json);
+    let meta_json = meta.as_ref().and_then(|meta| item_snapshot_json(meta).ok());
     StoredItem {
         position: str_field("position"),
-        snapshot_json: str_field("snapshot_json"),
+        snapshot_json,
+        meta,
+        meta_json,
         // Read back out of the document, so the originating `Item` is not
         // available; the JSON comparison is the fallback.
         item: None,
@@ -842,6 +939,89 @@ pub(crate) fn read_stored_item(item_map: &MapRef, txn: &impl ReadTxn) -> StoredI
             .flatten()
             .unwrap_or(false),
     }
+}
+
+impl StoredItem {
+    /// Whether the document already holds exactly this metadata — both as the
+    /// merged per-field values and as the snapshot older builds read.
+    fn metadata_matches(&self, next_snapshot: &str) -> bool {
+        self.snapshot_json == next_snapshot
+            && self
+                .meta_json
+                .as_deref()
+                .is_none_or(|meta| meta == next_snapshot)
+    }
+}
+
+/// An item's non-content fields after merge: `snapshot_json` as the base, each
+/// field overridden by its own key where the document has one. Unreadable keys
+/// keep the snapshot's value. Nothing is normalized here: every replica holds
+/// the same merged keys and so materializes the same item, and normalizing
+/// (e.g. marker constraints) would make the materialized item differ from what
+/// the writing device holds, so it would rewrite the item on every sync.
+fn materialize_item_meta(
+    item_map: &MapRef,
+    txn: &impl ReadTxn,
+    snapshot_json: &str,
+) -> Option<Item> {
+    let mut item: Item = serde_json::from_str(snapshot_json).ok()?;
+    let string = |key: &str| {
+        item_map
+            .get_as::<_, Option<String>>(txn, key)
+            .ok()
+            .flatten()
+    };
+    let enum_value = |key: &str| {
+        string(key)
+            .filter(|value| !value.is_empty())
+            .map(serde_json::Value::String)
+    };
+    if let Some(marker) = enum_value("marker").and_then(|v| serde_json::from_value(v).ok()) {
+        item.marker = marker;
+    }
+    if let Some(family) = enum_value("marker_family").and_then(|v| serde_json::from_value(v).ok()) {
+        item.marker_family = family;
+    }
+    if let Some(indent) = item_map
+        .get_as::<_, Option<i64>>(txn, "indent")
+        .ok()
+        .flatten()
+        .and_then(|indent| u8::try_from(indent).ok())
+    {
+        item.indent = indent;
+    }
+    for (key, slot) in [
+        ("start", &mut item.start),
+        ("end", &mut item.end),
+        ("available", &mut item.available),
+    ] {
+        match string(key) {
+            Some(value) if value.is_empty() => *slot = None,
+            Some(value) => {
+                if let Ok(parsed) = chrono::DateTime::parse_from_rfc3339(&value) {
+                    *slot = Some(parsed.with_timezone(&chrono::Utc));
+                }
+            }
+            None => {}
+        }
+    }
+    if let Some(repeats) = string("repeats_json").and_then(|v| serde_json::from_str(&v).ok()) {
+        item.repeats = repeats;
+    }
+    if let Some(state) = string("state_json")
+        .and_then(|v| serde_json::from_str::<Vec<knotq_model::OccurrenceState>>(&v).ok())
+        .filter(|state| !state.is_empty())
+    {
+        item.state = state;
+    }
+    if let Some(priority) = string("priority_json").and_then(|v| serde_json::from_str(&v).ok()) {
+        item.priority = priority;
+    }
+    if let Some(external) = string("external_json").and_then(|v| serde_json::from_str(&v).ok()) {
+        item.external = external;
+    }
+    item.content = ItemContent::default();
+    Some(item)
 }
 
 /// Serialize every item field except content. Content is owned by the Text CRDT,
@@ -860,7 +1040,7 @@ pub(crate) fn write_new_item(
     position: &str,
     snapshot_json: &str,
 ) -> anyhow::Result<()> {
-    write_item_fields(item_map, txn, item, position, snapshot_json, true)?;
+    write_item_fields(item_map, txn, item, position, snapshot_json, true, None)?;
     // content_json is owned by the shadow writer (see write_item_fields' note), so the
     // creation path writes it here — exactly once.
     write_item_content_shadow(
@@ -871,15 +1051,25 @@ pub(crate) fn write_new_item(
 }
 
 /// Rewrite an existing item's last-writer-wins metadata fields in place, leaving
-/// its collaborative Text untouched.
+/// its collaborative Text untouched. Only the fields that differ from `previous`
+/// are written (see `write_item_fields`).
 pub(crate) fn write_item_metadata(
     item_map: &MapRef,
     txn: &mut TransactionMut,
     item: &Item,
     position: &str,
     snapshot_json: &str,
+    previous: Option<&StoredItem>,
 ) -> anyhow::Result<()> {
-    write_item_fields(item_map, txn, item, position, snapshot_json, false)
+    write_item_fields(
+        item_map,
+        txn,
+        item,
+        position,
+        snapshot_json,
+        false,
+        previous,
+    )
 }
 
 pub(crate) fn write_item_content_shadow(
@@ -898,7 +1088,16 @@ pub(crate) fn write_item_fields(
     position: &str,
     snapshot_json: &str,
     include_text: bool,
+    previous: Option<&StoredItem>,
 ) -> anyhow::Result<()> {
+    // Each metadata field is its own last-writer-wins key, and only a field whose
+    // value actually differs from what the document holds is written. Rewriting
+    // an unchanged key still wins last-writer-wins, so writing every field on any
+    // edit let a device that changed one attribute silently restore its stale
+    // copy of every other attribute a concurrent device had just changed.
+    // `previous` is `None` for a new item (everything is written).
+    let prev_meta = previous.and_then(|stored| stored.meta.as_ref());
+    let changed = |same: &dyn Fn(&Item) -> bool| prev_meta.is_none_or(|meta| !same(meta));
     // `schema` and `id` are immutable identity fields. They are written once at
     // creation — by the deterministic item skeleton (shared seed clientID, so every
     // origin that creates this item produces the identical, de-duplicated struct) or by
@@ -912,10 +1111,14 @@ pub(crate) fn write_item_fields(
         item_map.insert(txn, "schema", "knotq.item.v1");
         item_map.insert(txn, "id", item.id.to_string());
     }
-    item_map.insert(txn, "position", position.to_string());
+    if previous.is_none_or(|stored| stored.position != position) {
+        item_map.insert(txn, "position", position.to_string());
+    }
     // A live item is not tombstoned. Setting this also un-deletes an item that was
     // re-added after a soft-delete (deleted vs edit resolves last-writer-wins).
-    item_map.insert(txn, "deleted", false);
+    if previous.is_none_or(|stored| stored.deleted) {
+        item_map.insert(txn, "deleted", false);
+    }
     if include_text {
         let text_ref = item_map.insert(txn, "text", TextPrelim::new(""));
         insert_inline_content(
@@ -924,27 +1127,55 @@ pub(crate) fn write_item_fields(
             &normalize_inline_content(&item.content.to_inlines()),
         )?;
     }
-    item_map.insert(txn, "marker", serde_json_string_value(&item.marker)?);
-    item_map.insert(txn, "indent", i64::from(item.indent));
-    item_map.insert(
-        txn,
-        "start",
-        item.start.map(|dt| dt.to_rfc3339()).unwrap_or_default(),
-    );
-    item_map.insert(
-        txn,
-        "end",
-        item.end.map(|dt| dt.to_rfc3339()).unwrap_or_default(),
-    );
-    item_map.insert(
-        txn,
-        "available",
-        item.available.map(|dt| dt.to_rfc3339()).unwrap_or_default(),
-    );
-    item_map.insert(txn, "repeats_json", serde_json::to_string(&item.repeats)?);
-    item_map.insert(txn, "state_json", serde_json::to_string(&item.state)?);
-    item_map.insert(txn, "priority_json", serde_json::to_string(&item.priority)?);
-    item_map.insert(txn, "external_json", serde_json::to_string(&item.external)?);
+    if changed(&|meta| meta.marker == item.marker) {
+        item_map.insert(txn, "marker", serde_json_string_value(&item.marker)?);
+    }
+    if changed(&|meta| meta.marker_family == item.marker_family) {
+        item_map.insert(
+            txn,
+            "marker_family",
+            serde_json_string_value(&item.marker_family)?,
+        );
+    }
+    if changed(&|meta| meta.indent == item.indent) {
+        item_map.insert(txn, "indent", i64::from(item.indent));
+    }
+    if changed(&|meta| meta.start == item.start) {
+        item_map.insert(
+            txn,
+            "start",
+            item.start.map(|dt| dt.to_rfc3339()).unwrap_or_default(),
+        );
+    }
+    if changed(&|meta| meta.end == item.end) {
+        item_map.insert(
+            txn,
+            "end",
+            item.end.map(|dt| dt.to_rfc3339()).unwrap_or_default(),
+        );
+    }
+    if changed(&|meta| meta.available == item.available) {
+        item_map.insert(
+            txn,
+            "available",
+            item.available.map(|dt| dt.to_rfc3339()).unwrap_or_default(),
+        );
+    }
+    if changed(&|meta| meta.repeats == item.repeats) {
+        item_map.insert(txn, "repeats_json", serde_json::to_string(&item.repeats)?);
+    }
+    if changed(&|meta| meta.state == item.state) {
+        item_map.insert(txn, "state_json", serde_json::to_string(&item.state)?);
+    }
+    if changed(&|meta| meta.priority == item.priority) {
+        item_map.insert(txn, "priority_json", serde_json::to_string(&item.priority)?);
+    }
+    if changed(&|meta| meta.external == item.external) {
+        item_map.insert(txn, "external_json", serde_json::to_string(&item.external)?);
+    }
+    // Always written: builds that predate per-field materialization read an
+    // item's metadata from this snapshot alone, and backend validation requires
+    // it. New builds read it only for fields without their own key.
     item_map.insert(txn, "snapshot_json", snapshot_json.to_string());
     // NOTE: `content_json` (the content shadow) is intentionally NOT written here — it is
     // owned solely by `write_item_content_shadow`. Writing it both here and there inserts

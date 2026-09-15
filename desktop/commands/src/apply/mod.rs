@@ -1,4 +1,5 @@
 mod batch;
+mod daily;
 mod folder;
 mod item;
 mod scheme;
@@ -48,6 +49,7 @@ pub(crate) fn dispatch(
             new_parent,
             position,
         } => move_node(workspace, node, new_parent, position),
+        Command::EnsureDailyQueue { date } => daily::ensure_daily_queue(workspace, date),
         Command::InsertItem { .. }
         | Command::UpdateItemText { .. }
         | Command::ReplaceItem { .. }

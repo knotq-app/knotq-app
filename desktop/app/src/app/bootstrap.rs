@@ -65,7 +65,7 @@ pub fn load_or_seed() -> WorkspaceBootstrap {
     bootstrap
 }
 
-fn load_or_seed_from_path(path: &Path, today: NaiveDate) -> WorkspaceBootstrap {
+pub(crate) fn load_or_seed_from_path(path: &Path, today: NaiveDate) -> WorkspaceBootstrap {
     let options = WorkspaceLoadOptions::daily_queue_range(daily_queue_initial_start(today), today);
     match load_workspace_with_options(path, options) {
         Ok(Some(mut workspace)) => {

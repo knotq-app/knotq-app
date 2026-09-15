@@ -17,6 +17,38 @@ use super::{
     SAVE_RETRY_BACKOFF, TIMELINE_POLL_INTERVAL,
 };
 
+/// The disk half of a save: the workspace (whole, or only the dirty schemes),
+/// then the pending CRDT queue, then the CRDT document states in `crdt_scope`.
+/// Shared by the save task and the production-path sync fuzzer.
+pub(crate) fn write_save_snapshot(
+    path: &std::path::Path,
+    workspace: &Workspace,
+    dirty_ids: &std::collections::HashSet<SchemeId>,
+    pending_crdt_edits: &[knotq_sync::PendingCrdtEdit],
+    crdt_scope: CrdtSaveScope,
+    crdt_states: &HashMap<knotq_model::DocumentId, std::sync::Arc<[u8]>>,
+) -> anyhow::Result<()> {
+    let result = if dirty_ids.is_empty() {
+        save_workspace(path, workspace)
+    } else {
+        save_workspace_incremental(path, workspace, dirty_ids)
+    };
+    // Persist the CRDT documents' state in lockstep with the workspace so a
+    // restart restores them consistently (and with their stable identity)
+    // rather than rebuilding.
+    result
+        .and_then(|_| save_pending_crdt_edits(path, pending_crdt_edits))
+        .and_then(|_| match crdt_scope {
+            // Only a full save may remove a file, so it is the one that sweeps
+            // documents that went away and retires the legacy blob.
+            CrdtSaveScope::All => save_crdt_state(path, crdt_states),
+            // Nothing moved: the workspace and scheme files still needed
+            // writing, the CRDT state did not.
+            CrdtSaveScope::Only(_) if crdt_states.is_empty() => Ok(()),
+            CrdtSaveScope::Only(_) => save_crdt_state_incremental(path, crdt_states),
+        })
+}
+
 pub(crate) fn spawn_save_task(
     bus: AppServiceBus,
     save_rx: Receiver<()>,
@@ -101,29 +133,14 @@ pub(crate) fn spawn_save_task(
                                 .into_iter()
                                 .map(|(document, handle)| (document, handle.encode()))
                                 .collect();
-                            let result = if dirty_ids.is_empty() {
-                                save_workspace(&path, &ws)
-                            } else {
-                                save_workspace_incremental(&path, &ws, &dirty_ids)
-                            };
-                            // Persist the CRDT documents' state in lockstep with the
-                            // workspace so a restart restores them consistently (and
-                            // with their stable identity) rather than rebuilding.
-                            result
-                                .and_then(|_| save_pending_crdt_edits(&path, &pending_crdt_edits))
-                                .and_then(|_| match crdt_scope {
-                                    // Only a full save may remove a file, so it
-                                    // is the one that sweeps documents that went
-                                    // away and retires the legacy blob.
-                                    CrdtSaveScope::All => save_crdt_state(&path, &crdt_states),
-                                    // Nothing moved: the workspace and scheme
-                                    // files still needed writing, the CRDT
-                                    // state did not.
-                                    CrdtSaveScope::Only(_) if crdt_states.is_empty() => Ok(()),
-                                    CrdtSaveScope::Only(_) => {
-                                        save_crdt_state_incremental(&path, &crdt_states)
-                                    }
-                                })
+                            write_save_snapshot(
+                                &path,
+                                &ws,
+                                &dirty_ids,
+                                &pending_crdt_edits,
+                                crdt_scope,
+                                &crdt_states,
+                            )
                         })
                         .await;
                     if let Err(err) = result {

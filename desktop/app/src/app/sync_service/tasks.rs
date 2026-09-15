@@ -391,10 +391,7 @@ async fn run_sync_attempt(
                 if squash_attempted {
                     app.last_squash_attempt_at = Some(Utc::now());
                 }
-                for pushed in pushed {
-                    app.state
-                        .clear_pushed_crdt_edits(pushed.document, pushed.through_local_sequence);
-                }
+                super::landing::clear_pushed_edits(&mut app.state, &pushed);
                 // Cache the schedule this run used against the generation it was
                 // computed at, so the next run can skip recomputing it when nothing
                 // schedule-relevant has changed since. If an edit bumped the
@@ -419,7 +416,10 @@ async fn run_sync_attempt(
                 app.sync_offline = false;
                 app.sync_server_rejecting = false;
                 app.last_synced_at = Some(Utc::now());
-                if remote_updates_applied > 0 || local_workspace_changed {
+                if super::landing::run_changed_workspace(
+                    remote_updates_applied,
+                    local_workspace_changed,
+                ) {
                     let scheme_scroll_restore = if app.selection.view == View::Scheme {
                         app.selection
                             .scheme_id
@@ -429,27 +429,14 @@ async fn run_sync_attempt(
                     };
                     let daily_queue_scroll_restore = (app.selection.view == View::DailyQueue)
                         .then(|| app.daily_queue_scroll_handle.offset());
-                    // Edits applied while the run was in flight are not in its
-                    // result; merge the result into the live documents so they
-                    // survive (e.g. an event being drafted on the calendar)
-                    // instead of being rolled back until the next round trip.
-                    // With no in-flight edits the replace is equivalent and
-                    // adopts the run's canonical merged state wholesale.
-                    let merged = app.state.has_local_edits_since(local_edit_watermark)
-                        && app
-                            .state
-                            .merge_workspace_from_sync(&workspace, &crdt_states);
-                    // The merge path only runs with local edits in flight — the
-                    // user is mid-keystroke, so treat it as changed. The replace
-                    // path reports whether the run moved anything the UI shows;
-                    // most runs while typing are the pusher's own document
-                    // echoing back and move nothing.
-                    let workspace_changed = if merged {
-                        true
-                    } else {
-                        app.state
-                            .replace_workspace_from_sync(workspace, crdt_states)
-                    };
+                    // Most runs while typing are the pusher's own document
+                    // echoing back and move nothing; see `adopt_sync_workspace`.
+                    let workspace_changed = super::landing::adopt_sync_workspace(
+                        &mut app.state,
+                        workspace,
+                        crdt_states,
+                        local_edit_watermark,
+                    );
                     crate::frame_log::count(&crate::frame_log::WORKSPACE_REPLACED);
                     // The CRDT documents advanced even on an echo, so the save
                     // signal is unconditional; the rest only matters when the

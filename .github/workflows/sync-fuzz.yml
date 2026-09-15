@@ -130,6 +130,12 @@ jobs:
           cargo test -p knotq-sync --test sync_property_model --release -- \
             --ignored --exact daily_queue_multiorigin_stress --nocapture
 
+      - name: Run the desktop production-path fuzzer at depth
+        env:
+          KNOTQ_FUZZ_SEEDS: ${{ github.event.inputs.seeds || '400' }}
+          KNOTQ_FUZZ_STEPS: "300"
+        run: cargo test -p knotq-app --release production_fuzz -- --nocapture
+
   backend-ws-fuzz:
     name: WebSocket fuzz against a real backend (deep)
     runs-on: ubuntu-24.04

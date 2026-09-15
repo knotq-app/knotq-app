@@ -61,7 +61,8 @@ pub(super) fn primary_cursor_item(cmd: &Command) -> Option<(SchemeId, ItemId)> {
         | Command::SetSchemeSource { .. }
         | Command::DeleteScheme { .. }
         | Command::PermanentlyDeleteScheme { .. }
-        | Command::MoveNode { .. } => None,
+        | Command::MoveNode { .. }
+        | Command::EnsureDailyQueue { .. } => None,
     }
 }
 
@@ -174,7 +175,9 @@ fn service_signals_for_command(cmd: &Command, workspace: &Workspace) -> Workspac
                 timeline,
             }
         }
-        Command::CreateFolder { .. } | Command::CreateScheme { .. } => WorkspaceServiceSignals {
+        Command::CreateFolder { .. }
+        | Command::CreateScheme { .. }
+        | Command::EnsureDailyQueue { .. } => WorkspaceServiceSignals {
             notifications: NotificationServiceSignal::None,
             timeline: false,
         },

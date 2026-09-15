@@ -1,5 +1,6 @@
 mod apply;
 mod command;
+mod documents;
 mod invariants;
 mod receipt;
 mod workspace;
@@ -13,6 +14,7 @@ pub use commit::{
     reset_after_trigger_notification_to_default_command, DateEditScope, EventDeleteScope,
     EventPopupDraft,
 };
+pub use documents::CommandDocuments;
 pub use filter::filter_recurring_occurrence_toggles;
 pub use invariants::CommandError;
 pub use receipt::*;

@@ -42,10 +42,8 @@ mod test_device_sync;
 mod test_server;
 mod util;
 
-use std::cell::RefCell;
 use std::collections::{BTreeMap, HashMap};
 
-use anyhow::anyhow;
 use base64::Engine as _;
 use chrono::{Duration, NaiveDate, Utc};
 use knotq_model::{
@@ -55,16 +53,12 @@ use knotq_model::{
     WorkspaceId,
 };
 use knotq_sync::{
-    batch_pull_and_apply, batch_push_pending, queue_workspace_bootstrap_updates,
-    validate_crdt_update_sequence, BatchPullRequest, BatchPullResponse, BatchPushRequest,
-    BatchPushResponse, CrdtDocumentUpdate, DocumentPullStateVector, LocalSyncState,
-    NotificationScheduleSnapshot, PendingCrdtEdit, PulledCrdtDocument, PushDocumentUpdates,
-    PushedCrdtDocument, SyncPushRejected, SyncTransport, WorkspaceCrdtChangeSet,
-    WorkspaceCrdtDocuments, MAX_SYNC_MEDIA_BYTES,
+    batch_pull_and_apply, batch_push_pending, queue_workspace_bootstrap_updates, BatchPushRequest,
+    CrdtDocumentUpdate, LocalSyncState, NotificationScheduleSnapshot, PendingCrdtEdit,
+    PushDocumentUpdates, SyncTransport, WorkspaceCrdtChangeSet, WorkspaceCrdtDocuments,
 };
 use uuid::Uuid;
 use yrs::updates::decoder::Decode;
-use yrs::updates::encoder::Encode;
 use yrs::{Doc, ReadTxn, StateVector, Transact, Update};
 
 use summaries::{
@@ -75,7 +69,7 @@ pub use test_server::TestServer;
 pub use util::Rng;
 use util::{
     dq_item_is_fully_complete_task, dq_last_nonblank_day, dq_scheme_is_blank, dq_strip_annotations,
-    merge_state, test_notification_schedule,
+    test_notification_schedule,
 };
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq, Ord, PartialOrd)]
@@ -171,6 +165,9 @@ pub struct TestDevice {
     crdt_states: HashMap<DocumentId, std::sync::Arc<[u8]>>,
     local_state: LocalSyncState,
     account_switch_reseed_pending: bool,
+    // Pre-edit content of schemes edited while their store document was never
+    // populated, handed to `sync_changes_with_bases` (mirrors the desktop store).
+    population_bases: HashMap<knotq_model::SchemeId, knotq_model::Scheme>,
     next_sequence: u64,
     /// In-memory stand-in for the desktop's `media/` assets directory.
     /// Maps image_name (e.g. "<uuid>.png") → raw bytes.  Populated by

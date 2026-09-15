@@ -1,0 +1,45 @@
+//! Landing a finished sync run on the live state — the decisions the sync task
+//! makes on the UI thread once `sync_snapshot` returns, kept out of the GPUI
+//! closure so the production-path fuzzer runs exactly the same steps.
+
+use std::collections::HashMap;
+use std::sync::Arc;
+
+use knotq_model::{DocumentId, Workspace};
+use knotq_state::AppState;
+use knotq_sync::PushedDocument;
+
+/// Drop the pending edits a run pushed.
+pub(super) fn clear_pushed_edits(state: &mut AppState, pushed: &[PushedDocument]) {
+    for pushed in pushed {
+        state.clear_pushed_crdt_edits(pushed.document, pushed.through_local_sequence);
+    }
+}
+
+/// Whether a run's result has to be landed on the live workspace at all.
+pub(super) fn run_changed_workspace(
+    remote_updates_applied: usize,
+    local_workspace_changed: bool,
+) -> bool {
+    remote_updates_applied > 0 || local_workspace_changed
+}
+
+/// Adopt a run's merged workspace. Edits applied while the run was in flight
+/// are not in its result, so the result is merged into the live documents and
+/// they survive; with none in flight the replace is equivalent and adopts the
+/// run's canonical state wholesale. Returns whether the workspace visibly changed
+/// (the merge path is always treated as changed — the user is mid-edit).
+pub(super) fn adopt_sync_workspace(
+    state: &mut AppState,
+    workspace: Workspace,
+    crdt_states: HashMap<DocumentId, Arc<[u8]>>,
+    local_edit_watermark: u64,
+) -> bool {
+    let merged = state.has_local_edits_since(local_edit_watermark)
+        && state.merge_workspace_from_sync(&workspace, &crdt_states);
+    if merged {
+        true
+    } else {
+        state.replace_workspace_from_sync(workspace, crdt_states)
+    }
+}

@@ -29,10 +29,93 @@ impl TestDevice {
             crdt_states,
             local_state,
             account_switch_reseed_pending: false,
+            population_bases: HashMap::new(),
             next_sequence: 1,
             media_assets: HashMap::new(),
             last_skipped: Vec::new(),
         }
+    }
+
+    /// Mutate only the plain workspace, deliberately skipping the CRDT store
+    /// and pending queue. This models a committed disk snapshot that survived
+    /// while the separately persisted CRDT snapshot did not — the persistence
+    /// boundary that ordinary command-path fuzzing cannot produce.
+    pub fn direct_add_scheme_without_crdt(
+        &mut self,
+        parent: FolderId,
+        name: &str,
+        lines: &[&str],
+    ) -> SchemeId {
+        let mut scheme = Scheme::new(name, 0);
+        for line in lines {
+            scheme.items.push(Item::new(*line));
+        }
+        let scheme_id = scheme.id;
+        self.workspace
+            .folders
+            .get_mut(&parent)
+            .expect("unknown direct-mutation parent")
+            .children
+            .push(NodeRef::Scheme(scheme_id));
+        self.workspace.schemes.insert(scheme_id, scheme);
+        self.workspace.ensure_sync_metadata();
+        scheme_id
+    }
+
+    /// Add a folder to the plain workspace only, without authoring a CRDT
+    /// update. Kept separate from the normal command helper so persistence
+    /// boundary fuzzing can exercise folder/index loss independently of scheme
+    /// content-document loss.
+    pub fn direct_add_folder_without_crdt(&mut self, parent: FolderId, name: &str) -> FolderId {
+        let folder = Folder {
+            id: FolderId::new(),
+            name: name.to_string(),
+            parent: Some(parent),
+            children: Vec::new(),
+            expanded: true,
+        };
+        let folder_id = folder.id;
+        self.workspace
+            .folders
+            .get_mut(&parent)
+            .expect("unknown direct-mutation parent")
+            .children
+            .push(NodeRef::Folder(folder_id));
+        self.workspace.folders.insert(folder_id, folder);
+        self.workspace.ensure_sync_metadata();
+        folder_id
+    }
+
+    /// Edit an existing scheme in the plain workspace only, leaving its CRDT
+    /// bytes and outbound queue untouched. This catches a mismatch where the
+    /// document exists locally but its last plain-file edit was not reflected
+    /// in the CRDT snapshot before a remote index pull.
+    pub fn direct_append_line_without_crdt(&mut self, scheme_id: SchemeId, text: &str) {
+        self.workspace
+            .schemes
+            .get_mut(&scheme_id)
+            .expect("unknown direct-mutation scheme")
+            .items
+            .push(Item::new(text));
+    }
+
+    /// Change an existing item in the plain workspace only. This races a
+    /// remote deletion against a locally durable edit whose CRDT bytes were
+    /// not persisted yet.
+    pub fn direct_set_line_text_without_crdt(
+        &mut self,
+        scheme_id: SchemeId,
+        item_index: usize,
+        text: &str,
+    ) {
+        self.workspace
+            .schemes
+            .get_mut(&scheme_id)
+            .expect("unknown direct-mutation scheme")
+            .items
+            .get_mut(item_index)
+            .expect("unknown direct-mutation item")
+            .set_text(text);
     }
 
     // --- restart simulation ----------------------------------------------------

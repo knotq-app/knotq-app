@@ -60,10 +60,10 @@ use knotq_model::{
 pub use knotq_state::{
     add_months, calendar_month_keys_between, calendar_toggle_keys, daily_queue_carryover_command,
     daily_queue_default_window_start, daily_queue_initial_start, daily_queue_scheme_is_blank,
-    daily_queue_scheme_name, editor_undo_key, last_nonempty_daily_queue_day,
-    make_default_workspace_for_date, recurrence_undo_key, should_coalesce_editor_undo,
-    should_coalesce_recurrence_undo, AppState, CalendarOccurrenceKey, EditorUndoGroup,
-    EditorUndoKey, NavSnapshot, Selection, UndoEntry, View, DAILY_QUEUE_DEFAULT_WINDOW_DAYS,
+    editor_undo_key, last_nonempty_daily_queue_day, make_default_workspace_for_date,
+    recurrence_undo_key, should_coalesce_editor_undo, should_coalesce_recurrence_undo, AppState,
+    CalendarOccurrenceKey, EditorUndoGroup, EditorUndoKey, NavSnapshot, Selection, UndoEntry, View,
+    DAILY_QUEUE_DEFAULT_WINDOW_DAYS,
 };
 use knotq_storage_json::{
     load_daily_queue_scheme, load_daily_queue_schemes_for_calendar_range, load_settings_or_recover,
@@ -570,7 +570,6 @@ pub fn daily_queue_marker_color(is_dark: bool) -> u32 {
         DAILY_QUEUE_MARKER_COLOR_LIGHT
     }
 }
-pub const DAILY_QUEUE_COLOR_INDEX: u8 = 0;
 pub const DEFAULT_WINDOW_WIDTH: f32 = 1250.0;
 pub const DEFAULT_WINDOW_HEIGHT: f32 = 750.0;
 pub const MIN_WINDOW_WIDTH: f32 = 800.0;

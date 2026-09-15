@@ -7,4 +7,5 @@ mod helpers;
 mod merge;
 mod schema_validation;
 mod scheme_edit_sequences;
+mod scheme_population;
 mod workspace_materialization;

@@ -791,6 +791,15 @@ impl TestDevice {
     }
 
     pub(super) fn scheme_mut(&mut self, scheme_id: SchemeId) -> &mut Scheme {
+        // As the desktop store does: an edit to a scheme whose document was never
+        // populated records the scheme as it stood, so the edit lands as an edit.
+        if !self.population_bases.contains_key(&scheme_id)
+            && self.store_crdt.scheme_document_is_unpopulated(scheme_id)
+        {
+            if let Some(scheme) = self.workspace.schemes.get(&scheme_id) {
+                self.population_bases.insert(scheme_id, scheme.clone());
+            }
+        }
         self.workspace
             .schemes
             .get_mut(&scheme_id)

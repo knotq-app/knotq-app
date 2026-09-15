@@ -19,9 +19,10 @@ use chrono::Utc;
 use knotq_model::{DocumentId, OperationId, ReplicaId, SyncDocumentKind, Workspace, WorkspaceId};
 
 use crate::{
-    BatchPullRequest, BatchPushRequest, DocumentPullStateVector, DocumentStateVector,
-    LocalSyncState, NotificationScheduleSnapshot, PendingCrdtEdit, PulledCrdtDocument,
-    PushDocumentUpdates, StoredCrdtUpdate, WorkspaceCrdtDocuments,
+    BatchPullRequest, BatchPushRequest, CrdtDocumentUpdate, DocumentPullStateVector,
+    DocumentStateVector, LocalSyncState, NotificationScheduleSnapshot, PendingCrdtEdit,
+    PulledCrdtDocument, PushDocumentUpdates, StoredCrdtUpdate, WorkspaceCrdtChangeSet,
+    WorkspaceCrdtDocuments,
 };
 
 /// A document that was included in a pull response but could not be applied
@@ -108,6 +109,10 @@ impl std::error::Error for SyncPushEpochStale {}
 pub struct PullOutcome {
     pub workspace: Workspace,
     pub remote_updates_applied: usize,
+    /// Documents repaired from a plain workspace/CRDT persistence mismatch
+    /// before the first remote pull. These must be persisted by the platform
+    /// even when the remote response is empty.
+    pub locally_repaired_documents: Vec<DocumentId>,
     /// Number of pull responses consumed by this call, including the final
     /// caught-up response. Useful for distinguishing one slow request from a
     /// server page sequence in platform diagnostics.
@@ -287,6 +292,15 @@ fn batch_pull_and_apply_with_integrity_documents_inner(
     hydrate_all_deferred_for_integrity: bool,
 ) -> Result<PullOutcome> {
     let mut workspace = workspace;
+    // The plain workspace and the durable CRDT state are separate persistence
+    // artifacts. A crash or an older build can leave a locally-created scheme
+    // in the former but not the latter. If we pull first, materializing the
+    // remote workspace index treats that missing CRDT entry as authoritative
+    // absence and silently drops the local scheme. Reconcile this boundary
+    // before *any* remote bytes are applied; the resulting full snapshots are
+    // durable pending edits, so the server gets the local document as well.
+    let local_repair =
+        queue_local_only_documents_before_pull(crdt_docs, local_state, &workspace, replica_id);
     let mut remote_updates_applied = 0;
     let mut pull_requests = 0;
     let mut remote_documents_received = 0;
@@ -860,6 +874,32 @@ fn batch_pull_and_apply_with_integrity_documents_inner(
         }
     }
 
+    let locally_repaired_documents = if let Some(repair) = local_repair {
+        // A remote scheme document may contain tombstones or a partial state
+        // that would still win over the pre-pull seed. Re-express only the
+        // specific scheme content documents that were detected as locally
+        // ahead. The workspace-index snapshot was already queued before the
+        // pull; replaying the entire pre-pull workspace here would resurrect
+        // unrelated remote folder/scheme changes that arrived during the pull.
+        let post_pull_changeset = WorkspaceCrdtChangeSet {
+            workspace: false,
+            schemes: repair.changeset.schemes.clone(),
+        };
+        let outcome = crdt_docs.sync_changes(&repair.workspace, &post_pull_changeset);
+        for error in &outcome.errors {
+            eprintln!("knotq sync: post-pull local CRDT repair skipped: {error}");
+        }
+        queue_crdt_updates(local_state, &repair.workspace, replica_id, outcome.updates);
+        let repaired_workspace = crdt_docs
+            .materialized_workspace_repair(&workspace, &|_| false)
+            .context("materialize post-pull local CRDT repair")?;
+        if repaired_workspace != workspace {
+            workspace = repaired_workspace;
+        }
+        repair.documents
+    } else {
+        Vec::new()
+    };
     let remote_latest = authoritative_remote_latest.unwrap_or_else(|| {
         local_state
             .document_cursors
@@ -870,6 +910,7 @@ fn batch_pull_and_apply_with_integrity_documents_inner(
     Ok(PullOutcome {
         workspace,
         remote_updates_applied,
+        locally_repaired_documents,
         pull_requests,
         remote_documents_received,
         remote_delta_documents,
@@ -878,6 +919,181 @@ fn batch_pull_and_apply_with_integrity_documents_inner(
         changed_documents,
         skipped: all_skipped,
     })
+}
+
+/// Repair the gap between a plain workspace snapshot and its persisted CRDT
+/// documents before pulling remote state. This is deliberately in the shared
+/// engine so desktop and mobile get the same data-loss guard.
+struct LocalPrePullRepair {
+    workspace: Workspace,
+    changeset: WorkspaceCrdtChangeSet,
+    documents: Vec<DocumentId>,
+}
+
+fn queue_local_only_documents_before_pull(
+    crdt_docs: &mut WorkspaceCrdtDocuments,
+    local_state: &mut LocalSyncState,
+    workspace: &Workspace,
+    replica_id: ReplicaId,
+) -> Option<LocalPrePullRepair> {
+    // Account switches intentionally defer to the post-pull re-seed path: the
+    // old CRDT belongs to the source account and must not be pushed into the
+    // destination account before its workspace index has been adopted.
+    if local_state.needs_full_reseed() {
+        return None;
+    }
+    // An unseeded workspace document has no history to merge with, so it must
+    // adopt the server's workspace index before anything local is written into
+    // it. Writing the plain workspace first mints an independent index that wins
+    // over the server's when the two merge, deleting the account's existing
+    // schemes, folders and days for every device. That is not only the empty
+    // bootstrap: a real first launch seeds the starter workspace, so a new
+    // install signing into an existing account has a non-empty plain workspace
+    // and an unseeded CRDT (`fresh_install_join.rs`). The repair below is for a
+    // seeded CRDT that fell behind the plain files.
+    if !crdt_docs.workspace_is_seeded() {
+        return None;
+    }
+    // The repair is for a CRDT that already synced with this server and then
+    // fell behind the plain files. A device that has never synced with this
+    // server — no pull or push cursor at all — has nothing for its plain files to
+    // be ahead of: its offline history reaches the account through the
+    // re-identified workspace snapshot and the post-pull bootstrap, like any
+    // first sign-in. Running the repair first instead writes the pre-sign-in
+    // workspace index — local root, local identity — over the account's, and the
+    // account loses everything (`offline_device_join.rs`). A first sign-in does
+    // not trip `needs_full_reseed`: there is no previous account to reset from.
+    if local_state.document_cursors.is_empty() {
+        return None;
+    }
+
+    let known_documents = crdt_docs.known_document_ids();
+    let mut missing_schemes = workspace
+        .scheme_sync
+        .iter()
+        .filter_map(|(scheme_id, metadata)| {
+            (metadata.kind == SyncDocumentKind::Scheme
+                && workspace.schemes.contains_key(scheme_id)
+                && !known_documents.contains(&metadata.id))
+            .then_some((*scheme_id, metadata.id))
+        })
+        .collect::<Vec<_>>();
+    let workspace_index_mismatch = match crdt_docs.workspace_folder_records_match(workspace) {
+        Ok(matches) => !matches,
+        Err(error) => {
+            // An unreadable comparison is not permission to discard the plain
+            // workspace. Queue a reconciliation; the normal CRDT validation
+            // will reject only the repair itself if the bytes are unusable.
+            eprintln!("knotq sync: could not compare plain and CRDT workspace indexes: {error:#}");
+            true
+        }
+    };
+    missing_schemes.sort_by_key(|(scheme_id, _)| *scheme_id);
+
+    // The workspace index can be perfectly current while a plain scheme file
+    // is newer than its separately persisted CRDT document. Detect that case
+    // before the early return as well; otherwise a remote change to an
+    // unrelated document gives the stale CRDT a chance to overwrite the newer
+    // plain scheme content.
+    let content_mismatch_schemes = crdt_docs
+        .materialized_workspace_repair(workspace, &|_| false)
+        .ok()
+        .map(|materialized| {
+            workspace
+                .schemes
+                .keys()
+                .filter(|scheme_id| {
+                    workspace
+                        .schemes
+                        .get(scheme_id)
+                        .zip(materialized.schemes.get(scheme_id))
+                        .is_some_and(|(local, crdt)| {
+                            local.items != crdt.items
+                                // An empty plain scheme is the known stale-file
+                                // shape: a failed materialization/save can clear
+                                // the UI snapshot while the durable CRDT still
+                                // has content. Never turn that into a deletion;
+                                // the normal materialization pass restores it.
+                                && (!local.items.is_empty() || crdt.items.is_empty())
+                        })
+                })
+                .copied()
+                .collect::<HashSet<_>>()
+        })
+        .unwrap_or_default();
+    if missing_schemes.is_empty()
+        && !workspace_index_mismatch
+        && content_mismatch_schemes.is_empty()
+    {
+        return None;
+    }
+    // A full workspace-index snapshot must precede any stale workspace delta;
+    // likewise, the full scheme snapshot must be the first update for a new
+    // document or the server could reject a bare delta as schema-invalid.
+    local_state.pending.retain(|edit| {
+        edit.kind != SyncDocumentKind::PersonalWorkspace
+            && !missing_schemes
+                .iter()
+                .any(|(_, document)| *document == edit.document)
+    });
+
+    let mut changeset = WorkspaceCrdtChangeSet {
+        workspace: workspace_index_mismatch || !missing_schemes.is_empty(),
+        ..WorkspaceCrdtChangeSet::default()
+    };
+    changeset
+        .schemes
+        .extend(missing_schemes.iter().map(|(scheme_id, _)| *scheme_id));
+    changeset.schemes.extend(content_mismatch_schemes);
+    let outcome = crdt_docs.sync_changes(workspace, &changeset);
+    for error in &outcome.errors {
+        eprintln!("knotq sync: pre-pull local CRDT repair skipped: {error}");
+    }
+
+    let documents = outcome
+        .updates
+        .iter()
+        .map(|update| update.document)
+        .collect::<Vec<_>>();
+    queue_crdt_updates(local_state, workspace, replica_id, outcome.updates);
+    Some(LocalPrePullRepair {
+        workspace: workspace.clone(),
+        changeset,
+        documents,
+    })
+}
+
+fn queue_crdt_updates(
+    local_state: &mut LocalSyncState,
+    workspace: &Workspace,
+    replica_id: ReplicaId,
+    updates: Vec<CrdtDocumentUpdate>,
+) {
+    if updates.is_empty() {
+        return;
+    }
+    let operation_id = OperationId::new();
+    let mut next_sequence = local_state
+        .pending
+        .iter()
+        .map(|edit| edit.local_sequence)
+        .max()
+        .unwrap_or(0)
+        + 1;
+    for update in updates {
+        local_state.push_pending(PendingCrdtEdit {
+            operation_id,
+            workspace_id: workspace.id,
+            replica_id,
+            local_sequence: next_sequence,
+            created_at: Utc::now(),
+            document: update.document,
+            kind: update.kind,
+            update_v1: update.update_v1,
+            touched_items: update.touched_items,
+        });
+        next_sequence += 1;
+    }
 }
 
 /// Push every dirty document in as few batched requests as the bounds allow,
@@ -1379,6 +1595,117 @@ mod tests {
         fn push(&self, _request: &BatchPushRequest) -> Result<BatchPushResponse> {
             Ok(BatchPushResponse::default())
         }
+    }
+
+    /// Returns a stale workspace index that predates a scheme present only in
+    /// the caller's plain workspace. This is the exact ordering hazard where a
+    /// pull used to materialize the stale index and erase the local scheme.
+    struct StaleWorkspaceIndexTransport {
+        workspace_document: DocumentId,
+        state_v1: Vec<u8>,
+    }
+
+    impl SyncTransport for StaleWorkspaceIndexTransport {
+        fn pull(&self, _request: &BatchPullRequest) -> Result<BatchPullResponse> {
+            Ok(BatchPullResponse {
+                documents: vec![PulledCrdtDocument {
+                    document: self.workspace_document,
+                    kind: SyncDocumentKind::PersonalWorkspace,
+                    seq: 1,
+                    epoch: 0,
+                    state_v1: self.state_v1.clone(),
+                    state_v1_is_delta: false,
+                }],
+                known_documents: Some(HashMap::from([(self.workspace_document, 1)])),
+                ..BatchPullResponse::default()
+            })
+        }
+
+        fn push(&self, _request: &BatchPushRequest) -> Result<BatchPushResponse> {
+            Ok(BatchPushResponse::default())
+        }
+    }
+
+    #[test]
+    fn pre_pull_repair_preserves_plain_workspace_scheme_against_stale_index() {
+        let stale_workspace = Workspace::new();
+        let mut local_workspace = stale_workspace.clone();
+        let mut scheme = knotq_model::Scheme::new("Local-only", 0);
+        scheme.items.push(knotq_model::Item::new("must survive"));
+        let scheme_id = scheme.id;
+        local_workspace.schemes.insert(scheme_id, scheme);
+        local_workspace.ensure_sync_metadata();
+        let scheme_document = local_workspace.scheme_sync[&scheme_id].id;
+        let folder = knotq_model::Folder {
+            id: knotq_model::FolderId::new(),
+            name: "Local-only folder".to_string(),
+            parent: Some(local_workspace.root),
+            children: Vec::new(),
+            expanded: true,
+        };
+        let folder_id = folder.id;
+        local_workspace
+            .folders
+            .get_mut(&local_workspace.root)
+            .unwrap()
+            .children
+            .push(knotq_model::NodeRef::Folder(folder_id));
+        local_workspace.folders.insert(folder_id, folder);
+
+        // The local CRDT was restored from the older workspace before the
+        // scheme was created, while the plain workspace already contains it.
+        let stale_crdt = WorkspaceCrdtDocuments::try_new(&stale_workspace).unwrap();
+        let workspace_document = stale_workspace.sync.id;
+        let stale_workspace_state = stale_crdt.document_states()[&workspace_document].to_vec();
+        let mut local_crdt = stale_crdt;
+        assert!(!local_crdt.known_document_ids().contains(&scheme_document));
+
+        let transport = StaleWorkspaceIndexTransport {
+            workspace_document,
+            state_v1: stale_workspace_state,
+        };
+        let mut local_state = LocalSyncState::default();
+        // A CRDT restored from an older state implies a device that has synced
+        // with this server before — the repair's precondition. (A cursor on an
+        // unrelated document, so the stale index below is still applied.)
+        local_state.mark_pulled(
+            knotq_model::DocumentId::new(),
+            knotq_model::SyncDocumentKind::Scheme,
+            1,
+            0,
+        );
+
+        let outcome = batch_pull_and_apply(
+            &transport,
+            &mut local_crdt,
+            &mut local_state,
+            local_workspace,
+            ReplicaId::new(),
+        )
+        .expect("a stale remote index must not erase a local-only scheme");
+
+        assert!(outcome.workspace.schemes.contains_key(&scheme_id));
+        assert_eq!(
+            outcome.workspace.folders[&folder_id].name,
+            "Local-only folder"
+        );
+        assert_eq!(
+            outcome.workspace.schemes[&scheme_id].items[0].text(),
+            "must survive"
+        );
+        assert!(
+            outcome
+                .locally_repaired_documents
+                .contains(&scheme_document),
+            "the missing local CRDT document must be explicitly repaired"
+        );
+        assert!(
+            local_state
+                .pending
+                .iter()
+                .any(|edit| edit.document == scheme_document),
+            "the recovered scheme must be queued for the server"
+        );
     }
 
     #[test]

@@ -10,6 +10,13 @@ pub const DAILY_QUEUE_TITLE: &str = "Daily";
 pub const DAILY_QUEUE_COLOR_INDEX: u8 = 0;
 pub const PAGE_DAYS: i64 = 31;
 
+/// The stored name of a Daily Queue day's scheme. A canonical value, not display
+/// text: both shells compare against it to tell an untouched day from a renamed
+/// one, so it is the same in every language.
+pub fn daily_queue_scheme_name(date: NaiveDate) -> String {
+    format!("Daily {}", date.format("%Y-%m-%d"))
+}
+
 const DAILY_QUEUE_SCHEME_NAMESPACE: [u8; 16] = [
     0x72, 0x38, 0x61, 0x5d, 0x6c, 0x7e, 0x46, 0x6f, 0x9f, 0x23, 0x91, 0xa8, 0xe5, 0x0a, 0xdf, 0x31,
 ];

@@ -94,6 +94,12 @@ pub enum Command {
         position: usize,
     },
 
+    /// Make a Daily Queue day exist (bound, with at least one row). See
+    /// `apply::daily::ensure_daily_queue`.
+    EnsureDailyQueue {
+        date: chrono::NaiveDate,
+    },
+
     InsertItem {
         scheme: SchemeId,
         position: usize,

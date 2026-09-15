@@ -10,7 +10,10 @@ use knotq_sync::{
 use std::fmt;
 
 mod http;
+mod landing;
 mod media;
+#[cfg(test)]
+mod production_fuzz;
 mod snapshot;
 mod tasks;
 mod ws_lifecycle;
@@ -229,6 +232,27 @@ struct SyncMediaAsset {
 struct SyncHttpClient {
     api_base: String,
     bearer_token: String,
+}
+
+/// The requests a sync run makes besides the batched CRDT pull/push: media
+/// transfer and history squash. Always HTTP in the app.
+trait SyncSideChannel {
+    fn upload_media_asset(&self, media: SyncMediaAsset, bytes: &[u8]) -> anyhow::Result<()>;
+    fn download_media_asset(&self, media: SyncMediaAsset) -> anyhow::Result<Option<Vec<u8>>>;
+    fn squash(
+        &self,
+        request: &knotq_sync::SquashDocumentRequest,
+    ) -> anyhow::Result<knotq_sync::SquashDocumentResponse>;
+}
+
+/// Everything a sync run reads from or talks to outside its snapshot: the data
+/// directory and the backend. `sync_snapshot` builds the real one; the
+/// production-path fuzzer builds one per simulated device.
+struct SyncEnvironment<'a> {
+    workspace_path: &'a std::path::Path,
+    image_dir: &'a std::path::Path,
+    transport: &'a dyn knotq_sync::SyncTransport,
+    side_channel: &'a dyn SyncSideChannel,
 }
 
 #[cfg(test)]

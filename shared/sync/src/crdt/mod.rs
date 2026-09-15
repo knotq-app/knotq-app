@@ -409,6 +409,7 @@ impl WorkspaceCrdtDocuments {
         docs.sync_changes_with_scheme_factory(
             &workspace,
             &WorkspaceCrdtChangeSet::default().workspace(),
+            &HashMap::new(),
             |scheme_id, document_id| {
                 YrsSchemeDocument::new_with_client_id(
                     document_id,
@@ -622,6 +623,40 @@ impl WorkspaceCrdtDocuments {
             ids.insert(deferred.document);
         }
         ids
+    }
+
+    /// Whether the durable workspace-index document contains a real persisted
+    /// state. A newly signed-in device has an intentionally empty local CRDT;
+    /// that empty base must pull the server before any plain-workspace repair
+    /// is considered authoritative.
+    pub fn workspace_is_seeded(&self) -> bool {
+        self.workspace.is_seeded()
+    }
+
+    /// Compare the persisted folder records without treating their derived
+    /// child lists as local authority. Child lists can legitimately differ
+    /// while a concurrent scheme/index update is still being merged; the
+    /// folder records themselves are the persistence-boundary signal for a
+    /// locally-created or locally-renamed/moved folder.
+    pub fn workspace_folder_records_match(&self, workspace: &Workspace) -> anyhow::Result<bool> {
+        if !self.workspace.is_seeded() {
+            return Ok(false);
+        }
+        let mut normalized = workspace.clone();
+        normalized.ensure_sync_metadata();
+        let actual = self.workspace.snapshot()?;
+        let mut expected = workspace_document_snapshot(&normalized);
+        for folder in &mut expected.folders {
+            folder.children.clear();
+        }
+        let mut actual_folders = actual.folders;
+        actual_folders
+            .iter_mut()
+            .for_each(|folder| folder.children.clear());
+        Ok(actual_folders == expected.folders
+            && actual.recently_deleted_folders == expected.recently_deleted_folders
+            && actual.deleted_folder_origins == expected.deleted_folder_origins
+            && actual.folder_sync == expected.folder_sync)
     }
 
     /// Promote a deferred scheme document into a live Yjs document, so it can be
@@ -1272,18 +1307,45 @@ impl WorkspaceCrdtDocuments {
         workspace: &Workspace,
         changeset: &WorkspaceCrdtChangeSet,
     ) -> WorkspaceCrdtSyncOutcome {
+        self.sync_changes_with_bases(workspace, changeset, &HashMap::new())
+    }
+
+    /// [`Self::sync_changes`], given what each scheme held before the edits being
+    /// written, for schemes whose documents had never been populated when those
+    /// edits were made (see [`Self::scheme_document_is_unpopulated`]). Such a
+    /// document is populated from its base first, so the edits land as edits.
+    pub fn sync_changes_with_bases(
+        &mut self,
+        workspace: &Workspace,
+        changeset: &WorkspaceCrdtChangeSet,
+        bases: &HashMap<SchemeId, Scheme>,
+    ) -> WorkspaceCrdtSyncOutcome {
         // A doc absent from `self.schemes` is authored from an empty base, so it gets a
         // fresh identity (`None`); the stable clientID is reserved for from-bytes restore
         // in `from_states` to prevent `(clientID, clock)` reuse across incarnations.
-        self.sync_changes_with_scheme_factory(workspace, changeset, move |_, document_id| {
+        self.sync_changes_with_scheme_factory(workspace, changeset, bases, move |_, document_id| {
             YrsSchemeDocument::for_replica(document_id, None)
         })
+    }
+
+    /// Whether `scheme`'s document has never been populated on this replica —
+    /// absent, or present but empty. An edit to such a scheme has to record the
+    /// scheme's content from before the edit and hand it to
+    /// [`Self::sync_changes_with_bases`]. A deferred document holds real bytes.
+    pub fn scheme_document_is_unpopulated(&self, scheme: SchemeId) -> bool {
+        if self.deferred.contains_key(&scheme) {
+            return false;
+        }
+        self.schemes
+            .get(&scheme)
+            .is_none_or(|document| document.is_unpopulated())
     }
 
     fn sync_changes_with_scheme_factory(
         &mut self,
         workspace: &Workspace,
         changeset: &WorkspaceCrdtChangeSet,
+        bases: &HashMap<SchemeId, Scheme>,
         mut new_scheme_document: impl FnMut(SchemeId, DocumentId) -> YrsSchemeDocument,
     ) -> WorkspaceCrdtSyncOutcome {
         // Only clone to repair. This runs on the per-keystroke path, where the
@@ -1362,7 +1424,7 @@ impl WorkspaceCrdtDocuments {
                 .schemes
                 .entry(id)
                 .or_insert_with(|| new_scheme_document(id, meta.id))
-                .sync_scheme(scheme)
+                .sync_scheme_from_base(bases.get(&id), scheme)
             {
                 Ok(Some(update)) => outcome.updates.push(update),
                 Ok(None) => {}

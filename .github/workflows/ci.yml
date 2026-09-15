@@ -197,6 +197,14 @@ jobs:
               - 'shared/model/**'
               - 'desktop/state/**'
               - 'desktop/commands/**'
+              - 'desktop/storage-json/**'
+              - 'desktop/app/src/app/sync_service.rs'
+              - 'desktop/app/src/app/sync_service/**'
+              - 'desktop/app/src/app/daily_queue.rs'
+              - 'desktop/app/src/app/services/**'
+              - 'desktop/app/src/app/bootstrap.rs'
+              - 'desktop/app/src/app/constructor.rs'
+              - '.github/scripts/run-sync-coverage.sh'
               - 'Cargo.lock'
               - 'Cargo.toml'
               - '.github/workflows/ci.yml'
@@ -220,6 +228,14 @@ jobs:
         uses: ./.github/actions/sync-stress
         with:
           backend-repo-token: ${{ secrets.BACKEND_REPO_TOKEN }}
+
+      - name: Sync line coverage (every file on the sync path above its floor)
+        if: steps.filter.outputs.sync == 'true'
+        shell: bash
+        run: |
+          rustup component add llvm-tools-preview
+          cargo install cargo-llvm-cov --locked
+          ./.github/scripts/run-sync-coverage.sh
 
   mobile-accounts:
     name: Mobile core accounts

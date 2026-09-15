@@ -220,7 +220,7 @@ fn merge_preserves_local_edits_made_during_sync_run() {
 }
 
 #[test]
-fn merge_preserves_direct_workspace_mutations_made_during_sync_run() {
+fn merge_preserves_scheme_created_during_sync_run() {
     let (mut state, scheme_id) = app_state_with_scheme("Plans");
 
     let watermark = state.local_edit_watermark();
@@ -234,19 +234,20 @@ fn merge_preserves_direct_workspace_mutations_made_during_sync_run() {
         "Renamed remotely",
     );
 
-    // A direct (non-command) mutation while the run is in flight — the path
-    // used when e.g. today's Daily Queue scheme is created on the fly.
+    // A scheme created while the run is in flight, through the store.
     let direct = Scheme::new("Direct", 1);
     let direct_id = direct.id;
-    state.workspace.schemes.insert(direct_id, direct);
+    let root = state.workspace.root;
     state
-        .workspace
-        .folders
-        .get_mut(&state.workspace.root)
-        .unwrap()
-        .children
-        .push(NodeRef::Scheme(direct_id));
-    state.mark_scheme_dirty(direct_id);
+        .apply_prechecked_local_command(
+            Command::RestoreScheme {
+                folder: root,
+                position: 0,
+                scheme: direct,
+            },
+            CommandOrigin::User,
+        )
+        .unwrap();
     assert!(state.has_local_edits_since(watermark));
 
     assert!(state.merge_workspace_from_sync(&result_workspace, &result_states));
@@ -342,11 +343,19 @@ fn undo_after_sync_merge_preserves_remote_change_and_pushes_cleanly() {
 
 #[test]
 fn watermark_reports_no_edits_when_nothing_changed() {
-    let (mut state, _) = app_state_with_scheme("Plans");
+    let (mut state, scheme_id) = app_state_with_scheme("Plans");
     let watermark = state.local_edit_watermark();
     assert!(!state.has_local_edits_since(watermark));
 
-    state.mark_direct_workspace_dirty();
+    state
+        .apply_prechecked_local_command(
+            Command::RenameScheme {
+                id: scheme_id,
+                name: "Renamed".into(),
+            },
+            CommandOrigin::User,
+        )
+        .unwrap();
     assert!(state.has_local_edits_since(watermark));
 }
 
@@ -432,8 +441,16 @@ fn replace_from_sync_reports_a_change_for_real_remote_content() {
     let (mut state, scheme_id) = app_state_with_scheme("Plans");
     let item = Item::new("original");
     let item_id = item.id;
-    state.workspace.schemes.get_mut(&scheme_id).unwrap().items = vec![item];
-    state.sync_store_from_workspace();
+    state
+        .apply_prechecked_local_command(
+            Command::InsertItem {
+                scheme: scheme_id,
+                position: 0,
+                item,
+            },
+            CommandOrigin::User,
+        )
+        .unwrap();
 
     let snapshot = state.workspace.clone();
     let snapshot_states = state.crdt_document_states();

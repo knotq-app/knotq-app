@@ -64,7 +64,12 @@ fn create_scheme(
             Command::DeleteScheme { id },
             Command::PermanentlyDeleteScheme { id },
         ]),
-        touched: ChangeSet::default().touched_folder(folder),
+        // The new scheme itself is touched: `touched.schemes` is what an
+        // incremental save writes, and a scheme listed in the index with no
+        // file behind it makes the whole workspace fail to load.
+        touched: ChangeSet::default()
+            .touched_folder(folder)
+            .touched_scheme(id),
     })
 }
 
@@ -105,7 +110,11 @@ fn restore_scheme(
     workspace.schemes.insert(id, scheme);
     Ok(CommandReceipt {
         inverse: Command::DeleteScheme { id },
-        touched: ChangeSet::default().touched_folder(folder),
+        // The whole scheme was (re)written — it may be new, or carry different
+        // items than its file — so the scheme must be saved too.
+        touched: ChangeSet::default()
+            .touched_folder(folder)
+            .touched_scheme(id),
     })
 }
 
