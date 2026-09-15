@@ -882,7 +882,29 @@ fn batch_pull_and_apply_with_integrity_documents_inner(
         // pull; replaying the entire pre-pull workspace here would resurrect
         // unrelated remote folder/scheme changes that arrived during the pull.
         let repaired_schemes: Vec<_> = repair.changeset.schemes.iter().copied().collect();
-        let outcome = crdt_docs.sync_scheme_documents(&repair.workspace, &repaired_schemes);
+        // Re-express only what was ahead of the CRDT before the pull. Written
+        // as the pre-pull plain copy stood, a scheme would lose every line the
+        // pull just delivered (another device's additions): a scheme write
+        // makes the document match it exactly.
+        let mut repair_workspace = repair.workspace.clone();
+        if let Ok(pulled) = crdt_docs.materialized_workspace_repair(&workspace, &|_| false) {
+            for scheme_id in &repaired_schemes {
+                let (Some(ahead), Some(remote), Some(local)) = (
+                    repair.local_ahead_items.get(scheme_id),
+                    pulled.schemes.get(scheme_id),
+                    repair_workspace.schemes.get_mut(scheme_id),
+                ) else {
+                    continue;
+                };
+                let merged = crate::crdt::merge_items_for_adoption(
+                    &local.items,
+                    remote.items.clone(),
+                    ahead,
+                );
+                local.items = merged;
+            }
+        }
+        let outcome = crdt_docs.sync_scheme_documents(&repair_workspace, &repaired_schemes);
         for error in &outcome.errors {
             eprintln!("knotq sync: post-pull local CRDT repair skipped: {error}");
         }
@@ -925,6 +947,10 @@ struct LocalPrePullRepair {
     workspace: Workspace,
     changeset: WorkspaceCrdtChangeSet,
     documents: Vec<DocumentId>,
+    /// For each scheme repaired because its plain file was ahead of its CRDT,
+    /// the items that were ahead: added, changed or deleted locally. Only
+    /// these are re-expressed after the pull.
+    local_ahead_items: HashMap<knotq_model::SchemeId, HashSet<String>>,
 }
 
 fn queue_local_only_documents_before_pull(
@@ -992,32 +1018,49 @@ fn queue_local_only_documents_before_pull(
     // before the early return as well; otherwise a remote change to an
     // unrelated document gives the stale CRDT a chance to overwrite the newer
     // plain scheme content.
-    let content_mismatch_schemes = crdt_docs
-        .materialized_workspace_repair(workspace, &|_| false)
-        .ok()
-        .map(|materialized| {
-            workspace
-                .schemes
-                .keys()
-                .filter(|scheme_id| {
-                    workspace
-                        .schemes
-                        .get(scheme_id)
-                        .zip(materialized.schemes.get(scheme_id))
-                        .is_some_and(|(local, crdt)| {
-                            local.items != crdt.items
-                                // An empty plain scheme is the known stale-file
-                                // shape: a failed materialization/save can clear
-                                // the UI snapshot while the durable CRDT still
-                                // has content. Never turn that into a deletion;
-                                // the normal materialization pass restores it.
-                                && (!local.items.is_empty() || crdt.items.is_empty())
-                        })
+    let mut local_ahead_items: HashMap<knotq_model::SchemeId, HashSet<String>> = HashMap::new();
+    if let Ok(materialized) = crdt_docs.materialized_workspace_repair(workspace, &|_| false) {
+        for (scheme_id, local) in &workspace.schemes {
+            let Some(crdt) = materialized.schemes.get(scheme_id) else {
+                continue;
+            };
+            if local.items == crdt.items
+                // An empty plain scheme is the known stale-file shape: a failed
+                // materialization/save can clear the UI snapshot while the
+                // durable CRDT still has content. Never turn that into a
+                // deletion; the normal materialization pass restores it.
+                || (local.items.is_empty() && !crdt.items.is_empty())
+            {
+                continue;
+            }
+            let crdt_by_id: HashMap<String, &knotq_model::Item> = crdt
+                .items
+                .iter()
+                .map(|item| (item.id.to_string(), item))
+                .collect();
+            let local_ids: HashSet<String> =
+                local.items.iter().map(|item| item.id.to_string()).collect();
+            let mut ahead: HashSet<String> = local
+                .items
+                .iter()
+                .filter(|item| {
+                    crdt_by_id
+                        .get(&item.id.to_string())
+                        .is_none_or(|crdt_item| **crdt_item != **item)
                 })
-                .copied()
-                .collect::<HashSet<_>>()
-        })
-        .unwrap_or_default();
+                .map(|item| item.id.to_string())
+                .collect();
+            ahead.extend(
+                crdt_by_id
+                    .keys()
+                    .filter(|id| !local_ids.contains(*id))
+                    .cloned(),
+            );
+            local_ahead_items.insert(*scheme_id, ahead);
+        }
+    }
+    let content_mismatch_schemes: HashSet<knotq_model::SchemeId> =
+        local_ahead_items.keys().copied().collect();
     if missing_schemes.is_empty()
         && !workspace_index_mismatch
         && content_mismatch_schemes.is_empty()
@@ -1090,6 +1133,7 @@ fn queue_local_only_documents_before_pull(
         workspace: workspace.clone(),
         changeset,
         documents,
+        local_ahead_items,
     })
 }
 
@@ -1654,6 +1698,152 @@ mod tests {
         fn push(&self, _request: &BatchPushRequest) -> Result<BatchPushResponse> {
             Ok(BatchPushResponse::default())
         }
+    }
+
+    struct RemoteSchemeTransport {
+        index_document: DocumentId,
+        scheme_document: DocumentId,
+        state_v1: Vec<u8>,
+    }
+
+    impl SyncTransport for RemoteSchemeTransport {
+        fn pull(&self, _request: &BatchPullRequest) -> Result<BatchPullResponse> {
+            Ok(BatchPullResponse {
+                documents: vec![PulledCrdtDocument {
+                    document: self.scheme_document,
+                    kind: SyncDocumentKind::Scheme,
+                    seq: 2,
+                    epoch: 0,
+                    state_v1: self.state_v1.clone(),
+                    state_v1_is_delta: false,
+                }],
+                known_documents: Some(HashMap::from([
+                    (self.index_document, 1),
+                    (self.scheme_document, 2),
+                ])),
+                ..BatchPullResponse::default()
+            })
+        }
+
+        fn push(&self, _request: &BatchPushRequest) -> Result<BatchPushResponse> {
+            Ok(BatchPushResponse::default())
+        }
+    }
+
+    /// Production-fuzz seed 4: a device whose plain Daily file was ahead of its
+    /// CRDT (an edit saved before a crash) ran the pre-pull content repair, and
+    /// the post-pull repair then re-wrote that scheme from the pre-pull plain
+    /// copy after the pull had delivered another device's new lines. A scheme
+    /// write makes the document match exactly, so those lines were tombstoned
+    /// locally and on the server. Only the locally-ahead lines may be re-written.
+    #[test]
+    fn post_pull_repair_keeps_lines_the_pull_delivered() {
+        let replica = ReplicaId::new();
+        let mut base = Workspace::new();
+        let mut scheme = knotq_model::Scheme::new("Day", 0);
+        scheme.items.push(knotq_model::Item::new("old"));
+        let scheme_id = scheme.id;
+        let edited_item = scheme.items[0].id;
+        base.schemes.insert(scheme_id, scheme);
+        let root = base.root;
+        base.folders
+            .get_mut(&root)
+            .unwrap()
+            .children
+            .push(knotq_model::NodeRef::Scheme(scheme_id));
+        base.ensure_sync_metadata();
+        let index = base.sync.id;
+        let scheme_document = base.scheme_sync[&scheme_id].id;
+        let base_states = WorkspaceCrdtDocuments::try_new(&base)
+            .unwrap()
+            .document_states();
+
+        // Another device appends a line; the server holds that state.
+        let mut remote_docs =
+            WorkspaceCrdtDocuments::from_states(&base, ReplicaId::new(), &base_states).unwrap();
+        let mut remote = base.clone();
+        let added = knotq_model::Item::new("from another device");
+        let added_id = added.id;
+        remote
+            .schemes
+            .get_mut(&scheme_id)
+            .unwrap()
+            .items
+            .push(added);
+        let appended = remote_docs.sync_changes(
+            &remote,
+            &WorkspaceCrdtChangeSet::default().touch_scheme(scheme_id),
+        );
+        assert!(appended.is_ok(), "{:?}", appended.errors);
+        let server_scheme_state = remote_docs.document_states()[&scheme_document].to_vec();
+
+        // This device's plain file is ahead of its CRDT, so the pre-pull content
+        // repair fires for the same scheme.
+        let mut local_crdt =
+            WorkspaceCrdtDocuments::from_states(&base, replica, &base_states).unwrap();
+        let mut plain = base.clone();
+        plain.schemes.get_mut(&scheme_id).unwrap().items[0].set_text("edited locally");
+        let mut local_state = LocalSyncState::default();
+        local_state.mark_pulled(index, SyncDocumentKind::PersonalWorkspace, 1, 0);
+        local_state.mark_pulled(scheme_document, SyncDocumentKind::Scheme, 1, 0);
+
+        let transport = RemoteSchemeTransport {
+            index_document: index,
+            scheme_document,
+            state_v1: server_scheme_state.clone(),
+        };
+        let outcome = batch_pull_and_apply(
+            &transport,
+            &mut local_crdt,
+            &mut local_state,
+            plain,
+            replica,
+        )
+        .expect("pull");
+
+        let items = &outcome.workspace.schemes[&scheme_id].items;
+        assert!(
+            items.iter().any(|item| item.id == added_id),
+            "the line the pull delivered was removed locally"
+        );
+        assert_eq!(
+            items
+                .iter()
+                .find(|item| item.id == edited_item)
+                .map(|item| item.text()),
+            Some("edited locally".to_string())
+        );
+
+        // The repair's queued edits must not remove it on the server either.
+        let queued: Vec<Vec<u8>> = local_state
+            .pending
+            .iter()
+            .filter(|edit| edit.document == scheme_document)
+            .map(|edit| edit.update_v1.clone())
+            .collect();
+        let on_server = crate::testing::merge_state(&server_scheme_state, &queued);
+        let mut server_states: HashMap<DocumentId, Vec<u8>> = base_states
+            .iter()
+            .map(|(document, state)| (*document, state.to_vec()))
+            .collect();
+        server_states.insert(scheme_document, on_server);
+        let server_docs =
+            WorkspaceCrdtDocuments::from_states(&base, ReplicaId::new(), &server_states).unwrap();
+        let server = server_docs
+            .materialized_workspace_repair(&base, &|_| false)
+            .unwrap();
+        let server_items = &server.schemes[&scheme_id].items;
+        assert!(
+            server_items.iter().any(|item| item.id == added_id),
+            "the repair's push removes the delivered line on the server"
+        );
+        assert_eq!(
+            server_items
+                .iter()
+                .find(|item| item.id == edited_item)
+                .map(|item| item.text()),
+            Some("edited locally".to_string())
+        );
     }
 
     /// Production-fuzz seed 3: a device's queued workspace-index edits (a
