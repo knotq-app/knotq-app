@@ -317,6 +317,35 @@ impl Attribution {
             .is_some_and(|writers| writers.iter().any(|writer| *writer != device))
     }
 
+    /// A scheme inside a folder some device archived is archived with it, even
+    /// when that device never saw the scheme there: another device moved it in
+    /// concurrently and the merge marks it. No device's own step changed the
+    /// scheme's flag, but the folder's archive explains it.
+    fn archived_with_its_folder(&self, key: &Key, new: &str, view: &View) -> bool {
+        let (Subject::Scheme(scheme), Field::SchemeArchived) = *key else {
+            return false;
+        };
+        if new != "true" {
+            return false;
+        }
+        let mut current = view.scheme_parent.get(&scheme).copied().flatten();
+        let mut hops = 0;
+        while let Some(folder) = current {
+            let archive = (Subject::Folder(folder), Field::FolderArchived);
+            if view.fields.get(&archive).map(String::as_str) == Some("true")
+                && self.writers.contains_key(&archive)
+            {
+                return true;
+            }
+            hops += 1;
+            if hops > 64 {
+                return false;
+            }
+            current = view.folder_parent.get(&folder).copied().flatten();
+        }
+        false
+    }
+
     /// Check a passive step (`label`) on `device`: every disappearance and
     /// every field change must be explained by some device's local step.
     /// `check_fields` is off for the final settle comparison, where fields
@@ -388,7 +417,8 @@ impl Attribution {
                 let explained = self
                     .writers
                     .get(key)
-                    .is_some_and(|writers| writers.iter().any(|writer| *writer != device));
+                    .is_some_and(|writers| writers.iter().any(|writer| *writer != device))
+                    || self.archived_with_its_folder(key, new, after);
                 if !explained {
                     violations.push(format!(
                         "device {device}: {label} changed {key:?} with no other device ever writing it: {old} -> {new}"
