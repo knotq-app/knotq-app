@@ -881,11 +881,8 @@ fn batch_pull_and_apply_with_integrity_documents_inner(
         // ahead. The workspace-index snapshot was already queued before the
         // pull; replaying the entire pre-pull workspace here would resurrect
         // unrelated remote folder/scheme changes that arrived during the pull.
-        let post_pull_changeset = WorkspaceCrdtChangeSet {
-            workspace: false,
-            schemes: repair.changeset.schemes.clone(),
-        };
-        let outcome = crdt_docs.sync_changes(&repair.workspace, &post_pull_changeset);
+        let repaired_schemes: Vec<_> = repair.changeset.schemes.iter().copied().collect();
+        let outcome = crdt_docs.sync_scheme_documents(&repair.workspace, &repaired_schemes);
         for error in &outcome.errors {
             eprintln!("knotq sync: post-pull local CRDT repair skipped: {error}");
         }
@@ -1027,35 +1024,68 @@ fn queue_local_only_documents_before_pull(
     {
         return None;
     }
-    // A full workspace-index snapshot must precede any stale workspace delta;
-    // likewise, the full scheme snapshot must be the first update for a new
-    // document or the server could reject a bare delta as schema-invalid.
+    // Only a repair that rewrites the workspace index replaces the index edits
+    // queued before it (with a full snapshot, below). A repair of scheme
+    // content alone leaves them queued: dropping them there discarded this
+    // device's folder and scheme edits outright. Likewise a missing scheme
+    // document's queued deltas are replaced by its full snapshot, since the
+    // server would reject a bare delta for a document it has no base for.
+    let rewrites_index = workspace_index_mismatch || !missing_schemes.is_empty();
     local_state.pending.retain(|edit| {
-        edit.kind != SyncDocumentKind::PersonalWorkspace
+        (!rewrites_index || edit.kind != SyncDocumentKind::PersonalWorkspace)
             && !missing_schemes
                 .iter()
                 .any(|(_, document)| *document == edit.document)
     });
 
     let mut changeset = WorkspaceCrdtChangeSet {
-        workspace: workspace_index_mismatch || !missing_schemes.is_empty(),
+        workspace: rewrites_index,
         ..WorkspaceCrdtChangeSet::default()
     };
     changeset
         .schemes
         .extend(missing_schemes.iter().map(|(scheme_id, _)| *scheme_id));
     changeset.schemes.extend(content_mismatch_schemes);
-    let outcome = crdt_docs.sync_changes(workspace, &changeset);
+    // Only an index repair may write the index; a content-only repair writes
+    // just the mismatched schemes (see `sync_scheme_documents`).
+    let outcome = if changeset.workspace {
+        crdt_docs.sync_changes(workspace, &changeset)
+    } else {
+        let schemes: Vec<_> = changeset.schemes.iter().copied().collect();
+        crdt_docs.sync_scheme_documents(workspace, &schemes)
+    };
     for error in &outcome.errors {
         eprintln!("knotq sync: pre-pull local CRDT repair skipped: {error}");
     }
 
-    let documents = outcome
-        .updates
+    // The documents whose queued edits were dropped above go out as FULL
+    // snapshots. `sync_changes` only diffs: it writes the plain workspace into
+    // documents that already hold those queued edits, so its delta for them is
+    // nearly empty, and queueing it in their place silently discarded them —
+    // the server accepted a delete-only update whose dependencies it lacked and
+    // dropped it, while this device cleared the real edits as pushed.
+    let mut full_documents: HashSet<DocumentId> = missing_schemes
+        .iter()
+        .map(|(_, document)| *document)
+        .collect();
+    if changeset.workspace {
+        full_documents.insert(workspace.sync.id);
+    }
+    let mut updates = crdt_docs
+        .full_snapshot_updates_for_documents(&full_documents)
+        .updates;
+    updates.sort_by_key(|update| update.kind != SyncDocumentKind::PersonalWorkspace);
+    updates.extend(
+        outcome
+            .updates
+            .into_iter()
+            .filter(|update| !full_documents.contains(&update.document)),
+    );
+    let documents = updates
         .iter()
         .map(|update| update.document)
         .collect::<Vec<_>>();
-    queue_crdt_updates(local_state, workspace, replica_id, outcome.updates);
+    queue_crdt_updates(local_state, workspace, replica_id, updates);
     Some(LocalPrePullRepair {
         workspace: workspace.clone(),
         changeset,
@@ -1624,6 +1654,94 @@ mod tests {
         fn push(&self, _request: &BatchPushRequest) -> Result<BatchPushResponse> {
             Ok(BatchPushResponse::default())
         }
+    }
+
+    /// Production-fuzz seed 3: a device's queued workspace-index edits (a
+    /// folder rename) were dropped by the pre-pull repair and replaced with a
+    /// diff taken against the CRDT that already held them — a near-empty,
+    /// delete-only update. The server accepted it and silently discarded it,
+    /// the device cleared the real edits as pushed, and the rename never
+    /// reached any other device. The repair must queue the full index instead.
+    #[test]
+    fn pre_pull_repair_keeps_the_index_edits_it_replaces() {
+        let replica = ReplicaId::new();
+        let mut server_workspace = Workspace::new();
+        let folder = knotq_model::Folder {
+            id: knotq_model::FolderId::new(),
+            name: "Before".to_string(),
+            parent: Some(server_workspace.root),
+            children: Vec::new(),
+            expanded: true,
+        };
+        let folder_id = folder.id;
+        let root = server_workspace.root;
+        server_workspace
+            .folders
+            .get_mut(&root)
+            .unwrap()
+            .children
+            .push(knotq_model::NodeRef::Folder(folder_id));
+        server_workspace.folders.insert(folder_id, folder);
+        server_workspace.ensure_sync_metadata();
+        let index = server_workspace.sync.id;
+        let mut crdt = WorkspaceCrdtDocuments::try_new(&server_workspace).unwrap();
+        let server_state = crdt.document_states()[&index].to_vec();
+
+        // The device renames the folder: the edit is in its CRDT and queued.
+        let mut renamed = server_workspace.clone();
+        renamed.folders.get_mut(&folder_id).unwrap().name = "After".to_string();
+        let rename = crdt.sync_changes(&renamed, &WorkspaceCrdtChangeSet::default().workspace());
+        assert!(rename.is_ok(), "{:?}", rename.errors);
+        let mut local_state = LocalSyncState::default();
+        local_state.mark_pulled(index, SyncDocumentKind::PersonalWorkspace, 1, 0);
+        queue_crdt_updates(&mut local_state, &renamed, replica, rename.updates);
+        assert!(local_state
+            .pending
+            .iter()
+            .any(|edit| edit.kind == SyncDocumentKind::PersonalWorkspace));
+
+        // The plain workspace is ahead of the CRDT's folder records (a folder
+        // the CRDT never received), which triggers the repair.
+        let mut plain = renamed.clone();
+        let extra = knotq_model::Folder {
+            id: knotq_model::FolderId::new(),
+            name: "Plain only".to_string(),
+            parent: Some(root),
+            children: Vec::new(),
+            expanded: true,
+        };
+        let extra_id = extra.id;
+        plain
+            .folders
+            .get_mut(&root)
+            .unwrap()
+            .children
+            .push(knotq_model::NodeRef::Folder(extra_id));
+        plain.folders.insert(extra_id, extra);
+        let repair =
+            queue_local_only_documents_before_pull(&mut crdt, &mut local_state, &plain, replica);
+        assert!(
+            repair.is_some(),
+            "the folder-record mismatch must trigger the repair"
+        );
+
+        let queued: Vec<Vec<u8>> = local_state
+            .pending
+            .iter()
+            .filter(|edit| edit.document == index)
+            .map(|edit| edit.update_v1.clone())
+            .collect();
+        let on_server = crate::testing::merge_state(&server_state, &queued);
+        let server_docs = WorkspaceCrdtDocuments::from_states(
+            &plain,
+            replica,
+            &HashMap::from([(index, on_server)]),
+        )
+        .unwrap();
+        assert!(
+            server_docs.workspace_folder_records_match(&plain).unwrap(),
+            "the server's index after the repair's push is missing the queued rename or the repaired folder"
+        );
     }
 
     #[test]

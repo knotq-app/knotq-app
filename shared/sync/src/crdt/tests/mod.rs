@@ -5,6 +5,7 @@
 mod document_state_handles;
 mod helpers;
 mod merge;
+mod repair_sync;
 mod schema_validation;
 mod scheme_edit_sequences;
 mod scheme_population;

@@ -1341,6 +1341,57 @@ impl WorkspaceCrdtDocuments {
             .is_none_or(|document| document.is_unpopulated())
     }
 
+    /// Write the given schemes' content documents from `workspace`, and nothing
+    /// else: the workspace index is never re-emitted and no other document is
+    /// dropped. For repairs that re-express local scheme content against
+    /// documents that may hold newer remote state. `sync_changes` treats every
+    /// scheme the passed workspace does not list as removed — so given a
+    /// workspace from before a pull it re-wrote the whole index from that stale
+    /// copy, deleting the folders, schemes and days the pull had just brought
+    /// in, and pruned their documents.
+    pub fn sync_scheme_documents(
+        &mut self,
+        workspace: &Workspace,
+        schemes: &[SchemeId],
+    ) -> WorkspaceCrdtSyncOutcome {
+        let workspace = if workspace.sync_metadata_is_current() {
+            Cow::Borrowed(workspace)
+        } else {
+            let mut repaired = workspace.clone();
+            repaired.ensure_sync_metadata();
+            Cow::Owned(repaired)
+        };
+        let workspace = workspace.as_ref();
+        let mut outcome = WorkspaceCrdtSyncOutcome::default();
+        let mut ids: Vec<SchemeId> = schemes.to_vec();
+        ids.sort();
+        ids.dedup();
+        for id in ids {
+            let Some(scheme) = workspace.schemes.get(&id) else {
+                continue;
+            };
+            let meta = match scheme_meta(workspace, id) {
+                Ok(meta) => meta,
+                Err(err) => {
+                    outcome.push_error(format!("scheme CRDT metadata {id}"), err);
+                    continue;
+                }
+            };
+            self.hydrate_deferred(id);
+            match self
+                .schemes
+                .entry(id)
+                .or_insert_with(|| YrsSchemeDocument::for_replica(meta.id, None))
+                .sync_scheme(scheme)
+            {
+                Ok(Some(update)) => outcome.updates.push(update),
+                Ok(None) => {}
+                Err(err) => outcome.push_error(format!("scheme CRDT update {id}"), err),
+            }
+        }
+        outcome
+    }
+
     fn sync_changes_with_scheme_factory(
         &mut self,
         workspace: &Workspace,

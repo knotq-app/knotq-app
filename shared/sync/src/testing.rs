@@ -222,6 +222,14 @@ impl MemoryServer {
     }
 
     /// Current (seq, epoch) head of a stored document.
+    /// The server's current merged state of `document`, as v1 bytes.
+    pub fn document_state(&self, document: DocumentId) -> Option<Vec<u8>> {
+        self.documents
+            .borrow()
+            .get(&document)
+            .map(|entry| entry.state_v1.clone())
+    }
+
     pub fn document_head(&self, document: DocumentId) -> Option<(u64, u64)> {
         self.documents
             .borrow()
@@ -519,6 +527,49 @@ impl MemoryServer {
 
 /// Merge a stored merged state plus a batch of v1 updates into a new merged state,
 /// exactly as the worker's `validateAndCompactCrdtUpdates` does.
+/// The `(client, from_clock, to_clock)` ranges of structs a v1 update carries.
+pub fn client_ranges(update_v1: &[u8]) -> Vec<(u64, u32, u32)> {
+    let Ok(update) = Update::decode_v1(update_v1) else {
+        return Vec::new();
+    };
+    let lower = update.state_vector_lower();
+    let upper = update.state_vector();
+    let mut ranges: Vec<(u64, u32, u32)> = upper
+        .iter()
+        .map(|(client, clock)| (client.get(), lower.get(client), *clock))
+        .collect();
+    ranges.sort_unstable();
+    ranges
+}
+
+/// Struct ranges `local_state` holds beyond `server_state`, and whether the two
+/// still differ when no clock is ahead (a delete the server never received).
+pub fn missing_ranges(server_state: &[u8], local_state: &[u8]) -> (Vec<(u64, u32, u32)>, bool) {
+    let vector = |state: &[u8]| {
+        let doc = Doc::new();
+        {
+            let mut txn = doc.transact_mut();
+            if !state.is_empty() {
+                let _ = txn.apply_update(Update::decode_v1(state).expect("decode state"));
+            }
+        }
+        let txn = doc.transact();
+        txn.state_vector()
+    };
+    let server = vector(server_state);
+    let local = vector(local_state);
+    let mut ranges: Vec<(u64, u32, u32)> = local
+        .iter()
+        .filter(|(client, clock)| server.get(client) < **clock)
+        .map(|(client, clock)| (client.get(), server.get(client), *clock))
+        .collect();
+    ranges.sort_unstable();
+    let differs =
+        merge_state(server_state, &[local_state.to_vec()]) != merge_state(server_state, &[]);
+    let delete_only = ranges.is_empty() && differs;
+    (ranges, delete_only)
+}
+
 pub fn merge_state(base: &[u8], updates: &[Vec<u8>]) -> Vec<u8> {
     let doc = Doc::new();
     {
