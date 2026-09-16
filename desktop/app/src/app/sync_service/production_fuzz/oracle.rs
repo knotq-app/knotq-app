@@ -439,11 +439,34 @@ impl Attribution {
                 if new == old {
                     continue;
                 }
+                // The root folder is recorded as the label "root" rather than by
+                // id, because its id is re-derived from the account on first
+                // sign-in. A folder or scheme parented to the root therefore
+                // LOOKS like it changed parent the moment the device adopts a
+                // different root id: the parent field still names the old root,
+                // which is no longer "the root". Nothing moved, and no device
+                // wrote anything. A genuine move names a folder that is neither
+                // view's root, so it is still reported.
+                let parent_field = matches!(
+                    key,
+                    (Subject::Folder(_), Field::FolderParent)
+                        | (Subject::Scheme(_), Field::SchemeParent)
+                );
+                let parent_unchanged_across_root_change = parent_field
+                    && ((old.as_str() == "root"
+                        && before
+                            .root
+                            .is_some_and(|root| *new == format!("{:?}", Some(root))))
+                        || (new.as_str() == "root"
+                            && after
+                                .root
+                                .is_some_and(|root| *old == format!("{:?}", Some(root)))));
                 let explained = self
                     .writers
                     .get(key)
                     .is_some_and(|writers| writers.iter().any(|writer| *writer != device))
-                    || self.archived_with_its_folder(key, new, after);
+                    || self.archived_with_its_folder(key, new, after)
+                    || parent_unchanged_across_root_change;
                 if !explained {
                     violations.push(format!(
                         "device {device}: {label} changed {key:?} with no other device ever writing it: {old} -> {new}"
