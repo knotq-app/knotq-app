@@ -77,7 +77,7 @@ pub(crate) fn stable_item_seed_client_id(item_id: &str) -> u64 {
 /// the same clientID would reuse `(clientID, clock)` for different operations,
 /// which Yjs cannot merge. `scheme_population_encoding_is_pinned` fails whenever
 /// those bytes move, so the bump cannot be forgotten.
-pub(crate) const SCHEME_POPULATION_ENCODING_VERSION: u32 = 1;
+pub(crate) const SCHEME_POPULATION_ENCODING_VERSION: u32 = 2;
 
 /// Deterministic clientID for the first population of an empty scheme document
 /// from `content` (the serialized scheme it is populated with). Every replica
@@ -86,6 +86,35 @@ pub(crate) const SCHEME_POPULATION_ENCODING_VERSION: u32 = 1;
 /// copy of the same fixed-id starter lines being inserted again beside the
 /// others'. Different content hashes to a different clientID, so two different
 /// populations never share an id. Document namespace: it authors text content.
+/// Bump when the bytes an item CREATION encodes change (see
+/// [`stable_item_creation_client_id`]): a build writing different bytes under the
+/// same clientID as an older build would alias its structs.
+pub(crate) const ITEM_CREATION_ENCODING_VERSION: u32 = 1;
+
+/// Deterministic clientID for the initial text of a newly created item. Every
+/// device that creates this item in this document with this exact content encodes
+/// byte-identical text operations, so Yjs integrates them once instead of
+/// concatenating one copy per device inside the (already deduped) Text. Different
+/// content hashes to a different clientID, so two different creations stay
+/// concurrent and merge as before. Document namespace: it authors text content.
+pub(crate) fn stable_item_creation_client_id(
+    document: DocumentId,
+    item_id: &str,
+    content: &[u8],
+) -> u64 {
+    let mut hasher = Sha256::new();
+    hasher.update(b"knotq.crdt.item_creation_client_id");
+    hasher.update(ITEM_CREATION_ENCODING_VERSION.to_le_bytes());
+    hasher.update(document.0.as_bytes());
+    hasher.update(item_id.as_bytes());
+    hasher.update((item_id.len() as u64).to_le_bytes());
+    hasher.update(content);
+    let digest = hasher.finalize();
+    let mut bytes = [0u8; 8];
+    bytes.copy_from_slice(&digest[..8]);
+    document_namespace_client_id(u64::from_le_bytes(bytes))
+}
+
 pub(crate) fn stable_scheme_population_client_id(document: DocumentId, content: &[u8]) -> u64 {
     let mut hasher = Sha256::new();
     hasher.update(b"knotq.crdt.scheme_population_client_id");

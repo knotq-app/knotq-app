@@ -120,7 +120,7 @@ fn a_document_is_populated_only_once() {
 /// different operations under the same `(clientID, clock)`.
 #[test]
 fn scheme_population_encoding_is_pinned() {
-    const PINNED: &str = "4c40cd41c25610cd44c32095998cbeb6dfb94de15931d61bada27a686a7c559b";
+    const PINNED: &str = "74c2eff839f054532dbfedb6e9ca7c97950d8e516fe79a0477ef403d35571348";
     let document: DocumentId = "00000000-0000-8000-8000-000000000201".parse().unwrap();
     let doc = YrsSchemeDocument::new(document);
     doc.sync_scheme(&starter()).unwrap();
@@ -130,5 +130,29 @@ fn scheme_population_encoding_is_pinned() {
         actual, PINNED,
         "the first-population encoding changed: bump SCHEME_POPULATION_ENCODING_VERSION \
          and re-pin"
+    );
+}
+
+/// The creation clientID hashes the CONTENT, not the encoding, so these bytes
+/// must never change for the same id and content without bumping
+/// `ITEM_CREATION_ENCODING_VERSION` — otherwise two builds would write different
+/// operations under the same `(clientID, clock)`.
+#[test]
+fn item_creation_encoding_is_pinned() {
+    const PINNED: &str = "62773a23bac0ac564b32b59b04e032ccc043a9dd3d5a9e6d09633198ae3617c7";
+    let document: DocumentId = "00000000-0000-8000-8000-000000000201".parse().unwrap();
+    // A FIXED item id: `Item::new` mints a random one, which would re-pin itself
+    // on every run.
+    const ITEM: &str = "00000000-0000-8000-8000-000000000401";
+    let item = knotq_model::Item::new("Thesis");
+    let content =
+        super::super::scheme_content::normalize_inline_content(&item.content.to_inlines());
+    let update = super::super::scheme_content::build_item_creation_update(document, ITEM, &content)
+        .expect("build creation update");
+    let digest = Sha256::digest(update);
+    let actual: String = digest.iter().map(|byte| format!("{byte:02x}")).collect();
+    assert_eq!(
+        actual, PINNED,
+        "the item creation encoding changed: bump ITEM_CREATION_ENCODING_VERSION and re-pin"
     );
 }

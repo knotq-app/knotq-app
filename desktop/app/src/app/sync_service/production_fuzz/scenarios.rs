@@ -1017,3 +1017,86 @@ fn join_variant_empty_workspace_on_the_account_identity_with_offline_edits() {
     world.sync(b, 0);
     world.settle_and_assert();
 }
+
+/// Trial (deep seed 10013): two devices carry the same line over into the same
+/// existing Daily page before either syncs. The line's text must land once.
+#[test]
+fn a_line_carried_over_by_two_devices_at_once_keeps_its_text_once() {
+    let mut world = world(90_040, 1);
+    let a = world.add_device(Some(0));
+    let yesterday = World::today() - Duration::days(1);
+    let (source, line) = world.local(a, |device, _| {
+        let day = open_day(device, yesterday);
+        add_line(device, day, "carried once");
+        let line = device
+            .state
+            .workspace
+            .scheme(day)
+            .unwrap()
+            .items
+            .last()
+            .unwrap()
+            .id;
+        (day, line)
+    });
+    world.sync(a, 0);
+    let b = world.add_device(Some(0));
+    world.sync(b, 0);
+    let c = world.add_device(Some(0));
+    world.sync(c, 0);
+    world.sync(a, 0);
+    // Every device opens today and moves the same line into it, offline.
+    let mut targets = Vec::new();
+    for index in [a, b, c] {
+        let target = world.local(index, |device, _| {
+            let today = device.today();
+            let target = open_day(device, today);
+            let workspace = device.state.workspace.clone();
+            let moved = workspace
+                .scheme(source)
+                .unwrap()
+                .item(line)
+                .unwrap()
+                .clone();
+            let position = workspace.scheme(target).map_or(0, |s| s.items.len());
+            device
+                .state
+                .apply_command(Command::Batch(vec![
+                    Command::DeleteItem {
+                        scheme: source,
+                        item: line,
+                    },
+                    Command::InsertItem {
+                        scheme: target,
+                        position,
+                        item: moved,
+                    },
+                ]))
+                .expect("carry the line over");
+            target
+        });
+        targets.push(target);
+    }
+    assert_eq!(
+        targets[0], targets[1],
+        "both devices carry into the same day"
+    );
+    world.sync(a, 0);
+    world.sync(b, 0);
+    world.sync(a, 0);
+    world.sync(b, 0);
+    for index in [a, b] {
+        let workspace = &world.devices[index].as_ref().unwrap().state.workspace;
+        let texts: Vec<_> = workspace
+            .schemes
+            .values()
+            .filter_map(|scheme| scheme.item(line).map(|item| (scheme.id, item.text())))
+            .collect();
+        assert_eq!(
+            texts,
+            vec![(targets[0], "carried once".to_string())],
+            "device {index}: the carried line must hold its text once"
+        );
+    }
+    world.settle_and_assert();
+}

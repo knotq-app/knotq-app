@@ -201,13 +201,18 @@ impl YrsSchemeDocument {
     /// transaction.
     fn ensure_item_skeletons(&self, scheme: &Scheme) -> anyhow::Result<()> {
         let items_by_id = self.doc.get_or_insert_map("items_by_id");
-        let missing: Vec<String> = {
+        // Each missing item with the content its creation carries: the initial
+        // text is part of the deterministic creation (see
+        // `build_item_creation_update`), so two devices creating the same line
+        // with the same text encode identical bytes.
+        let missing: Vec<(String, Vec<Inline>)> = {
             let txn = self.doc.transact();
             scheme
                 .items
                 .iter()
-                .map(|item| item.id.to_string())
-                .filter(|id| item_map_ref(&items_by_id, &txn, id).is_none())
+                .map(|item| (item.id.to_string(), item))
+                .filter(|(id, _)| item_map_ref(&items_by_id, &txn, id).is_none())
+                .map(|(id, item)| (id, normalize_inline_content(&item.content.to_inlines())))
                 .collect()
         };
         if missing.is_empty() {
@@ -231,8 +236,8 @@ impl YrsSchemeDocument {
         // update is one integration pass.
         let skeletons: Vec<Vec<u8>> = missing
             .iter()
-            .map(|item_id| build_item_skeleton_update(self.id, item_id))
-            .collect();
+            .map(|(item_id, content)| build_item_creation_update(self.id, item_id, content))
+            .collect::<anyhow::Result<Vec<_>>>()?;
         let merged = yrs::merge_updates_v1(&skeletons)?;
         self.doc
             .transact_mut()
@@ -882,11 +887,49 @@ pub(crate) fn item_text_ref(item_map: &MapRef, txn: &impl ReadTxn) -> Option<Tex
     }
 }
 
+/// Build the deterministic creation sub-update for a new item: its skeleton (see
+/// [`build_item_skeleton_update`]) plus its initial text, the text authored under
+/// [`stable_item_creation_client_id`]. Byte-identical across devices for a given
+/// id and content, so N independent creations of the same line dedupe into one
+/// container holding ONE copy of the text (deep production fuzz seed 10013: three
+/// devices carrying the same line over produced it three times over).
+pub(crate) fn build_item_creation_update(
+    document: DocumentId,
+    item_id: &str,
+    content: &[Inline],
+) -> anyhow::Result<Vec<u8>> {
+    let skeleton = build_item_skeleton_update(document, item_id);
+    if content.is_empty() {
+        return Ok(skeleton);
+    }
+    // The text rides on its own deterministic clientID, applied ON TOP of the
+    // skeleton so it inserts into the skeleton's Text rather than a Text of its
+    // own — a yrs document authors under one clientID, so this takes two.
+    let content_key = serde_json::to_vec(content)?;
+    let doc = Doc::with_options(yrs_doc_options(
+        document,
+        super::encoding::stable_item_creation_client_id(document, item_id, &content_key),
+        OffsetKind::Utf16,
+    ));
+    doc.transact_mut()
+        .apply_update(Update::decode_v1(&skeleton)?)?;
+    let after_skeleton = doc.transact().state_vector();
+    {
+        let items = doc.get_or_insert_map("items_by_id");
+        let mut txn = doc.transact_mut();
+        let Some(item_map) = item_map_ref(&items, &txn, item_id) else {
+            return Ok(skeleton);
+        };
+        let Some(text) = item_text_ref(&item_map, &txn) else {
+            return Ok(skeleton);
+        };
+        insert_inline_content(&text, &mut txn, content)?;
+    }
+    let text_update = doc.transact().encode_diff_v1(&after_skeleton);
+    Ok(yrs::merge_updates_v1(&[skeleton, text_update])?)
+}
+
 /// Build the deterministic "create this item's skeleton" sub-update: the item's
-/// sub-map with invariant `schema`/`id` and an empty Text, encoded under a fixed
-/// clientID derived from `item_id` (see [`stable_item_seed_client_id`]). Byte-identical
-/// across devices for a given id, so applying two independent creations dedupes to a
-/// single container rather than clobbering one and losing its fields.
 fn build_item_skeleton_update(document: DocumentId, item_id: &str) -> Vec<u8> {
     let doc = Doc::with_options(yrs_doc_options(
         document,
