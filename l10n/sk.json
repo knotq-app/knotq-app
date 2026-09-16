@@ -1092,7 +1092,7 @@
   "web.account.sync_optional": "Hostovaná synchronizácia je voliteľná",
   "web.account.sync_promo_pill_available": "Dostupné",
   "web.account.sync_promo_point_local_first": "Lokálne — všetko pracuje aj offline",
-  "web.account.sync_promo_point_notifications": "Uchovávajte plány, pripomienky a stav úloh v kroku",
+  "web.account.sync_promo_point_notifications": "Upozornenia vás sprevádzajú na všetkých zariadeniach",
   "web.account.sync_promo_point_workspace": "Rovnaký pracovný priestor na každom prihlásenom zariadení",
   "web.account.sync_promo_tagline": "Synchronizácia medzi zariadeniami je k dispozícii.",
   "web.account.sync_summary_active": "Synchronizácia je aktívna.",
@@ -1516,5 +1516,6 @@
   "web.verify.title": "Overiť e-mail — KnotQ",
   "web.verify.title_error": "Nemohli sme overiť vašu e-mailovú adresu",
   "web.verify.title_success": "E-mail overený",
-  "web.verify.title_verifying": "Overovanie vašej e-mailovej adresy"
+  "web.verify.title_verifying": "Overovanie vašej e-mailovej adresy",
+  "web.account.sync_promo_point_trial": "1 mesiac bezplatnej skúšobnej verzie"
 }

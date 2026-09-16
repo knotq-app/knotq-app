@@ -1071,7 +1071,7 @@
   "web.account.sync_optional": "La synchronisation hébergée est optionnelle",
   "web.account.sync_promo_pill_available": "Disponible",
   "web.account.sync_promo_point_local_first": "Local-first — tout continue à fonctionner hors ligne",
-  "web.account.sync_promo_point_notifications": "Conservez les plannings, les rappels et l'état des tâches à l'étape",
+  "web.account.sync_promo_point_notifications": "Les notifications vous suivent sur tous vos appareils",
   "web.account.sync_promo_point_workspace": ". Même espace de travail sur chaque appareil connecté.",
   "web.account.sync_promo_tagline": "La synchronisation entre appareils est disponible.",
   "web.account.sync_summary_active": "La synchronisation est active.",
@@ -1495,5 +1495,6 @@
   "web.verify.title": "Vérifier l'e-mail — KnotQ",
   "web.verify.title_error": "Nous n'avons pas pu vérifier votre e-mail",
   "web.verify.title_success": "E-mail vérifié",
-  "web.verify.title_verifying": "Vérification de votre e-mail"
+  "web.verify.title_verifying": "Vérification de votre e-mail",
+  "web.account.sync_promo_point_trial": "1 mois d’essai gratuit"
 }

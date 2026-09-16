@@ -1071,7 +1071,7 @@
   "web.account.sync_optional": "Barındırılan senkronizasyon isteğe bağlı",
   "web.account.sync_promo_pill_available": "Kullanılabilir",
   "web.account.sync_promo_point_local_first": "Yerel-öncelikli — her şey çevrimdışı olarak çalışmaya devam eder",
-  "web.account.sync_promo_point_notifications": "Adımdaki programları, hatırlatıcıları ve görev durumunu koruyun",
+  "web.account.sync_promo_point_notifications": "Bildirimler tüm cihazlarınızda sizinle",
   "web.account.sync_promo_point_workspace": "Oturum açılan her cihazda aynı çalışma alanı",
   "web.account.sync_promo_tagline": "Cihazlar arası senkronizasyon mevcuttur.",
   "web.account.sync_summary_active": "Senkronizasyon etkin.",
@@ -1495,5 +1495,6 @@
   "web.verify.title": "E-posta Doğrula — KnotQ",
   "web.verify.title_error": "E-postanızı doğrulayamadık",
   "web.verify.title_success": "E-posta Doğrulandı",
-  "web.verify.title_verifying": "E-postanız Doğrulanıyor"
+  "web.verify.title_verifying": "E-postanız Doğrulanıyor",
+  "web.account.sync_promo_point_trial": "1 ay ücretsiz deneme"
 }

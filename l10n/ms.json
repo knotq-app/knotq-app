@@ -1050,7 +1050,7 @@
   "web.account.sync_optional": "Sinkron tuan rumah adalah pilihan",
   "web.account.sync_promo_pill_available": "Tersedia",
   "web.account.sync_promo_point_local_first": "Tempatan-dahulu — semuanya terus bekerja luar talian",
-  "web.account.sync_promo_point_notifications": "Simpan jadual, peringatan dan keadaan tugas mengikut langkah",
+  "web.account.sync_promo_point_notifications": "Pemberitahuan mengikuti anda merentas peranti",
   "web.account.sync_promo_point_workspace": "Ruang kerja yang sama merentas setiap peranti yang dilog masuk",
   "web.account.sync_promo_tagline": "Penyegerakan merentas peranti tersedia.",
   "web.account.sync_summary_active": "Sinkron aktif.",
@@ -1474,5 +1474,6 @@
   "web.verify.title": "Verifikasi email — KnotQ",
   "web.verify.title_error": "Kami tidak dapat memverifikasi email Anda",
   "web.verify.title_success": "Email diverifikasi",
-  "web.verify.title_verifying": "Memverifikasi email Anda"
+  "web.verify.title_verifying": "Memverifikasi email Anda",
+  "web.account.sync_promo_point_trial": "Percubaan percuma selama 1 bulan"
 }
