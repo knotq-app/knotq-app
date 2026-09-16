@@ -961,6 +961,72 @@ fn new_install_crashed_before_its_first_sync_joins_the_account() {
 
 /// Install device `index` from a chosen pre-launch workspace, signed into
 /// account 0, attributing its content to it as the fuzzer does for a seed.
+/// Two devices change DIFFERENT fields of the same scheme, neither having seen
+/// the other's change.
+///
+/// The workspace index keeps every field of a node — name, colour, gsync,
+/// source, and its membership parent and position — inside ONE map value, so
+/// the merge resolves the whole node by client id and silently discards one
+/// device's edit. `write_item_fields` fixed exactly this for item metadata
+/// ("writing every field on any edit let a device that changed one attribute
+/// silently restore its stale copy of every other attribute"); the index never
+/// got the same treatment.
+///
+/// The scheme is CREATED by one device rather than taken from the starter
+/// workspace on purpose: `Attribution::record_seed` marks every starter field as
+/// written by every device, which would explain away the very revert this pins.
+#[test]
+fn two_devices_changing_different_fields_of_one_scheme_keep_both() {
+    let mut world = world(90_120, 1);
+    let a = world.add_device(Some(0));
+    world.local(a, |device, _| create_scheme(device, "Shared plans"));
+    world.sync(a, 0);
+    let b = world.add_device(Some(0));
+    world.sync(b, 0);
+    world.sync(a, 0);
+
+    let scheme = {
+        let workspace = world.devices[a].as_ref().unwrap().state.workspace.clone();
+        workspace
+            .schemes
+            .values()
+            .find(|scheme| scheme.name == "Shared plans")
+            .expect("the created scheme")
+            .id
+    };
+
+    // Concurrent by construction: neither device syncs between these two edits,
+    // so neither has seen the other's when both are pushed.
+    world.local(a, |device, _| {
+        device
+            .state
+            .apply_command(Command::RenameScheme {
+                id: scheme,
+                name: "renamed on a".to_string(),
+            })
+            .expect("rename scheme");
+    });
+    world.local(b, |device, _| {
+        device
+            .state
+            .apply_command(Command::SetSchemeColor {
+                id: scheme,
+                color_index: 7,
+            })
+            .expect("recolour scheme");
+    });
+
+    world.sync(a, 0);
+    world.sync(b, 0);
+    world.sync(a, 0);
+    world.settle_and_assert();
+
+    let workspace = world.devices[a].as_ref().unwrap().state.workspace.clone();
+    let landed = workspace.scheme(scheme).expect("the scheme survives");
+    assert_eq!(landed.name, "renamed on a", "the rename was discarded");
+    assert_eq!(landed.color_index, 7, "the recolour was discarded");
+}
+
 fn install_prepared(world: &mut World, workspace: knotq_model::Workspace) -> usize {
     let index = world.devices.len();
     let dir = world.root.join(format!("device-{index}"));

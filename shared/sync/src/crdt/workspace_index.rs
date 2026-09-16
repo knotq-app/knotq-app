@@ -9,6 +9,25 @@ use super::*;
 struct WorkspaceMaps {
     meta: MapRef,
     nodes: MapRef,
+    /// One key per mutable field of a node (`<id>\u{1f}<field>`), alongside the
+    /// whole-node value in `nodes`.
+    ///
+    /// `nodes` keeps a node's every field — name, colour, gsync, source, and its
+    /// membership parent and position — inside ONE map value, so two devices
+    /// editing DIFFERENT fields of the same scheme write the same key and Yjs
+    /// resolves the whole node by client id: the loser's edit is silently
+    /// discarded. `write_item_fields` fixed exactly this for item metadata
+    /// ("writing every field on any edit let a device that changed one attribute
+    /// silently restore its stale copy of every other attribute"); the index
+    /// never got the same treatment.
+    ///
+    /// Splitting the fields here gives each one its own last-writer-wins key, so
+    /// concurrent edits to different fields merge. `nodes` is still written
+    /// unchanged and is still the fallback on read, which is what keeps this
+    /// backward compatible: an older build reads the maps it knows and never
+    /// sees this one, and neither the client's `validate_workspace_document` nor
+    /// the Worker's `crdt_validation.ts` enumerates top-level maps.
+    node_fields: MapRef,
     scheme_sync: MapRef,
     folder_sync: MapRef,
     daily_queue: MapRef,
@@ -23,6 +42,7 @@ impl WorkspaceMaps {
         Self {
             meta: doc.get_or_insert_map("meta"),
             nodes: doc.get_or_insert_map("nodes"),
+            node_fields: doc.get_or_insert_map("node_fields"),
             scheme_sync: doc.get_or_insert_map("scheme_sync"),
             folder_sync: doc.get_or_insert_map("folder_sync"),
             daily_queue: doc.get_or_insert_map("daily_queue"),
@@ -32,6 +52,16 @@ impl WorkspaceMaps {
             deleted_folder_origins: doc.get_or_insert_map("deleted_folder_origins"),
         }
     }
+}
+
+/// Separator between a node id and a field name in `node_fields`. A unit
+/// separator cannot occur in a UUID or a field name, so the key splits back
+/// unambiguously.
+const NODE_FIELD_SEPARATOR: char = '\u{1f}';
+
+/// The `node_fields` key for one field of one node.
+fn node_field_key(id: &str, field: &str) -> String {
+    format!("{id}{NODE_FIELD_SEPARATOR}{field}")
 }
 
 /// Serialize a slice into `(key, json)` map entries — the shared shape of the
@@ -208,6 +238,7 @@ impl YrsJsonDocument {
         let WorkspaceMaps {
             meta,
             nodes,
+            node_fields,
             scheme_sync,
             folder_sync,
             daily_queue,
@@ -402,7 +433,62 @@ impl YrsJsonDocument {
                 node_entries.push((id, stored.clone()));
             }
         }
+        // One key per mutable field, so two devices editing DIFFERENT fields of
+        // the same node no longer collide on a single value. `sync_string_map`
+        // writes only keys whose value actually changed, which is what makes
+        // this work: a device that changes one field writes that one key and
+        // leaves every other field's key — and so a concurrent edit to it —
+        // untouched. `nodes` above is still written whole and unchanged, so an
+        // older build keeps reading exactly what it reads today.
+        let stored_node_fields: HashMap<String, String> =
+            string_map_entries(&node_fields, &txn).into_iter().collect();
+        let mut node_field_entries: Vec<(String, String)> = Vec::new();
+        let mut rebuilt_nodes: HashSet<String> = HashSet::new();
+        for folder in &snapshot.folders {
+            let id = folder.id.to_string();
+            node_field_entries.push((node_field_key(&id, "name"), folder.name.clone()));
+            node_field_entries.push((node_field_key(&id, "expanded"), folder.expanded.to_string()));
+            node_field_entries.push((
+                node_field_key(&id, "parent"),
+                folder
+                    .parent
+                    .map(|parent| parent.to_string())
+                    .unwrap_or_default(),
+            ));
+            rebuilt_nodes.insert(id);
+        }
+        for scheme in &snapshot.schemes {
+            let id = scheme.id.to_string();
+            node_field_entries.push((node_field_key(&id, "name"), scheme.name.clone()));
+            node_field_entries.push((
+                node_field_key(&id, "color_index"),
+                scheme.color_index.to_string(),
+            ));
+            node_field_entries.push((node_field_key(&id, "gsync"), scheme.gsync.to_string()));
+            node_field_entries.push((
+                node_field_key(&id, "source"),
+                serde_json::to_string(&scheme.source)?,
+            ));
+            rebuilt_nodes.insert(id);
+        }
+        // A Daily page outside the loaded window keeps its stored `nodes` entry
+        // above rather than being rebuilt from a workspace that does not hold it.
+        // Its field keys must be kept the same way: `sync_string_map` removes
+        // every key absent from `desired`, so omitting them here would delete the
+        // page's metadata for the whole account (the "server lost Daily page"
+        // failure, in a new map).
+        for (id, _) in &node_entries {
+            if rebuilt_nodes.contains(id) {
+                continue;
+            }
+            for (key, value) in &stored_node_fields {
+                if key.split(NODE_FIELD_SEPARATOR).next() == Some(id.as_str()) {
+                    node_field_entries.push((key.clone(), value.clone()));
+                }
+            }
+        }
         changed |= sync_string_map(&nodes, &mut txn, &node_entries);
+        changed |= sync_string_map(&node_fields, &mut txn, &node_field_entries);
         changed |= sync_string_map(&scheme_sync, &mut txn, &scheme_sync_entries);
         changed |= sync_string_map(&folder_sync, &mut txn, &folder_sync_entries);
         changed |= sync_string_map(&daily_queue, &mut txn, &daily_queue_entries);
@@ -459,6 +545,7 @@ impl YrsJsonDocument {
         let WorkspaceMaps {
             meta,
             nodes,
+            node_fields,
             scheme_sync: scheme_sync_map,
             folder_sync: folder_sync_map,
             daily_queue: daily_queue_map,
@@ -522,6 +609,59 @@ impl YrsJsonDocument {
                     payload: entry.payload,
                 },
             );
+        }
+
+        // Prefer the per-field keys over the whole-node payload. A field written
+        // to `node_fields` merged independently of every other field, while the
+        // payload resolved the WHOLE node last-writer-wins and can carry another
+        // device's stale copy of a field this one changed. A node with no field
+        // keys — one written by an older build — keeps its payload verbatim.
+        // Applying this to the parsed payload rather than at each use means the
+        // legacy-root detection, the parent remapping and the scheme parse below
+        // all read the merged values.
+        let stored_node_fields = string_map_entries(&node_fields, &txn);
+        if !stored_node_fields.is_empty() {
+            let mut by_node: HashMap<&str, Vec<(&str, &str)>> = HashMap::new();
+            for (key, value) in &stored_node_fields {
+                if let Some((id, field)) = key.split_once(NODE_FIELD_SEPARATOR) {
+                    by_node.entry(id).or_default().push((field, value.as_str()));
+                }
+            }
+            for (id, fields) in by_node {
+                let Some(node) = parsed.get_mut(id) else {
+                    continue;
+                };
+                let Ok(mut payload) = serde_json::from_str::<serde_json::Value>(&node.payload)
+                else {
+                    continue;
+                };
+                let Some(object) = payload.as_object_mut() else {
+                    continue;
+                };
+                for (field, raw) in fields {
+                    let value = match field {
+                        "name" => serde_json::Value::String(raw.to_string()),
+                        "expanded" | "gsync" => match raw {
+                            "true" => serde_json::Value::Bool(true),
+                            "false" => serde_json::Value::Bool(false),
+                            _ => continue,
+                        },
+                        "color_index" => match raw.parse::<u64>() {
+                            Ok(number) => serde_json::Value::Number(number.into()),
+                            Err(_) => continue,
+                        },
+                        "parent" if raw.is_empty() => serde_json::Value::Null,
+                        "parent" => serde_json::Value::String(raw.to_string()),
+                        "source" => match serde_json::from_str(raw) {
+                            Ok(source) => source,
+                            Err(_) => continue,
+                        },
+                        _ => continue,
+                    };
+                    object.insert(field.to_string(), value);
+                }
+                node.payload = serde_json::to_string(&payload)?;
+            }
         }
 
         let root_key = root.to_string();
