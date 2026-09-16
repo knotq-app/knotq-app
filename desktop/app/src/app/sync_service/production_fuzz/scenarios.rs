@@ -1027,6 +1027,113 @@ fn two_devices_changing_different_fields_of_one_scheme_keep_both() {
     assert_eq!(landed.color_index, 7, "the recolour was discarded");
 }
 
+/// A rename and a move of the same scheme, on two devices, both survive.
+///
+/// Companion to the test above: that one pairs two PAYLOAD fields (name,
+/// colour), while this pairs a payload field with the MEMBERSHIP parent, which
+/// still lives inside the whole-node `nodes` value rather than in `node_fields`.
+///
+/// HONEST SCOPE — this passes at HEAD and always has; it is a regression pin,
+/// not a reproduction. Two things keep it from being the concurrency test its
+/// name suggests, and both are worth knowing before trusting it:
+///
+///  1. `World::sync` PULLS BEFORE IT PUSHES, so in `sync(a); sync(b); sync(a)`
+///     device b has already seen a's rename before it pushes its move. The two
+///     edits are causally ordered, never concurrent at the CRDT level. Genuine
+///     concurrency needs two replicas exchanging updates from a common base, as
+///     `crdt::tests::workspace_materialization`'s
+///     `concurrent_folder_additions_on_two_replicas_merge_without_loss` does.
+///  2. The whole-node last-writer-wins class this was written to chase is
+///     already fixed for payload fields by the `node_fields` split (e2f66c2).
+///
+/// Kept because the shape (rename + move of one scheme across two devices) is a
+/// real user action with no other coverage, and a future change to membership
+/// storage should not break it silently.
+#[test]
+fn two_devices_moving_and_renaming_one_scheme_keep_both() {
+    let mut world = world(90_122, 1);
+    let a = world.add_device(Some(0));
+    let folder = world.local(a, |device, _| {
+        let root = device.state.workspace.root;
+        device
+            .state
+            .apply_command(Command::CreateFolder {
+                parent: root,
+                name: "Destination".to_string(),
+                position: None,
+            })
+            .expect("create folder");
+        device
+            .state
+            .workspace
+            .folders
+            .values()
+            .find(|folder| folder.name == "Destination")
+            .expect("the created folder")
+            .id
+    });
+    world.local(a, |device, _| create_scheme(device, "Shared plans"));
+    world.sync(a, 0);
+    let b = world.add_device(Some(0));
+    world.sync(b, 0);
+    world.sync(a, 0);
+
+    let scheme = {
+        let workspace = world.devices[a].as_ref().unwrap().state.workspace.clone();
+        workspace
+            .schemes
+            .values()
+            .find(|scheme| scheme.name == "Shared plans")
+            .expect("the created scheme")
+            .id
+    };
+
+    // Concurrent by construction: neither device syncs between these two edits.
+    world.local(a, |device, _| {
+        device
+            .state
+            .apply_command(Command::RenameScheme {
+                id: scheme,
+                name: "renamed on a".to_string(),
+            })
+            .expect("rename scheme");
+    });
+    world.local(b, |device, _| {
+        device
+            .state
+            .apply_command(Command::MoveNode {
+                node: knotq_model::NodeRef::Scheme(scheme),
+                new_parent: folder,
+                position: 0,
+            })
+            .expect("move scheme into the folder");
+    });
+
+    world.sync(a, 0);
+    world.sync(b, 0);
+    world.sync(a, 0);
+    world.settle_and_assert();
+
+    let workspace = world.devices[a].as_ref().unwrap().state.workspace.clone();
+    let landed = workspace.scheme(scheme).expect("the scheme survives");
+    assert_eq!(landed.name, "renamed on a", "the rename was discarded");
+    let parent = workspace
+        .folders
+        .values()
+        .find(|candidate| {
+            candidate
+                .children
+                .contains(&knotq_model::NodeRef::Scheme(scheme))
+        })
+        .map(|candidate| candidate.id);
+    assert_eq!(
+        parent,
+        Some(folder),
+        "the move was discarded and the scheme re-homed (root is {:?})",
+        workspace.root
+    );
+}
+
 /// Two devices each move one of two folders into the other, neither having seen
 /// the other's move.
 ///

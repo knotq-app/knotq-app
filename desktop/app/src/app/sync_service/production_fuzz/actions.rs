@@ -174,7 +174,52 @@ fn focus(device: &mut DesktopDevice, scheme: Option<SchemeId>) {
 }
 
 fn apply(device: &mut DesktopDevice, command: Command) -> bool {
-    device.state.apply_command(command).is_some()
+    if std::env::var("KNOTQ_FUZZ_TRACE").is_err() {
+        return device.state.apply_command(command).is_some();
+    }
+    // Every structural action funnels through here, so this is the one place
+    // that can name what a step actually touched. The action labels carry no
+    // ids, and a CREATE does not carry the id it mints, so a violation naming a
+    // folder or scheme ("lost folder 8c4fcfd4 that no device deleted") could
+    // refer to something no trace line mentions at all — unattributable.
+    // Diffing the id sets across the call puts every appearance and
+    // disappearance on the record, including the ones no command spells out.
+    let folders_before: std::collections::HashSet<FolderId> =
+        device.state.workspace.folders.keys().copied().collect();
+    let schemes_before: std::collections::HashSet<SchemeId> =
+        device.state.workspace.schemes.keys().copied().collect();
+    // `RestoreScheme`/`RestoreFolder` carry a whole node; keep the line readable.
+    let mut description = format!("{command:?}");
+    description.truncate(180);
+    let applied = device.state.apply_command(command).is_some();
+    let mut changes: Vec<String> = Vec::new();
+    for id in device.state.workspace.folders.keys() {
+        if !folders_before.contains(id) {
+            changes.push(format!("+folder {id}"));
+        }
+    }
+    for id in &folders_before {
+        if !device.state.workspace.folders.contains_key(id) {
+            changes.push(format!("-folder {id}"));
+        }
+    }
+    for id in device.state.workspace.schemes.keys() {
+        if !schemes_before.contains(id) {
+            changes.push(format!("+scheme {id}"));
+        }
+    }
+    for id in &schemes_before {
+        if !device.state.workspace.schemes.contains_key(id) {
+            changes.push(format!("-scheme {id}"));
+        }
+    }
+    changes.sort();
+    eprintln!(
+        "[fuzz apply] ok={applied} {description}{}{}",
+        if changes.is_empty() { "" } else { " => " },
+        changes.join(" ")
+    );
+    applied
 }
 
 fn ensure_day(device: &mut DesktopDevice, date: NaiveDate) -> Option<SchemeId> {
