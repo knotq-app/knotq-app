@@ -305,6 +305,9 @@ pub(super) fn random_local_action(device: &mut DesktopDevice, rng: &mut Rng) -> 
             };
             let len = workspace.folders[&new_parent].children.len();
             let position = rng.below(len as u64 + 1) as usize;
+            if std::env::var("KNOTQ_FUZZ_TRACE").is_ok() {
+                eprintln!("[fuzz folder move] {folder} -> {new_parent} at {position}");
+            }
             apply(
                 device,
                 Command::MoveNode {

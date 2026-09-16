@@ -1027,6 +1027,113 @@ fn two_devices_changing_different_fields_of_one_scheme_keep_both() {
     assert_eq!(landed.color_index, 7, "the recolour was discarded");
 }
 
+/// Two devices each move one of two folders into the other, neither having seen
+/// the other's move.
+///
+/// `move_node` rejects a cycle it can SEE (`CommandError::CycleMove`, checked
+/// before any mutation), so neither command is invalid when it is issued — the
+/// cycle exists only in the merged result. `normalize_folder_tree` then walks
+/// only from the root, never visits either folder, and
+/// `normalize_one_level_folders` drops both plus every scheme inside them; the
+/// next index write publishes that as an authoritative deletion and every other
+/// device faithfully pulls the loss. Production fuzz seed 10042 (device 0 moves
+/// b7e06805 -> 627f8085 at step 179, device 2 moves it back at 184, and device
+/// 2's sync at 198 takes 3 schemes and 3 folders off the server).
+#[test]
+fn two_devices_moving_folders_into_each_other_keep_both() {
+    let mut world = world(90_121, 1);
+    let a = world.add_device(Some(0));
+    world.local(a, |device, _| {
+        let root = device.state.workspace.root;
+        for name in ["Outer", "Inner"] {
+            device
+                .state
+                .apply_command(Command::CreateFolder {
+                    parent: root,
+                    name: name.to_string(),
+                    position: None,
+                })
+                .expect("create folder");
+        }
+    });
+    let folder_named = |world: &World, name: &str| {
+        world.devices[a]
+            .as_ref()
+            .unwrap()
+            .state
+            .workspace
+            .folders
+            .values()
+            .find(|folder| folder.name == name)
+            .unwrap_or_else(|| panic!("folder {name} exists"))
+            .id
+    };
+    let outer = folder_named(&world, "Outer");
+    let inner = folder_named(&world, "Inner");
+    // A scheme inside one of them, so what the cycle costs is content and not
+    // just structure.
+    world.local(a, |device, _| {
+        device
+            .state
+            .apply_command(Command::CreateScheme {
+                folder: inner,
+                name: "Inside".to_string(),
+                color_index: 3,
+                position: None,
+            })
+            .expect("create scheme");
+    });
+    world.sync(a, 0);
+    let b = world.add_device(Some(0));
+    world.sync(b, 0);
+    world.sync(a, 0);
+
+    // Concurrent by construction: neither device syncs between these two moves,
+    // so each one is legal against the view it is applied to.
+    world.local(a, |device, _| {
+        device
+            .state
+            .apply_command(Command::MoveNode {
+                node: knotq_model::NodeRef::Folder(outer),
+                new_parent: inner,
+                position: 0,
+            })
+            .expect("move outer into inner");
+    });
+    world.local(b, |device, _| {
+        device
+            .state
+            .apply_command(Command::MoveNode {
+                node: knotq_model::NodeRef::Folder(inner),
+                new_parent: outer,
+                position: 0,
+            })
+            .expect("move inner into outer");
+    });
+
+    world.sync(a, 0);
+    world.sync(b, 0);
+    world.sync(a, 0);
+    world.settle_and_assert();
+
+    let workspace = world.devices[a].as_ref().unwrap().state.workspace.clone();
+    assert!(
+        workspace.folders.contains_key(&outer),
+        "the outer folder was deleted by the merge"
+    );
+    assert!(
+        workspace.folders.contains_key(&inner),
+        "the inner folder was deleted by the merge"
+    );
+    assert!(
+        workspace
+            .schemes
+            .values()
+            .any(|scheme| scheme.name == "Inside"),
+        "the scheme inside the moved folders was deleted"
+    );
+}
+
 fn install_prepared(world: &mut World, workspace: knotq_model::Workspace) -> usize {
     let index = world.devices.len();
     let dir = world.root.join(format!("device-{index}"));
