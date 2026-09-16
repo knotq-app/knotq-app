@@ -67,11 +67,14 @@ pub(super) fn adopt_sync_workspace(
     workspace: Workspace,
     crdt_states: HashMap<DocumentId, Arc<[u8]>>,
     local_edit_watermark: u64,
+    squash_applied: bool,
 ) -> bool {
     let merged = state.has_local_edits_since(local_edit_watermark)
         && state.merge_workspace_from_sync(&workspace, &crdt_states);
     if merged {
         true
+    } else if squash_applied {
+        state.replace_workspace_from_squash(workspace, crdt_states)
     } else {
         state.replace_workspace_from_sync(workspace, crdt_states)
     }

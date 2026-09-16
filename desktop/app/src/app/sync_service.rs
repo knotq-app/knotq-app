@@ -216,6 +216,11 @@ struct SyncRunResult {
     /// True when this run built and sent a squash proposal (accepted or not),
     /// so the scheduler can arm its attempt throttle.
     squash_attempted: bool,
+    /// True when an accepted squash was followed by a successful pull of the
+    /// rebuilt state. A reset CRDT history must be adopted wholesale when no
+    /// local edit raced the run; incrementally merging it can retain the old
+    /// insertion order on the proposer.
+    squash_applied: bool,
 }
 
 /// A notification schedule cached on `KnotQApp` between sync runs, with the inputs

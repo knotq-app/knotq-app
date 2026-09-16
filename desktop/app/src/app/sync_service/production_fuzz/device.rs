@@ -339,6 +339,7 @@ impl DesktopDevice {
                         result.workspace,
                         result.crdt_states,
                         run.watermark,
+                        result.squash_applied,
                     );
                     reassert_local_item_edits(&mut self.state, local_item_edits);
                 }

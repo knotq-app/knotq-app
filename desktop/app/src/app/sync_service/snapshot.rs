@@ -354,7 +354,17 @@ pub(super) fn sync_snapshot_in(
     let mut remote_updates_applied = remote_updates_applied;
     let mut merged_crdt_states = merged_crdt_states;
     let mut squash_attempted = false;
-    if snapshot.allow_squash && local_state.pending.is_empty() {
+    let mut squash_applied = false;
+    // Squashing changes the document epoch and replaces its CRDT history. Only
+    // attempt it after this run was already fully quiet: a concurrent pull or
+    // push would make the proposal stale, and a local edit racing the reset
+    // would need the ordinary merge landing path.
+    if snapshot.allow_squash
+        && local_state.pending.is_empty()
+        && remote_updates_applied == 0
+        && pulled_changes.is_empty()
+        && pushed.is_empty()
+    {
         if let Some(proposal) = knotq_sync::build_squash_proposal(&crdt_docs, &local_state) {
             squash_attempted = true;
             match client.squash(&proposal.as_request(replica_id)) {
@@ -379,6 +389,7 @@ pub(super) fn sync_snapshot_in(
                         replica_id,
                     ) {
                         Ok(adoption) => {
+                            squash_applied = true;
                             workspace = adoption.workspace;
                             remote_updates_applied += adoption.remote_updates_applied;
                             merged_crdt_states = crdt_docs.document_states();
@@ -407,6 +418,7 @@ pub(super) fn sync_snapshot_in(
         media_downloaded,
         notification_schedule,
         squash_attempted,
+        squash_applied,
     })
 }
 

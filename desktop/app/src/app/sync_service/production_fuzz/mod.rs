@@ -57,6 +57,8 @@ struct Config {
     steps: usize,
     /// Account switching, faults, crashes — off for the plainest single-account run.
     chaos: bool,
+    /// Require each maintenance path to run at least once in this fuzz world.
+    maintenance_coverage: bool,
 }
 
 struct World {
@@ -182,7 +184,14 @@ impl World {
         let Some(account) = self.devices[index].as_ref().unwrap().account else {
             return;
         };
-        let allow_squash = self.rng.below(4) == 0;
+        let squash_seen = self
+            .accounts
+            .iter()
+            .any(|account| account.server.squash_calls() > 0);
+        let allow_squash = self.config.maintenance_coverage
+            && self.step >= self.config.steps
+            && !squash_seen
+            && in_flight_edits == 0;
         let run = {
             let device = self.devices[index].as_mut().unwrap();
             device.run_sync(&self.accounts[account], allow_squash)
@@ -315,6 +324,14 @@ impl World {
         self.step += 1;
         let live = self.live_devices();
         let index = live[self.rng.below(live.len() as u64) as usize];
+        if self.config.maintenance_coverage && self.step.is_multiple_of(50) {
+            let account = self.rng.below(self.accounts.len() as u64) as usize;
+            self.accounts[account].server.run_compaction();
+            self.log(format!(
+                "account {account}: scheduled server compaction sweep"
+            ));
+            return;
+        }
         let roll = self.rng.below(100);
         let chaos = self.config.chaos;
         match roll {
@@ -346,14 +363,18 @@ impl World {
                 self.devices[index].as_mut().unwrap().sign_out();
                 self.log(format!("device {index} signed out"));
             }
-            83..=88 if chaos => {
+            83..=85 => {
+                let account = self.rng.below(self.accounts.len() as u64) as usize;
+                self.accounts[account].server.run_compaction();
+                self.log(format!("account {account}: server compaction sweep"));
+            }
+            86..=88 if chaos => {
                 let account = self.rng.below(self.accounts.len() as u64) as usize;
                 let server = &self.accounts[account].server;
-                match self.rng.below(4) {
+                match self.rng.below(3) {
                     0 => server.fail_next_pulls(1),
                     1 => server.lose_next_push_responses(1),
-                    2 => server.reject_next_push_with_schema_invalid(),
-                    _ => server.run_compaction(),
+                    _ => server.reject_next_push_with_schema_invalid(),
                 }
                 self.log(format!("account {account}: server fault injected"));
             }
@@ -514,6 +535,28 @@ impl World {
             }
         }
         failures.extend(std::mem::take(&mut self.violations));
+        if self.config.maintenance_coverage {
+            let squash_calls: usize = self
+                .accounts
+                .iter()
+                .map(|account| account.server.squash_calls())
+                .sum();
+            let compaction_calls: usize = self
+                .accounts
+                .iter()
+                .map(|account| account.server.compaction_calls())
+                .sum();
+            eprintln!(
+                "seed {} maintenance coverage: squash_calls={}, compaction_calls={}",
+                self.seed, squash_calls, compaction_calls
+            );
+            if squash_calls == 0 {
+                failures.push("maintenance coverage: no accepted squash request ran".to_string());
+            }
+            if compaction_calls == 0 {
+                failures.push("maintenance coverage: no compaction sweep ran".to_string());
+            }
+        }
         assert!(
             failures.is_empty(),
             "seed {seed}: {} sync invariant violation(s):\n{}",
@@ -554,6 +597,14 @@ fn run_seed(seed: u64, config: Config) {
 }
 
 fn run_seeds(first_seed: u64, config: impl Fn() -> Config + Sync) {
+    if config().maintenance_coverage {
+        // The production fuzz drives the real sync_snapshot path, so these
+        // test-only thresholds must be read by build_squash_proposal itself.
+        // Zero bytes makes the fuzzer's small scheme documents candidates and
+        // a ratio of one accepts any history-free rebuild that is not larger.
+        std::env::set_var("KNOTQ_SQUASH_MIN_STATE_BYTES", "0");
+        std::env::set_var("KNOTQ_SQUASH_MIN_RATIO", "1");
+    }
     // Belt and braces: nothing here resolves the global data directory, but a
     // stray call must never reach the user's real KnotQ data.
     static GUARD: std::sync::Once = std::sync::Once::new();
@@ -573,6 +624,11 @@ fn run_seeds(first_seed: u64, config: impl Fn() -> Config + Sync) {
     )
     .clamp(1, seeds.max(1));
     let next = AtomicUsize::new(0);
+    // Maintenance coverage is deliberately isolated to one seed per
+    // configuration. The real production paths still run, but making every
+    // corpus seed reset a CRDT epoch would make the census measure the
+    // maintenance schedule instead of the ordinary sync behavior.
+    let maintenance_seed = first_seed;
     // Every seed runs even after one fails, and the census below names all of
     // them. A panicking seed used to take its worker thread down with it, so a
     // run could only ever report as many failing seeds as it had workers. That
@@ -590,7 +646,9 @@ fn run_seeds(first_seed: u64, config: impl Fn() -> Config + Sync) {
                     }
                     let seed = first_seed + offset as u64;
                     let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                        run_seed(seed, config())
+                        let mut seed_config = config();
+                        seed_config.maintenance_coverage &= seed == maintenance_seed;
+                        run_seed(seed, seed_config)
                     }));
                     if let Err(payload) = outcome {
                         census(&failures).push((seed, panic_message(payload.as_ref())));
@@ -651,6 +709,7 @@ fn desktop_production_sync_fuzz() {
         max_devices: 5,
         steps: env_usize("KNOTQ_FUZZ_STEPS", 120),
         chaos: true,
+        maintenance_coverage: true,
     });
 }
 
@@ -664,6 +723,7 @@ fn desktop_production_single_account_fuzz() {
         max_devices: 4,
         steps: env_usize("KNOTQ_FUZZ_STEPS", 120),
         chaos: false,
+        maintenance_coverage: true,
     });
 }
 
@@ -680,6 +740,7 @@ fn replay_production_seed() {
             max_devices: if chaos { 5 } else { 4 },
             steps: env_usize("KNOTQ_FUZZ_STEPS", 120),
             chaos,
+            maintenance_coverage: false,
         },
     );
 }

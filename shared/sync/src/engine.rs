@@ -1413,6 +1413,23 @@ pub const SQUASH_MIN_STATE_BYTES: usize = 256 * 1024;
 /// so a large document that is genuinely mostly content is left alone.
 pub const SQUASH_MIN_RATIO: usize = 4;
 
+const SQUASH_MIN_STATE_BYTES_ENV: &str = "KNOTQ_SQUASH_MIN_STATE_BYTES";
+const SQUASH_MIN_RATIO_ENV: &str = "KNOTQ_SQUASH_MIN_RATIO";
+
+fn squash_min_state_bytes() -> usize {
+    std::env::var(SQUASH_MIN_STATE_BYTES_ENV)
+        .ok()
+        .and_then(|value| value.parse().ok())
+        .unwrap_or(SQUASH_MIN_STATE_BYTES)
+}
+
+fn squash_min_ratio() -> usize {
+    std::env::var(SQUASH_MIN_RATIO_ENV)
+        .ok()
+        .and_then(|value| value.parse().ok())
+        .unwrap_or(SQUASH_MIN_RATIO)
+}
+
 /// A candidate history squash: the rebuilt state plus the compare-and-set base
 /// the server verifies. Built only from a fully-synced document; the driver
 /// POSTs it to `/v1/sync/squash` and treats every rejection as a benign skip.
@@ -1454,7 +1471,9 @@ pub fn build_squash_proposal(
     crdt_docs: &WorkspaceCrdtDocuments,
     local_state: &LocalSyncState,
 ) -> Option<SquashProposal> {
-    for (document, state_len) in crdt_docs.squash_candidates(SQUASH_MIN_STATE_BYTES) {
+    let min_state_bytes = squash_min_state_bytes();
+    let min_ratio = squash_min_ratio();
+    for (document, state_len) in crdt_docs.squash_candidates(min_state_bytes) {
         if local_state.has_pending_for_document(document) {
             continue;
         }
@@ -1467,7 +1486,7 @@ pub fn build_squash_proposal(
         let Ok(state_v1) = crdt_docs.rebuild_scheme_state(document) else {
             continue;
         };
-        if state_v1.len().saturating_mul(SQUASH_MIN_RATIO) > state_len {
+        if state_v1.len().saturating_mul(min_ratio) > state_len {
             continue;
         }
         return Some(SquashProposal {

@@ -587,6 +587,27 @@ impl AppState {
         workspace: Workspace,
         crdt_states: HashMap<DocumentId, B>,
     ) -> bool {
+        self.replace_workspace_from_sync_inner(workspace, crdt_states, false)
+    }
+
+    /// Adopt a successfully squashed sync result by replacing the live CRDT
+    /// documents. Squashing resets document history, so incrementally merging
+    /// the rebuilt state can leave the proposer with a different insertion
+    /// order than a fresh device that materializes the server state.
+    pub fn replace_workspace_from_squash<B: AsRef<[u8]>>(
+        &mut self,
+        workspace: Workspace,
+        crdt_states: HashMap<DocumentId, B>,
+    ) -> bool {
+        self.replace_workspace_from_sync_inner(workspace, crdt_states, true)
+    }
+
+    fn replace_workspace_from_sync_inner<B: AsRef<[u8]>>(
+        &mut self,
+        workspace: Workspace,
+        crdt_states: HashMap<DocumentId, B>,
+        force_replace: bool,
+    ) -> bool {
         // Everything the UI renders, compared before anything is mutated.
         // `schemes` covers item content plus per-scheme metadata (name, colour,
         // source); `clone_without_schemes` covers the rest of the workspace and
@@ -624,7 +645,8 @@ impl AppState {
         // workspace (rebuilding hundreds of unchanged documents). A full rebuild
         // remains the fallback if the incremental merge reports an invalid state.
         self.sync_store_from_workspace();
-        if !self.store.merge_sync_crdt_states(&workspace, &crdt_states) {
+        let merged = !force_replace && self.store.merge_sync_crdt_states(&workspace, &crdt_states);
+        if !merged {
             self.store.replace_from_sync(workspace, crdt_states);
         }
         self.sync_workspace_from_store();

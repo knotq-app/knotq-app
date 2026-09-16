@@ -388,6 +388,7 @@ async fn run_sync_attempt(
             let media_downloaded = result.media_downloaded;
             let notification_schedule = result.notification_schedule.clone();
             let squash_attempted = result.squash_attempted;
+            let squash_applied = result.squash_applied;
             let queued_item_fields = result.queued_item_fields.clone();
             let _ = weak.update(cx, |app, cx| {
                 if squash_attempted {
@@ -440,6 +441,7 @@ async fn run_sync_attempt(
                         workspace,
                         crdt_states,
                         local_edit_watermark,
+                        squash_applied,
                     ) | super::landing::reassert_local_item_edits(
                         &mut app.state,
                         local_item_edits,

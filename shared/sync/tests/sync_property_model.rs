@@ -861,6 +861,17 @@ fn run_seed_compaction(seed: u64, num_accounts: usize, num_devices: usize, steps
     for account in 0..world.accounts.len() {
         world.accounts[account].server.run_compaction();
     }
+
+    let compaction_calls: usize = world
+        .accounts
+        .iter()
+        .map(|account| account.server.compaction_calls())
+        .sum();
+    eprintln!("seed {seed} property compaction coverage: compaction_calls={compaction_calls}");
+    assert!(
+        compaction_calls > 0,
+        "seed {seed}: compaction mode did not execute a compaction sweep"
+    );
     world.settle();
     world.assert_invariants(seed);
 

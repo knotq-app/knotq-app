@@ -20,6 +20,7 @@ fn world(seed: u64, accounts: usize) -> World {
             max_devices: 12,
             steps: 0,
             chaos: false,
+            maintenance_coverage: false,
         },
     )
 }

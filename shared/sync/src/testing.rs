@@ -55,6 +55,10 @@ pub struct MemoryServer {
 struct ServerCounters {
     pull_calls: usize,
     push_calls: usize,
+    /// Accepted history-squash requests.
+    squash_calls: usize,
+    /// At-rest compaction sweeps, including sweeps over an empty server.
+    compaction_calls: usize,
     /// How many times `push` organically rejected a batch with `crdt_schema_invalid`.
     /// Excludes the one-shot `reject_next_push` fault injection.
     schema_invalid_rejections: usize,
@@ -93,6 +97,14 @@ impl MemoryServer {
 
     pub fn push_calls(&self) -> usize {
         self.counters.borrow().push_calls
+    }
+
+    pub fn squash_calls(&self) -> usize {
+        self.counters.borrow().squash_calls
+    }
+
+    pub fn compaction_calls(&self) -> usize {
+        self.counters.borrow().compaction_calls
     }
 
     /// Number of batches organically rejected with `crdt_schema_invalid`.
@@ -195,6 +207,7 @@ impl MemoryServer {
     /// Server-side effect of an accepted `POST /v1/sync/squash`: replace the
     /// stored state with the history-free rebuild, bumping seq AND epoch.
     pub fn squash_document(&self, document: DocumentId, state_v1: Vec<u8>) -> (u64, u64) {
+        self.counters.borrow_mut().squash_calls += 1;
         let mut documents = self.documents.borrow_mut();
         let doc = documents.get_mut(&document).expect("squash target exists");
         doc.state_v1 = state_v1;
@@ -241,6 +254,7 @@ impl MemoryServer {
     /// `state_v1` is transcoded v1 -> v2 -> v1 and re-encoded, WITHOUT bumping
     /// `seq` or `epoch`.
     pub fn run_compaction(&self) {
+        self.counters.borrow_mut().compaction_calls += 1;
         let mut documents = self.documents.borrow_mut();
         for doc in documents.values_mut() {
             let Ok(update) = Update::decode_v1(&doc.state_v1) else {
