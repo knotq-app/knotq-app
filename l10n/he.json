@@ -490,7 +490,6 @@
   "mobile.search.no_results_detail": "כלום לא התאים „{query}“.",
   "mobile.search.screen_title": "חיפוש",
   "mobile.search.searching": "מחפש…",
-  "mobile.workspace.loading": "טוען את סביבת העבודה…",
   "mobile.settings.archived_items": "פריטים בארכיון",
   "mobile.settings.assignment_reminders_title": "תזכורות יעדים",
   "mobile.settings.cancel_sync_subscription_confirm": "בטל הרשמה",
@@ -574,6 +573,7 @@
   "mobile.widget.kind.assignment": "יעד",
   "mobile.widget.kind.event": "אירוע",
   "mobile.widget.kind.reminder": "תזכורת",
+  "mobile.workspace.loading": "טוען את סביבת העבודה…",
   "modal.unlink_google_confirm": "בטל קישור",
   "modal.unlink_google_message": "זה מבטל קישור לגישה המקומית ל-Google Calendar ל-{label}. תכניות לוח שנה של Google המסונכרנות נשארות, אך הן יוצגו כלא מחובר עד שתתחבר מחדש באופן מקומי.",
   "modal.unlink_google_title": "לבטל קישור לחשבון Google?",
@@ -831,6 +831,7 @@
   "sync.action.resync": "סנכרון מחדש",
   "sync.action.resyncing": "סנכרון מחדש…",
   "sync.action.sync_now": "סנכרון כעת",
+  "sync.disclosure.intro_month": "חודש אחד בחינם, ואז",
   "sync.disclosure.period_days": {
     "one": "יום",
     "other": "{count} ימים",
@@ -854,6 +855,7 @@
   },
   "sync.disclosure.privacy_policy": "מדיניות פרטיות",
   "sync.disclosure.subscription_terms": "{price} לכל {period}, חיוב לחשבון Apple שלך. המנוי שלך מתחדש באופן אוטומטי אלא אם בוטל לפחות 24 שעות לפני סיום התקופה הנוכחית. ניהול או ביטול בכל עת בהגדרות.",
+  "sync.disclosure.subscription_terms_no_intro": "{price} לכל {period}, חיוב לחשבון Apple שלך. המנוי שלך מתחדש באופן אוטומטי אלא אם בוטל לפחות 24 שעות לפני סיום התקופה הנוכחית. ניהול או ביטול בכל עת בהגדרות.",
   "sync.disclosure.terms_of_use": "תנאי השימוש",
   "sync.error.account_status_unsupported": "ממשק סנכרון לא תומך במצב חשבון עדיין.",
   "sync.error.api_unreachable": "לא היה אפשר להגיע לממשק סנכרון: {error}",
@@ -1093,6 +1095,7 @@
   "web.account.sync_promo_pill_available": "זמין",
   "web.account.sync_promo_point_local_first": "מקומי ראשון — הכל ממשיך לעבוד במצב לא מקוון",
   "web.account.sync_promo_point_notifications": "ההתראות שלך זמינות בכל המכשירים",
+  "web.account.sync_promo_point_trial": "חודש ניסיון חינם",
   "web.account.sync_promo_point_workspace": ". אותו סביבת עבודה בכל מכשיר מחובר",
   "web.account.sync_promo_tagline": "סנכרון חוצה-מכשיר זמין.",
   "web.account.sync_summary_active": "סנכרון פעיל.",
@@ -1516,6 +1519,5 @@
   "web.verify.title": "אמת דוא״ל — KnotQ",
   "web.verify.title_error": "לא יכלנו לאמת את הדוא״ל שלך",
   "web.verify.title_success": "דוא״ל מאומת",
-  "web.verify.title_verifying": "אימות הדוא״ל שלך",
-  "web.account.sync_promo_point_trial": "חודש ניסיון חינם"
+  "web.verify.title_verifying": "אימות הדוא״ל שלך"
 }

@@ -478,7 +478,6 @@
   "mobile.search.no_results_detail": "Ingenting samsvarte med «{query}».",
   "mobile.search.screen_title": "Søk",
   "mobile.search.searching": "Søker…",
-  "mobile.workspace.loading": "Laster arbeidsområde…",
   "mobile.settings.archived_items": "Arkiverte elementer",
   "mobile.settings.assignment_reminders_title": "Oppgaveremindere",
   "mobile.settings.cancel_sync_subscription_confirm": "Avbryt abonnement",
@@ -562,6 +561,7 @@
   "mobile.widget.kind.assignment": "Oppgave",
   "mobile.widget.kind.event": "Arrangement",
   "mobile.widget.kind.reminder": "Påminnelse",
+  "mobile.workspace.loading": "Laster arbeidsområde…",
   "modal.unlink_google_confirm": "Koble fra",
   "modal.unlink_google_message": "Dette kobler fra lokal Google Kalender-tilgang for {label}. Synkroniserte Google-kalenderskjemaer forblir, men de vil vises som offline til du logger inn lokalt igjen.",
   "modal.unlink_google_title": "Koble fra Google-konto?",
@@ -814,6 +814,7 @@
   "sync.action.resync": "Omsynkroniser",
   "sync.action.resyncing": "Omsynkroniserer…",
   "sync.action.sync_now": "Synkroniser nå",
+  "sync.disclosure.intro_month": "Én måned gratis, deretter",
   "sync.disclosure.period_days": {
     "one": "dag",
     "other": "{count} dager"
@@ -833,6 +834,7 @@
   },
   "sync.disclosure.privacy_policy": "Personvernregler",
   "sync.disclosure.subscription_terms": "{price} per {period}, fakturert til Apple Account-en din. Abonnementet fornyes automatisk med mindre det avbestilles minst 24 timer før slutten av den nåværende perioden. Administrer eller avbestill når som helst i Innstillinger.",
+  "sync.disclosure.subscription_terms_no_intro": "{price} per {period}, fakturert til Apple Account-en din. Abonnementet fornyes automatisk med mindre det avbestilles minst 24 timer før slutten av den nåværende perioden. Administrer eller avbestill når som helst i Innstillinger.",
   "sync.disclosure.terms_of_use": "Brukervilkår",
   "sync.error.account_status_unsupported": "Synk-APIet støtter ikke kontostatus ennå.",
   "sync.error.api_unreachable": "Kunne ikke nå synk-APIet: {error}",
@@ -1072,6 +1074,7 @@
   "web.account.sync_promo_pill_available": "Tilgjengelig",
   "web.account.sync_promo_point_local_first": "Lokalt først – alt fortsetter å fungere frakoblet",
   "web.account.sync_promo_point_notifications": "Varsler følger deg på tvers av enheter",
+  "web.account.sync_promo_point_trial": "1 måneds gratis prøveperiode",
   "web.account.sync_promo_point_workspace": "Samme arbeidsområde på tvers av alle påloggede enheter.",
   "web.account.sync_promo_tagline": "-synkronisering på tvers av enheter er tilgjengelig.",
   "web.account.sync_summary_active": "Synk er aktivt.",
@@ -1495,6 +1498,5 @@
   "web.verify.title": "Bekreft e-post — KnotQ",
   "web.verify.title_error": "Vi kunne ikke bekrefte e-posten din",
   "web.verify.title_success": "E-post bekreftet",
-  "web.verify.title_verifying": "Bekrefter e-posten din",
-  "web.account.sync_promo_point_trial": "1 måneds gratis prøveperiode"
+  "web.verify.title_verifying": "Bekrefter e-posten din"
 }

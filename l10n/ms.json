@@ -466,7 +466,6 @@
   "mobile.search.no_results_detail": "Tiada yang sepadan \"{query}\".",
   "mobile.search.screen_title": "Carian",
   "mobile.search.searching": "Mencari…",
-  "mobile.workspace.loading": "Memuatkan ruang kerja…",
   "mobile.settings.archived_items": "Item yang diarkibkan",
   "mobile.settings.assignment_reminders_title": "Peringatan tugasan",
   "mobile.settings.cancel_sync_subscription_confirm": "Batal Langganan",
@@ -550,6 +549,7 @@
   "mobile.widget.kind.assignment": "Tugasan",
   "mobile.widget.kind.event": "Acara",
   "mobile.widget.kind.reminder": "Peringatan",
+  "mobile.workspace.loading": "Memuatkan ruang kerja…",
   "modal.unlink_google_confirm": "Nyahpaut",
   "modal.unlink_google_message": "Ini menyahpaut akses Kalendar Google tempatan untuk {label}. Skema kalendar Google yang disegerak tetap ada, tetapi mereka akan ditunjukkan sebagai luar talian sehingga anda daftar masuk secara tempatan lagi.",
   "modal.unlink_google_title": "Nyahpaut Akaun Google?",
@@ -797,6 +797,7 @@
   "sync.action.resync": "Sinkron Semula",
   "sync.action.resyncing": "Menyinkron Semula…",
   "sync.action.sync_now": "Sinkron Sekarang",
+  "sync.disclosure.intro_month": "Satu bulan percuma, kemudian",
   "sync.disclosure.period_days": {
     "other": "{count} hari"
   },
@@ -812,6 +813,7 @@
   },
   "sync.disclosure.privacy_policy": "Dasar Privasi",
   "sync.disclosure.subscription_terms": "{price} setiap {period}, dikenakan ke Akaun Apple anda. Langganan anda diperbaharui secara automatik melainkan dibatalkan sekurang-kurangnya 24 jam sebelum akhir tempoh semasa. Urus atau batalkan bila-bila masa dalam Tetapan.",
+  "sync.disclosure.subscription_terms_no_intro": "{price} setiap {period}, dikenakan ke Akaun Apple anda. Langganan anda diperbaharui secara automatik melainkan dibatalkan sekurang-kurangnya 24 jam sebelum akhir tempoh semasa. Urus atau batalkan bila-bila masa dalam Tetapan.",
   "sync.disclosure.terms_of_use": "Syarat Penggunaan",
   "sync.error.account_status_unsupported": "API sinkron tidak menyokong status akaun lagi.",
   "sync.error.api_unreachable": "Tidak dapat menjangkau API sinkron: {error}",
@@ -1051,6 +1053,7 @@
   "web.account.sync_promo_pill_available": "Tersedia",
   "web.account.sync_promo_point_local_first": "Tempatan-dahulu — semuanya terus bekerja luar talian",
   "web.account.sync_promo_point_notifications": "Pemberitahuan mengikuti anda merentas peranti",
+  "web.account.sync_promo_point_trial": "Percubaan percuma selama 1 bulan",
   "web.account.sync_promo_point_workspace": "Ruang kerja yang sama merentas setiap peranti yang dilog masuk",
   "web.account.sync_promo_tagline": "Penyegerakan merentas peranti tersedia.",
   "web.account.sync_summary_active": "Sinkron aktif.",
@@ -1474,6 +1477,5 @@
   "web.verify.title": "Verifikasi email — KnotQ",
   "web.verify.title_error": "Kami tidak dapat memverifikasi email Anda",
   "web.verify.title_success": "Email diverifikasi",
-  "web.verify.title_verifying": "Memverifikasi email Anda",
-  "web.account.sync_promo_point_trial": "Percubaan percuma selama 1 bulan"
+  "web.verify.title_verifying": "Memverifikasi email Anda"
 }

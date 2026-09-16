@@ -478,7 +478,6 @@
   "mobile.search.no_results_detail": "Niets kwam overeen met \"{query}\".",
   "mobile.search.screen_title": "Zoeken",
   "mobile.search.searching": "Zoeken…",
-  "mobile.workspace.loading": "Werkruimte laden…",
   "mobile.settings.archived_items": "Gearchiveerde items",
   "mobile.settings.assignment_reminders_title": "Taakherinneringen",
   "mobile.settings.cancel_sync_subscription_confirm": "Abonnement annuleren",
@@ -562,6 +561,7 @@
   "mobile.widget.kind.assignment": "Taak",
   "mobile.widget.kind.event": "Gebeurtenis",
   "mobile.widget.kind.reminder": "Herinnering",
+  "mobile.workspace.loading": "Werkruimte laden…",
   "modal.unlink_google_confirm": "Ontkoppelen",
   "modal.unlink_google_message": "Dit ontkoppelt lokale Google Calendar-toegang voor {label}. Gesynchroniseerde Google-agendaschema's blijven behouden, maar ze worden offline weergegeven tot je je lokaal opnieuw aanmeldt.",
   "modal.unlink_google_title": "Google-account ontkoppelen?",
@@ -814,6 +814,7 @@
   "sync.action.resync": "Opnieuw synchroniseren",
   "sync.action.resyncing": "Opnieuw synchroniseren…",
   "sync.action.sync_now": "Nu synchroniseren",
+  "sync.disclosure.intro_month": "Eén maand gratis, daarna",
   "sync.disclosure.period_days": {
     "one": "dag",
     "other": "{count} dagen"
@@ -833,6 +834,7 @@
   },
   "sync.disclosure.privacy_policy": "Privacybeleid",
   "sync.disclosure.subscription_terms": "{price} per {period}, gefactureerd op je Apple Account. Je abonnement wordt automatisch vernieuwd tenzij je dit ten minste 24 uur voor het einde van de huidige periode annuleert. Je kunt het op elk moment beheren of annuleren in Instellingen.",
+  "sync.disclosure.subscription_terms_no_intro": "{price} per {period}, gefactureerd op je Apple Account. Je abonnement wordt automatisch vernieuwd tenzij je dit ten minste 24 uur voor het einde van de huidige periode annuleert. Je kunt het op elk moment beheren of annuleren in Instellingen.",
   "sync.disclosure.terms_of_use": "Gebruiksvoorwaarden",
   "sync.error.account_status_unsupported": "De sync-API ondersteunt accountstatus nog niet.",
   "sync.error.api_unreachable": "Kon de sync-API niet bereiken: {error}",
@@ -1072,6 +1074,7 @@
   "web.account.sync_promo_pill_available": "Beschikbaar",
   "web.account.sync_promo_point_local_first": "Lokaal eerst — alles werkt offline",
   "web.account.sync_promo_point_notifications": "Meldingen volgen je op al je apparaten",
+  "web.account.sync_promo_point_trial": "1 maand gratis proefperiode",
   "web.account.sync_promo_point_workspace": ". Dezelfde werkruimte op elk aangemeld apparaat.",
   "web.account.sync_promo_tagline": "Synchronisatie tussen verschillende apparaten is beschikbaar.",
   "web.account.sync_summary_active": "Sync is actief.",
@@ -1495,6 +1498,5 @@
   "web.verify.title": "E-mailadres verifiëren — KnotQ",
   "web.verify.title_error": "We konden je e-mailadres niet verifiëren",
   "web.verify.title_success": "E-mailadres geverifieerd",
-  "web.verify.title_verifying": "Je e-mailadres verifiëren",
-  "web.account.sync_promo_point_trial": "1 maand gratis proefperiode"
+  "web.verify.title_verifying": "Je e-mailadres verifiëren"
 }

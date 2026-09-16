@@ -478,7 +478,6 @@
   "mobile.search.no_results_detail": "Nada corresponde a «{query}».",
   "mobile.search.screen_title": "Pesquisa",
   "mobile.search.searching": "A pesquisar…",
-  "mobile.workspace.loading": "A carregar o espaço de trabalho…",
   "mobile.settings.archived_items": "Itens arquivados",
   "mobile.settings.assignment_reminders_title": "Lembretes de tarefas",
   "mobile.settings.cancel_sync_subscription_confirm": "Cancelar Subscrição",
@@ -562,6 +561,7 @@
   "mobile.widget.kind.assignment": "Tarefa",
   "mobile.widget.kind.event": "Evento",
   "mobile.widget.kind.reminder": "Lembrete",
+  "mobile.workspace.loading": "A carregar o espaço de trabalho…",
   "modal.unlink_google_confirm": "Desligar",
   "modal.unlink_google_message": "Isto desliga o acesso local ao Calendário Google para {label}. Os esquemas de calendário Google sincronizados permanecem, mas mostrarão como offline até que inicie sessão localmente novamente.",
   "modal.unlink_google_title": "Desligar conta Google?",
@@ -814,6 +814,7 @@
   "sync.action.resync": "Ressincronizar",
   "sync.action.resyncing": "A ressincronizar…",
   "sync.action.sync_now": "Sincronizar agora",
+  "sync.disclosure.intro_month": "Um mês grátis, depois",
   "sync.disclosure.period_days": {
     "one": "dia",
     "other": "{count} dias"
@@ -833,6 +834,7 @@
   },
   "sync.disclosure.privacy_policy": "Política de Privacidade",
   "sync.disclosure.subscription_terms": "{price} por {period}, cobrado na sua Conta Apple. A sua subscrição renova-se automaticamente, a menos que seja cancelada pelo menos 24 horas antes do fim do período atual. Gerencie ou cancele a qualquer momento em Definições.",
+  "sync.disclosure.subscription_terms_no_intro": "{price} por {period}, cobrado na sua Conta Apple. A sua subscrição renova-se automaticamente, a menos que seja cancelada pelo menos 24 horas antes do fim do período atual. Gerencie ou cancele a qualquer momento em Definições.",
   "sync.disclosure.terms_of_use": "Termos de Utilização",
   "sync.error.account_status_unsupported": "A API de sincronização ainda não suporta estado de conta.",
   "sync.error.api_unreachable": "Não foi possível aceder à API de sincronização: {error}",
@@ -1072,6 +1074,7 @@
   "web.account.sync_promo_pill_available": "Disponível",
   "web.account.sync_promo_point_local_first": "Primeira local — tudo continua a funcionar offline",
   "web.account.sync_promo_point_notifications": "As notificações acompanham-no em todos os dispositivos",
+  "web.account.sync_promo_point_trial": "1 mês de teste gratuito",
   "web.account.sync_promo_point_workspace": "O mesmo espaço de trabalho em todos os dispositivos ligados",
   "web.account.sync_promo_tagline": "A sincronização entre dispositivos está disponível.",
   "web.account.sync_summary_active": "A sincronização está ativa.",
@@ -1495,6 +1498,5 @@
   "web.verify.title": "Verificar correio eletrónico — KnotQ",
   "web.verify.title_error": "Não conseguimos verificar o seu correio eletrónico",
   "web.verify.title_success": "Correio eletrónico verificado",
-  "web.verify.title_verifying": "A verificar o seu correio eletrónico",
-  "web.account.sync_promo_point_trial": "1 mês de teste gratuito"
+  "web.verify.title_verifying": "A verificar o seu correio eletrónico"
 }

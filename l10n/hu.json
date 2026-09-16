@@ -478,7 +478,6 @@
   "mobile.search.no_results_detail": "Semmi sem felel meg a „{query}“ keresésnek.",
   "mobile.search.screen_title": "Keresés",
   "mobile.search.searching": "Keresés…",
-  "mobile.workspace.loading": "Munkaterület betöltése…",
   "mobile.settings.archived_items": "Archivált elemek",
   "mobile.settings.assignment_reminders_title": "Hozzárendelési emlékeztetők",
   "mobile.settings.cancel_sync_subscription_confirm": "Előfizetés lemondása",
@@ -562,6 +561,7 @@
   "mobile.widget.kind.assignment": "Hozzárendelés",
   "mobile.widget.kind.event": "Esemény",
   "mobile.widget.kind.reminder": "Emlékeztetőю",
+  "mobile.workspace.loading": "Munkaterület betöltése…",
   "modal.unlink_google_confirm": "Leválasztás",
   "modal.unlink_google_message": "Ez leválasztja a helyi Google Naptár-hozzáférést „{label}“ számára. A szinkronizált Google naptár-sémák megmaradnak, de offline-ként jelennek meg, amíg újra nem jelentkezel be helyileg.",
   "modal.unlink_google_title": "Google-fiók leválasztása?",
@@ -814,6 +814,7 @@
   "sync.action.resync": "Újraszinkronizálás",
   "sync.action.resyncing": "Újraszinkronizálás…",
   "sync.action.sync_now": "Szinkronizálás most",
+  "sync.disclosure.intro_month": "Egy hónap ingyenes, ezután",
   "sync.disclosure.period_days": {
     "one": "nap",
     "other": "{count} nap"
@@ -833,6 +834,7 @@
   },
   "sync.disclosure.privacy_policy": "Adatvédelmi szabályzat",
   "sync.disclosure.subscription_terms": "{price} havonta {period}, az Apple-fiókhoz számlázva. Az előfizetés automatikusan megújul, ha nem mondja le legalább 24 órával az aktuális időszak vége előtt. A Beállítások között bármikor kezelhet vagy lemondhat.",
+  "sync.disclosure.subscription_terms_no_intro": "{price} havonta {period}, az Apple-fiókhoz számlázva. Az előfizetés automatikusan megújul, ha nem mondja le legalább 24 órával az aktuális időszak vége előtt. A Beállítások között bármikor kezelhet vagy lemondhat.",
   "sync.disclosure.terms_of_use": "Felhasználási feltételek",
   "sync.error.account_status_unsupported": "A szinkronizálási API még nem támogatja a fiók állapotát.",
   "sync.error.api_unreachable": "Nem sikerült elérni a szinkronizálási API-t: {error}",
@@ -1072,6 +1074,7 @@
   "web.account.sync_promo_pill_available": "Elérhető",
   "web.account.sync_promo_point_local_first": "Helyi-első — minden offline működik",
   "web.account.sync_promo_point_notifications": "Az értesítések minden eszközödön elérhetők",
+  "web.account.sync_promo_point_trial": "1 hónap ingyenes próbaidőszak",
   "web.account.sync_promo_point_workspace": "lépésben. Ugyanaz a munkaterület minden bejelentkezett eszközön.",
   "web.account.sync_promo_tagline": "Az eszközök közötti szinkronizálás elérhető.",
   "web.account.sync_summary_active": "A szinkronizálás aktív.",
@@ -1495,6 +1498,5 @@
   "web.verify.title": "E-mail ellenõrzése — KnotQ",
   "web.verify.title_error": "Nem tudtuk ellenõrizni az Ön e-mailjét",
   "web.verify.title_success": "E-mail ellenõrzõtt",
-  "web.verify.title_verifying": "Az Ön e-mailjét ellenõrzik",
-  "web.account.sync_promo_point_trial": "1 hónap ingyenes próbaidőszak"
+  "web.verify.title_verifying": "Az Ön e-mailjét ellenõrzik"
 }

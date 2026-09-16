@@ -466,7 +466,6 @@
   "mobile.search.no_results_detail": "\"{query}\"와 일치하는 항목 없습니다.",
   "mobile.search.screen_title": "검색",
   "mobile.search.searching": "검색 중…",
-  "mobile.workspace.loading": "작업 공간을 불러오는 중…",
   "mobile.settings.archived_items": "아카이브된 항목",
   "mobile.settings.assignment_reminders_title": "할당 리마인더",
   "mobile.settings.cancel_sync_subscription_confirm": "구독 취소",
@@ -550,6 +549,7 @@
   "mobile.widget.kind.assignment": "할당",
   "mobile.widget.kind.event": "이벤트",
   "mobile.widget.kind.reminder": "리마인더",
+  "mobile.workspace.loading": "작업 공간을 불러오는 중…",
   "modal.unlink_google_confirm": "연결 해제",
   "modal.unlink_google_message": "이것은 {label}의 로컬 Google 캘린더 액세스를 연결 해제합니다. 동기화된 Google 캘린더 스키마는 유지되지만, 다시 로컬로 로그인할 때까지 오프라인으로 표시됩니다.",
   "modal.unlink_google_title": "Google 계정 연결을 해제할까요?",
@@ -797,6 +797,7 @@
   "sync.action.resync": "다시 동기화",
   "sync.action.resyncing": "다시 동기화 중…",
   "sync.action.sync_now": "지금 동기화",
+  "sync.disclosure.intro_month": "1개월 무료, 이후",
   "sync.disclosure.period_days": {
     "other": "{count}일"
   },
@@ -812,6 +813,7 @@
   },
   "sync.disclosure.privacy_policy": "개인정보보호정책",
   "sync.disclosure.subscription_terms": "{price}, {period}마다 Apple 계정으로 청구됩니다. 현재 기간이 끝나기 최소 24시간 전에 취소하지 않으면 구독이 자동으로 갱신됩니다. 설정에서 언제든지 관리하거나 취소할 수 있습니다.",
+  "sync.disclosure.subscription_terms_no_intro": "{price}, {period}마다 Apple 계정으로 청구됩니다. 현재 기간이 끝나기 최소 24시간 전에 취소하지 않으면 구독이 자동으로 갱신됩니다. 설정에서 언제든지 관리하거나 취소할 수 있습니다.",
   "sync.disclosure.terms_of_use": "이용약관",
   "sync.error.account_status_unsupported": "동기화 API가 아직 계정 상태를 지원하지 않습니다.",
   "sync.error.api_unreachable": "동기화 API에 연결할 수 없음: {error}",
@@ -1051,6 +1053,7 @@
   "web.account.sync_promo_pill_available": "사용 가능",
   "web.account.sync_promo_point_local_first": "로컬 우선 - 오프라인 상태에서 모든 것이 계속 작동합니다",
   "web.account.sync_promo_point_notifications": "모든 기기에서 알림을 받을 수 있습니다",
+  "web.account.sync_promo_point_trial": "1개월 무료 체험",
   "web.account.sync_promo_point_workspace": "단계에서 일정, 미리 알림 및 작업 상태를 유지합니다. 로그인한 모든 장치에서 동일한 작업 공간을 유지합니다.",
   "web.account.sync_promo_tagline": "장치 간 동기화가 가능합니다.",
   "web.account.sync_summary_active": "동기화가 활성입니다.",
@@ -1474,6 +1477,5 @@
   "web.verify.title": "이메일 확인 — KnotQ",
   "web.verify.title_error": "이메일을 확인할 수 없었습니다",
   "web.verify.title_success": "이메일 확인됨",
-  "web.verify.title_verifying": "이메일 확인 중",
-  "web.account.sync_promo_point_trial": "1개월 무료 체험"
+  "web.verify.title_verifying": "이메일 확인 중"
 }

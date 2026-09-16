@@ -466,7 +466,6 @@
   "mobile.search.no_results_detail": "Tidak ada yang cocok dengan \"{query}\".",
   "mobile.search.screen_title": "Pencarian",
   "mobile.search.searching": "Mencari…",
-  "mobile.workspace.loading": "Memuat ruang kerja…",
   "mobile.settings.archived_items": "Item arsip",
   "mobile.settings.assignment_reminders_title": "Pengingat tugas",
   "mobile.settings.cancel_sync_subscription_confirm": "Batalkan Langganan",
@@ -550,6 +549,7 @@
   "mobile.widget.kind.assignment": "Tugas",
   "mobile.widget.kind.event": "Acara",
   "mobile.widget.kind.reminder": "Pengingat",
+  "mobile.workspace.loading": "Memuat ruang kerja…",
   "modal.unlink_google_confirm": "Lepas tautan",
   "modal.unlink_google_message": "Ini melepas akses Google Calendar lokal untuk {label}. Skema Google Calendar yang disinkronkan tetap ada, tetapi akan ditampilkan sebagai offline hingga Anda masuk secara lokal lagi.",
   "modal.unlink_google_title": "Lepas tautan akun Google?",
@@ -797,6 +797,7 @@
   "sync.action.resync": "Sinkronisasi Ulang",
   "sync.action.resyncing": "Menyinkronisasi Ulang…",
   "sync.action.sync_now": "Sinkronisasi Sekarang",
+  "sync.disclosure.intro_month": "Satu bulan gratis, lalu",
   "sync.disclosure.period_days": {
     "other": "{count} hari"
   },
@@ -812,6 +813,7 @@
   },
   "sync.disclosure.privacy_policy": "Kebijakan Privasi",
   "sync.disclosure.subscription_terms": "{price} per {period}, ditagihkan ke Akun Apple Anda. Langganan Anda diperpanjang secara otomatis kecuali dibatalkan setidaknya 24 jam sebelum akhir periode saat ini. Kelola atau batalkan kapan saja di Pengaturan.",
+  "sync.disclosure.subscription_terms_no_intro": "{price} per {period}, ditagihkan ke Akun Apple Anda. Langganan Anda diperpanjang secara otomatis kecuali dibatalkan setidaknya 24 jam sebelum akhir periode saat ini. Kelola atau batalkan kapan saja di Pengaturan.",
   "sync.disclosure.terms_of_use": "Ketentuan Penggunaan",
   "sync.error.account_status_unsupported": "API sinkronisasi belum mendukung status akun.",
   "sync.error.api_unreachable": "Tidak dapat menjangkau API sinkronisasi: {error}",
@@ -1051,6 +1053,7 @@
   "web.account.sync_promo_pill_available": "Tersedia",
   "web.account.sync_promo_point_local_first": "Lokal-pertama — semuanya tetap berfungsi offline",
   "web.account.sync_promo_point_notifications": "Notifikasi mengikuti Anda di semua perangkat",
+  "web.account.sync_promo_point_trial": "Uji coba gratis selama 1 bulan",
   "web.account.sync_promo_point_workspace": "Ruang kerja yang sama di setiap perangkat yang masuk",
   "web.account.sync_promo_tagline": "Sinkronisasi lintas perangkat tersedia.",
   "web.account.sync_summary_active": "Sinkronisasi aktif.",
@@ -1474,6 +1477,5 @@
   "web.verify.title": "Verifikasi email — KnotQ",
   "web.verify.title_error": "Kami tidak dapat memverifikasi email Anda",
   "web.verify.title_success": "Email diverifikasi",
-  "web.verify.title_verifying": "Memverifikasi email Anda",
-  "web.account.sync_promo_point_trial": "Uji coba gratis selama 1 bulan"
+  "web.verify.title_verifying": "Memverifikasi email Anda"
 }

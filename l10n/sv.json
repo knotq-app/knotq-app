@@ -478,7 +478,6 @@
   "mobile.search.no_results_detail": "Ingenting matchade \"{query}\".",
   "mobile.search.screen_title": "Sök",
   "mobile.search.searching": "Söker…",
-  "mobile.workspace.loading": "Läser in arbetsyta…",
   "mobile.settings.archived_items": "Arkiverade uppgifter",
   "mobile.settings.assignment_reminders_title": "Påminnelser för uppdrag",
   "mobile.settings.cancel_sync_subscription_confirm": "Avbryt prenumeration",
@@ -562,6 +561,7 @@
   "mobile.widget.kind.assignment": "Uppdrag",
   "mobile.widget.kind.event": "Event",
   "mobile.widget.kind.reminder": "Påminnelse",
+  "mobile.workspace.loading": "Läser in arbetsyta…",
   "modal.unlink_google_confirm": "Avsluta länk",
   "modal.unlink_google_message": "Detta avsluter lokal Google Calendar-åtkomst för {label}. Synkroniserade Google-kalenderscheman förblir, men de visar offline tills du loggar in lokalt igen.",
   "modal.unlink_google_title": "Avsluta länk till Google-konto?",
@@ -814,6 +814,7 @@
   "sync.action.resync": "Omsynkronisera",
   "sync.action.resyncing": "Omsynkroniserar…",
   "sync.action.sync_now": "Synkronisera nu",
+  "sync.disclosure.intro_month": "En månad gratis, sedan",
   "sync.disclosure.period_days": {
     "one": "dag",
     "other": "{count} dagar"
@@ -833,6 +834,7 @@
   },
   "sync.disclosure.privacy_policy": "Sekretesspolicy",
   "sync.disclosure.subscription_terms": "{price} per {period}, debiteras till ditt Apple-konto. Din prenumeration förnyas automatiskt om den inte avbryts minst 24 timmar innan den aktuella perioden slutar. Hantera eller avbryt när som helst i Inställningar.",
+  "sync.disclosure.subscription_terms_no_intro": "{price} per {period}, debiteras till ditt Apple-konto. Din prenumeration förnyas automatiskt om den inte avbryts minst 24 timmar innan den aktuella perioden slutar. Hantera eller avbryt när som helst i Inställningar.",
   "sync.disclosure.terms_of_use": "Användarvillkor",
   "sync.error.account_status_unsupported": "Synkroniserings-API:t stöder inte kontostatus än.",
   "sync.error.api_unreachable": "Kunde inte nå synkroniserings-API:t: {error}",
@@ -1072,6 +1074,7 @@
   "web.account.sync_promo_pill_available": "Tillgänglig",
   "web.account.sync_promo_point_local_first": "Lokalt först — allt fortsätter att fungera offline",
   "web.account.sync_promo_point_notifications": "Aviseringar följer dig på alla enheter",
+  "web.account.sync_promo_point_trial": "1 månads gratis provperiod",
   "web.account.sync_promo_point_workspace": "Samma arbetsyta över alla inloggade enheter",
   "web.account.sync_promo_tagline": "Synkronisering över flera enheter är tillgänglig.",
   "web.account.sync_summary_active": "Synkronisering är aktiv.",
@@ -1495,6 +1498,5 @@
   "web.verify.title": "Verifiera e-post — KnotQ",
   "web.verify.title_error": "Vi kunde inte verifiera din e-postadress",
   "web.verify.title_success": "E-postadress verifierad",
-  "web.verify.title_verifying": "Verifierar din e-postadress",
-  "web.account.sync_promo_point_trial": "1 månads gratis provperiod"
+  "web.verify.title_verifying": "Verifierar din e-postadress"
 }

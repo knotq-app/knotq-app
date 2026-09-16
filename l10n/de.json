@@ -478,7 +478,6 @@
   "mobile.search.no_results_detail": "Nichts passt zu \"{query}\".",
   "mobile.search.screen_title": "Suche",
   "mobile.search.searching": "Suche…",
-  "mobile.workspace.loading": "Arbeitsbereich wird geladen…",
   "mobile.settings.archived_items": "Archivierte Aufgaben",
   "mobile.settings.assignment_reminders_title": "Aufgaben-Benachrichtigungen",
   "mobile.settings.cancel_sync_subscription_confirm": "Abonnement kündigen",
@@ -562,6 +561,7 @@
   "mobile.widget.kind.assignment": "Aufgabe",
   "mobile.widget.kind.event": "Ereignis",
   "mobile.widget.kind.reminder": "Benachrichtigung",
+  "mobile.workspace.loading": "Arbeitsbereich wird geladen…",
   "modal.unlink_google_confirm": "Verknüpfung aufheben",
   "modal.unlink_google_message": "Dies hebt die lokale Google Kalender-Zugriff für {label} auf. Synchronisierte Google Kalender-Schemata bleiben erhalten, werden aber offline angezeigt, bis Sie sich lokal erneut anmelden.",
   "modal.unlink_google_title": "Google-Konto verknüpfung aufheben?",
@@ -814,6 +814,7 @@
   "sync.action.resync": "Erneut synchronisieren",
   "sync.action.resyncing": "Wird erneut synchronisiert…",
   "sync.action.sync_now": "Jetzt synchronisieren",
+  "sync.disclosure.intro_month": "Einen Monat kostenlos, danach",
   "sync.disclosure.period_days": {
     "one": "Tag",
     "other": "{count} Tage"
@@ -833,6 +834,7 @@
   },
   "sync.disclosure.privacy_policy": "Datenschutzrichtlinie",
   "sync.disclosure.subscription_terms": "{price} pro {period}, wird auf Ihr Apple-Konto berechnet. Ihr Abonnement wird automatisch erneuert, wenn es nicht mindestens 24 Stunden vor Ablauf der aktuellen Periode storniert wird. Verwalten oder stornieren Sie jederzeit in Einstellungen.",
+  "sync.disclosure.subscription_terms_no_intro": "{price} pro {period}, wird auf Ihr Apple-Konto berechnet. Ihr Abonnement wird automatisch erneuert, wenn es nicht mindestens 24 Stunden vor Ablauf der aktuellen Periode storniert wird. Verwalten oder stornieren Sie jederzeit in Einstellungen.",
   "sync.disclosure.terms_of_use": "Nutzungsbedingungen",
   "sync.error.account_status_unsupported": "Die Sync-API unterstützt den Kontostatus noch nicht.",
   "sync.error.api_unreachable": "Sync-API nicht erreichbar: {error}",
@@ -1072,6 +1074,7 @@
   "web.account.sync_promo_pill_available": "Verfügbar",
   "web.account.sync_promo_point_local_first": "Lokal-first – alles funktioniert offline weiter",
   "web.account.sync_promo_point_notifications": "Benachrichtigungen folgen Ihnen auf allen Geräten",
+  "web.account.sync_promo_point_trial": "1 Monat kostenlos testen",
   "web.account.sync_promo_point_workspace": "bei. Gleicher Arbeitsbereich auf jedem angemeldeten Gerät.",
   "web.account.sync_promo_tagline": ". Geräteübergreifende Synchronisierung ist verfügbar.",
   "web.account.sync_summary_active": "Sync ist aktiv.",
@@ -1495,6 +1498,5 @@
   "web.verify.title": "E-Mail überprüfen — KnotQ",
   "web.verify.title_error": "Wir konnten Ihre E-Mail nicht überprüfen",
   "web.verify.title_success": "E-Mail überprüft",
-  "web.verify.title_verifying": "Überprüfung Ihrer E-Mail-Adresse",
-  "web.account.sync_promo_point_trial": "1 Monat kostenlos testen"
+  "web.verify.title_verifying": "Überprüfung Ihrer E-Mail-Adresse"
 }
