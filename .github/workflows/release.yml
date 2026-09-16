@@ -65,7 +65,19 @@ jobs:
 
       - name: Test mobile core with accounts
         working-directory: mobile
-        run: cargo test -p knotq-mobile-core --features accounts
+        env:
+          RUST_BACKTRACE: 1
+          # Deeper than PR CI: the build jobs below `needs:` this, so it is the
+          # last mobile-core gate before a signed artifact exists.
+          KNOTQ_FUZZ_SEEDS: 16
+          KNOTQ_FUZZ_STEPS: 256
+        # `--release --lib` mirrors the mobile repo's own CI, for its stated
+        # reason: the production tests and fuzzers live in the library target,
+        # while `core` also declares `edit_cost`, `load_cost` and
+        # `uniffi-bindgen` binaries. A bare `cargo test` builds and launches
+        # those zero-test harnesses too, where a platform loader hang would
+        # obscure core coverage rather than report it.
+        run: cargo test -p knotq-mobile-core --features accounts --release --lib
 
   build-macos-arch:
     name: macOS build (${{ matrix.artifact }})
