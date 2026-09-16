@@ -1050,7 +1050,7 @@
   "web.account.sync_optional": "托管同步是可选的",
   "web.account.sync_promo_pill_available": "可用",
   "web.account.sync_promo_point_local_first": "本地优先——一切在离线状态下继续工作",
-  "web.account.sync_promo_point_notifications": "在步骤",
+  "web.account.sync_promo_point_notifications": "通知会在所有设备上跟随你",
   "web.account.sync_promo_point_workspace": "中保留计划、提醒和任务状态 每个登录设备上的同一工作区",
   "web.account.sync_promo_tagline": "可以使用跨设备同步。",
   "web.account.sync_summary_active": "同步已激活。",
@@ -1474,5 +1474,6 @@
   "web.verify.title": "验证电子邮件 — KnotQ",
   "web.verify.title_error": "我们无法验证您的电子邮件",
   "web.verify.title_success": "电子邮件已验证",
-  "web.verify.title_verifying": "正在验证您的电子邮件"
+  "web.verify.title_verifying": "正在验证您的电子邮件",
+  "web.account.sync_promo_point_trial": "免费试用 1 个月"
 }

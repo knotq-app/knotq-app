@@ -255,8 +255,6 @@ fn an_edit_after_a_crash_between_the_queue_and_crdt_saves_is_kept() {
     world.settle_and_assert();
 }
 
-/// KNOWN GAP — kept runnable so the fix can be proven against it.
-///
 /// Fuzz seed 5: a fresh install's first sync lands through the merge while an
 /// edit made during the run is still unpushed. That edit's index update names
 /// the pre-sign-in root, which must be folded into the account's root — not
@@ -268,7 +266,6 @@ fn an_edit_after_a_crash_between_the_queue_and_crdt_saves_is_kept() {
 /// violations on 2026-09-15). The re-root must happen inside the CRDT index
 /// without rewriting entries the store's plain workspace does not hold.
 #[test]
-#[ignore = "known gap: first-sync merge leaves the pre-sign-in root as a second root folder"]
 fn a_first_sync_with_an_in_flight_edit_leaves_no_second_root_folder() {
     let mut world = world(90_013, 1);
     let a = world.add_device(Some(0));

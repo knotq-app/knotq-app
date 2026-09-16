@@ -1071,7 +1071,7 @@
   "web.account.sync_optional": "Gehoste synchronisatie is optioneel",
   "web.account.sync_promo_pill_available": "Beschikbaar",
   "web.account.sync_promo_point_local_first": "Lokaal eerst — alles werkt offline",
-  "web.account.sync_promo_point_notifications": "Houd schema's, herinneringen en taakstatus bij in stap",
+  "web.account.sync_promo_point_notifications": "Meldingen volgen je op al je apparaten",
   "web.account.sync_promo_point_workspace": ". Dezelfde werkruimte op elk aangemeld apparaat.",
   "web.account.sync_promo_tagline": "Synchronisatie tussen verschillende apparaten is beschikbaar.",
   "web.account.sync_summary_active": "Sync is actief.",
@@ -1495,5 +1495,6 @@
   "web.verify.title": "E-mailadres verifiëren — KnotQ",
   "web.verify.title_error": "We konden je e-mailadres niet verifiëren",
   "web.verify.title_success": "E-mailadres geverifieerd",
-  "web.verify.title_verifying": "Je e-mailadres verifiëren"
+  "web.verify.title_verifying": "Je e-mailadres verifiëren",
+  "web.account.sync_promo_point_trial": "1 maand gratis proefperiode"
 }

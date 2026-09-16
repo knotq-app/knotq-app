@@ -1113,7 +1113,7 @@
   "web.account.sync_optional": "Розміщена синхронізація опційна",
   "web.account.sync_promo_pill_available": "Доступна",
   "web.account.sync_promo_point_local_first": "Локально-перше — все продовжує працювати в автономному режимі",
-  "web.account.sync_promo_point_notifications": "Зберігайте розклади, нагадування та стан завдань на кроці",
+  "web.account.sync_promo_point_notifications": "Сповіщення доступні на всіх ваших пристроях",
   "web.account.sync_promo_point_workspace": ". Одна робоча область на кожному пристрої, на якому ви ввійшли в систему. Доступна синхронізація між пристроями",
   "web.account.sync_promo_tagline": ".",
   "web.account.sync_summary_active": "Синхронізація активна.",
@@ -1537,5 +1537,6 @@
   "web.verify.title": "Перевірити електронну пошту — KnotQ",
   "web.verify.title_error": "Ми не змогли перевірити вашу електронну пошту",
   "web.verify.title_success": "Електронна пошта перевірена",
-  "web.verify.title_verifying": "Перевірка вашої електронної пошти"
+  "web.verify.title_verifying": "Перевірка вашої електронної пошти",
+  "web.account.sync_promo_point_trial": "1 місяць безкоштовного пробного періоду"
 }

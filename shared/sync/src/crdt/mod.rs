@@ -1975,8 +1975,65 @@ impl WorkspaceCrdtDocuments {
             );
         }
 
+        // An item id is globally unique. A concurrent move is represented as
+        // a tombstone in the source document plus a live insert in the target;
+        // when two devices choose different targets, both inserts are otherwise
+        // valid and would materialize as two copies. Keep the same deterministic
+        // winner on every replica. Only schemes materialized above participate:
+        // a lazy/off-window Daily page is intentionally absent and must not be
+        // interpreted as a deletion or placement decision.
+        dedupe_materialized_items(&mut workspace);
+
         workspace.ensure_sync_metadata();
         Ok(workspace)
+    }
+}
+
+fn dedupe_materialized_items(workspace: &mut Workspace) {
+    let mut scheme_ids: Vec<SchemeId> = workspace.schemes.keys().copied().collect();
+    scheme_ids.sort();
+    let mut seen = HashSet::new();
+    for scheme_id in scheme_ids {
+        let Some(scheme) = workspace.schemes.get_mut(&scheme_id) else {
+            continue;
+        };
+        scheme.items.retain(|item| seen.insert(item.id));
+    }
+}
+
+impl WorkspaceCrdtDocuments {
+    /// Return the materialized scheme documents that still contain a losing
+    /// copy after [`materialized_workspace_repair`] removed duplicate item ids.
+    /// The caller re-expresses those schemes through the normal CRDT write path,
+    /// which tombstones the losing copy durably. Deferred documents are excluded
+    /// so an off-window Daily page remains byte-for-byte untouched.
+    pub(crate) fn duplicate_item_repair_schemes(&self, workspace: &Workspace) -> Vec<SchemeId> {
+        let mut scheme_ids: Vec<SchemeId> = self
+            .schemes
+            .keys()
+            .copied()
+            .filter(|id| workspace.schemes.contains_key(id))
+            .collect();
+        scheme_ids.sort();
+
+        let mut owners: HashMap<ItemId, SchemeId> = HashMap::new();
+        let mut losers = HashSet::new();
+        for scheme_id in scheme_ids {
+            let Some(document) = self.schemes.get(&scheme_id) else {
+                continue;
+            };
+            let Ok(items) = document.scheme_items() else {
+                continue;
+            };
+            for item in items {
+                if owners.insert(item.id, scheme_id).is_some() {
+                    losers.insert(scheme_id);
+                }
+            }
+        }
+        let mut losers: Vec<SchemeId> = losers.into_iter().collect();
+        losers.sort();
+        losers
     }
 }
 

@@ -1050,7 +1050,7 @@
   "web.account.sync_optional": "代管同步是選擇性的",
   "web.account.sync_promo_pill_available": "可用",
   "web.account.sync_promo_point_local_first": "本機優先 — 所有內容離線時保持運作",
-  "web.account.sync_promo_point_notifications": "在步驟",
+  "web.account.sync_promo_point_notifications": "通知會在所有裝置上跟隨你",
   "web.account.sync_promo_point_workspace": "中保留計畫、提醒和任務狀態 每個登入裝置上的相同工作區",
   "web.account.sync_promo_tagline": "可以使用跨裝置同步。",
   "web.account.sync_summary_active": "同步為有效。",
@@ -1474,5 +1474,6 @@
   "web.verify.title": "驗證電子郵件 — KnotQ",
   "web.verify.title_error": "我們無法驗證您的電子郵件",
   "web.verify.title_success": "電子郵件已驗證",
-  "web.verify.title_verifying": "正在驗證您的電子郵件"
+  "web.verify.title_verifying": "正在驗證您的電子郵件",
+  "web.account.sync_promo_point_trial": "免費試用 1 個月"
 }

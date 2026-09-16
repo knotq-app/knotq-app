@@ -11,6 +11,7 @@
 //! document's merged state, and [`batch_push_pending`] sends every dirty document
 //! in as few requests as the bounds allow.
 
+use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
 
 use anyhow::{anyhow, Context, Result};
@@ -872,6 +873,19 @@ fn batch_pull_and_apply_with_integrity_documents_inner(
             workspace = materialized;
             remote_updates_applied += 1;
         }
+        let duplicate_repairs = crdt_docs.duplicate_item_repair_schemes(&workspace);
+        if !duplicate_repairs.is_empty() {
+            // `materialized_workspace_repair` has already removed the losing
+            // copies from the workspace. Re-express just those schemes so the
+            // losing CRDT documents receive tombstones too; otherwise the next
+            // pre-pull stale-file repair would re-introduce the duplicate.
+            let repair = crdt_docs.sync_scheme_documents(&workspace, &duplicate_repairs);
+            for error in &repair.errors {
+                eprintln!("knotq sync: duplicate-item repair skipped: {error}");
+            }
+            queue_crdt_updates(local_state, &workspace, replica_id, repair.updates);
+            remote_updates_applied += 1;
+        }
     }
 
     let locally_repaired_documents = if let Some(repair) = local_repair {
@@ -1019,6 +1033,21 @@ fn queue_local_only_documents_before_pull(
     // unrelated document gives the stale CRDT a chance to overwrite the newer
     // plain scheme content.
     let mut local_ahead_items: HashMap<knotq_model::SchemeId, HashSet<String>> = HashMap::new();
+    // A duplicate item may already have been repaired in the materialized
+    // workspace while its losing CRDT document still contains the old copy.
+    // Such a copy is not a CRDT-only addition to preserve: it is the losing
+    // side of a deterministic placement repair and must be tombstoned on the
+    // next write. Items absent from every loaded scheme remain eligible for
+    // preservation, which is important for lazy/off-window Daily pages.
+    let locally_visible_item_ids: HashSet<String> = workspace
+        .schemes
+        .values()
+        .flat_map(|scheme| scheme.items.iter().map(|item| item.id.to_string()))
+        .collect();
+    // Per scheme, the CRDT's items as they stand now, for schemes whose plain
+    // copy is missing some of them (see below).
+    let mut crdt_only_items: HashMap<knotq_model::SchemeId, Vec<knotq_model::Item>> =
+        HashMap::new();
     if let Ok(materialized) = crdt_docs.materialized_workspace_repair(workspace, &|_| false) {
         for (scheme_id, local) in &workspace.schemes {
             let Some(crdt) = materialized.schemes.get(scheme_id) else {
@@ -1040,7 +1069,7 @@ fn queue_local_only_documents_before_pull(
                 .collect();
             let local_ids: HashSet<String> =
                 local.items.iter().map(|item| item.id.to_string()).collect();
-            let mut ahead: HashSet<String> = local
+            let ahead: HashSet<String> = local
                 .items
                 .iter()
                 .filter(|item| {
@@ -1050,12 +1079,29 @@ fn queue_local_only_documents_before_pull(
                 })
                 .map(|item| item.id.to_string())
                 .collect();
-            ahead.extend(
-                crdt_by_id
-                    .keys()
-                    .filter(|id| !local_ids.contains(*id))
-                    .cloned(),
-            );
+            // Lines the CRDT has and the plain copy does not are NOT treated as
+            // local deletions. "Plain lacks it" is ambiguous — the user deleted
+            // it, or these files are simply behind the durable CRDT (a crash
+            // between the workspace and CRDT saves, a quit while a sync run had
+            // already saved its merged state). Reading it as a deletion made the
+            // repair tombstone lines nobody deleted, and an account switch then
+            // carried those tombstones into the destination account, where every
+            // device lost them (production fuzz seed 6: five lines across four
+            // schemes). A real deletion reaches the CRDT through the edit's own
+            // flush, not through this repair.
+            let _ = &local_ids;
+            let carried: Vec<knotq_model::Item> = crdt
+                .items
+                .iter()
+                .filter(|item| {
+                    let id = item.id.to_string();
+                    !local_ids.contains(&id) && !locally_visible_item_ids.contains(&id)
+                })
+                .cloned()
+                .collect();
+            if !carried.is_empty() {
+                crdt_only_items.insert(*scheme_id, crdt.items.clone());
+            }
             local_ahead_items.insert(*scheme_id, ahead);
         }
     }
@@ -1091,11 +1137,32 @@ fn queue_local_only_documents_before_pull(
     changeset.schemes.extend(content_mismatch_schemes);
     // Only an index repair may write the index; a content-only repair writes
     // just the mismatched schemes (see `sync_scheme_documents`).
+    // Write a MERGE of the plain copy and the document, never the bare plain
+    // copy: `replace_scheme` makes the document match exactly, so passing the
+    // plain scheme tombstones every line only the document holds. The plain
+    // copy wins for the lines it actually changed (`local_ahead_items`); the
+    // rest keep the document's version, and plain-only lines are added.
+    let mut repair_source = Cow::Borrowed(workspace);
+    if !crdt_only_items.is_empty() {
+        let mut merged_workspace = workspace.clone();
+        for (scheme_id, crdt_items) in &crdt_only_items {
+            let (Some(ahead), Some(local)) = (
+                local_ahead_items.get(scheme_id),
+                merged_workspace.schemes.get_mut(scheme_id),
+            ) else {
+                continue;
+            };
+            local.items =
+                crate::crdt::merge_items_for_adoption(&local.items, crdt_items.clone(), ahead);
+        }
+        repair_source = Cow::Owned(merged_workspace);
+    }
+    let repair_source = repair_source.as_ref();
     let outcome = if changeset.workspace {
-        crdt_docs.sync_changes(workspace, &changeset)
+        crdt_docs.sync_changes(repair_source, &changeset)
     } else {
         let schemes: Vec<_> = changeset.schemes.iter().copied().collect();
-        crdt_docs.sync_scheme_documents(workspace, &schemes)
+        crdt_docs.sync_scheme_documents(repair_source, &schemes)
     };
     for error in &outcome.errors {
         eprintln!("knotq sync: pre-pull local CRDT repair skipped: {error}");
@@ -1130,7 +1197,7 @@ fn queue_local_only_documents_before_pull(
         .collect::<Vec<_>>();
     queue_crdt_updates(local_state, workspace, replica_id, updates);
     Some(LocalPrePullRepair {
-        workspace: workspace.clone(),
+        workspace: repair_source.clone(),
         changeset,
         documents,
         local_ahead_items,

@@ -526,6 +526,25 @@ impl YrsJsonDocument {
 
         let root_key = root.to_string();
 
+        // A first-sync merge can leave the pre-sign-in root as a second folder
+        // node. The node membership already tells us that it belongs under the
+        // canonical root, while its older payload still says `parent: null`.
+        // Treat that legacy root as an alias here: its children survive under the
+        // canonical root, but the alias itself must not materialize as a sidebar
+        // folder or change parent on the next relaunch.
+        let legacy_root_ids: HashSet<String> = parsed
+            .iter()
+            .filter_map(|(id, node)| {
+                if id == &root_key || node.kind != NODE_KIND_FOLDER {
+                    return None;
+                }
+                let payload = serde_json::from_str::<FolderPayload>(&node.payload).ok()?;
+                (payload.name == "root"
+                    && (payload.parent.is_none() || payload.parent == Some(root)))
+                .then_some(id.clone())
+            })
+            .collect();
+
         // Walk the node parent links to find every folder inside an archived subtree,
         // starting from the archived top folders.
         let mut children_of: HashMap<String, Vec<String>> = HashMap::new();
@@ -557,6 +576,9 @@ impl YrsJsonDocument {
             if *id_str == root_key {
                 continue;
             }
+            if legacy_root_ids.contains(id_str) {
+                continue;
+            }
             // Archived top folders are detached from the sidebar: don't attach them to
             // any parent. Their subtree is still rebuilt under them below.
             if archived_top_folder_ids.contains(id_str) {
@@ -575,7 +597,9 @@ impl YrsJsonDocument {
                     continue;
                 }
             }
-            let parent = if !node.parent.is_empty() && folder_ids.contains(&node.parent) {
+            let parent = if legacy_root_ids.contains(&node.parent) {
+                root_key.clone()
+            } else if !node.parent.is_empty() && folder_ids.contains(&node.parent) {
                 node.parent.clone()
             } else {
                 root_key.clone()
@@ -609,6 +633,9 @@ impl YrsJsonDocument {
         let mut schemes = Vec::new();
         for (id_str, node) in &parsed {
             if node.kind == NODE_KIND_FOLDER {
+                if legacy_root_ids.contains(id_str) {
+                    continue;
+                }
                 let payload: FolderPayload = serde_json::from_str(&node.payload)
                     .with_context(|| format!("folder payload invalid: {id_str}"))?;
                 let children = children_by_parent
@@ -620,12 +647,26 @@ impl YrsJsonDocument {
                     })
                     .transpose()?
                     .unwrap_or_default();
+                let id = id_str
+                    .parse::<FolderId>()
+                    .with_context(|| format!("folder id invalid: {id_str}"))?;
+                let parent = if id == root {
+                    None
+                } else if archived_top_folder_ids.contains(id_str) {
+                    payload.parent
+                } else {
+                    payload.parent.map(|parent| {
+                        if legacy_root_ids.contains(&parent.to_string()) {
+                            root
+                        } else {
+                            parent
+                        }
+                    })
+                };
                 folders.push(Folder {
-                    id: id_str
-                        .parse()
-                        .with_context(|| format!("folder id invalid: {id_str}"))?,
+                    id,
                     name: payload.name,
-                    parent: payload.parent,
+                    parent,
                     children,
                     expanded: payload.expanded,
                 });

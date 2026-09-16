@@ -1050,7 +1050,7 @@
   "web.account.sync_optional": "ホストされた同期はオプション",
   "web.account.sync_promo_pill_available": "利用可能",
   "web.account.sync_promo_point_local_first": "ローカルファースト—すべてがオフラインで機能し続けます",
-  "web.account.sync_promo_point_notifications": "スケジュール、リマインダー、およびタスクの状態をステップ",
+  "web.account.sync_promo_point_notifications": "通知をすべてのデバイスで受け取れます",
   "web.account.sync_promo_point_workspace": "に保持します。 サインインしているすべてのデバイス間で同じワークスペース",
   "web.account.sync_promo_tagline": "クロスデバイス同期が利用可能です。",
   "web.account.sync_summary_active": "同期がアクティブです。",
@@ -1474,5 +1474,6 @@
   "web.verify.title": "メールを確認 — KnotQ",
   "web.verify.title_error": "メールアドレスを確認できませんでした",
   "web.verify.title_success": "メールが確認されました",
-  "web.verify.title_verifying": "メールアドレスを確認中"
+  "web.verify.title_verifying": "メールアドレスを確認中",
+  "web.account.sync_promo_point_trial": "1か月無料トライアル"
 }

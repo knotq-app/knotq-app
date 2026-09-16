@@ -1071,7 +1071,7 @@
   "web.account.sync_optional": "Hoastet synk er valgfritt",
   "web.account.sync_promo_pill_available": "Tilgjengelig",
   "web.account.sync_promo_point_local_first": "Lokalt først – alt fortsetter å fungere frakoblet",
-  "web.account.sync_promo_point_notifications": "Hold tidsplaner, påminnelser og oppgavestatus i trinn",
+  "web.account.sync_promo_point_notifications": "Varsler følger deg på tvers av enheter",
   "web.account.sync_promo_point_workspace": "Samme arbeidsområde på tvers av alle påloggede enheter.",
   "web.account.sync_promo_tagline": "-synkronisering på tvers av enheter er tilgjengelig.",
   "web.account.sync_summary_active": "Synk er aktivt.",
@@ -1495,5 +1495,6 @@
   "web.verify.title": "Bekreft e-post — KnotQ",
   "web.verify.title_error": "Vi kunne ikke bekrefte e-posten din",
   "web.verify.title_success": "E-post bekreftet",
-  "web.verify.title_verifying": "Bekrefter e-posten din"
+  "web.verify.title_verifying": "Bekrefter e-posten din",
+  "web.account.sync_promo_point_trial": "1 måneds gratis prøveperiode"
 }
