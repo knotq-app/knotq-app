@@ -1092,7 +1092,7 @@
   "web.account.sync_optional": "Hostovaná synchronizace je nepovinná",
   "web.account.sync_promo_pill_available": "K dispozici",
   "web.account.sync_promo_point_local_first": "Nejprve místní – vše funguje i offline",
-  "web.account.sync_promo_point_notifications": "Oznámení vás budou provázet na všech zařízeních",
+  "web.account.sync_promo_point_notifications": "Udržujte plány, připomenutí a stav úkolů v kroku",
   "web.account.sync_promo_point_workspace": "K dispozici je stejný pracovní prostor pro všechna přihlášená zařízení",
   "web.account.sync_promo_tagline": "Synchronizace mezi zařízeními.",
   "web.account.sync_summary_active": "Synchronizace je aktivní.",
@@ -1516,6 +1516,5 @@
   "web.verify.title": "Ověřit e-mail — KnotQ",
   "web.verify.title_error": "Nemohli jsme ověřit váš e-mail",
   "web.verify.title_success": "E-mail ověřen",
-  "web.verify.title_verifying": "Ověřování vašeho e-mailu",
-  "web.account.sync_promo_point_trial": "1 měsíc zdarma"
+  "web.verify.title_verifying": "Ověřování vašeho e-mailu"
 }

@@ -1050,7 +1050,7 @@
   "web.account.sync_optional": "Sinkronisasi tuan rumah bersifat opsional",
   "web.account.sync_promo_pill_available": "Tersedia",
   "web.account.sync_promo_point_local_first": "Lokal-pertama — semuanya tetap berfungsi offline",
-  "web.account.sync_promo_point_notifications": "Notifikasi mengikuti Anda di semua perangkat",
+  "web.account.sync_promo_point_notifications": "Simpan jadwal, pengingat, dan status tugas dalam langkah",
   "web.account.sync_promo_point_workspace": "Ruang kerja yang sama di setiap perangkat yang masuk",
   "web.account.sync_promo_tagline": "Sinkronisasi lintas perangkat tersedia.",
   "web.account.sync_summary_active": "Sinkronisasi aktif.",
@@ -1474,6 +1474,5 @@
   "web.verify.title": "Verifikasi email — KnotQ",
   "web.verify.title_error": "Kami tidak dapat memverifikasi email Anda",
   "web.verify.title_success": "Email diverifikasi",
-  "web.verify.title_verifying": "Memverifikasi email Anda",
-  "web.account.sync_promo_point_trial": "Uji coba gratis selama 1 bulan"
+  "web.verify.title_verifying": "Memverifikasi email Anda"
 }

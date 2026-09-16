@@ -1050,7 +1050,7 @@
   "web.account.sync_optional": "호스팅된 동기화는 선택 사항입니다",
   "web.account.sync_promo_pill_available": "사용 가능",
   "web.account.sync_promo_point_local_first": "로컬 우선 - 오프라인 상태에서 모든 것이 계속 작동합니다",
-  "web.account.sync_promo_point_notifications": "모든 기기에서 알림을 받을 수 있습니다",
+  "web.account.sync_promo_point_notifications": "",
   "web.account.sync_promo_point_workspace": "단계에서 일정, 미리 알림 및 작업 상태를 유지합니다. 로그인한 모든 장치에서 동일한 작업 공간을 유지합니다.",
   "web.account.sync_promo_tagline": "장치 간 동기화가 가능합니다.",
   "web.account.sync_summary_active": "동기화가 활성입니다.",
@@ -1474,6 +1474,5 @@
   "web.verify.title": "이메일 확인 — KnotQ",
   "web.verify.title_error": "이메일을 확인할 수 없었습니다",
   "web.verify.title_success": "이메일 확인됨",
-  "web.verify.title_verifying": "이메일 확인 중",
-  "web.account.sync_promo_point_trial": "1개월 무료 체험"
+  "web.verify.title_verifying": "이메일 확인 중"
 }

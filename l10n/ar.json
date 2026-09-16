@@ -1155,7 +1155,7 @@
   "web.account.sync_optional": "المزامنة المستضافة اختيارية",
   "web.account.sync_promo_pill_available": "متاح",
   "web.account.sync_promo_point_local_first": "محلياً بالأساس — كل شيء يستمر في العمل بدون إنترنت",
-  "web.account.sync_promo_point_notifications": "تصلك الإشعارات على جميع أجهزتك",
+  "web.account.sync_promo_point_notifications": "احتفظ بالجداول والتذكيرات وحالة المهمة في الخطوة",
   "web.account.sync_promo_point_workspace": "نفس مساحة العمل عبر كل جهاز تم تسجيل الدخول إليه",
   "web.account.sync_promo_tagline": "تتوفر المزامنة عبر الأجهزة.",
   "web.account.sync_summary_active": "المزامنة نشطة.",
@@ -1579,6 +1579,5 @@
   "web.verify.title": "التحقق من البريد الإلكتروني — KnotQ",
   "web.verify.title_error": "لم نتمكن من التحقق من بريدك الإلكتروني",
   "web.verify.title_success": "تم التحقق من البريد الإلكتروني",
-  "web.verify.title_verifying": "التحقق من بريدك الإلكتروني",
-  "web.account.sync_promo_point_trial": "تجربة مجانية لمدة شهر واحد"
+  "web.verify.title_verifying": "التحقق من بريدك الإلكتروني"
 }

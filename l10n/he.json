@@ -1092,7 +1092,7 @@
   "web.account.sync_optional": "סנכרון מתאחסן הוא אופציונלי",
   "web.account.sync_promo_pill_available": "זמין",
   "web.account.sync_promo_point_local_first": "מקומי ראשון — הכל ממשיך לעבוד במצב לא מקוון",
-  "web.account.sync_promo_point_notifications": "ההתראות שלך זמינות בכל המכשירים",
+  "web.account.sync_promo_point_notifications": "שמור על לוחות זמנים, תזכורות ומצב משימות בשלב",
   "web.account.sync_promo_point_workspace": ". אותו סביבת עבודה בכל מכשיר מחובר",
   "web.account.sync_promo_tagline": "סנכרון חוצה-מכשיר זמין.",
   "web.account.sync_summary_active": "סנכרון פעיל.",
@@ -1516,6 +1516,5 @@
   "web.verify.title": "אמת דוא״ל — KnotQ",
   "web.verify.title_error": "לא יכלנו לאמת את הדוא״ל שלך",
   "web.verify.title_success": "דוא״ל מאומת",
-  "web.verify.title_verifying": "אימות הדוא״ל שלך",
-  "web.account.sync_promo_point_trial": "חודש ניסיון חינם"
+  "web.verify.title_verifying": "אימות הדוא״ל שלך"
 }

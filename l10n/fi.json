@@ -1071,7 +1071,7 @@
   "web.account.sync_optional": "Isännöity synkronointi on valinnainen",
   "web.account.sync_promo_pill_available": "Käytettävissä",
   "web.account.sync_promo_point_local_first": "Paikallinen ensin — kaikki toimii offline-tilassa",
-  "web.account.sync_promo_point_notifications": "Ilmoitukset seuraavat sinua laitteesta toiseen",
+  "web.account.sync_promo_point_notifications": "Pidä aikataulut, muistutukset ja tehtävän tila vaiheessa",
   "web.account.sync_promo_point_workspace": "Sama työtila jokaisessa kirjautuneessa laitteessa",
   "web.account.sync_promo_tagline": "Laitteiden välinen synkronointi on käytettävissä.",
   "web.account.sync_summary_active": "Synkronointi on aktiivinen.",
@@ -1495,6 +1495,5 @@
   "web.verify.title": "Vahvista sähköposti — KnotQ",
   "web.verify.title_error": "Emme voineet vahvistaa sähköpostiasi",
   "web.verify.title_success": "Sähköposti vahvistettu",
-  "web.verify.title_verifying": "Vahvistetaan sähköpostiasi",
-  "web.account.sync_promo_point_trial": "1 kuukauden ilmainen kokeilu"
+  "web.verify.title_verifying": "Vahvistetaan sähköpostiasi"
 }

@@ -1113,7 +1113,7 @@
   "web.account.sync_optional": "Synchronizacja w chmurze jest opcjonalna",
   "web.account.sync_promo_pill_available": "Dostępne",
   "web.account.sync_promo_point_local_first": "Lokalnie najpierw — wszystko działa w trybie offline",
-  "web.account.sync_promo_point_notifications": "Powiadomienia są dostępne na wszystkich Twoich urządzeniach",
+  "web.account.sync_promo_point_notifications": "Zachowaj harmonogramy, przypomnienia i stan zadań na bieżąco",
   "web.account.sync_promo_point_workspace": "Ten sam obszar roboczy na każdym zalogowanym urządzeniu",
   "web.account.sync_promo_tagline": "Dostępna jest synchronizacja między urządzeniami.",
   "web.account.sync_summary_active": "Synchronizacja jest aktywna.",
@@ -1537,6 +1537,5 @@
   "web.verify.title": "Zweryfikuj e-mail — KnotQ",
   "web.verify.title_error": "Nie mogliśmy zweryfikować Twojego adresu e-mail",
   "web.verify.title_success": "E-mail zweryfikowany",
-  "web.verify.title_verifying": "Weryfikowanie Twojego adresu e-mail",
-  "web.account.sync_promo_point_trial": "1 miesiąc bezpłatnego okresu próbnego"
+  "web.verify.title_verifying": "Weryfikowanie Twojego adresu e-mail"
 }

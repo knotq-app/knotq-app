@@ -1071,7 +1071,7 @@
   "web.account.sync_optional": "Hosted synkronisering är valfri",
   "web.account.sync_promo_pill_available": "Tillgänglig",
   "web.account.sync_promo_point_local_first": "Lokalt först — allt fortsätter att fungera offline",
-  "web.account.sync_promo_point_notifications": "Aviseringar följer dig på alla enheter",
+  "web.account.sync_promo_point_notifications": "Behåll scheman, påminnelser och uppgiftsstatus i steg",
   "web.account.sync_promo_point_workspace": "Samma arbetsyta över alla inloggade enheter",
   "web.account.sync_promo_tagline": "Synkronisering över flera enheter är tillgänglig.",
   "web.account.sync_summary_active": "Synkronisering är aktiv.",
@@ -1495,6 +1495,5 @@
   "web.verify.title": "Verifiera e-post — KnotQ",
   "web.verify.title_error": "Vi kunde inte verifiera din e-postadress",
   "web.verify.title_success": "E-postadress verifierad",
-  "web.verify.title_verifying": "Verifierar din e-postadress",
-  "web.account.sync_promo_point_trial": "1 månads gratis provperiod"
+  "web.verify.title_verifying": "Verifierar din e-postadress"
 }

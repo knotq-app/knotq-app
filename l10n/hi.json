@@ -1071,7 +1071,7 @@
   "web.account.sync_optional": "होस्ट किया गया सिंक वैकल्पिक है",
   "web.account.sync_promo_pill_available": "उपलब्ध",
   "web.account.sync_promo_point_local_first": "स्थानीय-पहले — सब कुछ ऑफ़लाइन काम करता रहता है",
-  "web.account.sync_promo_point_notifications": "नोटिफ़िकेशन आपके सभी डिवाइस पर मिलेंगे",
+  "web.account.sync_promo_point_notifications": "शेड्यूल, रिमाइंडर और कार्य स्थिति को चरण",
   "web.account.sync_promo_point_workspace": "में रखें, प्रत्येक साइन-इन डिवाइस पर समान कार्यस्थान",
   "web.account.sync_promo_tagline": "क्रॉस-डिवाइस सिंक उपलब्ध है।",
   "web.account.sync_summary_active": "सिंक सक्रिय है।",
@@ -1495,6 +1495,5 @@
   "web.verify.title": "ईमेल सत्यापित करें — KnotQ",
   "web.verify.title_error": "हम आपके ईमेल को सत्यापित नहीं कर सके",
   "web.verify.title_success": "ईमेल सत्यापित",
-  "web.verify.title_verifying": "आपके ईमेल को सत्यापित किया जा रहा है",
-  "web.account.sync_promo_point_trial": "1 महीने का मुफ़्त परीक्षण"
+  "web.verify.title_verifying": "आपके ईमेल को सत्यापित किया जा रहा है"
 }

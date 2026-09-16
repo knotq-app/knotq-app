@@ -1071,7 +1071,7 @@
   "web.account.sync_optional": "Ο φιλοξενημένος συγχρονισμός είναι προαιρετικός",
   "web.account.sync_promo_pill_available": "Διαθέσιμο",
   "web.account.sync_promo_point_local_first": "Τοπικό πρώτο — όλα παραμένουν λειτουργικά χωρίς σύνδεση",
-  "web.account.sync_promo_point_notifications": "Οι ειδοποιήσεις σας ακολουθούν σε όλες τις συσκευές",
+  "web.account.sync_promo_point_notifications": "Διατηρήστε τα χρονοδιαγράμματα, τις υπενθυμίσεις και την κατάσταση εργασιών στο βήμα",
   "web.account.sync_promo_point_workspace": "Ο ίδιος χώρος εργασίας σε κάθε συνδεδεμένη συσκευή είναι διαθέσιμος ο συγχρονισμός μεταξύ συσκευών",
   "web.account.sync_promo_tagline": ".",
   "web.account.sync_summary_active": "Ο συγχρονισμός είναι ενεργός.",
@@ -1495,6 +1495,5 @@
   "web.verify.title": "Επαλήθευση email — KnotQ",
   "web.verify.title_error": "Δεν θα μπορούσαμε να επαληθεύσουμε το email σας",
   "web.verify.title_success": "Email επαληθεύτηκε",
-  "web.verify.title_verifying": "Επαλήθευση του email σας",
-  "web.account.sync_promo_point_trial": "1 μήνας δωρεάν δοκιμής"
+  "web.verify.title_verifying": "Επαλήθευση του email σας"
 }

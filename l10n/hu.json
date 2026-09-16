@@ -1071,7 +1071,7 @@
   "web.account.sync_optional": "Szinkronizálás nem kötelező",
   "web.account.sync_promo_pill_available": "Elérhető",
   "web.account.sync_promo_point_local_first": "Helyi-első — minden offline működik",
-  "web.account.sync_promo_point_notifications": "Az értesítések minden eszközödön elérhetők",
+  "web.account.sync_promo_point_notifications": "Tartsa az ütemezéseket, az emlékeztetőket és a feladatállapotot a",
   "web.account.sync_promo_point_workspace": "lépésben. Ugyanaz a munkaterület minden bejelentkezett eszközön.",
   "web.account.sync_promo_tagline": "Az eszközök közötti szinkronizálás elérhető.",
   "web.account.sync_summary_active": "A szinkronizálás aktív.",
@@ -1495,6 +1495,5 @@
   "web.verify.title": "E-mail ellenõrzése — KnotQ",
   "web.verify.title_error": "Nem tudtuk ellenõrizni az Ön e-mailjét",
   "web.verify.title_success": "E-mail ellenõrzõtt",
-  "web.verify.title_verifying": "Az Ön e-mailjét ellenõrzik",
-  "web.account.sync_promo_point_trial": "1 hónap ingyenes próbaidőszak"
+  "web.verify.title_verifying": "Az Ön e-mailjét ellenõrzik"
 }

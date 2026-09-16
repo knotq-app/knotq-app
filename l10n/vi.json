@@ -1050,7 +1050,7 @@
   "web.account.sync_optional": "Đồng bộ được lưu trữ là tùy chọn",
   "web.account.sync_promo_pill_available": "Khả dụng",
   "web.account.sync_promo_point_local_first": "Cục bộ trước — mọi thứ tiếp tục hoạt động ngoại tuyến",
-  "web.account.sync_promo_point_notifications": "Thông báo theo bạn trên mọi thiết bị",
+  "web.account.sync_promo_point_notifications": "Giữ lịch trình, lời nhắc và trạng thái nhiệm vụ trong bước",
   "web.account.sync_promo_point_workspace": "Có cùng một không gian làm việc trên mọi thiết bị đã đăng nhập",
   "web.account.sync_promo_tagline": "Có sẵn tính năng đồng bộ hóa trên nhiều thiết bị.",
   "web.account.sync_summary_active": "Đồng bộ đang hoạt động.",
@@ -1474,6 +1474,5 @@
   "web.verify.title": "Xác minh email — KnotQ",
   "web.verify.title_error": "Chúng tôi không thể xác minh email của bạn",
   "web.verify.title_success": "Email đã được xác minh",
-  "web.verify.title_verifying": "Xác minh email của bạn",
-  "web.account.sync_promo_point_trial": "Dùng thử miễn phí 1 tháng"
+  "web.verify.title_verifying": "Xác minh email của bạn"
 }

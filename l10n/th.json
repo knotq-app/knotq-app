@@ -1050,7 +1050,7 @@
   "web.account.sync_optional": "Hosted Sync เป็นตัวเลือก",
   "web.account.sync_promo_pill_available": "พร้อมใช้งาน",
   "web.account.sync_promo_point_local_first": "Local-first — ทุกอย่างยังคงทำงานได้แม้ออฟไลน์",
-  "web.account.sync_promo_point_notifications": "การแจ้งเตือนติดตามคุณในทุกอุปกรณ์",
+  "web.account.sync_promo_point_notifications": "เก็บกำหนดการ การแจ้งเตือน และสถานะงานไว้ในขั้นตอน",
   "web.account.sync_promo_point_workspace": "พื้นที่ทำงานเดียวกันในทุกอุปกรณ์ที่ลงชื่อเข้าใช้",
   "web.account.sync_promo_tagline": "การซิงค์ข้ามอุปกรณ์พร้อมใช้งาน",
   "web.account.sync_summary_active": "Sync ใช้งานอยู่",
@@ -1474,6 +1474,5 @@
   "web.verify.title": "ตรวจสอบอีเมล — KnotQ",
   "web.verify.title_error": "เราไม่สามารถตรวจสอบอีเมลของคุณได้",
   "web.verify.title_success": "อีเมลได้รับการตรวจสอบแล้ว",
-  "web.verify.title_verifying": "การตรวจสอบอีเมลของคุณ",
-  "web.account.sync_promo_point_trial": "ทดลองใช้ฟรี 1 เดือน"
+  "web.verify.title_verifying": "การตรวจสอบอีเมลของคุณ"
 }
