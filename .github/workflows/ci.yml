@@ -201,6 +201,14 @@ jobs:
               - 'desktop/app/src/app/sync_service.rs'
               - 'desktop/app/src/app/sync_service/**'
               - 'desktop/app/src/app/daily_queue.rs'
+              # `services/**` does not match `services.rs`, and nothing matched
+              # `app.rs` — which owns the source-of-truth workspace. Both were
+              # edited on the branch that added this filter, so a PR touching
+              # only them would have skipped the gate.
+              - 'desktop/app/src/app.rs'
+              - 'desktop/app/src/app/commands.rs'
+              - 'desktop/app/src/app/commands/**'
+              - 'desktop/app/src/app/services.rs'
               - 'desktop/app/src/app/services/**'
               - 'desktop/app/src/app/bootstrap.rs'
               - 'desktop/app/src/app/constructor.rs'
