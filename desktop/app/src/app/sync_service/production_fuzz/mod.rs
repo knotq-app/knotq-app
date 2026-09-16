@@ -21,6 +21,7 @@ mod scenarios;
 
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Mutex;
 
 use chrono::NaiveDate;
 
@@ -108,7 +109,11 @@ impl World {
     }
 
     fn today() -> NaiveDate {
-        chrono::Local::now().date_naive()
+        // Fuzz seeds must not change behavior when the host clock crosses
+        // midnight between a failure and its replay. The production fuzzer
+        // exercises date rollover explicitly; the calendar itself therefore
+        // needs a stable starting point.
+        NaiveDate::from_ymd_opt(2026, 9, 15).expect("valid fuzz calendar date")
     }
 
     fn log(&self, message: impl AsRef<str>) {
@@ -453,19 +458,58 @@ impl World {
                 }
             }
             // A brand-new install signing in must see exactly the same content.
+            // Check that FIRST, and sync only the fresh device while checking:
+            // if an existing device synced here it could push content the server
+            // had dropped back up, and the loss would never be seen. The
+            // comparison is identity-only — a field whose value legitimately
+            // resolved to another device's write is not missing content, and the
+            // full settle below covers values.
+            let reference_content = self.view(first).content_keys();
             let fresh = self.add_device(Some(account));
             for _ in 0..3 {
                 self.sync(fresh, 0);
             }
-            let fresh_lines = self.view(fresh).convergence_lines();
-            let existing: Vec<String> = reference
+            let fresh_content = self.view(fresh).content_keys();
+            let missing: Vec<&String> = reference_content
                 .iter()
-                .filter(|line| !fresh_lines.contains(line))
-                .cloned()
+                .filter(|key| !fresh_content.contains(key))
                 .collect();
-            if !existing.is_empty() {
+            if !missing.is_empty() {
                 failures.push(format!(
-                    "account {account}: a fresh device is missing content existing devices have (server lost it): {existing:#?}"
+                    "account {account}: a fresh device is missing content existing devices have (server lost it): {missing:#?}"
+                ));
+            }
+            // Then bring every member of the account through the same rounds
+            // before comparing values; the server is the authority, not an
+            // arbitrarily selected device.
+            let mut settled_indexes = indexes.clone();
+            settled_indexes.push(fresh);
+            for _ in 0..settled_indexes.len() * 4 + 8 {
+                for index in &settled_indexes {
+                    self.sync(*index, 0);
+                }
+                let queues_empty = settled_indexes
+                    .iter()
+                    .all(|index| self.devices[*index].as_mut().unwrap().pending_edit_count() == 0);
+                if queues_empty && self.converged(&settled_indexes) {
+                    break;
+                }
+            }
+            let reference = self.view(first).convergence_lines();
+            for index in &settled_indexes[1..] {
+                let lines = self.view(*index).convergence_lines();
+                if lines != reference {
+                    let (only_first, only_other) = diff_lines(&reference, &lines);
+                    failures.push(format!(
+                        "account {account}: device {first} and {index} diverged after fresh join\n  only on {first}: {only_first:#?}\n  only on {index}: {only_other:#?}"
+                    ));
+                }
+            }
+            let server = self.server_view(account).convergence_lines();
+            if server != reference {
+                let (only_device, only_server) = diff_lines(&reference, &server);
+                failures.push(format!(
+                    "account {account}: devices diverged from server after fresh join\n  only on device {first}: {only_device:#?}\n  only on server: {only_server:#?}"
                 ));
             }
         }
@@ -481,7 +525,13 @@ impl World {
 
 impl Drop for World {
     fn drop(&mut self) {
-        if std::env::var("KNOTQ_FUZZ_KEEP").is_err() && !std::thread::panicking() {
+        // Keep the data directory only when explicitly asked for. It used to be
+        // kept whenever the thread was panicking too, which was affordable while
+        // the first failing seed aborted the whole run. Now that every seed runs
+        // and every failure unwinds, a wide sweep would leave one directory per
+        // failing seed behind (~2 MB each) and fill the disk mid-run. A failure
+        // is reproduced by replaying its seed, not by picking over leftovers.
+        if std::env::var("KNOTQ_FUZZ_KEEP").is_err() {
             let _ = std::fs::remove_dir_all(&self.root);
         }
     }
@@ -523,6 +573,13 @@ fn run_seeds(first_seed: u64, config: impl Fn() -> Config + Sync) {
     )
     .clamp(1, seeds.max(1));
     let next = AtomicUsize::new(0);
+    // Every seed runs even after one fails, and the census below names all of
+    // them. A panicking seed used to take its worker thread down with it, so a
+    // run could only ever report as many failing seeds as it had workers. That
+    // is worthless for a wide sweep (`KNOTQ_FUZZ_SEEDS=1000`) and it makes "did
+    // this change help?" unanswerable, because the seeds after the first
+    // failure never ran at all.
+    let failures: Mutex<Vec<(u64, String)>> = Mutex::new(Vec::new());
     std::thread::scope(|scope| {
         let handles: Vec<_> = (0..workers)
             .map(|_| {
@@ -531,14 +588,57 @@ fn run_seeds(first_seed: u64, config: impl Fn() -> Config + Sync) {
                     if offset >= seeds {
                         break;
                     }
-                    run_seed(first_seed + offset as u64, config());
+                    let seed = first_seed + offset as u64;
+                    let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                        run_seed(seed, config())
+                    }));
+                    if let Err(payload) = outcome {
+                        census(&failures).push((seed, panic_message(payload.as_ref())));
+                    }
                 })
             })
             .collect();
         for handle in handles {
-            handle.join().expect("production fuzz worker panicked");
+            let _ = handle.join();
         }
     });
+    let mut failures = std::mem::take(&mut *census(&failures));
+    if failures.is_empty() {
+        return;
+    }
+    failures.sort_by_key(|(seed, _)| *seed);
+    let named = failures
+        .iter()
+        .map(|(seed, _)| seed.to_string())
+        .collect::<Vec<_>>()
+        .join(", ");
+    let detail = failures
+        .iter()
+        .map(|(seed, message)| format!("--- seed {seed} ---\n{message}"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    panic!(
+        "{} of {seeds} seed(s) failed: {named}\n{detail}",
+        failures.len()
+    );
+}
+
+/// A seed that panicked while holding the census lock has not corrupted it: the
+/// census is append-only, so a poisoned lock is still safe to keep using.
+fn census<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+    mutex.lock().unwrap_or_else(|err| err.into_inner())
+}
+
+fn panic_message(payload: &(dyn std::any::Any + Send)) -> String {
+    payload
+        .downcast_ref::<String>()
+        .cloned()
+        .or_else(|| {
+            payload
+                .downcast_ref::<&str>()
+                .map(|text| (*text).to_string())
+        })
+        .unwrap_or_else(|| "panicked with a non-string payload".to_string())
 }
 
 /// Several accounts, devices joining, switching accounts, crashing, relaunching,

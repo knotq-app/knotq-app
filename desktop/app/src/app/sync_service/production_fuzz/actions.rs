@@ -257,13 +257,8 @@ pub(super) fn random_local_action(device: &mut DesktopDevice, rng: &mut Rng) -> 
             let Some(id) = scheme else {
                 return "skip".into();
             };
-            apply(
-                device,
-                Command::SetSchemeColor {
-                    id,
-                    color_index: rng.below(18) as u8,
-                },
-            );
+            let color_index = rng.below(18) as u8;
+            apply(device, Command::SetSchemeColor { id, color_index });
             "color scheme"
         }
         5 => {
@@ -688,6 +683,9 @@ pub(super) fn random_local_action(device: &mut DesktopDevice, rng: &mut Rng) -> 
                 return "skip".into();
             };
             let position = workspace.scheme(target).map_or(0, |s| s.items.len());
+            if std::env::var("KNOTQ_FUZZ_TRACE").is_ok() {
+                eprintln!("[fuzz move] {source} {item} -> {target} at {position}");
+            }
             apply(
                 device,
                 Command::Batch(vec![

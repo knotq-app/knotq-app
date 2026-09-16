@@ -227,6 +227,24 @@ impl View {
         view
     }
 
+    /// What content EXISTS, independent of any field's value: the identity of
+    /// every item, scheme, folder and Daily binding the user can reach. A field
+    /// that legitimately resolved to another device's value is not missing
+    /// content, so a loss check compares these rather than whole lines.
+    pub(super) fn content_keys(&self) -> Vec<String> {
+        let mut keys: Vec<String> = Vec::new();
+        keys.extend(self.items.keys().map(|item| format!("item {item}")));
+        keys.extend(self.schemes.keys().map(|scheme| format!("scheme {scheme}")));
+        keys.extend(
+            self.folder_parent
+                .keys()
+                .map(|folder| format!("folder {folder}")),
+        );
+        keys.extend(self.daily.keys().map(|date| format!("daily {date}")));
+        keys.sort();
+        keys
+    }
+
     /// Every line a user could see, sorted — two devices converged iff equal.
     pub(super) fn convergence_lines(&self) -> Vec<String> {
         let mut lines: Vec<String> = self
@@ -312,6 +330,13 @@ impl Attribution {
     }
 
     fn moved_by_another_device(&self, device: usize, item: ItemId) -> bool {
+        // `usize::MAX` is the synthetic server actor used by `audit_server`.
+        // A server-side disappearance is never explained by a placement write:
+        // the exception only covers a device seeing an item move to another
+        // scheme during a concurrent merge.
+        if device == usize::MAX {
+            return false;
+        }
         self.writers
             .get(&(Subject::Item(item), Field::ItemPlacement))
             .is_some_and(|writers| writers.iter().any(|writer| *writer != device))
