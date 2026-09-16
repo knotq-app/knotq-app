@@ -371,6 +371,38 @@ impl Attribution {
         false
     }
 
+    /// A node whose parent folder some device DESTROYED has to go somewhere,
+    /// and the root is the only safe home — the index materializer re-homes a
+    /// node whose parent is missing rather than dropping it.
+    ///
+    /// The disappearance check already excuses a scheme that vanished *under* a
+    /// destroyed folder (`folder_destroyed_or_under_destroyed`). Not excusing
+    /// the SURVIVING node's re-homing means the oracle reports the non-lossy
+    /// outcome while accepting the lossy one, which is backwards.
+    ///
+    /// Deliberately narrow: the old parent must be a folder some device really
+    /// destroyed, and the new parent must be the root (or none). A move between
+    /// two folders that both still exist is still reported, so this cannot hide
+    /// a node being silently re-homed while its parent is alive — which is the
+    /// symptom that travels with a genuine folder LOSS (production fuzz seed
+    /// 10034: device 1 empties the trash at step 113, device 2 creates a scheme
+    /// into that same folder at 115 having not seen it, and device 0 pulls both
+    /// at 195).
+    fn reparented_by_a_destroyed_folder(&self, key: &Key, old: &str, new: &str) -> bool {
+        if !matches!(
+            key,
+            (Subject::Scheme(_), Field::SchemeParent) | (Subject::Folder(_), Field::FolderParent)
+        ) {
+            return false;
+        }
+        if new != "root" && new != "None" {
+            return false;
+        }
+        self.destroyed_folders
+            .iter()
+            .any(|folder| *old == format!("{:?}", Some(*folder)))
+    }
+
     /// Check a passive step (`label`) on `device`: every disappearance and
     /// every field change must be explained by some device's local step.
     /// `check_fields` is off for the final settle comparison, where fields
@@ -466,7 +498,8 @@ impl Attribution {
                     .get(key)
                     .is_some_and(|writers| writers.iter().any(|writer| *writer != device))
                     || self.archived_with_its_folder(key, new, after)
-                    || parent_unchanged_across_root_change;
+                    || parent_unchanged_across_root_change
+                    || self.reparented_by_a_destroyed_folder(key, old, new);
                 if !explained {
                     violations.push(format!(
                         "device {device}: {label} changed {key:?} with no other device ever writing it: {old} -> {new}"
