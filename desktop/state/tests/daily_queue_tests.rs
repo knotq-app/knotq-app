@@ -259,12 +259,31 @@ fn seed_daily_scheme(
     items: Vec<Item>,
 ) -> SchemeId {
     let id = daily_queue_scheme_id(day);
-    let mut scheme = Scheme::new(format!("Daily {day}"), 0);
-    scheme.id = id;
-    scheme.items = items;
-    state.workspace.daily_queue.insert(day, id);
-    state.workspace.schemes.insert(id, scheme);
-    state.mark_scheme_dirty(id);
+    state
+        .apply_prechecked_local_command(
+            knotq_commands::Command::EnsureDailyQueue { date: day },
+            knotq_commands::CommandOrigin::User,
+        )
+        .unwrap();
+    // Replace the day's placeholder row with exactly `items`.
+    let placeholder = state.workspace.schemes[&id].items[0].id;
+    let mut rows = vec![knotq_commands::Command::DeleteItem {
+        scheme: id,
+        item: placeholder,
+    }];
+    rows.extend(items.into_iter().enumerate().map(|(position, item)| {
+        knotq_commands::Command::InsertItem {
+            scheme: id,
+            position,
+            item,
+        }
+    }));
+    state
+        .apply_prechecked_local_command(
+            knotq_commands::Command::Batch(rows),
+            knotq_commands::CommandOrigin::User,
+        )
+        .unwrap();
     id
 }
 

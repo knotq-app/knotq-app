@@ -71,8 +71,8 @@ impl KnotQApp {
             return;
         }
         let Some(scheme) = self.workspace.scheme(scheme_id).cloned() else {
-            self.workspace.unmark_scheme_deleted(scheme_id);
-            self.state.mark_index_dirty();
+            // A trash entry with no scheme behind it: index repair drops it.
+            self.state.repair_workspace_index();
             self.service_bus.signal_save();
             cx.notify();
             return;
@@ -128,8 +128,8 @@ impl KnotQApp {
             return;
         }
         let Some(folder) = self.workspace.folder(folder_id).cloned() else {
-            self.workspace.unmark_folder_deleted_shallow(folder_id);
-            self.state.mark_index_dirty();
+            // A trash entry with no folder behind it: index repair drops it.
+            self.state.repair_workspace_index();
             self.service_bus.signal_save();
             cx.notify();
             return;

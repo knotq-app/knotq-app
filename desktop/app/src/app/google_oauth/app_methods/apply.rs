@@ -1,4 +1,5 @@
 use super::super::*;
+use knotq_commands::Command;
 
 /// Localized "Google Calendar {label} failed" title for the sync-result notice
 /// modal. `label` is the internal (English, log-oriented) stage identifier
@@ -13,6 +14,45 @@ fn google_calendar_sync_failed_title(label: &str) -> String {
         _ => return format!("Google Calendar {label} failed"),
     };
     knotq_l10n::t(key).to_string()
+}
+
+/// The commands that bring an imported calendar scheme from `current` to
+/// `updated`: name, source, and the full item list. Items are replaced by
+/// deleting every current row and inserting every updated one — ids are kept,
+/// and sync diffs the resulting state, so an unchanged row costs nothing.
+fn imported_scheme_update_command(current: &Scheme, updated: Scheme) -> Option<Command> {
+    let id = current.id;
+    let mut commands = Vec::new();
+    if updated.name != current.name {
+        commands.push(Command::RenameScheme {
+            id,
+            name: updated.name,
+        });
+    }
+    if updated.source != current.source {
+        commands.push(Command::SetSchemeSource {
+            id,
+            source: updated.source,
+        });
+    }
+    if updated.items != current.items {
+        commands.extend(current.items.iter().map(|item| Command::DeleteItem {
+            scheme: id,
+            item: item.id,
+        }));
+        commands.extend(
+            updated
+                .items
+                .into_iter()
+                .enumerate()
+                .map(|(position, item)| Command::InsertItem {
+                    scheme: id,
+                    position,
+                    item,
+                }),
+        );
+    }
+    Command::from_vec(commands)
 }
 
 struct GoogleSyncResultOptions {
@@ -227,6 +267,22 @@ impl KnotQApp {
         });
     }
 
+    /// Apply an import-driven change through the store. Importer origin: an
+    /// import legitimately writes the read-only calendar schemes a user cannot.
+    /// Not undoable. Returns whether it applied.
+    fn apply_import_command(&mut self, command: Command) -> bool {
+        match self
+            .state
+            .apply_prechecked_local_command(command, knotq_commands::CommandOrigin::Importer)
+        {
+            Ok(_) => true,
+            Err(err) => {
+                eprintln!("Google Calendar import command failed: {err}");
+                false
+            }
+        }
+    }
+
     fn upsert_google_accounts(&mut self, accounts: Vec<GoogleOAuthAccount>) -> bool {
         let mut changed = false;
         for account in accounts {
@@ -261,10 +317,16 @@ impl KnotQApp {
         } else {
             self.workspace.root
         };
-        if parent != self.workspace.root {
-            if let Some(folder) = self.workspace.folders.get_mut(&parent) {
-                folder.expanded = true;
-            }
+        if parent != self.workspace.root
+            && self
+                .workspace
+                .folder(parent)
+                .is_some_and(|folder| !folder.expanded)
+        {
+            self.apply_import_command(Command::SetFolderExpanded {
+                id: parent,
+                expanded: true,
+            });
         }
 
         let mut first_scheme = None;
@@ -303,9 +365,16 @@ impl KnotQApp {
                     let mut scheme = Scheme::new(calendar.name.clone(), color_index);
                     let id = scheme.id;
                     scheme.source = google_calendar_source(&calendar);
-                    self.workspace.schemes.insert(id, scheme);
-                    if let Some(folder) = self.workspace.folders.get_mut(&parent) {
-                        folder.children.push(NodeRef::Scheme(id));
+                    let position = self
+                        .workspace
+                        .folder(parent)
+                        .map_or(0, |folder| folder.children.len());
+                    if !self.apply_import_command(Command::RestoreScheme {
+                        folder: parent,
+                        position,
+                        scheme,
+                    }) {
+                        continue;
                     }
                     content_changed = true;
                     id
@@ -313,13 +382,16 @@ impl KnotQApp {
                 None => continue,
             };
 
-            if let Some(scheme) = self.workspace.schemes.get_mut(&scheme_id) {
+            if let Some(current) = self.workspace.scheme(scheme_id).cloned() {
                 let should_update_name = existing_scheme_id.is_none();
+                let mut updated = current.clone();
                 let metadata_changed =
-                    apply_google_calendar_metadata(scheme, &calendar, should_update_name);
-                let items_changed = apply_google_calendar_items(scheme, &calendar);
-                self.state.mark_scheme_dirty(scheme_id);
+                    apply_google_calendar_metadata(&mut updated, &calendar, should_update_name);
+                let items_changed = apply_google_calendar_items(&mut updated, &calendar);
                 let scheme_content_changed = metadata_changed || items_changed;
+                if let Some(command) = imported_scheme_update_command(&current, updated) {
+                    self.apply_import_command(command);
+                }
                 if scheme_content_changed {
                     content_changed = true;
                     if self
@@ -367,29 +439,10 @@ impl KnotQApp {
                 .then(|| self.first_visible_scheme_id_except(scheme_id))
                 .flatten();
 
-            let mut origin = None;
-            for (folder_id, folder) in self.workspace.folders.iter_mut() {
-                let mut index = 0usize;
-                while index < folder.children.len() {
-                    if folder.children[index] == NodeRef::Scheme(scheme_id) {
-                        if origin.is_none() {
-                            origin = Some((*folder_id, index));
-                        }
-                        folder.children.remove(index);
-                    } else {
-                        index += 1;
-                    }
-                }
-            }
-
-            if let Some((folder_id, position)) = origin {
-                self.workspace
-                    .mark_scheme_deleted_from(scheme_id, folder_id, position);
-            } else {
-                self.workspace.mark_scheme_deleted(scheme_id);
+            if !self.apply_import_command(Command::DeleteScheme { id: scheme_id }) {
+                continue;
             }
             self.trash_expanded = true;
-            self.state.mark_index_dirty();
             if self
                 .scheme_editor
                 .as_ref()

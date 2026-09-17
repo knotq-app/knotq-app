@@ -294,7 +294,10 @@ impl TestDevice {
         self.workspace
             .canonicalize_personal_sync_identity(self.account_workspace);
         self.workspace.ensure_sync_metadata();
-        let outcome = self.store_crdt.sync_changes(&self.workspace, &changes);
+        let bases = std::mem::take(&mut self.population_bases);
+        let outcome = self
+            .store_crdt
+            .sync_changes_with_bases(&self.workspace, &changes, &bases);
         assert!(outcome.is_ok(), "{:?}", outcome.errors);
         // Persist the store CRDT after every edit, as the desktop store does, so the
         // next sync's restored apply CRDT sees the local edits' base state.

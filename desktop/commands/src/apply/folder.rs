@@ -273,8 +273,9 @@ fn permanently_delete_folder(
     workspace.recently_deleted_folders.remove(trash_position);
 
     for scheme_id in &scheme_ids {
-        workspace.remove_scheme_from_archive(*scheme_id);
-        workspace.schemes.remove(scheme_id);
+        // See `remove_scheme_completely`: clears the archive state AND any
+        // daily-queue binding, so no reference outlives the scheme.
+        workspace.remove_scheme_completely(*scheme_id);
     }
     for folder_id in &folder_ids {
         workspace.folders.remove(folder_id);

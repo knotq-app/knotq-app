@@ -8,7 +8,9 @@ use gpui::{Context, Task};
 use knotq_model::{ItemId, ItemKind, OccurrenceId, SchemeId, Workspace};
 use knotq_rrule::ItemOccurrenceExt;
 use knotq_state::CrdtSaveScope;
-use knotq_storage_json::{save_crdt_state, save_crdt_state_incremental, save_pending_crdt_edits};
+use knotq_storage_json::{
+    save_crdt_state, save_crdt_state_incremental, save_pending_crdt_edits_with_item_fields,
+};
 
 use super::{
     save_workspace, save_workspace_incremental, workspace_path, AppServiceBus, KnotQApp,
@@ -16,6 +18,41 @@ use super::{
     DEADLINE_LOOKAHEAD_DAYS, DEADLINE_LOOKBACK_DAYS, NOTIFICATION_DEBOUNCE, SAVE_DEBOUNCE,
     SAVE_RETRY_BACKOFF, TIMELINE_POLL_INTERVAL,
 };
+
+/// The disk half of a save: the workspace (whole, or only the dirty schemes),
+/// then the pending CRDT queue, then the CRDT document states in `crdt_scope`.
+/// Shared by the save task and the production-path sync fuzzer.
+pub(crate) fn write_save_snapshot(
+    path: &std::path::Path,
+    workspace: &Workspace,
+    dirty_ids: &std::collections::HashSet<SchemeId>,
+    pending_crdt_edits: &[knotq_sync::PendingCrdtEdit],
+    queued_item_fields: &HashMap<knotq_model::OperationId, Vec<knotq_sync::QueuedItemFields>>,
+    crdt_scope: CrdtSaveScope,
+    crdt_states: &HashMap<knotq_model::DocumentId, std::sync::Arc<[u8]>>,
+) -> anyhow::Result<()> {
+    let result = if dirty_ids.is_empty() {
+        save_workspace(path, workspace)
+    } else {
+        save_workspace_incremental(path, workspace, dirty_ids)
+    };
+    // Persist the CRDT documents' state in lockstep with the workspace so a
+    // restart restores them consistently (and with their stable identity)
+    // rather than rebuilding.
+    result
+        .and_then(|_| {
+            save_pending_crdt_edits_with_item_fields(path, pending_crdt_edits, queued_item_fields)
+        })
+        .and_then(|_| match crdt_scope {
+            // Only a full save may remove a file, so it is the one that sweeps
+            // documents that went away and retires the legacy blob.
+            CrdtSaveScope::All => save_crdt_state(path, crdt_states),
+            // Nothing moved: the workspace and scheme files still needed
+            // writing, the CRDT state did not.
+            CrdtSaveScope::Only(_) if crdt_states.is_empty() => Ok(()),
+            CrdtSaveScope::Only(_) => save_crdt_state_incremental(path, crdt_states),
+        })
+}
 
 pub(crate) fn spawn_save_task(
     bus: AppServiceBus,
@@ -36,6 +73,21 @@ pub(crate) fn spawn_save_task(
                         if !app.state.is_dirty() {
                             return None;
                         }
+                        // A sync run saves the pulled workspace, CRDT state and
+                        // cursors before it lands, and the store is behind those
+                        // files until it does. Writing the store's workspace now
+                        // would put older content back over what the run saved —
+                        // and if the app dies before the landing it stays there,
+                        // so the next edit re-expresses the stale copy (a moved
+                        // line came back in its source scheme). Nothing is marked
+                        // clean; try again after the next debounce.
+                        if matches!(
+                            app.sync_run_status,
+                            crate::app::SyncRunStatus::Running { .. }
+                        ) {
+                            app.service_bus.signal_save();
+                            return None;
+                        }
                         // Step timings behind KNOTQ_TYPING_TIMING: this whole
                         // block runs on the UI thread, so anything slow in it is
                         // a freeze the user feels, and the watchdog can only say
@@ -43,6 +95,7 @@ pub(crate) fn spawn_save_task(
                         let step = crate::app::services::step_timing();
                         let t0 = std::time::Instant::now();
                         let pending_crdt_edits = app.state.pending_crdt_edits();
+                        let queued_item_fields = app.state.queued_item_fields();
                         let t_pending = t0.elapsed();
                         // Handles, not bytes. Serializing a large scheme's CRDT
                         // is several milliseconds and this block runs on the UI
@@ -79,6 +132,7 @@ pub(crate) fn spawn_save_task(
                             workspace_clone,
                             dirty_ids,
                             pending_crdt_edits,
+                            queued_item_fields,
                             crdt_scope,
                             crdt_state_handles,
                         ))
@@ -86,7 +140,14 @@ pub(crate) fn spawn_save_task(
                     .ok()
                     .flatten();
 
-                if let Some((ws, dirty_ids, pending_crdt_edits, crdt_scope, crdt_state_handles)) =
+                if let Some((
+                    ws,
+                    dirty_ids,
+                    pending_crdt_edits,
+                    queued_item_fields,
+                    crdt_scope,
+                    crdt_state_handles,
+                )) =
                     snapshot
                 {
                     let path = workspace_path();
@@ -101,29 +162,15 @@ pub(crate) fn spawn_save_task(
                                 .into_iter()
                                 .map(|(document, handle)| (document, handle.encode()))
                                 .collect();
-                            let result = if dirty_ids.is_empty() {
-                                save_workspace(&path, &ws)
-                            } else {
-                                save_workspace_incremental(&path, &ws, &dirty_ids)
-                            };
-                            // Persist the CRDT documents' state in lockstep with the
-                            // workspace so a restart restores them consistently (and
-                            // with their stable identity) rather than rebuilding.
-                            result
-                                .and_then(|_| save_pending_crdt_edits(&path, &pending_crdt_edits))
-                                .and_then(|_| match crdt_scope {
-                                    // Only a full save may remove a file, so it
-                                    // is the one that sweeps documents that went
-                                    // away and retires the legacy blob.
-                                    CrdtSaveScope::All => save_crdt_state(&path, &crdt_states),
-                                    // Nothing moved: the workspace and scheme
-                                    // files still needed writing, the CRDT
-                                    // state did not.
-                                    CrdtSaveScope::Only(_) if crdt_states.is_empty() => Ok(()),
-                                    CrdtSaveScope::Only(_) => {
-                                        save_crdt_state_incremental(&path, &crdt_states)
-                                    }
-                                })
+                            write_save_snapshot(
+                                &path,
+                                &ws,
+                                &dirty_ids,
+                                &pending_crdt_edits,
+                                &queued_item_fields,
+                                crdt_scope,
+                                &crdt_states,
+                            )
                         })
                         .await;
                     if let Err(err) = result {

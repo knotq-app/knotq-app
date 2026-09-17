@@ -10,7 +10,10 @@ use knotq_sync::{
 use std::fmt;
 
 mod http;
+mod landing;
 mod media;
+#[cfg(test)]
+mod production_fuzz;
 mod snapshot;
 mod tasks;
 mod ws_lifecycle;
@@ -161,6 +164,9 @@ struct SyncSnapshot {
     account: SyncAccountSettings,
     replica_id: ReplicaId,
     pending: Vec<PendingCrdtEdit>,
+    /// Which line fields each of `pending`'s store operations edits (see
+    /// `LocalSyncState::queued_item_fields`).
+    queued_item_fields: HashMap<knotq_model::OperationId, Vec<knotq_sync::QueuedItemFields>>,
     /// This device's current CRDT document state, so the background sync seeds its
     /// CRDT from the UI store's latest local edits (with the same stable identity)
     /// rather than from a possibly-staler on-disk copy. Shared, not copied: this
@@ -197,6 +203,9 @@ struct SyncRunResult {
     /// data).
     crdt_states: HashMap<DocumentId, std::sync::Arc<[u8]>>,
     pushed: Vec<PushedDocument>,
+    /// The line field records of the queued edits this run pushed, including ones
+    /// persisted before a relaunch, for landing's re-apply of moved lines.
+    queued_item_fields: Vec<knotq_sync::QueuedItemFields>,
     remote_updates_applied: usize,
     remaining_pending: usize,
     local_workspace_changed: bool,
@@ -207,6 +216,11 @@ struct SyncRunResult {
     /// True when this run built and sent a squash proposal (accepted or not),
     /// so the scheduler can arm its attempt throttle.
     squash_attempted: bool,
+    /// True when an accepted squash was followed by a successful pull of the
+    /// rebuilt state. A reset CRDT history must be adopted wholesale when no
+    /// local edit raced the run; incrementally merging it can retain the old
+    /// insertion order on the proposer.
+    squash_applied: bool,
 }
 
 /// A notification schedule cached on `KnotQApp` between sync runs, with the inputs
@@ -229,6 +243,27 @@ struct SyncMediaAsset {
 struct SyncHttpClient {
     api_base: String,
     bearer_token: String,
+}
+
+/// The requests a sync run makes besides the batched CRDT pull/push: media
+/// transfer and history squash. Always HTTP in the app.
+trait SyncSideChannel {
+    fn upload_media_asset(&self, media: SyncMediaAsset, bytes: &[u8]) -> anyhow::Result<()>;
+    fn download_media_asset(&self, media: SyncMediaAsset) -> anyhow::Result<Option<Vec<u8>>>;
+    fn squash(
+        &self,
+        request: &knotq_sync::SquashDocumentRequest,
+    ) -> anyhow::Result<knotq_sync::SquashDocumentResponse>;
+}
+
+/// Everything a sync run reads from or talks to outside its snapshot: the data
+/// directory and the backend. `sync_snapshot` builds the real one; the
+/// production-path fuzzer builds one per simulated device.
+struct SyncEnvironment<'a> {
+    workspace_path: &'a std::path::Path,
+    image_dir: &'a std::path::Path,
+    transport: &'a dyn knotq_sync::SyncTransport,
+    side_channel: &'a dyn SyncSideChannel,
 }
 
 #[cfg(test)]

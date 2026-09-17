@@ -137,6 +137,19 @@ fn keystroke_ms(state: &mut AppState, workspace: &Workspace, runs: usize) -> f64
     ms(start) / runs as f64
 }
 
+/// The UI-thread portion of one sync snapshot, kept in lockstep with the
+/// ignored `sync_snapshot_probe` measurement. CRDT encoding is intentionally
+/// represented by handles here; the handle collection does not encode bytes.
+fn sync_snapshot_ms(state: &mut AppState, workspace: &Workspace) -> f64 {
+    let start = Instant::now();
+    state.sync_store_from_workspace();
+    let _pending = state.pending_crdt_edits();
+    let _handles = state.crdt_document_state_handles();
+    let _workspace = workspace.clone();
+    std::hint::black_box((_pending, _handles, _workspace));
+    ms(start)
+}
+
 // ── Shape: these run everywhere ────────────────────────────────────────────
 
 /// Building a scheme's CRDT must stay roughly linear in its item count.
@@ -276,5 +289,58 @@ fn large_scheme_crdt_build_stays_within_budget() {
     assert!(
         each < 6_000.0,
         "building a 5,000-item scheme's CRDT took {each:.0}ms (budget 6000ms)"
+    );
+}
+
+/// The sync snapshot's UI-thread work must stay inside one 60fps frame.
+#[test]
+fn sync_snapshot_stays_within_a_frame_budget() {
+    if !ceilings_enabled() {
+        return;
+    }
+    let workspace = workspace_of(170, 22, 80);
+    let mut state = state_of(&workspace);
+    let scheme = workspace.schemes.values().next().expect("a scheme");
+    let scheme_id = scheme.id;
+    let item = scheme.items[0].id;
+
+    // Warm the same one-off read-back work the probe excludes from its rows.
+    for index in 0..8 {
+        let _ = state.apply_prechecked_local_command(
+            Command::UpdateItemText {
+                scheme: scheme_id,
+                item,
+                text: format!("warm {index}"),
+            },
+            CommandOrigin::User,
+        );
+    }
+    let _ = sync_snapshot_ms(&mut state, &workspace);
+
+    let mut total = 0.0;
+    let mut runs = 0;
+    for index in 0..400 {
+        let _ = state.apply_prechecked_local_command(
+            Command::UpdateItemText {
+                scheme: scheme_id,
+                item,
+                text: format!("typing {index}"),
+            },
+            CommandOrigin::User,
+        );
+        if (index + 1) % 32 == 0 {
+            total += sync_snapshot_ms(&mut state, &workspace);
+            runs += 1;
+        }
+    }
+    let per_run = total / runs as f64;
+
+    // ~0.21ms locally in release for the largest row of the existing
+    // `sync_snapshot_probe` (3,740 items, walking lines, 32 edits/run).
+    // 16ms is one 60fps frame; a sync snapshot consuming a whole frame is the
+    // regression worth failing CI over, and the gap absorbs a loaded runner.
+    assert!(
+        per_run < 16.0,
+        "sync snapshot took {per_run:.2}ms per run (budget 16ms)"
     );
 }

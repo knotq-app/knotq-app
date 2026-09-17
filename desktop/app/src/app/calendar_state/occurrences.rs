@@ -4,7 +4,7 @@ use knotq_commands::Command;
 use knotq_model::{ItemId, OccurrenceId, SchemeId};
 
 use crate::app::{CalendarOccurrenceKey, KnotQApp};
-use knotq_state::mark_past_event_completion_keys_done;
+use knotq_state::complete_past_event_keys;
 
 impl KnotQApp {
     pub fn toggle_calendar_item(
@@ -35,7 +35,7 @@ impl KnotQApp {
         now: DateTime<Utc>,
         cx: &mut Context<Self>,
     ) -> usize {
-        let changed = mark_past_event_completion_keys_done(&mut self.workspace, keys, now);
+        let changed = complete_past_event_keys(&mut self.state, keys, now);
         if changed == 0 {
             return 0;
         }
@@ -58,13 +58,6 @@ impl KnotQApp {
                 self.notification_defaults,
             );
         }
-        // Completion keys can come from any scheme in the background snapshot.
-        let all_ids: Vec<_> = self.workspace.schemes.keys().copied().collect();
-        for id in all_ids {
-            self.dirty_schemes.insert(id);
-        }
-        self.index_dirty = true;
-        self.state.mark_direct_workspace_dirty();
         self.reconcile_workspace_ui_state();
         self.reschedule_notifications();
         cx.notify();

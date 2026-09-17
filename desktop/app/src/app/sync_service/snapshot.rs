@@ -15,11 +15,38 @@ use knotq_sync::{
 
 use super::http::normalize_api_base;
 use super::media::{download_missing_media_assets, upload_local_media_assets};
-use super::{SyncHttpClient, SyncRunResult, SyncSnapshot};
+use super::{SyncEnvironment, SyncHttpClient, SyncRunResult, SyncSnapshot};
 
+/// Run one sync against the configured backend and the app's data directory.
 pub(super) fn sync_snapshot(snapshot: SyncSnapshot) -> Result<SyncRunResult> {
     let path = workspace_path();
-    let mut workspace = workspace_for_background_sync(&path, snapshot.workspace);
+    let image_dir = knotq_storage_json::image_assets_dir();
+    let client = SyncHttpClient {
+        api_base: normalize_api_base(&snapshot.account.api_base)?,
+        bearer_token: snapshot.account.bearer_token.clone(),
+    };
+    // Batched pull/push prefer the live WebSocket and fall back to `client` (HTTP)
+    // when the socket is down. Media transfer always uses `client` (HTTP) directly.
+    let ws_sync = snapshot.ws_sync.clone();
+    let transport = super::ws_transport::FallbackTransport::new(ws_sync.as_deref(), &client);
+    sync_snapshot_in(
+        SyncEnvironment {
+            workspace_path: &path,
+            image_dir: &image_dir,
+            transport: &transport,
+            side_channel: &client,
+        },
+        snapshot,
+    )
+}
+
+/// The sync run itself, against an explicit data directory and backend.
+pub(super) fn sync_snapshot_in(
+    env: SyncEnvironment<'_>,
+    snapshot: SyncSnapshot,
+) -> Result<SyncRunResult> {
+    let path = env.workspace_path;
+    let mut workspace = workspace_for_background_sync(path, snapshot.workspace);
     // The notification schedule is computed here on the background sync thread, never
     // on main: recurrence expansion + per-occurrence JSON/SHA-256 hashing over the
     // whole workspace is the heaviest part of preparing a sync. When the caller
@@ -48,7 +75,7 @@ pub(super) fn sync_snapshot(snapshot: SyncSnapshot) -> Result<SyncRunResult> {
         workspace.canonicalize_personal_sync_identity_with_change(server_workspace_id);
     workspace.ensure_sync_metadata();
 
-    let mut local_state = load_local_sync_state(&path).unwrap_or_default();
+    let mut local_state = load_local_sync_state(path).unwrap_or_default();
     // One-time recovery: clear stale pull cursors so this sync re-pulls and
     // re-merges every document, repairing any workspace left diverged by the earlier
     // push-failure desync.
@@ -60,25 +87,41 @@ pub(super) fn sync_snapshot(snapshot: SyncSnapshot) -> Result<SyncRunResult> {
         &snapshot.account,
     );
     merge_pending(&mut local_state, snapshot.pending);
+    for (operation, fields) in snapshot.queued_item_fields {
+        local_state.record_queued_item_fields(operation, fields);
+    }
+    local_state.prune_queued_item_fields();
 
-    let client = SyncHttpClient {
-        api_base: normalize_api_base(&snapshot.account.api_base)?,
-        bearer_token: snapshot.account.bearer_token.clone(),
-    };
-    // Batched pull/push prefer the live WebSocket and fall back to `client` (HTTP)
-    // when the socket is down. Media transfer always uses `client` (HTTP) directly.
-    let ws_sync = snapshot.ws_sync.clone();
-    let transport = super::ws_transport::FallbackTransport::new(ws_sync.as_deref(), &client);
+    let transport = env.transport;
+    let client = env.side_channel;
+    let image_dir = env.image_dir;
     // Restore the long-lived CRDT documents from disk and overlay the UI store's
     // latest states (the `snapshot`), so the sync's CRDT carries this device's stable
     // deterministic identity plus its newest local edits — never rebuilt from plain
     // data. Disk fills documents the in-memory store doesn't hold (e.g. archived /
     // off-screen Daily Queue schemes loaded by `workspace_for_background_sync`).
+    // The store restored the documents it holds with the queue folded in; a
+    // document only on disk (a day off screen) did not pass through it, so fold
+    // the queue into that one here (`restored_crdt_states`).
+    let store_documents: std::collections::HashSet<knotq_model::DocumentId> =
+        snapshot.crdt_states.keys().copied().collect();
     let mut crdt_states: std::collections::HashMap<knotq_model::DocumentId, std::sync::Arc<[u8]>> =
-        load_crdt_state(&path)
+        load_crdt_state(path)
             .unwrap_or_default()
             .into_iter()
-            .map(|(document, state)| (document, std::sync::Arc::from(state)))
+            .map(|(document, state)| {
+                let state = if store_documents.contains(&document) {
+                    state
+                } else {
+                    knotq_sync::fold_pending_edits_into_state(
+                        document,
+                        &state,
+                        &local_state.pending,
+                    )
+                    .unwrap_or(state)
+                };
+                (document, std::sync::Arc::from(state))
+            })
             .collect();
     // Encode HERE, on the background sync thread: these handles were taken on the
     // UI thread precisely so this cost lands off main.
@@ -133,15 +176,20 @@ pub(super) fn sync_snapshot(snapshot: SyncSnapshot) -> Result<SyncRunResult> {
     // workspace; the engine applies the workspace index before scheme content so
     // newly discovered schemes route correctly.
     let pull = batch_pull_and_apply(
-        &transport,
+        transport,
         &mut crdt_docs,
         &mut local_state,
         workspace,
         snapshot.replica_id,
     )?;
     log_skipped_documents(&pull.skipped);
+    // What this pull changed locally. A run that fails after saving its cursors
+    // never lands, so these have to be pulled again (`forget_pull_of_failed_run`).
+    let pulled_changes: Vec<knotq_model::DocumentId> =
+        pull.changed_documents.iter().copied().collect();
     let mut workspace = pull.workspace;
     let remote_updates_applied = pull.remote_updates_applied;
+    let locally_repaired_documents = pull.locally_repaired_documents;
     let (repaired_identity, repaired_identity_changed) =
         workspace.canonicalize_personal_sync_identity_with_change(server_workspace_id);
     let repaired_folders = workspace.normalize_one_level_folders();
@@ -179,8 +227,14 @@ pub(super) fn sync_snapshot(snapshot: SyncSnapshot) -> Result<SyncRunResult> {
         );
     }
 
-    upload_local_media_assets(&client, &mut local_state, &workspace, &pull.remote_latest)?;
-    let mut media_downloaded = download_missing_media_assets(&client, &workspace)?;
+    upload_local_media_assets(
+        client,
+        image_dir,
+        &mut local_state,
+        &workspace,
+        &pull.remote_latest,
+    )?;
+    let mut media_downloaded = download_missing_media_assets(client, image_dir, &workspace)?;
 
     let replica_id = local_state.replica_id.unwrap_or_default();
     // The server's per-document seq (our advanced pull cursor) tells the bootstrap
@@ -217,18 +271,21 @@ pub(super) fn sync_snapshot(snapshot: SyncSnapshot) -> Result<SyncRunResult> {
     if remote_updates_applied > 0
         || local_workspace_changed
         || repaired_workspace_persist_changed
+        || !locally_repaired_documents.is_empty()
         || !healed_documents.is_empty()
     {
-        save_workspace(&path, &workspace)?;
-        save_crdt_state(&path, &merged_crdt_states)?;
+        save_workspace(path, &workspace)?;
+        save_crdt_state(path, &merged_crdt_states)?;
     }
 
     // Persist pull cursors, dropped orphans, and per-document push acks even if the
     // push below fails partway, so a transient push error never forces the next
     // sync to re-download every document from sequence zero. The merged workspace
     // above is already durable, so the cursor never runs ahead of it.
+    // The records of the edits about to be pushed, before the push clears them.
+    let queued_item_fields = local_state.queued_item_field_union();
     let push_result = batch_push_pending(
-        &transport,
+        transport,
         &mut local_state,
         replica_id,
         &notification_schedule,
@@ -237,14 +294,24 @@ pub(super) fn sync_snapshot(snapshot: SyncSnapshot) -> Result<SyncRunResult> {
         &mut crdt_docs,
         &workspace,
     );
-    save_local_sync_state(&path, &local_state)?;
+    // Until this run lands, a quit abandons these pulls (`abandon_unlanded_sync_run`).
+    local_state.unlanded_pulls = pulled_changes.clone();
+    if push_result.is_err() {
+        // The run returns the push error and never lands; see
+        // `forget_pull_of_failed_run`. Its acks above are still worth keeping.
+        for document in &pulled_changes {
+            local_state.reset_pull_cursor(*document);
+        }
+    }
+    local_state.prune_queued_item_fields();
+    save_local_sync_state(path, &local_state)?;
     // The push's own self-heal may have repopulated a schema-less document after
     // the capture above; persist the healed state so this device's future diffs
     // share its identity instead of re-minting the same clientID from clock zero.
     let merged_crdt_states = {
         let post_push_states = crdt_docs.document_states();
         if post_push_states != merged_crdt_states {
-            save_crdt_state(&path, &post_push_states)?;
+            save_crdt_state(path, &post_push_states)?;
         }
         post_push_states
     };
@@ -259,9 +326,24 @@ pub(super) fn sync_snapshot(snapshot: SyncSnapshot) -> Result<SyncRunResult> {
             .entry(pushed_document.document)
             .or_insert(1);
     }
-    upload_local_media_assets(&client, &mut local_state, &workspace, &media_remote_latest)?;
-    save_local_sync_state(&path, &local_state)?;
-    media_downloaded |= download_missing_media_assets(&client, &workspace)?;
+    if let Err(err) = upload_local_media_assets(
+        client,
+        image_dir,
+        &mut local_state,
+        &workspace,
+        &media_remote_latest,
+    ) {
+        forget_pull_of_failed_run(path, &mut local_state, &pulled_changes);
+        return Err(err);
+    }
+    save_local_sync_state(path, &local_state)?;
+    match download_missing_media_assets(client, image_dir, &workspace) {
+        Ok(downloaded) => media_downloaded |= downloaded,
+        Err(err) => {
+            forget_pull_of_failed_run(path, &mut local_state, &pulled_changes);
+            return Err(err);
+        }
+    }
 
     // Post-run maintenance: propose at most one history squash when the run left
     // this device fully synced. The proposal replaces a bloated scheme document's
@@ -272,7 +354,17 @@ pub(super) fn sync_snapshot(snapshot: SyncSnapshot) -> Result<SyncRunResult> {
     let mut remote_updates_applied = remote_updates_applied;
     let mut merged_crdt_states = merged_crdt_states;
     let mut squash_attempted = false;
-    if snapshot.allow_squash && local_state.pending.is_empty() {
+    let mut squash_applied = false;
+    // Squashing changes the document epoch and replaces its CRDT history. Only
+    // attempt it after this run was already fully quiet: a concurrent pull or
+    // push would make the proposal stale, and a local edit racing the reset
+    // would need the ordinary merge landing path.
+    if snapshot.allow_squash
+        && local_state.pending.is_empty()
+        && remote_updates_applied == 0
+        && pulled_changes.is_empty()
+        && pushed.is_empty()
+    {
         if let Some(proposal) = knotq_sync::build_squash_proposal(&crdt_docs, &local_state) {
             squash_attempted = true;
             match client.squash(&proposal.as_request(replica_id)) {
@@ -290,19 +382,20 @@ pub(super) fn sync_snapshot(snapshot: SyncSnapshot) -> Result<SyncRunResult> {
                     // exact. A failure here is harmless: the next regular sync
                     // adopts instead.
                     match batch_pull_and_apply(
-                        &transport,
+                        transport,
                         &mut crdt_docs,
                         &mut local_state,
                         workspace.clone(),
                         replica_id,
                     ) {
                         Ok(adoption) => {
+                            squash_applied = true;
                             workspace = adoption.workspace;
                             remote_updates_applied += adoption.remote_updates_applied;
                             merged_crdt_states = crdt_docs.document_states();
-                            save_workspace(&path, &workspace)?;
-                            save_crdt_state(&path, &merged_crdt_states)?;
-                            save_local_sync_state(&path, &local_state)?;
+                            save_workspace(path, &workspace)?;
+                            save_crdt_state(path, &merged_crdt_states)?;
+                            save_local_sync_state(path, &local_state)?;
                         }
                         Err(err) => {
                             eprintln!("sync: post-squash adoption pull failed (next sync adopts): {err:#}");
@@ -318,13 +411,35 @@ pub(super) fn sync_snapshot(snapshot: SyncSnapshot) -> Result<SyncRunResult> {
         workspace,
         crdt_states: merged_crdt_states,
         pushed,
+        queued_item_fields,
         remote_updates_applied,
         remaining_pending: local_state.pending.len(),
         local_workspace_changed: local_workspace_changed || repaired_workspace_changed,
         media_downloaded,
         notification_schedule,
         squash_attempted,
+        squash_applied,
     })
+}
+
+/// A run that fails after saving its pull cursors never lands: the UI store keeps
+/// the state it had before the pull, and the next run starts from that state
+/// overlaid on the saved one. The server does not resend a document below its
+/// cursor, so what the failed pull brought in would be lost for good (production
+/// fuzz seed 6: a line another device moved stayed in its source scheme). Pull
+/// those documents again instead — only those, so a transient failure never
+/// forces a full re-download.
+fn forget_pull_of_failed_run(
+    path: &std::path::Path,
+    local_state: &mut LocalSyncState,
+    pulled: &[knotq_model::DocumentId],
+) {
+    for document in pulled {
+        local_state.reset_pull_cursor(*document);
+    }
+    if let Err(err) = save_local_sync_state(path, local_state) {
+        eprintln!("sync: could not persist re-pull cursors after a failed run: {err:#}");
+    }
 }
 
 /// Queue a re-identified workspace document's full state as a pending push, so a
@@ -420,16 +535,39 @@ pub(super) fn workspace_for_background_sync(
 }
 
 fn overlay_current_workspace_for_sync(full: &mut Workspace, current: Workspace) {
-    full.id = current.id;
-    full.sync = current.sync;
-    full.root = current.root;
-    full.folders = current.folders;
-    full.scheme_sync = current.scheme_sync;
-    full.folder_sync = current.folder_sync;
-    full.daily_queue = current.daily_queue;
-    full.recently_deleted = current.recently_deleted;
-    full.deleted_scheme_origins = current.deleted_scheme_origins;
-    for (scheme_id, scheme) in current.schemes {
+    // Everything but `schemes` comes from the in-memory workspace: the saved
+    // files can be behind it whenever the save task has not run since an edit.
+    // Only `schemes` merges, because memory holds just the loaded days.
+    // Destructured exhaustively so a field added to `Workspace` has to be
+    // decided here: the folder archive was once left out, and a folder archived
+    // since the last save — in neither the tree nor the trash — was dropped from
+    // the account for every device (production fuzz seed 10005).
+    let Workspace {
+        id,
+        sync,
+        root,
+        folders,
+        schemes,
+        scheme_sync,
+        folder_sync,
+        daily_queue,
+        recently_deleted,
+        deleted_scheme_origins,
+        recently_deleted_folders,
+        deleted_folder_origins,
+    } = current;
+    full.id = id;
+    full.sync = sync;
+    full.root = root;
+    full.folders = folders;
+    full.scheme_sync = scheme_sync;
+    full.folder_sync = folder_sync;
+    full.daily_queue = daily_queue;
+    full.recently_deleted = recently_deleted;
+    full.deleted_scheme_origins = deleted_scheme_origins;
+    full.recently_deleted_folders = recently_deleted_folders;
+    full.deleted_folder_origins = deleted_folder_origins;
+    for (scheme_id, scheme) in schemes {
         full.schemes.insert(scheme_id, scheme);
     }
     full.normalize_one_level_folders();

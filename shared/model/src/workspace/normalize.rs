@@ -68,6 +68,82 @@ impl Workspace {
             }
         }
 
+        // A folder can become unreachable from the root without anyone deleting
+        // it. `move_node` rejects a cycle it can SEE, but two devices that each
+        // move one of two folders into the other are both issuing a legal
+        // command against their own view, and only the merged result holds the
+        // cycle. The walk above starts at the root and never reaches such a
+        // pair, so the retain below would delete both folders AND every scheme
+        // inside them, and the next index write would publish that as an
+        // authoritative deletion for the whole account (production fuzz seed
+        // 10042: three schemes and three folders off the server in one push).
+        //
+        // Break the cycle instead of dropping it, at its lowest id so every
+        // replica picks the same member and they converge, then re-walk so the
+        // rescued subtree's schemes count as referenced below. A chain that
+        // simply ends — an ordinary orphan whose parent is gone — is left to the
+        // retain, which is what normalization is meant to do with it.
+        fn ancestry_cycles(workspace: &Workspace, start: FolderId) -> bool {
+            let mut seen = HashSet::new();
+            let mut current = Some(start);
+            while let Some(id) = current {
+                if !seen.insert(id) {
+                    return true;
+                }
+                if id == workspace.root {
+                    return false;
+                }
+                current = workspace.folders.get(&id).and_then(|folder| folder.parent);
+            }
+            false
+        }
+
+        for _ in 0..=self.folders.len() {
+            let stranded: Vec<FolderId> = self
+                .folders
+                .keys()
+                .copied()
+                .filter(|id| {
+                    *id != self.root
+                        && !visited_folders.contains(id)
+                        && !archived_folders.contains(id)
+                })
+                .collect();
+            let Some(rescue) = stranded
+                .into_iter()
+                .filter(|id| ancestry_cycles(self, *id))
+                .min()
+            else {
+                break;
+            };
+            let root = self.root;
+            if let Some(parent) = self.folders.get(&rescue).and_then(|folder| folder.parent) {
+                if let Some(parent) = self.folders.get_mut(&parent) {
+                    parent
+                        .children
+                        .retain(|child| *child != NodeRef::Folder(rescue));
+                }
+            }
+            if let Some(folder) = self.folders.get_mut(&rescue) {
+                folder.parent = Some(root);
+            }
+            if let Some(root_folder) = self.folders.get_mut(&root) {
+                if !root_folder.children.contains(&NodeRef::Folder(rescue)) {
+                    root_folder.children.push(NodeRef::Folder(rescue));
+                }
+            }
+            changed = true;
+            visited_folders.clear();
+            referenced_schemes.clear();
+            self.normalize_folder_tree(
+                root,
+                None,
+                &mut visited_folders,
+                &mut referenced_schemes,
+                &mut changed,
+            );
+        }
+
         let before_folders = self.folders.len();
         self.folders.retain(|id, _| {
             *id == self.root || visited_folders.contains(id) || archived_folders.contains(id)

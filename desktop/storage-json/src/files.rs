@@ -15,7 +15,8 @@ use crate::{
     schema::{WorkspaceEnvelope, WorkspaceIndex},
     scheme_file::{
         ensure_scheme_directories, prune_removed_scheme_files, read_daily_queue_file,
-        read_existing_daily_queue_index, write_daily_backup, write_scheme_file,
+        read_existing_daily_queue_index, scheme_path_for_workspace, write_daily_backup,
+        write_scheme_file,
     },
 };
 
@@ -180,6 +181,20 @@ pub fn save_workspace_incremental(
         if let Some(scheme) = workspace.schemes.get(scheme_id) {
             write_scheme_file(&base_dir, &workspace, scheme)
                 .with_context(|| format!("write scheme {}", scheme.id))?;
+        }
+    }
+    // A lazily loaded or starter scheme may not be in the dirty set when an
+    // incremental save first creates the workspace index. Never leave any
+    // indexed scheme without its body: the next launch treats that as a
+    // damaged workspace and moves the whole directory aside. Existing files
+    // remain untouched, so this repair is limited to missing files.
+    for (scheme_id, scheme) in &workspace.schemes {
+        let Some(path) = scheme_path_for_workspace(&base_dir, &workspace, *scheme_id)? else {
+            continue;
+        };
+        if !path.exists() {
+            write_scheme_file(&base_dir, &workspace, scheme)
+                .with_context(|| format!("write missing daily scheme {}", scheme.id))?;
         }
     }
     prune_removed_scheme_files(&base_dir, &workspace)?;

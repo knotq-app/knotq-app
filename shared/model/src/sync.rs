@@ -83,10 +83,42 @@ const SCHEME_CONTENT_DOCUMENT_NAMESPACE: [u8; 16] = [
 /// the same convergence-by-derivation pattern as `daily_queue_document_id` and
 /// `stable_item_seed_client_id`.
 pub fn scheme_content_document_id(scheme: SchemeId) -> DocumentId {
+    if let Some(document) = starter_scheme_document_id(scheme) {
+        return document;
+    }
     DocumentId(stable_derived_uuid(
         SCHEME_CONTENT_DOCUMENT_NAMESPACE,
         scheme.0.as_bytes(),
     ))
+}
+
+/// The starter workspace's root schemes and the content documents it binds them
+/// to. Every install seeds these exact pairs, so a re-minted binding for one of
+/// these schemes has to land on the same document — a hashed id would put the
+/// re-minting device's content in a document no other device holds.
+const STARTER_SCHEME_DOCUMENTS: [(u128, u128); 3] = [
+    (
+        0x0000_0000_0000_8000_8000_0000_0000_0101,
+        0x0000_0000_0000_8000_8000_0000_0000_0201,
+    ),
+    (
+        0x0000_0000_0000_8000_8000_0000_0000_0102,
+        0x0000_0000_0000_8000_8000_0000_0000_0202,
+    ),
+    (
+        0x0000_0000_0000_8000_8000_0000_0000_0103,
+        0x0000_0000_0000_8000_8000_0000_0000_0203,
+    ),
+];
+
+/// The content document the starter workspace seeds for `scheme`, if `scheme`
+/// is one of its root schemes.
+pub fn starter_scheme_document_id(scheme: SchemeId) -> Option<DocumentId> {
+    let scheme = scheme.0.as_u128();
+    STARTER_SCHEME_DOCUMENTS
+        .iter()
+        .find(|(starter, _)| *starter == scheme)
+        .map(|(_, document)| DocumentId(uuid::Uuid::from_u128(*document)))
 }
 
 /// Sync metadata for a scheme's content document with the deterministic

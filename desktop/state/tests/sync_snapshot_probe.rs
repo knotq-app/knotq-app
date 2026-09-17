@@ -91,6 +91,50 @@ fn snapshot(state: &mut AppState, workspace: &Workspace) -> (f64, f64, f64, f64)
     (store, pending_ms, handles_ms, clone_ms)
 }
 
+fn maintenance_cost() {
+    // The normal 256KiB / 4x policy cannot select this test's small fixtures,
+    // so use test-only overrides: zero bytes selects the scheme and zero ratio
+    // accepts the history-free rebuild regardless of its encoded size.
+    std::env::set_var("KNOTQ_SQUASH_MIN_STATE_BYTES", "0");
+    std::env::set_var("KNOTQ_SQUASH_MIN_RATIO", "0");
+
+    let (workspace, _) = workspace_of(1, 5_000);
+    let scheme = workspace.schemes.values().next().expect("a scheme");
+    let document = workspace.scheme_sync[&scheme.id].id;
+    let crdt = WorkspaceCrdtDocuments::try_new(&workspace).expect("build crdt");
+    let mut local_state = knotq_sync::LocalSyncState::default();
+    local_state.document_cursors.insert(
+        document,
+        knotq_sync::DocumentSyncCursor {
+            document,
+            kind: knotq_model::SyncDocumentKind::Scheme,
+            last_pulled_sequence: 1,
+            last_pushed_sequence: 1,
+            epoch: 0,
+        },
+    );
+
+    let start = Instant::now();
+    let proposal = knotq_sync::build_squash_proposal(&crdt, &local_state)
+        .expect("test thresholds should select the scheme");
+    let proposal_ms = ms(start);
+
+    let server = knotq_sync::testing::MemoryServer::default();
+    server.inject_orphan_scheme_document(scheme);
+    let start = Instant::now();
+    server.squash_document(document, proposal.state_v1);
+    let squash_ms = ms(start);
+
+    let start = Instant::now();
+    server.run_compaction();
+    let compaction_ms = ms(start);
+    println!(
+        "\nmaintenance on a 5,000-item scheme: proposal {:.1}ms, server squash {:.3}ms, \
+         server compaction {:.1}ms",
+        proposal_ms, squash_ms, compaction_ms
+    );
+}
+
 /// How a burst of keystrokes is spread over the workspace.
 #[derive(Clone, Copy)]
 enum Burst {
@@ -166,4 +210,5 @@ fn snapshot_cost_by_edits_per_run() {
     run("walking lines", 180, 11, Burst::WalkingLines);
     run("one line, larger", 170, 22, Burst::OneLine);
     run("walking lines, larger", 170, 22, Burst::WalkingLines);
+    maintenance_cost();
 }

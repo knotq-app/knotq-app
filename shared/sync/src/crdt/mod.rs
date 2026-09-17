@@ -409,6 +409,7 @@ impl WorkspaceCrdtDocuments {
         docs.sync_changes_with_scheme_factory(
             &workspace,
             &WorkspaceCrdtChangeSet::default().workspace(),
+            &HashMap::new(),
             |scheme_id, document_id| {
                 YrsSchemeDocument::new_with_client_id(
                     document_id,
@@ -622,6 +623,40 @@ impl WorkspaceCrdtDocuments {
             ids.insert(deferred.document);
         }
         ids
+    }
+
+    /// Whether the durable workspace-index document contains a real persisted
+    /// state. A newly signed-in device has an intentionally empty local CRDT;
+    /// that empty base must pull the server before any plain-workspace repair
+    /// is considered authoritative.
+    pub fn workspace_is_seeded(&self) -> bool {
+        self.workspace.is_seeded()
+    }
+
+    /// Compare the persisted folder records without treating their derived
+    /// child lists as local authority. Child lists can legitimately differ
+    /// while a concurrent scheme/index update is still being merged; the
+    /// folder records themselves are the persistence-boundary signal for a
+    /// locally-created or locally-renamed/moved folder.
+    pub fn workspace_folder_records_match(&self, workspace: &Workspace) -> anyhow::Result<bool> {
+        if !self.workspace.is_seeded() {
+            return Ok(false);
+        }
+        let mut normalized = workspace.clone();
+        normalized.ensure_sync_metadata();
+        let actual = self.workspace.snapshot()?;
+        let mut expected = workspace_document_snapshot(&normalized);
+        for folder in &mut expected.folders {
+            folder.children.clear();
+        }
+        let mut actual_folders = actual.folders;
+        actual_folders
+            .iter_mut()
+            .for_each(|folder| folder.children.clear());
+        Ok(actual_folders == expected.folders
+            && actual.recently_deleted_folders == expected.recently_deleted_folders
+            && actual.deleted_folder_origins == expected.deleted_folder_origins
+            && actual.folder_sync == expected.folder_sync)
     }
 
     /// Promote a deferred scheme document into a live Yjs document, so it can be
@@ -1272,18 +1307,96 @@ impl WorkspaceCrdtDocuments {
         workspace: &Workspace,
         changeset: &WorkspaceCrdtChangeSet,
     ) -> WorkspaceCrdtSyncOutcome {
+        self.sync_changes_with_bases(workspace, changeset, &HashMap::new())
+    }
+
+    /// [`Self::sync_changes`], given what each scheme held before the edits being
+    /// written, for schemes whose documents had never been populated when those
+    /// edits were made (see [`Self::scheme_document_is_unpopulated`]). Such a
+    /// document is populated from its base first, so the edits land as edits.
+    pub fn sync_changes_with_bases(
+        &mut self,
+        workspace: &Workspace,
+        changeset: &WorkspaceCrdtChangeSet,
+        bases: &HashMap<SchemeId, Scheme>,
+    ) -> WorkspaceCrdtSyncOutcome {
         // A doc absent from `self.schemes` is authored from an empty base, so it gets a
         // fresh identity (`None`); the stable clientID is reserved for from-bytes restore
         // in `from_states` to prevent `(clientID, clock)` reuse across incarnations.
-        self.sync_changes_with_scheme_factory(workspace, changeset, move |_, document_id| {
+        self.sync_changes_with_scheme_factory(workspace, changeset, bases, move |_, document_id| {
             YrsSchemeDocument::for_replica(document_id, None)
         })
+    }
+
+    /// Whether `scheme`'s document has never been populated on this replica —
+    /// absent, or present but empty. An edit to such a scheme has to record the
+    /// scheme's content from before the edit and hand it to
+    /// [`Self::sync_changes_with_bases`]. A deferred document holds real bytes.
+    pub fn scheme_document_is_unpopulated(&self, scheme: SchemeId) -> bool {
+        if self.deferred.contains_key(&scheme) {
+            return false;
+        }
+        self.schemes
+            .get(&scheme)
+            .is_none_or(|document| document.is_unpopulated())
+    }
+
+    /// Write the given schemes' content documents from `workspace`, and nothing
+    /// else: the workspace index is never re-emitted and no other document is
+    /// dropped. For repairs that re-express local scheme content against
+    /// documents that may hold newer remote state. `sync_changes` treats every
+    /// scheme the passed workspace does not list as removed — so given a
+    /// workspace from before a pull it re-wrote the whole index from that stale
+    /// copy, deleting the folders, schemes and days the pull had just brought
+    /// in, and pruned their documents.
+    pub fn sync_scheme_documents(
+        &mut self,
+        workspace: &Workspace,
+        schemes: &[SchemeId],
+    ) -> WorkspaceCrdtSyncOutcome {
+        let workspace = if workspace.sync_metadata_is_current() {
+            Cow::Borrowed(workspace)
+        } else {
+            let mut repaired = workspace.clone();
+            repaired.ensure_sync_metadata();
+            Cow::Owned(repaired)
+        };
+        let workspace = workspace.as_ref();
+        let mut outcome = WorkspaceCrdtSyncOutcome::default();
+        let mut ids: Vec<SchemeId> = schemes.to_vec();
+        ids.sort();
+        ids.dedup();
+        for id in ids {
+            let Some(scheme) = workspace.schemes.get(&id) else {
+                continue;
+            };
+            let meta = match scheme_meta(workspace, id) {
+                Ok(meta) => meta,
+                Err(err) => {
+                    outcome.push_error(format!("scheme CRDT metadata {id}"), err);
+                    continue;
+                }
+            };
+            self.hydrate_deferred(id);
+            match self
+                .schemes
+                .entry(id)
+                .or_insert_with(|| YrsSchemeDocument::for_replica(meta.id, None))
+                .sync_scheme(scheme)
+            {
+                Ok(Some(update)) => outcome.updates.push(update),
+                Ok(None) => {}
+                Err(err) => outcome.push_error(format!("scheme CRDT update {id}"), err),
+            }
+        }
+        outcome
     }
 
     fn sync_changes_with_scheme_factory(
         &mut self,
         workspace: &Workspace,
         changeset: &WorkspaceCrdtChangeSet,
+        bases: &HashMap<SchemeId, Scheme>,
         mut new_scheme_document: impl FnMut(SchemeId, DocumentId) -> YrsSchemeDocument,
     ) -> WorkspaceCrdtSyncOutcome {
         // Only clone to repair. This runs on the per-keystroke path, where the
@@ -1362,7 +1475,7 @@ impl WorkspaceCrdtDocuments {
                 .schemes
                 .entry(id)
                 .or_insert_with(|| new_scheme_document(id, meta.id))
-                .sync_scheme(scheme)
+                .sync_scheme_from_base(bases.get(&id), scheme)
             {
                 Ok(Some(update)) => outcome.updates.push(update),
                 Ok(None) => {}
@@ -1862,8 +1975,65 @@ impl WorkspaceCrdtDocuments {
             );
         }
 
+        // An item id is globally unique. A concurrent move is represented as
+        // a tombstone in the source document plus a live insert in the target;
+        // when two devices choose different targets, both inserts are otherwise
+        // valid and would materialize as two copies. Keep the same deterministic
+        // winner on every replica. Only schemes materialized above participate:
+        // a lazy/off-window Daily page is intentionally absent and must not be
+        // interpreted as a deletion or placement decision.
+        dedupe_materialized_items(&mut workspace);
+
         workspace.ensure_sync_metadata();
         Ok(workspace)
+    }
+}
+
+fn dedupe_materialized_items(workspace: &mut Workspace) {
+    let mut scheme_ids: Vec<SchemeId> = workspace.schemes.keys().copied().collect();
+    scheme_ids.sort();
+    let mut seen = HashSet::new();
+    for scheme_id in scheme_ids {
+        let Some(scheme) = workspace.schemes.get_mut(&scheme_id) else {
+            continue;
+        };
+        scheme.items.retain(|item| seen.insert(item.id));
+    }
+}
+
+impl WorkspaceCrdtDocuments {
+    /// Return the materialized scheme documents that still contain a losing
+    /// copy after [`materialized_workspace_repair`] removed duplicate item ids.
+    /// The caller re-expresses those schemes through the normal CRDT write path,
+    /// which tombstones the losing copy durably. Deferred documents are excluded
+    /// so an off-window Daily page remains byte-for-byte untouched.
+    pub(crate) fn duplicate_item_repair_schemes(&self, workspace: &Workspace) -> Vec<SchemeId> {
+        let mut scheme_ids: Vec<SchemeId> = self
+            .schemes
+            .keys()
+            .copied()
+            .filter(|id| workspace.schemes.contains_key(id))
+            .collect();
+        scheme_ids.sort();
+
+        let mut owners: HashMap<ItemId, SchemeId> = HashMap::new();
+        let mut losers = HashSet::new();
+        for scheme_id in scheme_ids {
+            let Some(document) = self.schemes.get(&scheme_id) else {
+                continue;
+            };
+            let Ok(items) = document.scheme_items() else {
+                continue;
+            };
+            for item in items {
+                if owners.insert(item.id, scheme_id).is_some() {
+                    losers.insert(scheme_id);
+                }
+            }
+        }
+        let mut losers: Vec<SchemeId> = losers.into_iter().collect();
+        losers.sort();
+        losers
     }
 }
 
@@ -1949,6 +2119,16 @@ struct WorkspaceNodeEntry {
     #[serde(default)]
     position: String,
     payload: String,
+    /// Field-schema stamp, present only on entries written by a build that also
+    /// maintains the `node_fields` map. Its ABSENCE is the signal that matters:
+    /// a build predating `node_fields` regenerates this whole entry from its own
+    /// struct on every write, so it can never carry the stamp, and its payload is
+    /// therefore the authority for that node. See `NODE_FIELD_SCHEMA`.
+    ///
+    /// `skip_serializing_if` keeps it off the wire when absent so an entry an old
+    /// build wrote and a new build merely re-reads stays byte-identical.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    field_schema: Option<u32>,
 }
 
 #[derive(Serialize, Deserialize)]

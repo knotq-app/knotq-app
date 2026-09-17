@@ -15,6 +15,49 @@ use super::services::{
 use super::sync_service::spawn_sync_task;
 use super::*;
 
+/// The first local sequence a relaunched store may mint: past every sequence
+/// still pending or already pushed in the persisted sync state, so post-restart
+/// edits never reuse one (Bug 1 fix). Mirrors mobile/core/src/lib.rs:820-841.
+pub(crate) fn restored_initial_sequence(workspace_path: &std::path::Path) -> u64 {
+    let sync_state = load_local_sync_state(workspace_path).unwrap_or_default();
+    let max_pending = sync_state
+        .pending
+        .iter()
+        .map(|e| e.local_sequence)
+        .max()
+        .unwrap_or(0);
+    let max_pushed = sync_state
+        .document_cursors
+        .values()
+        .map(|c| c.last_pushed_sequence)
+        .max()
+        .unwrap_or(0);
+    max_pending.max(max_pushed) + 1
+}
+
+/// The saved CRDT states a launch restores, with the saved pending queue folded
+/// in: a crash between the queue and CRDT saves (or an older build that left the
+/// two apart) must not let the next session edit beside a queued edit it never
+/// saw (see [`knotq_sync::fold_pending_edits_into_state`]).
+pub(crate) fn restored_crdt_states(
+    workspace_path: &std::path::Path,
+) -> HashMap<knotq_model::DocumentId, Vec<u8>> {
+    let mut states = load_crdt_state(workspace_path).unwrap_or_default();
+    let sync_state = load_local_sync_state(workspace_path).unwrap_or_default();
+    if sync_state.pending.is_empty() {
+        return states;
+    }
+    for (document, state) in &mut states {
+        if let Some(folded) =
+            knotq_sync::fold_pending_edits_into_state(*document, state, &sync_state.pending)
+        {
+            eprintln!("restore: applied queued edits missing from the saved state of {document}");
+            *state = folded;
+        }
+    }
+    states
+}
+
 impl KnotQApp {
     pub fn new(cx: &mut Context<Self>) -> Self {
         let bootstrap = load_or_seed();
@@ -86,27 +129,9 @@ impl KnotQApp {
         // identity survives this restart instead of being rebuilt from plain data.
         // This stays active even when account sync is hidden/compiled out, so a
         // future sync-capable build can reuse the local CRDT history.
-        let crdt_states = load_crdt_state(&workspace_path()).unwrap_or_default();
+        let crdt_states = restored_crdt_states(&workspace_path());
 
-        // Seed next_sequence from persisted sync state so post-restart edits never
-        // reuse sequence numbers still present in the pending queue (Bug 1 fix).
-        // Mirrors mobile/core/src/lib.rs:820-841.
-        let initial_sequence = {
-            let sync_state = load_local_sync_state(&workspace_path()).unwrap_or_default();
-            let max_pending = sync_state
-                .pending
-                .iter()
-                .map(|e| e.local_sequence)
-                .max()
-                .unwrap_or(0);
-            let max_pushed = sync_state
-                .document_cursors
-                .values()
-                .map(|c| c.last_pushed_sequence)
-                .max()
-                .unwrap_or(0);
-            max_pending.max(max_pushed) + 1
-        };
+        let initial_sequence = restored_initial_sequence(&workspace_path());
 
         let mut app = Self {
             state: AppState::new(

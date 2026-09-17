@@ -2,9 +2,12 @@
 //! of the `crdt` module, so each submodule's `use super::super::*` reaches the same
 //! internal items the original flat `use super::*` did.
 
+mod daily_window_index;
 mod document_state_handles;
 mod helpers;
 mod merge;
+mod repair_sync;
 mod schema_validation;
 mod scheme_edit_sequences;
+mod scheme_population;
 mod workspace_materialization;

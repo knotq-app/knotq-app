@@ -64,7 +64,12 @@ fn create_scheme(
             Command::DeleteScheme { id },
             Command::PermanentlyDeleteScheme { id },
         ]),
-        touched: ChangeSet::default().touched_folder(folder),
+        // The new scheme itself is touched: `touched.schemes` is what an
+        // incremental save writes, and a scheme listed in the index with no
+        // file behind it makes the whole workspace fail to load.
+        touched: ChangeSet::default()
+            .touched_folder(folder)
+            .touched_scheme(id),
     })
 }
 
@@ -105,7 +110,11 @@ fn restore_scheme(
     workspace.schemes.insert(id, scheme);
     Ok(CommandReceipt {
         inverse: Command::DeleteScheme { id },
-        touched: ChangeSet::default().touched_folder(folder),
+        // The whole scheme was (re)written — it may be new, or carry different
+        // items than its file — so the scheme must be saved too.
+        touched: ChangeSet::default()
+            .touched_folder(folder)
+            .touched_scheme(id),
     })
 }
 
@@ -253,12 +262,20 @@ fn permanently_delete_scheme(
     else {
         return Err(CommandError::SchemeMissing(id));
     };
+    // Check before mutating: `remove_scheme_completely` clears archive state and
+    // the daily binding, so calling it first and erroring afterwards would leave
+    // the workspace half-modified. Command application is atomic — a rejected
+    // command must leave the workspace untouched.
+    if !workspace.schemes.contains_key(&id) {
+        return Err(CommandError::SchemeMissing(id));
+    }
+    let origin = workspace.deleted_scheme_origin(id);
+    // One chokepoint for destroying a scheme: this also clears the daily-queue
+    // binding, which would otherwise outlive the scheme and re-materialize the
+    // day as an empty page.
     let removed = workspace
-        .schemes
-        .remove(&id)
+        .remove_scheme_completely(id)
         .ok_or(CommandError::SchemeMissing(id))?;
-    workspace.recently_deleted.remove(trash_position);
-    let origin = workspace.deleted_scheme_origins.remove(&id);
     Ok(CommandReceipt {
         inverse: Command::RestoreDeletedScheme {
             position: trash_position,

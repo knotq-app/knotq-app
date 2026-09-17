@@ -35,16 +35,25 @@ fn lcg(state: &mut u64) -> u32 {
     (*state >> 33) as u32
 }
 
-/// Insert a scheme carrying one item directly into the workspace, returning the
-/// ids. Mirrors the direct-mutation pattern used by the dispatch tests.
+/// Add a scheme carrying one item through the store (not undoable), returning
+/// the ids.
 fn add_scheme_with_item(state: &mut AppState, name: &str, body: &str) -> (SchemeId, ItemId) {
     let mut scheme = Scheme::new(name, 0);
     let scheme_id = scheme.id;
     let item = Item::new(body);
     let item_id = item.id;
     scheme.items.push(item);
-    state.workspace.schemes.insert(scheme_id, scheme);
-    state.mark_scheme_dirty(scheme_id);
+    let root = state.workspace.root;
+    state
+        .apply_prechecked_local_command(
+            knotq_commands::Command::RestoreScheme {
+                folder: root,
+                position: 0,
+                scheme,
+            },
+            knotq_commands::CommandOrigin::User,
+        )
+        .unwrap();
     (scheme_id, item_id)
 }
 
@@ -122,17 +131,25 @@ fn scheme_undo_skips_workspace_ops_then_workspace_undo_reaches_them() {
         name: "Projects".into(),
         position: None,
     });
-    assert_eq!(state.workspace.folders[&root].children.len(), 1);
+    // Count folders only: scheme A also lives under root.
+    let root_folders = |state: &AppState| {
+        state.workspace.folders[&root]
+            .children
+            .iter()
+            .filter(|child| matches!(child, knotq_model::NodeRef::Folder(_)))
+            .count()
+    };
+    assert_eq!(root_folders(&state), 1);
 
     // Undo while focused on the scheme reverts the scheme edit, not the folder.
     state.undo_command();
     assert_eq!(text(&state, a, ia), "a0");
-    assert_eq!(state.workspace.folders[&root].children.len(), 1);
+    assert_eq!(root_folders(&state), 1);
 
     // Switching to a no-scheme view lets undo reach the workspace op.
     focus_union(&mut state);
     state.undo_command();
-    assert!(state.workspace.folders[&root].children.is_empty());
+    assert_eq!(root_folders(&state), 0);
 }
 
 #[test]

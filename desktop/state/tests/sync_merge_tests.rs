@@ -220,7 +220,7 @@ fn merge_preserves_local_edits_made_during_sync_run() {
 }
 
 #[test]
-fn merge_preserves_direct_workspace_mutations_made_during_sync_run() {
+fn merge_preserves_scheme_created_during_sync_run() {
     let (mut state, scheme_id) = app_state_with_scheme("Plans");
 
     let watermark = state.local_edit_watermark();
@@ -234,19 +234,20 @@ fn merge_preserves_direct_workspace_mutations_made_during_sync_run() {
         "Renamed remotely",
     );
 
-    // A direct (non-command) mutation while the run is in flight — the path
-    // used when e.g. today's Daily Queue scheme is created on the fly.
+    // A scheme created while the run is in flight, through the store.
     let direct = Scheme::new("Direct", 1);
     let direct_id = direct.id;
-    state.workspace.schemes.insert(direct_id, direct);
+    let root = state.workspace.root;
     state
-        .workspace
-        .folders
-        .get_mut(&state.workspace.root)
-        .unwrap()
-        .children
-        .push(NodeRef::Scheme(direct_id));
-    state.mark_scheme_dirty(direct_id);
+        .apply_prechecked_local_command(
+            Command::RestoreScheme {
+                folder: root,
+                position: 0,
+                scheme: direct,
+            },
+            CommandOrigin::User,
+        )
+        .unwrap();
     assert!(state.has_local_edits_since(watermark));
 
     assert!(state.merge_workspace_from_sync(&result_workspace, &result_states));
@@ -342,11 +343,19 @@ fn undo_after_sync_merge_preserves_remote_change_and_pushes_cleanly() {
 
 #[test]
 fn watermark_reports_no_edits_when_nothing_changed() {
-    let (mut state, _) = app_state_with_scheme("Plans");
+    let (mut state, scheme_id) = app_state_with_scheme("Plans");
     let watermark = state.local_edit_watermark();
     assert!(!state.has_local_edits_since(watermark));
 
-    state.mark_direct_workspace_dirty();
+    state
+        .apply_prechecked_local_command(
+            Command::RenameScheme {
+                id: scheme_id,
+                name: "Renamed".into(),
+            },
+            CommandOrigin::User,
+        )
+        .unwrap();
     assert!(state.has_local_edits_since(watermark));
 }
 
@@ -432,8 +441,16 @@ fn replace_from_sync_reports_a_change_for_real_remote_content() {
     let (mut state, scheme_id) = app_state_with_scheme("Plans");
     let item = Item::new("original");
     let item_id = item.id;
-    state.workspace.schemes.get_mut(&scheme_id).unwrap().items = vec![item];
-    state.sync_store_from_workspace();
+    state
+        .apply_prechecked_local_command(
+            Command::InsertItem {
+                scheme: scheme_id,
+                position: 0,
+                item,
+            },
+            CommandOrigin::User,
+        )
+        .unwrap();
 
     let snapshot = state.workspace.clone();
     let snapshot_states = state.crdt_document_states();
@@ -445,4 +462,44 @@ fn replace_from_sync_reports_a_change_for_real_remote_content() {
         "a sync run carrying a peer's edit must report a visible change"
     );
     assert_eq!(item_text(&state, scheme_id, item_id), "from-peer");
+}
+
+/// Production-fuzz seed 3: a scheme edited and then permanently deleted left
+/// its unpushed edit in the store. Every sync run discarded the edit (the
+/// document is no longer bound, so the server can never take it) but only its
+/// own copy, so the device reported unsynced work forever.
+#[test]
+fn edits_to_a_permanently_deleted_scheme_are_dropped_not_kept_forever() {
+    let (mut state, scheme_id) = app_state_with_scheme("Doomed");
+    let document = state.workspace.scheme_sync[&scheme_id].id;
+    state
+        .apply_command(Command::InsertItem {
+            scheme: scheme_id,
+            position: 0,
+            item: Item::new("edited before deleting"),
+        })
+        .unwrap();
+    assert!(
+        state
+            .pending_crdt_edits()
+            .iter()
+            .any(|edit| edit.document == document),
+        "the edit is pending for the scheme's document"
+    );
+
+    state
+        .apply_command(Command::DeleteScheme { id: scheme_id })
+        .unwrap();
+    state
+        .apply_command(Command::PermanentlyDeleteScheme { id: scheme_id })
+        .unwrap();
+    assert!(state.drop_unbound_pending_crdt_edits() > 0);
+    assert!(
+        state
+            .pending_crdt_edits()
+            .iter()
+            .all(|edit| edit.document != document),
+        "an edit to the deleted scheme's document is still pending"
+    );
+    assert_eq!(state.drop_unbound_pending_crdt_edits(), 0);
 }

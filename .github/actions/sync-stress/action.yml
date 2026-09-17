@@ -19,6 +19,19 @@ inputs:
   ws-fuzz-steps:
     description: Operations per seed for the WebSocket fuzz.
     default: "40"
+  production-fuzz-seeds:
+    description: >
+      Seeds per configuration for the desktop production-path fuzzer. Raised from
+      24 to 128 on 2026-09-16: a 60-seed local sweep found 7 failing seeds in EACH
+      of the two configurations, several of them outside the old 24 — and the ones
+      inside it had been failing unnoticed. This fuzzer drives the real AppState,
+      real disk and the real sync_snapshot path, so its seeds are the most
+      expensive and the most valuable; a shallow corpus here is how a
+      no-silent-loss violation reaches a release.
+    default: "128"
+  production-fuzz-steps:
+    description: Steps per seed for the desktop production-path fuzzer.
+    default: "200"
   ws-hop-seeds:
     description: Seeds for the account-hopping-over-WebSocket fuzz (the slowest).
     default: "2"
@@ -67,6 +80,24 @@ runs:
         KNOTQ_FUZZ_SEEDS: ${{ inputs.fuzz-seeds }}
         KNOTQ_FUZZ_STEPS: ${{ inputs.fuzz-steps }}
       run: cargo test -p knotq-sync --test sync_property_model --release -- --nocapture
+
+    - name: Join / first-sign-in regressions
+      shell: bash
+      run: |
+        cargo test -p knotq-sync --release \
+          --test fresh_install_join --test offline_device_join --test starter_content_join
+
+    - name: Desktop production-path fuzzer (real AppState, disk, sync_snapshot)
+      if: inputs.production-fuzz-seeds != '0'
+      shell: bash
+      env:
+        KNOTQ_FUZZ_SEEDS: ${{ inputs.production-fuzz-seeds }}
+        KNOTQ_FUZZ_STEPS: ${{ inputs.production-fuzz-steps }}
+      # Every simulated device is the desktop below the UI: commands through the
+      # store, the save task and shutdown flush on a real data directory, and the
+      # real `sync_snapshot` with the sync task's landing. Checks the no-silent-
+      # loss oracle after every sync, relaunch, and against the server state.
+      run: cargo test -p knotq-app --release production_fuzz -- --nocapture
 
     - name: Backend-driven HTTP + WebSocket scenario / fuzz suites
       shell: bash

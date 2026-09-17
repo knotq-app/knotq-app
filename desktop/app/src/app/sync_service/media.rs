@@ -4,11 +4,16 @@ use std::path::Path;
 
 use anyhow::{anyhow, Context as AnyhowContext, Result};
 use knotq_model::{DocumentId, ImageAssetFormat, ImageInline, Item, ItemContent, Workspace};
-use knotq_storage_json::image_asset_path;
 use knotq_sync::{LocalSyncState, MAX_SYNC_MEDIA_BYTES};
 use sha2::{Digest, Sha256};
 
-use super::{SyncHttpClient, SyncMediaAsset};
+use super::{SyncMediaAsset, SyncSideChannel};
+
+/// Where an asset lives under the image directory — the same layout as
+/// `knotq_storage_json::image_asset_path`, rooted at the run's data directory.
+fn media_asset_path(image_dir: &Path, media: SyncMediaAsset) -> std::path::PathBuf {
+    image_dir.join(media.image_name())
+}
 
 impl SyncMediaAsset {
     pub(super) fn image_name(self) -> String {
@@ -60,13 +65,14 @@ fn collect_item_image_assets(item: &Item, images: &mut Vec<ImageInline>) {
 }
 
 pub(super) fn upload_local_media_assets(
-    client: &SyncHttpClient,
+    client: &dyn SyncSideChannel,
+    image_dir: &Path,
     local_state: &mut LocalSyncState,
     workspace: &Workspace,
     remote_latest: &HashMap<DocumentId, u64>,
 ) -> Result<()> {
     for media in workspace_media_assets(workspace) {
-        let path = image_asset_path(media.asset, media.format.extension());
+        let path = media_asset_path(image_dir, media);
         let Ok(metadata) = fs::metadata(&path) else {
             continue;
         };
@@ -129,12 +135,13 @@ pub(super) fn upload_local_media_assets(
 }
 
 pub(super) fn download_missing_media_assets(
-    client: &SyncHttpClient,
+    client: &dyn SyncSideChannel,
+    image_dir: &Path,
     workspace: &Workspace,
 ) -> Result<bool> {
     let mut downloaded = false;
     for media in workspace_media_assets(workspace) {
-        let path = image_asset_path(media.asset, media.format.extension());
+        let path = media_asset_path(image_dir, media);
         match media_asset_needs_download(&path) {
             Ok(false) => continue,
             Ok(true) => {}

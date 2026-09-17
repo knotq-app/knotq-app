@@ -280,19 +280,6 @@ fn direct_mutation_routes_bump_both_revisions() {
     );
 
     let before = revisions(&state);
-    state.mark_direct_workspace_dirty();
-    assert_ne!(
-        before.content,
-        state.content_revision(),
-        "mark_direct_workspace_dirty"
-    );
-    assert_ne!(
-        before.schedule,
-        state.schedule_revision(),
-        "mark_direct_workspace_dirty"
-    );
-
-    let before = revisions(&state);
     state.mark_dirty_from_command(&Command::DeleteScheme { id: scheme });
     assert_ne!(
         before.content,
@@ -608,13 +595,8 @@ fn scopeless_changes_raise_every_scheme_including_unseen_ones() {
 
     for (label, mutate) in [
         (
-            "mark_direct_workspace_dirty",
-            Box::new(|state: &mut AppState| state.mark_direct_workspace_dirty())
-                as Box<dyn Fn(&mut AppState)>,
-        ),
-        (
             "mark_index_dirty",
-            Box::new(|state: &mut AppState| state.mark_index_dirty()),
+            Box::new(|state: &mut AppState| state.mark_index_dirty()) as Box<dyn Fn(&mut AppState)>,
         ),
         (
             "mark_scheme_dirty",
@@ -654,7 +636,7 @@ fn a_schemes_revision_never_goes_backwards() {
 
     for round in 0..12 {
         if round % 3 == 0 {
-            state.mark_direct_workspace_dirty();
+            state.mark_index_dirty();
         } else {
             state
                 .apply_prechecked_local_command(

@@ -23,71 +23,26 @@ impl KnotQApp {
         should_notify: bool,
         cx: &mut Context<Self>,
     ) -> SchemeId {
-        if let Some(existing) = self.workspace.daily_queue_scheme_id(date) {
-            if self.workspace.scheme(existing).is_some() {
-                self.ensure_daily_queue_blank_placeholder(existing, should_notify, cx);
-                return existing;
-            }
-            match load_daily_queue_scheme(&workspace_path(), date) {
-                Ok(Some(mut scheme)) if scheme.id == existing => {
-                    ensure_plain_blank_daily_row(&mut scheme);
-                    self.workspace.schemes.insert(existing, scheme);
-                    self.state.mark_direct_workspace_dirty();
+        // Loading the day from disk, rebuilding it from its CRDT document, and
+        // creating it are one decision owned by the state layer, so every client
+        // and the sync fuzzer share it.
+        match self
+            .state
+            .ensure_daily_queue(date, || load_daily_queue_scheme(&workspace_path(), date))
+        {
+            Ok((id, changed)) => {
+                if changed {
+                    self.service_bus.signal_save();
                     if should_notify {
                         cx.notify();
                     }
-                    return existing;
                 }
-                Ok(Some(scheme)) => {
-                    eprintln!(
-                        "daily queue {} loaded with unexpected id {}, expected {}",
-                        date, scheme.id, existing
-                    );
-                    return existing;
-                }
-                Ok(None) => {}
-                Err(err) => {
-                    eprintln!("daily queue load failed for {date}: {err:#}");
-                    return existing;
-                }
+                id
             }
-            self.workspace.daily_queue.remove(&date);
-            self.state.mark_direct_workspace_dirty();
-        }
-
-        let id = knotq_model::daily_queue_scheme_id(date);
-        let mut scheme = Scheme::new(daily_queue_scheme_name(date), DAILY_QUEUE_COLOR_INDEX);
-        scheme.id = id;
-        ensure_plain_blank_daily_row(&mut scheme);
-        self.workspace.daily_queue.insert(date, id);
-        self.workspace.schemes.insert(id, scheme);
-        self.workspace
-            .scheme_sync
-            .insert(id, knotq_model::daily_queue_sync_metadata(date));
-        self.state.mark_scheme_dirty(id);
-        self.service_bus.signal_save();
-        if should_notify {
-            cx.notify();
-        }
-        id
-    }
-
-    fn ensure_daily_queue_blank_placeholder(
-        &mut self,
-        scheme_id: SchemeId,
-        should_notify: bool,
-        cx: &mut Context<Self>,
-    ) {
-        let Some(scheme) = self.workspace.schemes.get_mut(&scheme_id) else {
-            return;
-        };
-        if !ensure_plain_blank_daily_row(scheme) {
-            return;
-        }
-        self.state.mark_scheme_dirty(scheme_id);
-        self.service_bus.signal_save();
-        if should_notify {
-            cx.notify();
+            Err((id, reason)) => {
+                eprintln!("daily queue {date}: {reason}");
+                id
+            }
         }
     }
 
@@ -107,27 +62,22 @@ impl KnotQApp {
 
         match load_daily_queue_schemes_for_calendar_range(&workspace_path(), start, end) {
             Ok(schemes) => {
-                let mut changed = false;
-                for (date, scheme) in schemes {
-                    let Some(expected_id) = self.workspace.daily_queue_scheme_id(date) else {
-                        continue;
-                    };
-                    if expected_id != scheme.id {
-                        eprintln!(
-                            "daily queue {} loaded with unexpected id {}, expected {}",
-                            date, scheme.id, expected_id
-                        );
-                        continue;
-                    }
-                    if self.workspace.schemes.contains_key(&scheme.id) {
-                        continue;
-                    }
-                    self.workspace.schemes.insert(scheme.id, scheme);
-                    self.state.mark_direct_workspace_dirty();
-                    changed = true;
-                }
+                let loaded: Vec<Scheme> = schemes
+                    .into_iter()
+                    .filter_map(|(date, scheme)| {
+                        let expected_id = self.workspace.daily_queue_scheme_id(date)?;
+                        if expected_id != scheme.id {
+                            eprintln!(
+                                "daily queue {} loaded with unexpected id {}, expected {}",
+                                date, scheme.id, expected_id
+                            );
+                            return None;
+                        }
+                        Some(scheme)
+                    })
+                    .collect();
                 self.daily_queue_loaded_calendar_months.extend(months);
-                if changed {
+                if self.state.adopt_loaded_schemes(loaded) {
                     cx.notify();
                 }
             }
@@ -248,32 +198,5 @@ impl KnotQApp {
             self.ensure_daily_queue_window(cx);
         }
         cx.notify();
-    }
-}
-
-fn ensure_plain_blank_daily_row(scheme: &mut Scheme) -> bool {
-    if !scheme.items.is_empty() {
-        return false;
-    }
-    scheme.items.push(Item::new(""));
-    true
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use knotq_model::ItemMarker;
-
-    #[test]
-    fn empty_daily_scheme_gets_plain_blank_placeholder_row() {
-        let mut scheme = Scheme::new("Daily 2026-06-05", DAILY_QUEUE_COLOR_INDEX);
-
-        assert!(ensure_plain_blank_daily_row(&mut scheme));
-        assert_eq!(scheme.items.len(), 1);
-        assert_eq!(scheme.items[0].text(), "");
-        assert_eq!(scheme.items[0].marker, ItemMarker::Blank);
-        assert_eq!(scheme.items[0].indent, 0);
-        assert!(!ensure_plain_blank_daily_row(&mut scheme));
-        assert_eq!(scheme.items.len(), 1);
     }
 }

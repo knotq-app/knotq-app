@@ -19,10 +19,11 @@
 
 mod common;
 
-use chrono::NaiveDate;
+use chrono::{DateTime, NaiveDate, Utc};
 use common::{Rng, TestDevice, TestServer};
 use knotq_model::{
-    DocumentId, FolderId, Item, ReplicaId, SchemeId, SyncDocumentKind, Workspace, WorkspaceId,
+    DocumentId, FolderId, Item, ItemMarker, ReplicaId, SchemeId, SyncDocumentKind, Workspace,
+    WorkspaceId,
 };
 use knotq_sync::{
     batch_pull_and_apply, BatchPullRequest, BatchPullResponse, BatchPushRequest, BatchPushResponse,
@@ -30,6 +31,7 @@ use knotq_sync::{
 };
 use std::cell::Cell;
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 fn fresh_device(account: WorkspaceId) -> TestDevice {
     let mut base = Workspace::new();
@@ -105,7 +107,7 @@ struct World {
 
 /// Ops in `edit_op` that mutate a scheme's item list (so an undo can revert it).
 fn is_content_op(op: u64) -> bool {
-    matches!(op, 5 | 6 | 7 | 8 | 9 | 11 | 20)
+    matches!(op, 5 | 6 | 7 | 8 | 9 | 11 | 20 | 24 | 25)
 }
 
 impl World {
@@ -216,7 +218,7 @@ impl World {
 
         // Pre-roll every random choice BEFORE taking &mut on the device, so the RNG
         // and the device (disjoint fields) are never borrowed at once.
-        let op = self.rng.below(21);
+        let op = self.rng.below(27);
         let scheme = (!scheme_ids.is_empty())
             .then(|| scheme_ids[self.rng.below(scheme_ids.len() as u64) as usize]);
         let folder = (!folder_ids.is_empty())
@@ -322,7 +324,16 @@ impl World {
             }
             16 => {
                 if let Some(s) = scheme {
-                    dev.delete_scheme(s);
+                    // A daily-bound scheme is unreachable by the product's
+                    // DeleteScheme: it is never in a folder's children (see
+                    // `normalize_folder_tree`), so the command returns
+                    // `SchemeMissing`. The harness helper hard-removes instead,
+                    // which manufactured an orphan daily binding the product
+                    // cannot create. `production_fuzz` already filters this the
+                    // same way (`actions.rs`: `!is_daily_queue_scheme`).
+                    if !dev.workspace.is_daily_queue_scheme(s) {
+                        dev.delete_scheme(s);
+                    }
                 }
             }
             17 => {
@@ -352,6 +363,52 @@ impl World {
                         dev.set_item_indent(s, (a as usize) % n, (b % 4) as u8);
                     }
                 }
+            }
+            21 => {
+                if let Some(f) = nonroot_folder {
+                    dev.archive_folder(f);
+                }
+            }
+            22 => {
+                if let Some(f) = nonroot_folder {
+                    dev.restore_folder(f);
+                }
+            }
+            23 => {
+                if let Some(f) = nonroot_folder {
+                    dev.delete_folder(f);
+                }
+            }
+            24 => {
+                if let Some(s) = scheme {
+                    let n = items_in(s);
+                    if n > 0 {
+                        let marker = match b % 4 {
+                            0 => ItemMarker::Blank,
+                            1 => ItemMarker::Bullet,
+                            2 => ItemMarker::Numbered,
+                            _ => ItemMarker::Checkbox,
+                        };
+                        dev.set_item_marker(s, (a as usize) % n, marker);
+                    }
+                }
+            }
+            25 => {
+                if let Some(s) = scheme {
+                    let n = items_in(s);
+                    if n > 0 {
+                        let start = a.is_multiple_of(2).then(|| {
+                            DateTime::<Utc>::from_timestamp(1_800_000_000 + a as i64, 0).unwrap()
+                        });
+                        let end = b.is_multiple_of(2).then(|| {
+                            DateTime::<Utc>::from_timestamp(1_800_100_000 + b as i64, 0).unwrap()
+                        });
+                        dev.set_item_dates(s, (a as usize) % n, start, end);
+                    }
+                }
+            }
+            26 => {
+                dev.carryover_daily_queue(date_for(a));
             }
             _ => {}
         }
@@ -597,6 +654,95 @@ fn run_seed(seed: u64, num_accounts: usize, num_devices: usize, steps: usize) {
     world.assert_invariants(seed);
 }
 
+/// Cross the persistence boundary deliberately: write schemes, folders, and
+/// scheme content into the plain workspace while omitting their CRDT snapshots,
+/// then let another device advance the server's workspace index before the
+/// damaged device pulls. This is the failure shape ordinary operation fuzzing
+/// cannot reach because its helpers author the plain workspace and CRDT together.
+fn run_seed_persistence_boundary(seed: u64) {
+    let mut world = World::new(seed, 1, 2);
+    world.sync_device(0).expect("initial local sync");
+    world.sync_device(1).expect("initial peer sync");
+
+    let rounds = 2 + (seed % 4) as usize;
+    let mut local_schemes = Vec::new();
+    for round in 0..rounds {
+        let root = world.devices[0].dev.workspace.root;
+        let folder = world.devices[0]
+            .dev
+            .direct_add_folder_without_crdt(root, &format!("plain-folder-{seed}-{round}"));
+        let scheme = world.devices[0].dev.direct_add_scheme_without_crdt(
+            folder,
+            &format!("plain-scheme-{seed}-{round}"),
+            &["plain-content"],
+        );
+        local_schemes.push(scheme);
+
+        // Advance the server from a different replica, ensuring device 0 must
+        // merge a remote workspace-index update while its plain state is ahead
+        // of its own CRDT state.
+        let peer_root = world.devices[1].dev.workspace.root;
+        world.devices[1]
+            .dev
+            .add_folder(&format!("peer-folder-{seed}-{round}"));
+        world.devices[1].dev.add_scheme_to_folder(
+            peer_root,
+            &format!("peer-scheme-{seed}-{round}"),
+            &["peer-content"],
+        );
+        world
+            .sync_device(1)
+            .expect("peer sync after local disk write");
+        world
+            .sync_device(0)
+            .expect("plain-only workspace state must survive remote pull");
+
+        // Make the peer learn the repaired scheme, then race a plain-file edit
+        // against a peer deletion. The local edit must be re-expressed after
+        // the remote tombstone is merged rather than disappearing.
+        world
+            .sync_device(1)
+            .expect("peer learns repaired local scheme");
+        world.devices[0].dev.direct_set_line_text_without_crdt(
+            scheme,
+            0,
+            &format!("plain-repair-{seed}-{round}"),
+        );
+        world.devices[1].dev.remove_line(scheme, 0);
+        world.sync_device(1).expect("peer deletion sync");
+        world
+            .sync_device(0)
+            .expect("plain-only edit must survive remote tombstone");
+
+        // Repeat the mismatch with an existing scheme's content, not only a
+        // missing document, then force another remote index change before pull.
+        world.devices[0]
+            .dev
+            .direct_append_line_without_crdt(scheme, &format!("plain-edit-{seed}-{round}"));
+        world.devices[1]
+            .dev
+            .add_folder(&format!("peer-folder-2-{seed}-{round}"));
+        world.sync_device(1).expect("peer index advancement");
+        world
+            .sync_device(0)
+            .expect("plain-only existing content must survive remote pull");
+    }
+
+    world.settle();
+    world.assert_invariants(seed);
+    for scheme in local_schemes {
+        let Some(local) = world.devices[0].dev.workspace.schemes.get(&scheme) else {
+            panic!("seed {seed}: persistence fuzz lost local scheme {scheme}");
+        };
+        assert!(
+            local.items.iter().any(|item| {
+                item.text() == "plain-content" || item.text().starts_with("plain-repair-")
+            }),
+            "seed {seed}: persistence fuzz lost local scheme content"
+        );
+    }
+}
+
 /// A transport that keeps returning the same valid scheme snapshot even after
 /// the client advances its cursor. This models the old pull-loop wedge: the
 /// workspace index binds a scheme, but the local CRDT cannot materialize it, so
@@ -643,14 +789,14 @@ impl SyncTransport for RepeatingMaterializationGapTransport {
 /// in random operation sequences, and proves every seed remains bounded.
 #[test]
 fn materialization_gap_fuzz_is_bounded() {
-    let seeds = env_usize("KNOTQ_FUZZ_SEEDS", 24) as u64;
-    for seed in 0..seeds {
+    let seeds = env_usize("KNOTQ_FUZZ_SEEDS", 24);
+    run_seeds_parallel(seeds, |seed| {
         let mut indexed_workspace = Workspace::new();
-        let mut scheme = knotq_model::Scheme::new(&format!("Older scheme {seed}"), 0);
+        let mut scheme = knotq_model::Scheme::new(format!("Older scheme {seed}"), 0);
         for item in 0..=seed % 3 {
             scheme
                 .items
-                .push(Item::new(&format!("remote-{seed}-{item}")));
+                .push(Item::new(format!("remote-{seed}-{item}")));
         }
         let scheme_id = scheme.id;
         indexed_workspace.schemes.insert(scheme_id, scheme);
@@ -690,7 +836,7 @@ fn materialization_gap_fuzz_is_bounded() {
             local_state.document_cursors[&document].last_pulled_sequence, 1,
             "seed {seed}: cursor must advance past the unmaterializable page"
         );
-    }
+    });
 }
 
 /// Undo, redo *and* restarts in the same world — the combination that is hardest
@@ -724,6 +870,17 @@ fn run_seed_compaction(seed: u64, num_accounts: usize, num_devices: usize, steps
     for account in 0..world.accounts.len() {
         world.accounts[account].server.run_compaction();
     }
+
+    let compaction_calls: usize = world
+        .accounts
+        .iter()
+        .map(|account| account.server.compaction_calls())
+        .sum();
+    eprintln!("seed {seed} property compaction coverage: compaction_calls={compaction_calls}");
+    assert!(
+        compaction_calls > 0,
+        "seed {seed}: compaction mode did not execute a compaction sweep"
+    );
     world.settle();
     world.assert_invariants(seed);
 
@@ -778,28 +935,73 @@ fn env_usize(key: &str, default: usize) -> usize {
         .unwrap_or(default)
 }
 
+/// Run independent seeds across a bounded worker pool. The deterministic model
+/// seed is thread-local, so each worker gets a reproducible UUID stream and a
+/// failure still reports the exact seed to replay. Keep the default small
+/// because libtest may run several fuzz tests at once; set
+/// `KNOTQ_FUZZ_WORKERS=1` for serial behavior or raise it on a dedicated host.
+fn run_seeds_parallel(seeds: usize, run: impl Fn(u64) + Sync) {
+    if seeds == 0 {
+        return;
+    }
+    let default_workers = std::thread::available_parallelism()
+        .map(|parallelism| parallelism.get().min(4))
+        .unwrap_or(4);
+    let workers = env_usize("KNOTQ_FUZZ_WORKERS", default_workers)
+        .max(1)
+        .min(seeds);
+    let next_seed = AtomicUsize::new(0);
+    std::thread::scope(|scope| {
+        let mut handles = Vec::with_capacity(workers);
+        for _ in 0..workers {
+            handles.push(scope.spawn(|| loop {
+                let seed = next_seed.fetch_add(1, Ordering::Relaxed);
+                if seed >= seeds {
+                    break;
+                }
+                run(seed as u64);
+            }));
+        }
+        for handle in handles {
+            handle.join().expect("sync fuzzer worker panicked");
+        }
+    });
+}
+
 /// The main fuzz: 3 accounts, 4 devices, lots of mixed operations including account
 /// switches, over many seeds. Override breadth/depth with env vars for deep runs:
 ///   KNOTQ_FUZZ_SEEDS=2000 KNOTQ_FUZZ_STEPS=400 cargo test -p knotq-sync --test sync_property_model -- --nocapture
 #[test]
 fn multi_account_fuzz_converges() {
-    let seeds = env_usize("KNOTQ_FUZZ_SEEDS", 24) as u64;
+    let seeds = env_usize("KNOTQ_FUZZ_SEEDS", 24);
     let steps = env_usize("KNOTQ_FUZZ_STEPS", 140);
-    for seed in 0..seeds {
+    run_seeds_parallel(seeds, |seed| {
         run_seed(seed, 3, 4, steps);
-    }
+    });
+}
+
+/// Persistence-boundary fuzz: every seed includes direct plain-workspace
+/// creation of folders/schemes and direct edits to existing scheme content,
+/// with a peer advancing the remote index between each local write and pull.
+#[test]
+fn persistence_boundary_fuzz_converges() {
+    let default_seeds = env_usize("KNOTQ_FUZZ_SEEDS", 32);
+    let seeds = env_usize("KNOTQ_PERSISTENCE_FUZZ_SEEDS", default_seeds);
+    run_seeds_parallel(seeds, |seed| {
+        run_seed_persistence_boundary(seed.wrapping_add(0x9e37_79b9));
+    });
 }
 
 /// Switch-heavy variant: 2 devices that hop between 4 accounts constantly, stressing
 /// the sign-out/sign-in cursor reset and workspace re-identify paths specifically.
 #[test]
 fn account_hopping_fuzz_converges() {
-    let seeds = env_usize("KNOTQ_FUZZ_SEEDS", 24) as u64;
-    for seed in 0..seeds {
+    let seeds = env_usize("KNOTQ_FUZZ_SEEDS", 24);
+    run_seeds_parallel(seeds, |seed| {
         // Bias toward switches by interleaving extra switch+sync after each seed's run
         // is handled inside run_seed via the op weights; here we just widen accounts.
         run_seed(seed.wrapping_mul(2_654_435_761), 4, 2, 120);
-    }
+    });
 }
 
 /// Regression for the multi-origin daily-queue "carryover" divergence. A reused stable
@@ -814,12 +1016,27 @@ fn daily_queue_carryover_merge_regression() {
     run_seed(421, 3, 4, 140); // multi-account, surfaced at 600-seed depth
 }
 
+/// Multi-origin convergence for ONE daily-queue document: 3-4 devices each
+/// create the same day offline, so the document has that many independent
+/// origins, then append concurrently with interleaved partial syncs. This is the
+/// shape that produced the "carryover" divergence and the permanent-wedge class
+/// (see `daily_queue_carryover_merge_regression` above), so it runs
+/// unconditionally rather than being opt-in.
+///
+/// It was `#[ignore]`d with no reason given, which read as a pinned failure. It
+/// is not: it passes, and the default was simply priced for a nightly run (3000
+/// serial seeds, ~0.12s each, ~6 minutes). The default is now a slice CI can
+/// afford on every `cargo test`; `KNOTQ_FUZZ_SEEDS` deepens it, and the deploy
+/// gate's 800 runs it ~100s. Verified at 250 seeds before un-ignoring.
+///
+/// Serial on purpose: `set_deterministic_id_seed` is thread-local and each
+/// iteration re-seeds the id stream, so the seeds cannot be spread across
+/// `run_seeds_parallel` workers without one iteration reading another's seed.
 #[test]
-#[ignore]
 fn daily_queue_multiorigin_stress() {
     let date = NaiveDate::from_ymd_opt(2026, 7, 15).unwrap();
     let sid = knotq_model::daily_queue_scheme_id(date);
-    let seeds = env_usize("KNOTQ_FUZZ_SEEDS", 3000) as u64;
+    let seeds = env_usize("KNOTQ_FUZZ_SEEDS", 120) as u64;
     for seed in 0..seeds {
         knotq_model::set_deterministic_id_seed(Some(seed));
         let account = WorkspaceId::new();
@@ -870,10 +1087,10 @@ fn daily_queue_multiorigin_stress() {
 
 #[test]
 fn single_account_many_devices_fuzz_converges() {
-    let seeds = env_usize("KNOTQ_FUZZ_SEEDS", 24) as u64;
-    for seed in 0..seeds {
+    let seeds = env_usize("KNOTQ_FUZZ_SEEDS", 24);
+    run_seeds_parallel(seeds, |seed| {
         run_seed(seed.wrapping_add(7), 1, 5, 160);
-    }
+    });
 }
 
 /// Undo/redo fuzz: the same multi-device world, but devices also revert scheme
@@ -883,11 +1100,11 @@ fn single_account_many_devices_fuzz_converges() {
 /// against a content revert wedging a device or diverging sync.
 #[test]
 fn undo_redo_fuzz_converges() {
-    let seeds = env_usize("KNOTQ_FUZZ_SEEDS", 24) as u64;
+    let seeds = env_usize("KNOTQ_FUZZ_SEEDS", 24);
     let steps = env_usize("KNOTQ_FUZZ_STEPS", 160);
-    for seed in 0..seeds {
+    run_seeds_parallel(seeds, |seed| {
         run_seed_undo(seed.wrapping_add(13), 3, 4, steps);
-    }
+    });
 }
 
 /// At-rest compaction fuzz: the server rewrites every stored document (v1->v2->v1
@@ -897,11 +1114,11 @@ fn undo_redo_fuzz_converges() {
 /// state-vector-preserving in every interleaving.
 #[test]
 fn compaction_sweep_fuzz_converges() {
-    let seeds = env_usize("KNOTQ_FUZZ_SEEDS", 24) as u64;
+    let seeds = env_usize("KNOTQ_FUZZ_SEEDS", 24);
     let steps = env_usize("KNOTQ_FUZZ_STEPS", 160);
-    for seed in 0..seeds {
+    run_seeds_parallel(seeds, |seed| {
         run_seed_compaction(seed.wrapping_add(101), 2, 4, steps);
-    }
+    });
 }
 
 /// Restart fuzz: devices quit and relaunch mid-stream, restoring their CRDT
@@ -912,23 +1129,23 @@ fn compaction_sweep_fuzz_converges() {
 /// the sequence-reuse and document-identity wedges lived.
 #[test]
 fn restart_fuzz_converges() {
-    let seeds = env_usize("KNOTQ_FUZZ_SEEDS", 24) as u64;
+    let seeds = env_usize("KNOTQ_FUZZ_SEEDS", 24);
     let steps = env_usize("KNOTQ_FUZZ_STEPS", 180);
-    for seed in 0..seeds {
+    run_seeds_parallel(seeds, |seed| {
         run_seed_restart(seed.wrapping_add(101), 3, 4, steps);
-    }
+    });
 }
 
 /// A device that restarts while it still has unpushed edits must push exactly
 /// those edits — not re-mint their sequence numbers, and not drop them.
 #[test]
 fn restarting_with_unpushed_edits_keeps_them_pushable() {
-    let seeds = env_usize("KNOTQ_FUZZ_SEEDS", 16) as u64;
-    for seed in 0..seeds {
+    let seeds = env_usize("KNOTQ_FUZZ_SEEDS", 16);
+    run_seeds_parallel(seeds, |seed| {
         // One account, two devices: every edit one device makes must reach the
         // other, restart or not.
         run_seed_restart(seed.wrapping_mul(6_364_136_223_846_793_005), 1, 2, 140);
-    }
+    });
 }
 
 #[test]

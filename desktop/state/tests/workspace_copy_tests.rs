@@ -319,19 +319,23 @@ fn carried_over_schemes_stay_readable_and_editable() {
     assert_eq!(&state.workspace, state.store_workspace());
 }
 
-/// A direct mutation of the local copy is flushed into the store by the next
-/// command. The reuse path must not resurrect the pre-mutation scheme.
+/// An edit to one scheme survives an unrelated command on another: the reuse
+/// path carries untouched schemes over and must not resurrect a stale copy.
+/// (The workspace copy is read-only, so every edit arrives through the store.)
 #[test]
 fn a_direct_mutation_survives_the_next_command() {
     let (mut state, ids) = state_with_schemes();
+    let position = state.workspace.schemes[&ids[1]].items.len();
     state
-        .workspace
-        .schemes
-        .get_mut(&ids[1])
-        .unwrap()
-        .items
-        .push(Item::new("added directly"));
-    state.mark_scheme_dirty(ids[1]);
+        .apply_prechecked_local_command(
+            Command::InsertItem {
+                scheme: ids[1],
+                position,
+                item: Item::new("added directly"),
+            },
+            CommandOrigin::User,
+        )
+        .unwrap();
 
     let item = state.workspace.schemes[&ids[0]].items[0].id;
     state
@@ -364,11 +368,30 @@ fn daily_queue_edits_leave_the_copy_matching_the_store() {
     let (mut state, _) = state_with_schemes();
     let day = date(2026, 8, 16);
     let daily = daily_queue_scheme_id(day);
-    let mut scheme = scheme_with_items("Daily", &["one", "two"]);
-    scheme.id = daily;
-    state.workspace.schemes.insert(daily, scheme);
-    state.workspace.daily_queue.insert(day, daily);
-    state.mark_index_dirty();
+    state
+        .apply_prechecked_local_command(
+            knotq_commands::Command::EnsureDailyQueue { date: day },
+            knotq_commands::CommandOrigin::User,
+        )
+        .unwrap();
+    let placeholder = state.workspace.schemes[&daily].items[0].id;
+    let mut rows = vec![knotq_commands::Command::DeleteItem {
+        scheme: daily,
+        item: placeholder,
+    }];
+    for (position, text) in ["one", "two"].into_iter().enumerate() {
+        rows.push(knotq_commands::Command::InsertItem {
+            scheme: daily,
+            position,
+            item: knotq_model::Item::new(text),
+        });
+    }
+    state
+        .apply_prechecked_local_command(
+            knotq_commands::Command::Batch(rows),
+            knotq_commands::CommandOrigin::User,
+        )
+        .unwrap();
 
     let item = state.workspace.schemes[&daily].items[0].id;
     assert_copy_matches_store(

@@ -2,7 +2,8 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
-use knotq_sync::{LocalSyncState, PendingCrdtEdit, LOCAL_SYNC_STATE_FILE};
+use knotq_model::OperationId;
+use knotq_sync::{LocalSyncState, PendingCrdtEdit, QueuedItemFields, LOCAL_SYNC_STATE_FILE};
 
 pub fn sync_state_data_dir(workspace_path: &Path) -> PathBuf {
     let workspace_dir = workspace_path.parent().unwrap_or_else(|| Path::new("."));
@@ -74,7 +75,22 @@ pub fn save_local_sync_state(workspace_path: &Path, state: &LocalSyncState) -> R
 }
 
 pub fn save_pending_crdt_edits(workspace_path: &Path, pending: &[PendingCrdtEdit]) -> Result<()> {
+    save_pending_crdt_edits_with_item_fields(workspace_path, pending, &Default::default())
+}
+
+/// [`save_pending_crdt_edits`], also recording which line fields each queued
+/// edit changes (see `LocalSyncState::queued_item_fields`).
+pub fn save_pending_crdt_edits_with_item_fields(
+    workspace_path: &Path,
+    pending: &[PendingCrdtEdit],
+    item_fields: &std::collections::HashMap<OperationId, Vec<QueuedItemFields>>,
+) -> Result<()> {
     let mut state = load_local_sync_state(workspace_path)?;
+    for (operation, fields) in item_fields {
+        if pending.iter().any(|edit| edit.operation_id == *operation) {
+            state.record_queued_item_fields(*operation, fields.clone());
+        }
+    }
     for edit in pending {
         if !state.pending.iter().any(|existing| {
             existing.operation_id == edit.operation_id
@@ -84,6 +100,7 @@ pub fn save_pending_crdt_edits(workspace_path: &Path, pending: &[PendingCrdtEdit
             state.push_pending(edit.clone());
         }
     }
+    state.prune_queued_item_fields();
     save_local_sync_state(workspace_path, &state)
 }
 

@@ -45,6 +45,8 @@ pub fn is_descendant(workspace: &Workspace, candidate: FolderId, ancestor: Folde
 
 pub fn is_valid_scheme_parent(workspace: &Workspace, folder_id: FolderId) -> bool {
     workspace.folders.contains_key(&folder_id)
+        && !workspace.is_folder_deleted(folder_id)
+        && !workspace.is_node_in_deleted_folder_subtree(NodeRef::Folder(folder_id))
 }
 
 pub fn validate_depth_for_node(
@@ -54,6 +56,12 @@ pub fn validate_depth_for_node(
 ) -> Result<(), CommandError> {
     match node {
         NodeRef::Folder(_) if !workspace.folders.contains_key(&new_parent) => {
+            Err(CommandError::FolderMissing(new_parent))
+        }
+        NodeRef::Folder(_)
+            if workspace.is_folder_deleted(new_parent)
+                || workspace.is_node_in_deleted_folder_subtree(NodeRef::Folder(new_parent)) =>
+        {
             Err(CommandError::FolderMissing(new_parent))
         }
         NodeRef::Scheme(_) if !is_valid_scheme_parent(workspace, new_parent) => {

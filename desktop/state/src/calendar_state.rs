@@ -77,17 +77,79 @@ fn retention_ttl() -> Duration {
     Duration::seconds(RETAINED_COMPLETED_TTL_SECS)
 }
 
+/// Mark every elapsed event occurrence done, through the command path. Returns
+/// how many occurrences were completed.
 pub fn complete_past_events(state: &mut crate::AppState, now: DateTime<Utc>) -> usize {
-    let changed = mark_past_events_done(&mut state.workspace, now);
-    if changed > 0 {
-        let all_ids: Vec<_> = state.workspace.schemes.keys().copied().collect();
-        for id in all_ids {
-            state.dirty_schemes.insert(id);
+    let keys = past_event_completion_keys(&state.workspace, now);
+    complete_past_event_keys(state, &keys, now)
+}
+
+/// Complete the given elapsed occurrences, through the command path. Returns how
+/// many occurrences were completed.
+pub fn complete_past_event_keys(
+    state: &mut crate::AppState,
+    keys: &[CalendarOccurrenceKey],
+    now: DateTime<Utc>,
+) -> usize {
+    let Some((command, count)) = past_event_completion_command(&state.workspace, keys, now) else {
+        return 0;
+    };
+    match state.apply_prechecked_local_command(command, knotq_commands::CommandOrigin::User) {
+        Ok(_) => count,
+        Err(err) => {
+            eprintln!("completing past events failed: {err}");
+            0
         }
-        state.index_dirty = true;
-        state.mark_direct_workspace_dirty();
     }
-    changed
+}
+
+/// The command that marks each still-due occurrence in `keys` done, and how many
+/// it completes. `None` when nothing is due.
+pub fn past_event_completion_command(
+    workspace: &Workspace,
+    keys: &[CalendarOccurrenceKey],
+    now: DateTime<Utc>,
+) -> Option<(knotq_commands::Command, usize)> {
+    let mut seen = std::collections::HashSet::new();
+    let commands: Vec<knotq_commands::Command> = keys
+        .iter()
+        .filter(|key| seen.insert((*key).clone()))
+        .filter(|key| {
+            workspace
+                .scheme(key.scheme_id)
+                .and_then(|scheme| scheme.item(key.item_id))
+                .is_some_and(|item| completion_key_is_due(item, key, now))
+        })
+        .map(|key| knotq_commands::Command::ToggleOccurrence {
+            scheme: key.scheme_id,
+            item: key.item_id,
+            occurrence: key.occurrence.clone(),
+        })
+        .collect();
+    let count = commands.len();
+    knotq_commands::Command::from_vec(commands).map(|command| (command, count))
+}
+
+/// Whether `key`'s occurrence of `item` has ended by `now` and is not done yet.
+fn completion_key_is_due(item: &Item, key: &CalendarOccurrenceKey, now: DateTime<Utc>) -> bool {
+    if item.kind() != ItemKind::Event {
+        return false;
+    }
+    let (Some(start), Some(end)) = (item.start, item.end) else {
+        return false;
+    };
+    if end > now && item.repeats.is_none() {
+        return false;
+    }
+    let mut from = recurring_completion_scan_start(item, start, end) - Duration::seconds(1);
+    from = from.max(now - Duration::days(COMPLETION_LOOKBACK_DAYS));
+    let to = now + Duration::seconds(1);
+    item.occurrences(from, to).into_iter().any(|occurrence| {
+        occurrence.id == key.occurrence
+            && occurrence.kind == ItemKind::Event
+            && occurrence.end.is_some_and(|end| end <= now)
+            && !occurrence.state.is_done()
+    }) && !item.state_for_occurrence(&key.occurrence).is_done()
 }
 
 pub fn past_event_completion_keys(
@@ -146,31 +208,10 @@ pub fn mark_past_event_completion_keys_done(
         let Some(item) = scheme.item_mut(key.item_id) else {
             continue;
         };
-        if item.kind() != ItemKind::Event {
-            continue;
-        }
-        let (Some(start), Some(end)) = (item.start, item.end) else {
-            continue;
-        };
-        if end > now && item.repeats.is_none() {
-            continue;
-        }
-
-        let mut from = recurring_completion_scan_start(item, start, end) - Duration::seconds(1);
-        from = from.max(now - Duration::days(COMPLETION_LOOKBACK_DAYS));
-        let to = now + Duration::seconds(1);
-        let still_due = item.occurrences(from, to).into_iter().any(|occurrence| {
-            occurrence.id == key.occurrence
-                && occurrence.kind == ItemKind::Event
-                && occurrence.end.is_some_and(|end| end <= now)
-                && !occurrence.state.is_done()
-        });
-        if still_due {
-            let state = item.state_for_occurrence_mut(key.occurrence.clone());
-            if !state.is_done() {
-                state.progress = -1;
-                changed += 1;
-            }
+        if completion_key_is_due(item, key, now) {
+            item.state_for_occurrence_mut(key.occurrence.clone())
+                .progress = -1;
+            changed += 1;
         }
     }
 

@@ -146,6 +146,23 @@ jobs:
       - name: Validate repository agent assets
         run: ./.github/scripts/validate-agent-assets.sh
 
+  scheme-removal-chokepoint:
+    name: Scheme removal chokepoint
+    runs-on: ubuntu-24.04
+
+    steps:
+      - uses: actions/checkout@v6
+
+      # Destroying a scheme must go through `remove_scheme_completely`, which
+      # also clears the `daily_queue` binding. A bare `schemes.remove()` leaves
+      # that binding pointing at a removed id, and the next sync re-materializes
+      # the day as an EMPTY page which then syncs out as authoritative loss.
+      # Nothing downstream can repair it: an unloaded Daily page is also absent
+      # from `schemes`, so absence cannot distinguish removed from unloaded.
+      # Cheap to enforce here, impossible to detect later.
+      - name: Validate the scheme removal chokepoint
+        run: ./.github/scripts/validate-scheme-removal.sh
+
   perf-budget:
     name: Performance budget
     runs-on: ubuntu-24.04
@@ -197,6 +214,22 @@ jobs:
               - 'shared/model/**'
               - 'desktop/state/**'
               - 'desktop/commands/**'
+              - 'desktop/storage-json/**'
+              - 'desktop/app/src/app/sync_service.rs'
+              - 'desktop/app/src/app/sync_service/**'
+              - 'desktop/app/src/app/daily_queue.rs'
+              # `services/**` does not match `services.rs`, and nothing matched
+              # `app.rs` — which owns the source-of-truth workspace. Both were
+              # edited on the branch that added this filter, so a PR touching
+              # only them would have skipped the gate.
+              - 'desktop/app/src/app.rs'
+              - 'desktop/app/src/app/commands.rs'
+              - 'desktop/app/src/app/commands/**'
+              - 'desktop/app/src/app/services.rs'
+              - 'desktop/app/src/app/services/**'
+              - 'desktop/app/src/app/bootstrap.rs'
+              - 'desktop/app/src/app/constructor.rs'
+              - '.github/scripts/run-sync-coverage.sh'
               - 'Cargo.lock'
               - 'Cargo.toml'
               - '.github/workflows/ci.yml'
@@ -219,7 +252,19 @@ jobs:
         if: steps.filter.outputs.sync == 'true'
         uses: ./.github/actions/sync-stress
         with:
+          # The production fuzzer defaults to 6 seeds in its test harness. Keep
+          # the PR gate explicit so a harness default change cannot silently
+          # reduce production-path coverage again.
+          production-fuzz-seeds: "128"
           backend-repo-token: ${{ secrets.BACKEND_REPO_TOKEN }}
+
+      - name: Sync line coverage (every file on the sync path above its floor)
+        if: steps.filter.outputs.sync == 'true'
+        shell: bash
+        run: |
+          rustup component add llvm-tools-preview
+          cargo install cargo-llvm-cov --locked
+          ./.github/scripts/run-sync-coverage.sh
 
   mobile-accounts:
     name: Mobile core accounts
@@ -244,4 +289,14 @@ jobs:
 
       - name: Test mobile core with accounts
         working-directory: mobile
-        run: cargo test -p knotq-mobile-core --features accounts
+        env:
+          RUST_BACKTRACE: 1
+          KNOTQ_FUZZ_SEEDS: 8
+          KNOTQ_FUZZ_STEPS: 128
+        # `--release --lib` mirrors the mobile repo's own CI, for its stated
+        # reason: the production tests and fuzzers live in the library target,
+        # while `core` also declares `edit_cost`, `load_cost` and
+        # `uniffi-bindgen` binaries. A bare `cargo test` builds and launches
+        # those zero-test harnesses too, where a platform loader hang would
+        # obscure core coverage rather than report it.
+        run: cargo test -p knotq-mobile-core --features accounts --release --lib

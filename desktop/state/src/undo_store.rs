@@ -98,6 +98,10 @@ fn touched(cmd: &Command) -> Touched {
             structural: true,
             schemes: Vec::new(),
         },
+        Command::EnsureDailyQueue { date } => Touched {
+            structural: true,
+            schemes: vec![knotq_model::daily_queue_scheme_id(*date)],
+        },
         Command::Batch(cmds) => {
             let mut acc = Touched {
                 structural: false,

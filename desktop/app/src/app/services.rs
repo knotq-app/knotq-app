@@ -15,6 +15,10 @@ mod shutdown;
 mod tasks;
 
 pub(crate) use hang_probe::spawn as spawn_hang_probe;
+#[cfg(test)]
+pub(crate) use shutdown::{abandon_unlanded_sync_run, write_shutdown_workspace};
+#[cfg(test)]
+pub(crate) use tasks::write_save_snapshot;
 pub(crate) use tasks::{spawn_notification_task, spawn_save_task, spawn_timeline_task};
 
 pub(super) const SAVE_DEBOUNCE: StdDuration = StdDuration::from_secs(2);
