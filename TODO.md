@@ -85,23 +85,58 @@ silently dropped from the workspace the moment *any* unrelated concurrent
 scheme binding forces the fallback. `SchemeParent`/`FolderArchived` look like
 the same gap for structural folder/scheme edits.
 
-The `ItemMeta`/`ItemContent` violations (5 of the 10 failures) are the more
-concerning open question: item-field edits are *supposed* to be protected by
-`capture_local_item_edits`/`reassert_local_item_edits` even across the replace
-fallback, but they are still going missing sometimes. Not yet root-caused —
-worth checking whether `queued_item_fields` covers every `ItemMeta` sub-field
-(marker/dates/recurrence/priority/etc.), or whether the capture happens at
-the wrong point relative to some other in-flight mutation.
+**Correction to the "protected" claim above:** re-reading
+`capture_local_item_edits`/`reassert_local_item_edits`
+(`desktop/state/src/moved_edits.rs`) — this mechanism is narrower than it
+looks. `reassert_local_item_edits` only re-applies a captured field edit when
+the item *moved to a different scheme* (`landed_scheme != local_scheme`); if
+the item stayed in the same scheme and the replace fallback simply reverted
+its field value, the code explicitly `continue`s and does nothing. Its own
+module doc confirms the scope: "Keeping a line edit when another device moves
+the line to another scheme," a narrower, earlier-motivated problem. So a
+field edit that does NOT involve a cross-scheme move has **no** protection
+against the replace fallback at all — this may independently explain some of
+the `ItemMeta` violations, on top of whatever #0's scheme-loss mechanism
+explains.
 
-**Suggested direction, not attempted:** mirror the existing item-edit
-capture/reassert pattern for whole-scheme and whole-folder creation — capture
-"locally known but not in the incoming `sync_workspace`, created after the
-watermark" schemes/folders before `adopt_sync_workspace` runs, and re-insert
-them after, regardless of which path (merge or replace) was taken. Keep the
-existing scheme-binding guard as is (it protects a different, already-fixed
-bug) — the fix is what happens *after* the fallback fires, not preventing it
-from firing. As always: extend the fuzzer (this exact scenario is now a
-known, minimal repro) and run the **full** `production_fuzz` suite after each
+**But at least one `ItemMeta` violation (seed 10307) traced to something
+else entirely — likely unrelated to the replace-fallback mechanism above.**
+Item `99c6c352...`'s marker reverts `checkbox -> blank` with no cross-device
+write. Tracing it: two *different* devices (2 and 0, steps 108 and 119) each
+independently ran the Daily Queue carryover command
+(`daily_queue_carryover_command`, `desktop/state/src/daily_queue.rs`) around
+the same real time, each believing (from its own, not-yet-synced view) that
+today's scheme was still blank. `daily_queue_carryover_command`'s
+idempotency check (`existing.contains(&item.id)`) only guards against
+*re-running carryover on a device that already saw it land* — it does
+nothing for two devices racing to carry the same source item *concurrently*,
+before either has seen the other's copy. There is already a dedicated
+scenario for concurrent carryover
+(`a_line_carried_over_by_two_devices_at_once_keeps_its_text_once` in
+`scenarios.rs`) — passing — but it apparently only asserts on the item's
+*text* surviving once, not its other `ItemMeta` fields (marker, in this
+case). **Not root-caused further; likely a separate bug from #0's scheme
+loss, in the carryover/concurrent-creation path rather than the
+merge-vs-replace landing decision.** Needs its own investigation session —
+don't assume the fix for #0 above also fixes this.
+
+**Suggested direction for the scheme-loss mechanism specifically, not
+attempted:** mirror the existing item-edit capture/reassert pattern for
+whole-scheme and whole-folder creation — capture "locally known but not in
+the incoming `sync_workspace`, created after the watermark" schemes/folders
+before `adopt_sync_workspace` runs, and re-insert them after, regardless of
+which path (merge or replace) was taken. Note this needs more than
+re-inserting into `state.workspace.schemes`/`.folders`: the CRDT layer
+(`self.crdt`) also has to know about the re-inserted entity, or the very next
+sync's workspace-to-CRDT reconciliation will just delete it again — this is
+exactly the kind of subtlety that makes this riskier than it first looks.
+Keep the existing scheme-binding guard as is (it protects a different,
+already-fixed bug) — the fix is what happens *after* the fallback fires, not
+preventing it from firing. As always: extend the fuzzer (this exact scenario
+is now a known, minimal repro,
+`a_scheme_created_in_flight_survives_an_unrelated_replace_fallback` in
+`desktop/app/src/app/sync_service/production_fuzz/mod.rs`, `#[ignore]`d) and
+run the **full** `production_fuzz` suite after each
 step, not just the target seed.
 
 ## 1. An edit made during a device's first-ever sync can be silently lost
