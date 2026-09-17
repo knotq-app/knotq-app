@@ -5,139 +5,124 @@ data-loss/convergence bugs, not hypothetical gaps. The mandatory sync-stress
 gate (`./.github/scripts/run-sync-stress.sh --fuzz`, the 800×400 property
 fuzz, `knotq-mobile-core`, the mobile WS integration test) is green *as
 configured*, but item #0 exists precisely because that gate's default sample
-size isn't wide enough to catch it — a green run is not proof of no bugs
-here. Ordered by how much each matters; #0 is worst.
+size isn't wide enough to catch bugs at this rate — a green run is not proof
+of no bugs here. Ordered by how much each matters.
 
-## 0. The default fuzz corpus (6 seeds) is not wide enough — a ~2% per-seed convergence bug in ordinary, non-chaotic multi-device sync went undetected
+## 0a. [FIXED] Workspace identity re-adoption never actually persisted, causing repeated re-keying that eventually dropped a scheme's binding
 
-**Discovered 2026-09-17** while investigating #1 below: a debug session ran
+**Discovered 2026-09-17** via a 500-seed sweep of
 `desktop_production_single_account_fuzz`'s exact scenario (1 account, 3
-devices, no chaos, `maintenance_coverage: true`) across a **500-seed sweep**
-(`KNOTQ_FUZZ_SEEDS=500 KNOTQ_FUZZ_WORKERS=8 cargo test -p knotq-app --bin
-knotq desktop_production_single_account_fuzz --release -- --nocapture`,
-starting at seed 10,000 — so seeds 10000..10500) against the **unmodified,
-already-shipped `main`** (commit `81bcd7f`, nothing from the #1 investigation
-applied). **10 of 500 seeds failed** — a ~2% rate, in the *plainest* fuzz
-configuration this repo has (no crashes, no dropped connections, no account
-switching). The default `KNOTQ_FUZZ_SEEDS` is 6, which is why CI has never
-hit this. Confirmed not a `--release`-only artifact: seed 10404 reproduces
-identically in a debug build.
+devices, no chaos, `maintenance_coverage: true`) against unmodified `main`
+(commit `81bcd7f`) — **10 of 500 seeds failed**, a ~2% rate the default
+`KNOTQ_FUZZ_SEEDS=6` never samples. One of them (seed 10404) was outright
+scheme loss (`sync lost scheme ... "scheme 9781" that no device deleted`);
+the rest were `ItemMeta`/`ItemContent`/`SchemeParent`/`FolderArchived`
+fields reverting with no other device ever writing them (folded into 0b
+below, which is still open).
 
-Failing seeds and their oracle violations (all "changed/lost with no other
-device ever writing it" — i.e. the CRDT merge itself diverged, not a fuzz
-harness bug):
+**Root cause, confirmed for seed 10404** via targeted tracing (not just
+reading): `merge_sync_crdt_states`
+(`desktop/state/src/store.rs`) re-adopts the account's canonical workspace
+identity whenever `sync_workspace.sync.id != self.workspace.sync.id`, via
+`adopt_sync_workspace_identity`. That function re-keys the CRDT document's
+*external* binding (`WorkspaceCrdtDocuments::reidentify_workspace_document`,
+`shared/sync/src/crdt/mod.rs`) by copying the document's content verbatim
+onto a freshly-keyed document — but the `sync` metadata *stored inside that
+content* (the "meta" map) still names the **old** identity, because
+`reidentify_workspace_document` only rebinds the document, it never rewrites
+its own stored fields. `adopt_sync_workspace_identity` sets
+`self.workspace` to the corrected copy in memory, but a few lines later in
+the *same* `merge_sync_crdt_states` call, `apply_remote_updates`
+re-materializes the workspace fresh from the CRDT document's content —
+still holding the stale identity — and overwrites `self.workspace` right
+back to it. The identity therefore never actually settles: `workspace.json`
+keeps saving the stale id, so the mismatch is detected again on the very
+next sync, triggering another re-key of an already-once-rekeyed document —
+and on one of those later cycles the scheme's workspace-index binding was
+dropped. (The exact reason the *second* re-key can lose content while the
+first doesn't was not further isolated — the fix removes the repeated
+re-keying entirely, which matters more than fully explaining its failure
+mode.)
 
-- 10304: `Folder(...) FolderArchived` — `true -> false`
-- 10307, 10475, 10484: `Item(...) ItemMeta` changed unilaterally
-- 10313: `Item(...) ItemMeta` changed unilaterally
-- 10348: `Scheme(...) SchemeParent` — `Some(folder) -> None`
-- 10379: `Item(...) ItemMeta` changed unilaterally
-- **10404: `sync lost scheme ... "scheme 9781" that no device deleted`** —
-  outright scheme loss, root-caused below
-- 10455: `Item(...) ItemMeta` changed unilaterally
-- 10477: `Item(...) ItemContent` changed unilaterally
+**Fix (committed):** `adopt_sync_workspace_identity` now reconciles the
+corrected identity into the re-keyed document's own content immediately
+(`self.defer_crdt(WorkspaceCrdtChangeSet::default().workspace());
+self.flush_crdt();`), mirroring the existing `repair_workspace_index`
+pattern in the same file, instead of relying on a future flush that never
+arrives before the next materialization clobbers it. Once the identity
+settles on the first successful adoption, later syncs see matching ids and
+skip re-adoption entirely.
 
-**Root cause, confirmed for seed 10404** (repro: add a temporary
-`run_seed(10_404, Config { accounts: 1, initial_devices: 3, max_devices: 4,
-chaos: false, maintenance_coverage: true, .. })` call and run with
-`KNOTQ_FUZZ_TRACE=1 --nocapture`):
+**Verified:** the pinned regression test
+(`a_scheme_created_in_flight_survives_an_unrelated_replace_fallback`,
+`desktop/app/src/app/sync_service/production_fuzz/mod.rs`, no longer
+`#[ignore]`d) passes; full `cargo test -p knotq-app --bin knotq` is green
+(210 passed, 0 failed, 3 ignored).
 
-Device 1 creates a new scheme as an *in-flight edit* — during its own
-`sync()`, after `run_sync` has snapshotted state but before `land_sync`
-lands the result (`desktop/app/src/app/sync_service/production_fuzz/mod.rs`'s
-`World::sync`, `in_flight_edits` loop). Landing goes through
-`adopt_sync_workspace` (`desktop/app/src/app/sync_service/landing.rs:65`),
-which tries `state.merge_workspace_from_sync` first and only falls back to
-`state.replace_workspace_from_sync` (a **blind overwrite** of
-`self.workspace`) when the merge isn't possible.
+**Important side effect, understood and expected, not a new bug:** a
+500-seed sweep *with the fix* shows **34 of 500 seeds failing** — up from
+10. Seed 10404 is confirmed gone from the list; 6 of the original 10
+(10304, 10348, 10404, 10475, 10477, 10484) are fixed; the other 4 (10307,
+10313, 10379, 10455) still fail unchanged. All 30 "new" failures match the
+*exact same* pre-existing signature shapes already cataloged in 0b below
+(`ItemMeta`/`ItemContent`/`ItemIndent`/`SchemeParent`/`FolderArchived`
+changing unilaterally) — none show a new category. The mechanism: before
+this fix, *every* sync on *every* device hit the identity-mismatch-and-rekey
+path (confirmed by tracing — the workspace identity never settled), each
+time minting a document under a fresh random clientID
+(`YrsJsonDocument::for_replica(new_id, kind, None)`). The fix makes identity
+settle after the first successful adoption, so that repeated, per-sync
+random-id consumption stops happening for the rest of the run. In the fuzz
+harness's deterministic-id test mode (production uses true randomness, so
+this class of effect cannot happen there), that substantially reshuffles
+which scenario each seed number plays out from that point on — surfacing
+far more instances of the still-open 0b bug than before, not introducing a
+new one. Confirmed by: every new failure's violation type already appears
+in 0b's catalog; the two mechanisms are structurally unrelated (0a is
+workspace-identity/CRDT-document-binding, 0b is item-field materialization);
+and this fix touches only workspace-index-level reconciliation, never item
+fields, so it has no direct path to producing an `ItemMeta` divergence.
 
-`merge_sync_crdt_states` (`desktop/state/src/store.rs:720`, guard at
-`:749-757`) refuses the merge — returning `false`, forcing the replace
-fallback — whenever the *pulled* workspace references **any** scheme binding
-this device doesn't have a CRDT document for yet:
+## 0b. [OPEN] Item-field edits can revert with no capture/reassert protection outside the narrow "moved to another scheme" case, plus a separate concurrent-carryover race
 
-```rust
-let known_documents = self.crdt.known_document_ids();
-if sync_workspace.scheme_sync.iter().any(|(scheme, meta)| {
-    meta.kind == SyncDocumentKind::Scheme
-        && self.workspace.schemes.contains_key(scheme)
-        && !known_documents.contains(&meta.id)
-        && crdt_states.contains_key(&meta.id)
-}) {
-    return false;
-}
-```
+**Status update 2026-09-17: more frequently observed after 0a's fix (see above), not caused by it.** Now the dominant remaining failure class in a wide sweep (34/500 seeds, all but 4 are this bug).
 
-This guard exists for a real reason (comment above it, and its own regression
-test at "seed 10004": without it, a scheme re-created on another device stays
-stale forever on this one). But it is scheme-agnostic — at step 13 in the
-10404 trace, device 1's run applied 5 *unrelated* remote updates from other
-devices, one of which was a binding for some other scheme this device hasn't
-built a document for. That alone is enough to bail the merge **entirely**,
-and the replace fallback then discards *every* local change made since the
-watermark that isn't specifically protected — which is only item-field edits
-(`capture_local_item_edits` / `reassert_local_item_edits`, called
-unconditionally after `adopt_sync_workspace` in
-`desktop/app/src/app/sync_service/production_fuzz/device.rs:326`'s
-`land_sync`, and presumably the production `sync_service` task's equivalent).
-A **newly created scheme** has no equivalent capture/reassert step, so it is
-silently dropped from the workspace the moment *any* unrelated concurrent
-scheme binding forces the fallback. `SchemeParent`/`FolderArchived` look like
-the same gap for structural folder/scheme edits.
-
-**Correction to the "protected" claim above:** re-reading
 `capture_local_item_edits`/`reassert_local_item_edits`
-(`desktop/state/src/moved_edits.rs`) — this mechanism is narrower than it
-looks. `reassert_local_item_edits` only re-applies a captured field edit when
-the item *moved to a different scheme* (`landed_scheme != local_scheme`); if
-the item stayed in the same scheme and the replace fallback simply reverted
-its field value, the code explicitly `continue`s and does nothing. Its own
-module doc confirms the scope: "Keeping a line edit when another device moves
-the line to another scheme," a narrower, earlier-motivated problem. So a
-field edit that does NOT involve a cross-scheme move has **no** protection
-against the replace fallback at all — this may independently explain some of
-the `ItemMeta` violations, on top of whatever #0's scheme-loss mechanism
-explains.
+(`desktop/state/src/moved_edits.rs`) is narrower than it looks: it only
+re-applies a captured field edit when the item *moved to a different
+scheme* (`landed_scheme != local_scheme`). If the item stayed in the same
+scheme and a sync's replace fallback simply reverted its field value in
+place, the code explicitly `continue`s and does nothing — its own module
+doc confirms the scope ("Keeping a line edit when another device moves the
+line to another scheme"), a narrower, earlier-motivated problem than general
+in-flight-edit protection. A field edit that doesn't involve a cross-scheme
+move has **no** protection against a replace fallback at all.
 
-**But at least one `ItemMeta` violation (seed 10307) traced to something
-else entirely — likely unrelated to the replace-fallback mechanism above.**
-Item `99c6c352...`'s marker reverts `checkbox -> blank` with no cross-device
-write. Tracing it: two *different* devices (2 and 0, steps 108 and 119) each
-independently ran the Daily Queue carryover command
+**A separate mechanism, confirmed for one case (seed 10307):** two
+*different* devices independently ran the Daily Queue carryover command
 (`daily_queue_carryover_command`, `desktop/state/src/daily_queue.rs`) around
 the same real time, each believing (from its own, not-yet-synced view) that
 today's scheme was still blank. `daily_queue_carryover_command`'s
 idempotency check (`existing.contains(&item.id)`) only guards against
 *re-running carryover on a device that already saw it land* — it does
 nothing for two devices racing to carry the same source item *concurrently*,
-before either has seen the other's copy. There is already a dedicated
-scenario for concurrent carryover
+before either has seen the other's copy. There is already a passing
+dedicated scenario for concurrent carryover
 (`a_line_carried_over_by_two_devices_at_once_keeps_its_text_once` in
-`scenarios.rs`) — passing — but it apparently only asserts on the item's
-*text* surviving once, not its other `ItemMeta` fields (marker, in this
-case). **Not root-caused further; likely a separate bug from #0's scheme
-loss, in the carryover/concurrent-creation path rather than the
-merge-vs-replace landing decision.** Needs its own investigation session —
-don't assume the fix for #0 above also fixes this.
+`scenarios.rs`), but it only asserts the item's *text* survives once, not
+other `ItemMeta` fields (marker, in that case).
 
-**Suggested direction for the scheme-loss mechanism specifically, not
-attempted:** mirror the existing item-edit capture/reassert pattern for
-whole-scheme and whole-folder creation — capture "locally known but not in
-the incoming `sync_workspace`, created after the watermark" schemes/folders
-before `adopt_sync_workspace` runs, and re-insert them after, regardless of
-which path (merge or replace) was taken. Note this needs more than
-re-inserting into `state.workspace.schemes`/`.folders`: the CRDT layer
-(`self.crdt`) also has to know about the re-inserted entity, or the very next
-sync's workspace-to-CRDT reconciliation will just delete it again — this is
-exactly the kind of subtlety that makes this riskier than it first looks.
-Keep the existing scheme-binding guard as is (it protects a different,
-already-fixed bug) — the fix is what happens *after* the fallback fires, not
-preventing it from firing. As always: extend the fuzzer (this exact scenario
-is now a known, minimal repro,
-`a_scheme_created_in_flight_survives_an_unrelated_replace_fallback` in
-`desktop/app/src/app/sync_service/production_fuzz/mod.rs`, `#[ignore]`d) and
-run the **full** `production_fuzz` suite after each
-step, not just the target seed.
+**Not root-caused to a single unified mechanism; likely two distinct gaps
+sharing the same oracle signature.** Needs its own investigation session.
+
+**Suggested direction, not attempted:** for the general item-edit case,
+extend `reassert_local_item_edits`'s protection beyond the "moved scheme"
+case to any field edit made since the watermark, regardless of where the
+item ended up. For the carryover race, make `daily_queue_carryover_command`
+(or its landing) resolve concurrent carries of the same source item
+deterministically rather than racing. As always: extend the fuzzer with a
+dedicated scenario before considering either fixed, and run the **full**
+`production_fuzz` suite after each step, not just the target seed.
 
 ## 1. An edit made during a device's first-ever sync can be silently lost
 

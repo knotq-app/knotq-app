@@ -840,6 +840,15 @@ impl WorkspaceStore {
         self.remap_pending_workspace_document(previous_document, sync_workspace.sync.id);
         self.dirty.index = true;
         self.index_stale = true;
+        // `reidentify_workspace_document` only re-keys the document's external
+        // binding; the `sync` metadata stored in its own "meta" map content (read
+        // back by every future materialization, including the one later in this
+        // same merge) still names the old identity. Left deferred, that stale
+        // content re-materializes over `self.workspace` before anything flushes
+        // it — reconcile it into the re-keyed document immediately instead of
+        // trusting a future flush to catch up in time.
+        self.defer_crdt(WorkspaceCrdtChangeSet::default().workspace());
+        self.flush_crdt();
         true
     }
 
