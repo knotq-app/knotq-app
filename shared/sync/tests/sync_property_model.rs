@@ -1016,12 +1016,27 @@ fn daily_queue_carryover_merge_regression() {
     run_seed(421, 3, 4, 140); // multi-account, surfaced at 600-seed depth
 }
 
+/// Multi-origin convergence for ONE daily-queue document: 3-4 devices each
+/// create the same day offline, so the document has that many independent
+/// origins, then append concurrently with interleaved partial syncs. This is the
+/// shape that produced the "carryover" divergence and the permanent-wedge class
+/// (see `daily_queue_carryover_merge_regression` above), so it runs
+/// unconditionally rather than being opt-in.
+///
+/// It was `#[ignore]`d with no reason given, which read as a pinned failure. It
+/// is not: it passes, and the default was simply priced for a nightly run (3000
+/// serial seeds, ~0.12s each, ~6 minutes). The default is now a slice CI can
+/// afford on every `cargo test`; `KNOTQ_FUZZ_SEEDS` deepens it, and the deploy
+/// gate's 800 runs it ~100s. Verified at 250 seeds before un-ignoring.
+///
+/// Serial on purpose: `set_deterministic_id_seed` is thread-local and each
+/// iteration re-seeds the id stream, so the seeds cannot be spread across
+/// `run_seeds_parallel` workers without one iteration reading another's seed.
 #[test]
-#[ignore]
 fn daily_queue_multiorigin_stress() {
     let date = NaiveDate::from_ymd_opt(2026, 7, 15).unwrap();
     let sid = knotq_model::daily_queue_scheme_id(date);
-    let seeds = env_usize("KNOTQ_FUZZ_SEEDS", 3000) as u64;
+    let seeds = env_usize("KNOTQ_FUZZ_SEEDS", 120) as u64;
     for seed in 0..seeds {
         knotq_model::set_deterministic_id_seed(Some(seed));
         let account = WorkspaceId::new();
