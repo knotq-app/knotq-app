@@ -112,8 +112,29 @@ dedicated scenario for concurrent carryover
 `scenarios.rs`), but it only asserts the item's *text* survives once, not
 other `ItemMeta` fields (marker, in that case).
 
-**Not root-caused to a single unified mechanism; likely two distinct gaps
-sharing the same oracle signature.** Needs its own investigation session.
+**Note:** that carryover-race trace was from *before* 0a's fix landed. Seed
+10307 was re-checked *after* 0a's fix (its RNG-stream shift changes which
+scenario a given seed number plays out, per 0a's own side-effect note above)
+and now fails differently: `Item(b7502b85...) ItemContent` and
+`Item(f36f46fa...) ItemMeta` both revert on device 0's sync at step 68,
+correlated with a server compaction sweep at step 61 that ran just before
+it. That timing correlation was investigated and **ruled out**: the shared
+`knotq-sync` crate has its own dedicated compaction-convergence fuzz
+(`compaction_sweep_fuzz_converges` / `run_seed_compaction`, exercising the
+exact same `MemoryServer::run_compaction` v1→v2→v1 transcode desktop's fuzz
+also uses), and a 300-seed sweep of it (`KNOTQ_FUZZ_SEEDS=300
+KNOTQ_FUZZ_STEPS=160 cargo test -p knotq-sync --test sync_property_model
+compaction_sweep_fuzz_converges --release`) found **zero** convergence
+failures — the compaction mechanism itself is sound. Seed 10307's new
+manifestation is therefore most likely the same "no protection outside
+moved-scheme" reassert gap described above, reached via a different code
+path than a genuine compaction defect; not confirmed further.
+
+**Not root-caused to a single unified mechanism; likely two-plus distinct
+gaps sharing the same oracle signature.** Needs its own investigation
+session — and re-tracing any specific seed only after re-confirming its
+current failure shape, since 0a's fix already changed at least one seed's
+manifestation once.
 
 **Suggested direction, not attempted:** for the general item-edit case,
 extend `reassert_local_item_edits`'s protection beyond the "moved scheme"
