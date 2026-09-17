@@ -1,12 +1,12 @@
 # Known gaps
 
-Not deploy blockers as of 2026-09-17 — the mandatory sync-stress gate
-(`./.github/scripts/run-sync-stress.sh --fuzz`, the 800×400 property fuzz,
-`knotq-mobile-core`, the mobile WS integration test) is green. These are real,
-confirmed-reproducing bugs or gaps, kept here so they don't get lost, roughly
-ordered by how much they matter. **Except #0** — that one is more severe and
-more frequent than everything below it; it is listed first, out of the
-"roughly ordered" sequence, so it is not mistaken for a lower-priority item.
+**Deploy blockers as of 2026-09-17.** These are real, confirmed-reproducing
+data-loss/convergence bugs, not hypothetical gaps. The mandatory sync-stress
+gate (`./.github/scripts/run-sync-stress.sh --fuzz`, the 800×400 property
+fuzz, `knotq-mobile-core`, the mobile WS integration test) is green *as
+configured*, but item #0 exists precisely because that gate's default sample
+size isn't wide enough to catch it — a green run is not proof of no bugs
+here. Ordered by how much each matters; #0 is worst.
 
 ## 0. The default fuzz corpus (6 seeds) is not wide enough — a ~2% per-seed convergence bug in ordinary, non-chaotic multi-device sync went undetected
 
