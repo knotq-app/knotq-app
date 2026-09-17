@@ -59,6 +59,26 @@ impl WorkspaceMaps {
 /// unambiguously.
 const NODE_FIELD_SEPARATOR: char = '\u{1f}';
 
+/// Stamped into every `nodes` entry this build writes, to mark that the matching
+/// `node_fields` keys were written alongside it.
+///
+/// A build that predates `node_fields` cannot write those keys — it does not know
+/// the map exists — and `sync_string_map` only prunes keys inside the map it is
+/// handed, so it cannot clear them either. Without this stamp such a build's
+/// rename or recolour is silently reverted on every build that prefers the
+/// per-field keys, which then re-asserts the stale value on its next write.
+///
+/// Only the stamp's PRESENCE is consulted, never its value: presence means "the
+/// field keys belong to this payload", absence means "this payload came from a
+/// build that could not maintain them, so trust it instead". A constant keeps
+/// re-serialization byte-identical, so an unchanged workspace still emits no
+/// update (`store_tests`: "an unchanged workspace must not queue new CRDT edits").
+///
+/// Removable once every client is past the `node_fields` change — see
+/// `CLIENT_SYNC_PROTOCOL_VERSION` and the backend's
+/// `MIN_SUPPORTED_CLIENT_SYNC_PROTOCOL_VERSION`.
+const NODE_FIELD_SCHEMA: u32 = 1;
+
 /// The `node_fields` key for one field of one node.
 fn node_field_key(id: &str, field: &str) -> String {
     format!("{id}{NODE_FIELD_SEPARATOR}{field}")
@@ -591,6 +611,9 @@ impl YrsJsonDocument {
             parent: String,
             position: String,
             payload: String,
+            /// See [`NODE_FIELD_SCHEMA`]: `None` means an older build wrote this
+            /// entry, so its payload wins over any `node_fields` key.
+            field_schema: Option<u32>,
         }
         let mut parsed: HashMap<String, ParsedNode> = HashMap::new();
         let mut folder_ids: HashSet<String> = HashSet::new();
@@ -607,6 +630,7 @@ impl YrsJsonDocument {
                     parent: entry.parent,
                     position: entry.position,
                     payload: entry.payload,
+                    field_schema: entry.field_schema,
                 },
             );
         }
@@ -631,6 +655,15 @@ impl YrsJsonDocument {
                 let Some(node) = parsed.get_mut(id) else {
                     continue;
                 };
+                // An unstamped entry was written by a build that predates
+                // `node_fields` (see `NODE_FIELD_SCHEMA`). It could not have
+                // written these keys, so they are stale and its payload — which
+                // carries that build's actual edit — is the authority. Applying
+                // them here is what silently reverted an older device's rename or
+                // recolour on every newer device.
+                if node.field_schema.is_none() {
+                    continue;
+                }
                 let Ok(mut payload) = serde_json::from_str::<serde_json::Value>(&node.payload)
                 else {
                     continue;
@@ -980,6 +1013,9 @@ pub(crate) fn node_entry_json(
         parent: membership_parent.get(id).cloned().unwrap_or_default(),
         position: positions.get(id).cloned().unwrap_or_default(),
         payload,
+        // This build writes the per-field keys alongside the entry, so the
+        // entry is stamped. See `NODE_FIELD_SCHEMA`.
+        field_schema: Some(NODE_FIELD_SCHEMA),
     };
     Ok(serde_json::to_string(&entry)?)
 }
@@ -1205,4 +1241,121 @@ pub(crate) fn scheme_documents_by_id(
         .filter(|(_, meta)| meta.kind == SyncDocumentKind::Scheme)
         .map(|(scheme, meta)| (meta.id, *scheme))
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Build a one-scheme workspace and write its index the way this build does.
+    fn indexed_workspace(colour: u8) -> (YrsJsonDocument, SchemeId) {
+        let mut workspace = Workspace::new();
+        let scheme = Scheme::new("Plans", colour);
+        let scheme_id = scheme.id;
+        workspace.schemes.insert(scheme_id, scheme);
+        workspace
+            .folders
+            .get_mut(&workspace.root)
+            .unwrap()
+            .children
+            .push(NodeRef::Scheme(scheme_id));
+        workspace.ensure_sync_metadata();
+        let doc = YrsJsonDocument::new(workspace.sync.id, SyncDocumentKind::PersonalWorkspace);
+        doc.replace_snapshot(&workspace_document_snapshot(&workspace))
+            .expect("first index write");
+        (doc, scheme_id)
+    }
+
+    fn colour_of(doc: &YrsJsonDocument, scheme: SchemeId) -> u8 {
+        doc.snapshot()
+            .expect("read the index back")
+            .schemes
+            .iter()
+            .find(|entry| entry.id == scheme)
+            .expect("the scheme survives")
+            .color_index
+    }
+
+    /// MIXED FLEET: a build predating `node_fields` writes only the whole-node
+    /// entry, without the field-schema stamp. Its edit must win over the stale
+    /// per-field keys it could not update.
+    ///
+    /// Without this, every updated device silently reverts the older device's
+    /// rename/recolour and re-asserts the stale value on its next write, making
+    /// the loss sticky. Desktop and mobile ship from separate release trains, so
+    /// a mixed fleet is the normal state during a rollout.
+    #[test]
+    fn an_older_builds_whole_node_edit_wins_over_stale_field_keys() {
+        let (doc, scheme_id) = indexed_workspace(3);
+
+        // An older build recolours 3 -> 9: it regenerates the whole entry from
+        // its own struct, so the entry carries no stamp and `node_fields` is
+        // untouched.
+        {
+            let maps = WorkspaceMaps::get(&doc.doc);
+            let mut txn = doc.doc.transact_mut();
+            let key = scheme_id.to_string();
+            let raw = maps
+                .nodes
+                .get_as::<_, Option<String>>(&txn, &key)
+                .ok()
+                .flatten()
+                .expect("the scheme's node entry");
+            let mut entry: serde_json::Value = serde_json::from_str(&raw).expect("node entry json");
+            let object = entry.as_object_mut().expect("node entry object");
+            object.remove("field_schema");
+            let mut payload: serde_json::Value =
+                serde_json::from_str(object["payload"].as_str().expect("payload string"))
+                    .expect("payload json");
+            payload["color_index"] = serde_json::json!(9);
+            object.insert(
+                "payload".to_string(),
+                serde_json::Value::String(payload.to_string()),
+            );
+            maps.nodes.insert(
+                &mut txn,
+                key,
+                serde_json::to_string(&entry).expect("re-encode node entry"),
+            );
+        }
+
+        assert_eq!(
+            colour_of(&doc, scheme_id),
+            9,
+            "an older build's recolour was shadowed by a stale node_fields key"
+        );
+    }
+
+    /// The control for the test above: the per-field merge `node_fields` exists
+    /// for must still work. A concurrent write from a build that DOES maintain
+    /// the keys lands in `node_fields` while the whole-node payload keeps another
+    /// device's value — there the field key is authoritative, exactly as before.
+    ///
+    /// Without this, the compatibility check above could be "passed" by never
+    /// preferring the per-field keys at all, silently undoing the fix that
+    /// introduced them.
+    #[test]
+    fn a_current_builds_field_write_still_wins_over_a_stale_payload() {
+        let (doc, scheme_id) = indexed_workspace(3);
+
+        // A concurrent current-build device recoloured to 7: its field key won,
+        // while the whole-node payload still carries the other device's 3. The
+        // entry keeps its stamp, because a current build wrote it.
+        {
+            let maps = WorkspaceMaps::get(&doc.doc);
+            let mut txn = doc.doc.transact_mut();
+            maps.node_fields.insert(
+                &mut txn,
+                node_field_key(&scheme_id.to_string(), "color_index"),
+                "7".to_string(),
+            );
+        }
+
+        assert_eq!(
+            colour_of(&doc, scheme_id),
+            7,
+            "the per-field merge regressed: a current build's field write lost to \
+             a stale whole-node payload"
+        );
+    }
 }

@@ -2119,6 +2119,16 @@ struct WorkspaceNodeEntry {
     #[serde(default)]
     position: String,
     payload: String,
+    /// Field-schema stamp, present only on entries written by a build that also
+    /// maintains the `node_fields` map. Its ABSENCE is the signal that matters:
+    /// a build predating `node_fields` regenerates this whole entry from its own
+    /// struct on every write, so it can never carry the stamp, and its payload is
+    /// therefore the authority for that node. See `NODE_FIELD_SCHEMA`.
+    ///
+    /// `skip_serializing_if` keeps it off the wire when absent so an entry an old
+    /// build wrote and a new build merely re-reads stays byte-identical.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    field_schema: Option<u32>,
 }
 
 #[derive(Serialize, Deserialize)]
