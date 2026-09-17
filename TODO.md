@@ -4,7 +4,105 @@ Not deploy blockers as of 2026-09-17 — the mandatory sync-stress gate
 (`./.github/scripts/run-sync-stress.sh --fuzz`, the 800×400 property fuzz,
 `knotq-mobile-core`, the mobile WS integration test) is green. These are real,
 confirmed-reproducing bugs or gaps, kept here so they don't get lost, roughly
-ordered by how much they matter.
+ordered by how much they matter. **Except #0** — that one is more severe and
+more frequent than everything below it; it is listed first, out of the
+"roughly ordered" sequence, so it is not mistaken for a lower-priority item.
+
+## 0. The default fuzz corpus (6 seeds) is not wide enough — a ~2% per-seed convergence bug in ordinary, non-chaotic multi-device sync went undetected
+
+**Discovered 2026-09-17** while investigating #1 below: a debug session ran
+`desktop_production_single_account_fuzz`'s exact scenario (1 account, 3
+devices, no chaos, `maintenance_coverage: true`) across a **500-seed sweep**
+(`KNOTQ_FUZZ_SEEDS=500 KNOTQ_FUZZ_WORKERS=8 cargo test -p knotq-app --bin
+knotq desktop_production_single_account_fuzz --release -- --nocapture`,
+starting at seed 10,000 — so seeds 10000..10500) against the **unmodified,
+already-shipped `main`** (commit `81bcd7f`, nothing from the #1 investigation
+applied). **10 of 500 seeds failed** — a ~2% rate, in the *plainest* fuzz
+configuration this repo has (no crashes, no dropped connections, no account
+switching). The default `KNOTQ_FUZZ_SEEDS` is 6, which is why CI has never
+hit this. Confirmed not a `--release`-only artifact: seed 10404 reproduces
+identically in a debug build.
+
+Failing seeds and their oracle violations (all "changed/lost with no other
+device ever writing it" — i.e. the CRDT merge itself diverged, not a fuzz
+harness bug):
+
+- 10304: `Folder(...) FolderArchived` — `true -> false`
+- 10307, 10475, 10484: `Item(...) ItemMeta` changed unilaterally
+- 10313: `Item(...) ItemMeta` changed unilaterally
+- 10348: `Scheme(...) SchemeParent` — `Some(folder) -> None`
+- 10379: `Item(...) ItemMeta` changed unilaterally
+- **10404: `sync lost scheme ... "scheme 9781" that no device deleted`** —
+  outright scheme loss, root-caused below
+- 10455: `Item(...) ItemMeta` changed unilaterally
+- 10477: `Item(...) ItemContent` changed unilaterally
+
+**Root cause, confirmed for seed 10404** (repro: add a temporary
+`run_seed(10_404, Config { accounts: 1, initial_devices: 3, max_devices: 4,
+chaos: false, maintenance_coverage: true, .. })` call and run with
+`KNOTQ_FUZZ_TRACE=1 --nocapture`):
+
+Device 1 creates a new scheme as an *in-flight edit* — during its own
+`sync()`, after `run_sync` has snapshotted state but before `land_sync`
+lands the result (`desktop/app/src/app/sync_service/production_fuzz/mod.rs`'s
+`World::sync`, `in_flight_edits` loop). Landing goes through
+`adopt_sync_workspace` (`desktop/app/src/app/sync_service/landing.rs:65`),
+which tries `state.merge_workspace_from_sync` first and only falls back to
+`state.replace_workspace_from_sync` (a **blind overwrite** of
+`self.workspace`) when the merge isn't possible.
+
+`merge_sync_crdt_states` (`desktop/state/src/store.rs:720`, guard at
+`:749-757`) refuses the merge — returning `false`, forcing the replace
+fallback — whenever the *pulled* workspace references **any** scheme binding
+this device doesn't have a CRDT document for yet:
+
+```rust
+let known_documents = self.crdt.known_document_ids();
+if sync_workspace.scheme_sync.iter().any(|(scheme, meta)| {
+    meta.kind == SyncDocumentKind::Scheme
+        && self.workspace.schemes.contains_key(scheme)
+        && !known_documents.contains(&meta.id)
+        && crdt_states.contains_key(&meta.id)
+}) {
+    return false;
+}
+```
+
+This guard exists for a real reason (comment above it, and its own regression
+test at "seed 10004": without it, a scheme re-created on another device stays
+stale forever on this one). But it is scheme-agnostic — at step 13 in the
+10404 trace, device 1's run applied 5 *unrelated* remote updates from other
+devices, one of which was a binding for some other scheme this device hasn't
+built a document for. That alone is enough to bail the merge **entirely**,
+and the replace fallback then discards *every* local change made since the
+watermark that isn't specifically protected — which is only item-field edits
+(`capture_local_item_edits` / `reassert_local_item_edits`, called
+unconditionally after `adopt_sync_workspace` in
+`desktop/app/src/app/sync_service/production_fuzz/device.rs:326`'s
+`land_sync`, and presumably the production `sync_service` task's equivalent).
+A **newly created scheme** has no equivalent capture/reassert step, so it is
+silently dropped from the workspace the moment *any* unrelated concurrent
+scheme binding forces the fallback. `SchemeParent`/`FolderArchived` look like
+the same gap for structural folder/scheme edits.
+
+The `ItemMeta`/`ItemContent` violations (5 of the 10 failures) are the more
+concerning open question: item-field edits are *supposed* to be protected by
+`capture_local_item_edits`/`reassert_local_item_edits` even across the replace
+fallback, but they are still going missing sometimes. Not yet root-caused —
+worth checking whether `queued_item_fields` covers every `ItemMeta` sub-field
+(marker/dates/recurrence/priority/etc.), or whether the capture happens at
+the wrong point relative to some other in-flight mutation.
+
+**Suggested direction, not attempted:** mirror the existing item-edit
+capture/reassert pattern for whole-scheme and whole-folder creation — capture
+"locally known but not in the incoming `sync_workspace`, created after the
+watermark" schemes/folders before `adopt_sync_workspace` runs, and re-insert
+them after, regardless of which path (merge or replace) was taken. Keep the
+existing scheme-binding guard as is (it protects a different, already-fixed
+bug) — the fix is what happens *after* the fallback fires, not preventing it
+from firing. As always: extend the fuzzer (this exact scenario is now a
+known, minimal repro) and run the **full** `production_fuzz` suite after each
+step, not just the target seed.
 
 ## 1. An edit made during a device's first-ever sync can be silently lost
 
