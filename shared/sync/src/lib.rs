@@ -97,7 +97,21 @@ pub const SYNC_API_VERSION: &str = "2026-06-08-crdt-sync-batched";
 /// backend change that raises the floor whenever a protocol change requires
 /// it — e.g. the kind of change the removed `supports_document_epochs` gate
 /// (see git history) briefly protected with a narrower, one-off mechanism.
-pub const CLIENT_SYNC_PROTOCOL_VERSION: u32 = 1;
+/// v2 (2026-09-16): the workspace index's per-field `node_fields` keys are
+/// preferred over the whole-node `nodes` payload on read. A v1 build cannot
+/// write those keys — it does not know the map exists — so a v1 device's rename
+/// or recolour is silently reverted on every v2 device, and the stale value is
+/// re-asserted on the next write. Raising the backend floor to 2 keeps v1
+/// clients off the account entirely rather than letting them lose edits.
+///
+/// SEQUENCING, and it is load-bearing: this constant ships FIRST, in both the
+/// desktop and mobile releases (mobile consumes this crate from the same tree).
+/// `MIN_SUPPORTED_CLIENT_SYNC_PROTOCOL_VERSION` in the backend stays at 0 until
+/// those builds have actually been adopted — raising it is a `wrangler deploy`
+/// that locks out every client below the floor the instant it lands, and mobile
+/// cannot update on demand. Both v0.56.0 and v0.56.1 declare 1, so a floor of 1
+/// would gate nobody; the floor must become 2.
+pub const CLIENT_SYNC_PROTOCOL_VERSION: u32 = 2;
 pub const LOCAL_SYNC_STATE_FILE: &str = "sync-state.json";
 /// On-disk file holding each CRDT document's persisted `state_v1`. The CRDT
 /// documents are long-lived: drivers restore them from this file (with a stable,
