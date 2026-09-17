@@ -721,6 +721,7 @@ impl YrsSchemeDocument {
                         meta_json: Some(next_snapshot.clone()),
                         snapshot_json: next_snapshot,
                         item: Some(item.clone()),
+                        metadata_fields_present: [true; 10],
                         // Every branch that marks an item touched either writes
                         // its Text or leaves an existing one in place, so the
                         // entry always carries one by the time we get here.
@@ -861,6 +862,10 @@ pub(crate) struct StoredItem {
     /// `meta` serialized exactly as `item_snapshot_json` would serialize it, so
     /// "does this item need writing?" stays a string comparison.
     meta_json: Option<String>,
+    /// Legacy documents can carry metadata only in `snapshot_json`. Remember
+    /// which per-field keys exist so a later edit backfills missing keys before
+    /// replacing that fallback snapshot.
+    metadata_fields_present: [bool; 10],
     /// Whether the stored entry actually carries a Text. An entry that lost its
     /// Text needs repairing even when every other field matches, so the
     /// unchanged-item fast path in `replace_scheme` must not fire without this.
@@ -970,6 +975,18 @@ pub(crate) fn read_stored_item(item_map: &MapRef, txn: &impl ReadTxn) -> StoredI
         snapshot_json,
         meta,
         meta_json,
+        metadata_fields_present: [
+            item_map.get(txn, "marker").is_some(),
+            item_map.get(txn, "marker_family").is_some(),
+            item_map.get(txn, "indent").is_some(),
+            item_map.get(txn, "start").is_some(),
+            item_map.get(txn, "end").is_some(),
+            item_map.get(txn, "available").is_some(),
+            item_map.get(txn, "repeats_json").is_some(),
+            item_map.get(txn, "state_json").is_some(),
+            item_map.get(txn, "priority_json").is_some(),
+            item_map.get(txn, "external_json").is_some(),
+        ],
         // Read back out of the document, so the originating `Item` is not
         // available; the JSON comparison is the fallback.
         item: None,
@@ -993,6 +1010,10 @@ impl StoredItem {
                 .meta_json
                 .as_deref()
                 .is_none_or(|meta| meta == next_snapshot)
+    }
+
+    fn metadata_field_present(&self, index: usize) -> bool {
+        self.metadata_fields_present[index]
     }
 }
 
@@ -1104,12 +1125,64 @@ pub(crate) fn write_item_metadata(
     snapshot_json: &str,
     previous: Option<&StoredItem>,
 ) -> anyhow::Result<()> {
+    // A pre-field-wise document stores the authoritative value only in its
+    // snapshot.  The caller's item can be a stale plain-workspace copy (for
+    // example after compaction/restart), so do not replace an absent field's
+    // snapshot value with that copy while migrating the entry.
+    let (item, snapshot_json) = if let Some(previous) = previous {
+        let Some(previous_meta) = previous.meta.as_ref() else {
+            return write_item_fields(
+                item_map,
+                txn,
+                item,
+                position,
+                snapshot_json,
+                false,
+                Some(previous),
+            );
+        };
+        let mut effective = item.clone();
+        if !previous.metadata_field_present(0) {
+            effective.marker = previous_meta.marker;
+        }
+        if !previous.metadata_field_present(1) {
+            effective.marker_family = previous_meta.marker_family;
+        }
+        if !previous.metadata_field_present(2) {
+            effective.indent = previous_meta.indent;
+        }
+        if !previous.metadata_field_present(3) {
+            effective.start = previous_meta.start;
+        }
+        if !previous.metadata_field_present(4) {
+            effective.end = previous_meta.end;
+        }
+        if !previous.metadata_field_present(5) {
+            effective.available = previous_meta.available;
+        }
+        if !previous.metadata_field_present(6) {
+            effective.repeats = previous_meta.repeats.clone();
+        }
+        if !previous.metadata_field_present(7) {
+            effective.state = previous_meta.state.clone();
+        }
+        if !previous.metadata_field_present(8) {
+            effective.priority = previous_meta.priority;
+        }
+        if !previous.metadata_field_present(9) {
+            effective.external = previous_meta.external.clone();
+        }
+        let effective_snapshot = item_snapshot_json(&effective)?;
+        (effective, effective_snapshot)
+    } else {
+        (item.clone(), snapshot_json.to_string())
+    };
     write_item_fields(
         item_map,
         txn,
-        item,
+        &item,
         position,
-        snapshot_json,
+        &snapshot_json,
         false,
         previous,
     )
@@ -1140,7 +1213,13 @@ pub(crate) fn write_item_fields(
     // copy of every other attribute a concurrent device had just changed.
     // `previous` is `None` for a new item (everything is written).
     let prev_meta = previous.and_then(|stored| stored.meta.as_ref());
-    let changed = |same: &dyn Fn(&Item) -> bool| prev_meta.is_none_or(|meta| !same(meta));
+    let changed = |index: usize, same: &dyn Fn(&Item) -> bool| {
+        prev_meta.is_none_or(|meta| {
+            !previous
+                .is_some_and(|stored| stored.metadata_field_present(index))
+                || !same(meta)
+        })
+    };
     // `schema` and `id` are immutable identity fields. They are written once at
     // creation — by the deterministic item skeleton (shared seed clientID, so every
     // origin that creates this item produces the identical, de-duplicated struct) or by
@@ -1170,50 +1249,50 @@ pub(crate) fn write_item_fields(
             &normalize_inline_content(&item.content.to_inlines()),
         )?;
     }
-    if changed(&|meta| meta.marker == item.marker) {
+    if changed(0, &|meta| meta.marker == item.marker) {
         item_map.insert(txn, "marker", serde_json_string_value(&item.marker)?);
     }
-    if changed(&|meta| meta.marker_family == item.marker_family) {
+    if changed(1, &|meta| meta.marker_family == item.marker_family) {
         item_map.insert(
             txn,
             "marker_family",
             serde_json_string_value(&item.marker_family)?,
         );
     }
-    if changed(&|meta| meta.indent == item.indent) {
+    if changed(2, &|meta| meta.indent == item.indent) {
         item_map.insert(txn, "indent", i64::from(item.indent));
     }
-    if changed(&|meta| meta.start == item.start) {
+    if changed(3, &|meta| meta.start == item.start) {
         item_map.insert(
             txn,
             "start",
             item.start.map(|dt| dt.to_rfc3339()).unwrap_or_default(),
         );
     }
-    if changed(&|meta| meta.end == item.end) {
+    if changed(4, &|meta| meta.end == item.end) {
         item_map.insert(
             txn,
             "end",
             item.end.map(|dt| dt.to_rfc3339()).unwrap_or_default(),
         );
     }
-    if changed(&|meta| meta.available == item.available) {
+    if changed(5, &|meta| meta.available == item.available) {
         item_map.insert(
             txn,
             "available",
             item.available.map(|dt| dt.to_rfc3339()).unwrap_or_default(),
         );
     }
-    if changed(&|meta| meta.repeats == item.repeats) {
+    if changed(6, &|meta| meta.repeats == item.repeats) {
         item_map.insert(txn, "repeats_json", serde_json::to_string(&item.repeats)?);
     }
-    if changed(&|meta| meta.state == item.state) {
+    if changed(7, &|meta| meta.state == item.state) {
         item_map.insert(txn, "state_json", serde_json::to_string(&item.state)?);
     }
-    if changed(&|meta| meta.priority == item.priority) {
+    if changed(8, &|meta| meta.priority == item.priority) {
         item_map.insert(txn, "priority_json", serde_json::to_string(&item.priority)?);
     }
-    if changed(&|meta| meta.external == item.external) {
+    if changed(9, &|meta| meta.external == item.external) {
         item_map.insert(txn, "external_json", serde_json::to_string(&item.external)?);
     }
     // Always written: builds that predate per-field materialization read an
@@ -1407,4 +1486,59 @@ fn shadow_miss_timing() -> bool {
     *ON.get_or_init(|| {
         std::env::var("KNOTQ_TYPING_TIMING").is_ok_and(|value| value != "0" && !value.is_empty())
     })
+}
+
+#[cfg(test)]
+mod metadata_migration_tests {
+    use super::*;
+
+    #[test]
+    fn stale_plain_metadata_cannot_erase_legacy_snapshot_field_after_restart() {
+        let document = DocumentId::new();
+        let mut scheme = Scheme::new("Plans", 0);
+        let end = chrono::DateTime::from_timestamp(1_800_000_000, 0).unwrap();
+        let mut item = Item::new("line");
+        item.end = Some(end);
+        scheme.items.push(item.clone());
+
+        let first = YrsSchemeDocument::new(document);
+        first.replace_scheme(&scheme).unwrap();
+
+        // Model a legacy snapshot-only entry: the value remains in
+        // snapshot_json, but the newer per-field key is absent.
+        let item_key = item.id.to_string();
+        let items = first.doc.get_or_insert_map("items_by_id");
+        let mut txn = first.doc.transact_mut();
+        item_map_ref(&items, &txn, &item_key)
+            .unwrap()
+            .remove(&mut txn, "end");
+        drop(txn);
+
+        // The server's at-rest compaction and the next app launch both rebuild
+        // the persisted bytes before this edit is observed.
+        let update = Update::decode_v1(&first.encode_state_v1()).unwrap();
+        let compacted = {
+            let compacted_doc = Doc::new();
+            compacted_doc
+                .transact_mut()
+                .apply_update(Update::decode_v2(&update.encode_v2()).unwrap())
+                .unwrap();
+            let state = compacted_doc
+                .transact()
+                .encode_diff_v1(&StateVector::default());
+            state
+        };
+        let restarted = YrsSchemeDocument::new(document);
+        restarted.apply_update_v1(&compacted).unwrap();
+
+        // The plain workspace is stale for `end` while a different field was
+        // edited locally. The legacy snapshot must still win for `end`.
+        let mut stale = scheme;
+        stale.items[0].end = None;
+        stale.items[0].indent = 2;
+        restarted.replace_scheme(&stale).unwrap();
+        let materialized = restarted.scheme_items().unwrap();
+        assert_eq!(materialized[0].end, Some(end));
+        assert_eq!(materialized[0].indent, 2);
+    }
 }

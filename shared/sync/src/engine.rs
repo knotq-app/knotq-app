@@ -1272,6 +1272,11 @@ pub fn batch_push_pending(
             notification_schedule,
             background_refresh_required,
         ) else {
+            // Keep the account-switch guard armed until the complete push has
+            // drained. Clearing it when snapshots are merely queued lets a
+            // failed push run the pre-pull local repair on the next attempt,
+            // allowing source-account tombstones to overwrite destination data.
+            local_state.clear_full_reseed();
             return Ok(());
         };
         let push_result = transport.push(&request);
@@ -2403,5 +2408,70 @@ mod tests {
         assert_eq!(pushed[0].through_local_sequence, 7);
         assert_eq!(pushed[0].server_sequence, 42);
         assert!(state.pending.is_empty());
+    }
+
+    struct FailingPushTransport;
+
+    impl SyncTransport for FailingPushTransport {
+        fn pull(&self, _request: &BatchPullRequest) -> Result<BatchPullResponse> {
+            Ok(BatchPullResponse::default())
+        }
+
+        fn push(&self, _request: &BatchPushRequest) -> Result<BatchPushResponse> {
+            Err(anyhow!("network unavailable"))
+        }
+    }
+
+    #[test]
+    fn full_reseed_obligation_clears_only_once_the_push_queue_fully_drains() {
+        let workspace_id = WorkspaceId::new();
+        let replica_id = ReplicaId::new();
+        let document = DocumentId::new();
+        let mut state = LocalSyncState {
+            workspace_id: Some(workspace_id),
+            replica_id: Some(replica_id),
+            reseed_all_documents: true,
+            ..LocalSyncState::default()
+        };
+        state.push_pending(pending(workspace_id, replica_id, document, 1, 8));
+        let workspace = Workspace::new();
+        let mut crdt = WorkspaceCrdtDocuments::try_new(&workspace).unwrap();
+
+        // A push that fails must leave the guard armed: clearing it here would
+        // let the next attempt's pre-pull local repair run as though this device
+        // had already re-seeded the new account, letting a stale/source-account
+        // tombstone overwrite destination data.
+        let failing = FailingPushTransport;
+        let mut pushed = Vec::new();
+        assert!(batch_push_pending(
+            &failing,
+            &mut state,
+            replica_id,
+            &schedule(),
+            false,
+            &mut pushed,
+            &mut crdt,
+            &workspace,
+        )
+        .is_err());
+        assert!(state.needs_full_reseed());
+        assert!(!state.pending.is_empty());
+
+        // Once every queued edit is actually accepted by the server, the
+        // obligation is satisfied and the guard drops.
+        let transport = PushAckTransport { server_sequence: 9 };
+        batch_push_pending(
+            &transport,
+            &mut state,
+            replica_id,
+            &schedule(),
+            false,
+            &mut pushed,
+            &mut crdt,
+            &workspace,
+        )
+        .unwrap();
+        assert!(state.pending.is_empty());
+        assert!(!state.needs_full_reseed());
     }
 }

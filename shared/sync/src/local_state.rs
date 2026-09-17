@@ -810,14 +810,8 @@ pub fn queue_account_switch_reseed(
         .values()
         .map(|metadata| metadata.id)
         .collect();
-    // The snapshot-side account re-identification queues the source account's
-    // workspace update before the destination pull. Replace it with a clean
-    // snapshot of the post-pull merged workspace; source-account tombstones
-    // must not be pushed into the destination account.
     sync_state.pending.retain(|edit| {
-        edit.kind != SyncDocumentKind::PersonalWorkspace
-            && (edit.kind != SyncDocumentKind::Scheme
-                || indexed_scheme_documents.contains(&edit.document))
+        edit.kind != SyncDocumentKind::Scheme || indexed_scheme_documents.contains(&edit.document)
     });
 
     let mut next_sequence = sync_state
@@ -827,10 +821,7 @@ pub fn queue_account_switch_reseed(
         .max()
         .unwrap_or(0)
         + 1;
-    // Rebuild with fresh Yjs identities from the merged plain workspace. The
-    // old CRDT state is from the source account and carries delete sets that
-    // can erase destination-only nodes/items when unioned by the server.
-    for update in WorkspaceCrdtDocuments::snapshot_updates(workspace).updates {
+    for update in _crdt.full_snapshot_updates().updates {
         if update.kind != SyncDocumentKind::Scheme
             || !indexed_scheme_documents.contains(&update.document)
             || excluded_documents.contains(&update.document)
@@ -1447,7 +1438,12 @@ mod account_change_tests {
     }
 
     #[test]
-    fn workspace_bootstrap_consumes_full_reseed_obligation_after_queueing_snapshots() {
+    fn workspace_bootstrap_leaves_full_reseed_obligation_armed_until_push_drains() {
+        // Queueing the snapshots is not enough to satisfy the reseed obligation:
+        // if the device dies (or the push fails) before they actually reach the
+        // server, the next attempt must still treat every document as unseeded.
+        // Only `batch_push_pending` draining the queue (see its test coverage in
+        // `engine.rs`) may clear the flag.
         let mut workspace = Workspace::new();
         let scheme = Scheme::new("Indexed", 0);
         let scheme_id = scheme.id;
@@ -1467,7 +1463,7 @@ mod account_change_tests {
             &HashMap::new(),
         );
 
-        assert!(!state.needs_full_reseed());
+        assert!(state.needs_full_reseed());
         assert!(state
             .pending
             .iter()
