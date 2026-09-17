@@ -20,7 +20,9 @@ use crate::{
 /// once the queue is pushed a stale queued edit can win and revert what the user
 /// did since. Applying an update the document already holds changes nothing, so
 /// this only fills that gap — including in data directories an older build left
-/// this way. A document with no saved state is left to the sync that seeds it.
+/// this way. A document with no saved state is reconstructed from its queued
+/// updates when possible; this covers a document first touched by a compound
+/// edit whose CRDT save was interrupted before that document was written.
 pub fn fold_pending_edits_into_state<'a>(
     document: DocumentId,
     state: &[u8],
@@ -30,13 +32,15 @@ pub fn fold_pending_edits_into_state<'a>(
         .into_iter()
         .filter(|edit| edit.document == document)
         .collect();
-    if edits.is_empty() || state.is_empty() {
+    if edits.is_empty() {
         return None;
     }
     edits.sort_by_key(|edit| edit.local_sequence);
     let doc = Doc::new();
     let mut txn = doc.transact_mut();
-    txn.apply_update(Update::decode_v1(state).ok()?).ok()?;
+    if !state.is_empty() {
+        txn.apply_update(Update::decode_v1(state).ok()?).ok()?;
+    }
     let before = txn.encode_state_as_update_v1(&StateVector::default());
     for edit in edits {
         // One unreadable queued edit must not cost the others.
@@ -764,14 +768,6 @@ pub fn queue_workspace_bootstrap_updates(
         });
         next_sequence += 1;
     }
-    // The obligation means "queue a full snapshot once after an account/server
-    // change", not "force a full snapshot on every later poll". The queued
-    // snapshots are durable pending edits and remain retryable if the network
-    // push fails or accepts only part of the batch.
-    if reseed_all {
-        sync_state.clear_full_reseed();
-    }
-
     // Drop queued deltas that the server can never accept: a document it has no
     // base snapshot for (remote sequence 0) that we also did not just re-seed with
     // a full snapshot above. These orphans appear when a scheme is deleted or its
@@ -798,7 +794,7 @@ pub fn queue_workspace_bootstrap_updates(
 /// therefore must not be re-seeded from an incompatible account history.
 pub fn queue_account_switch_reseed(
     sync_state: &mut LocalSyncState,
-    crdt: &WorkspaceCrdtDocuments,
+    _crdt: &WorkspaceCrdtDocuments,
     workspace: &Workspace,
     replica_id: ReplicaId,
     excluded_documents: &HashSet<DocumentId>,
@@ -814,8 +810,14 @@ pub fn queue_account_switch_reseed(
         .values()
         .map(|metadata| metadata.id)
         .collect();
+    // The snapshot-side account re-identification queues the source account's
+    // workspace update before the destination pull. Replace it with a clean
+    // snapshot of the post-pull merged workspace; source-account tombstones
+    // must not be pushed into the destination account.
     sync_state.pending.retain(|edit| {
-        edit.kind != SyncDocumentKind::Scheme || indexed_scheme_documents.contains(&edit.document)
+        edit.kind != SyncDocumentKind::PersonalWorkspace
+            && (edit.kind != SyncDocumentKind::Scheme
+                || indexed_scheme_documents.contains(&edit.document))
     });
 
     let mut next_sequence = sync_state
@@ -825,7 +827,10 @@ pub fn queue_account_switch_reseed(
         .max()
         .unwrap_or(0)
         + 1;
-    for update in crdt.full_snapshot_updates().updates {
+    // Rebuild with fresh Yjs identities from the merged plain workspace. The
+    // old CRDT state is from the source account and carries delete sets that
+    // can erase destination-only nodes/items when unioned by the server.
+    for update in WorkspaceCrdtDocuments::snapshot_updates(workspace).updates {
         if update.kind != SyncDocumentKind::Scheme
             || !indexed_scheme_documents.contains(&update.document)
             || excluded_documents.contains(&update.document)
@@ -1788,8 +1793,9 @@ mod fold_pending_tests {
             fold_pending_edits_into_state(document, &saved, &pending),
             None
         );
-        // A document with no saved state is left for the sync that seeds it.
-        assert_eq!(fold_pending_edits_into_state(document, &[], &pending), None);
+        let recovered = fold_pending_edits_into_state(document, &[], &pending)
+            .expect("valid queued updates can reconstruct a missing document");
+        assert_eq!(value(&restore(&recovered)), "second");
     }
 }
 

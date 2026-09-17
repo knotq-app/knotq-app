@@ -3,14 +3,14 @@
 //! concurrent edits merge additively instead of as whole-document last-writer-wins.
 use super::*;
 
-/// The nine independent, id-keyed maps the workspace document is decomposed into.
+/// The ten independent, id-keyed maps the workspace document is decomposed into.
 /// `get` both creates them (first call on a fresh doc) and re-fetches them, in one
 /// fixed order, so construction and reconciliation share a single source of truth.
 struct WorkspaceMaps {
     meta: MapRef,
     nodes: MapRef,
-    /// One key per mutable field of a node (`<id>\u{1f}<field>`), alongside the
-    /// whole-node value in `nodes`.
+    /// One key per mutable field of a node (`<id>\u{1f}<field>`), including its
+    /// membership parent and position, alongside the whole-node value in `nodes`.
     ///
     /// `nodes` keeps a node's every field — name, colour, gsync, source, and its
     /// membership parent and position — inside ONE map value, so two devices
@@ -58,6 +58,26 @@ impl WorkspaceMaps {
 /// separator cannot occur in a UUID or a field name, so the key splits back
 /// unambiguously.
 const NODE_FIELD_SEPARATOR: char = '\u{1f}';
+
+/// Stamped into every `nodes` entry this build writes, to mark that the matching
+/// `node_fields` keys were written alongside it.
+///
+/// A build that predates `node_fields` cannot write those keys — it does not know
+/// the map exists — and `sync_string_map` only prunes keys inside the map it is
+/// handed, so it cannot clear them either. Without this stamp such a build's
+/// rename or recolour is silently reverted on every build that prefers the
+/// per-field keys, which then re-asserts the stale value on its next write.
+///
+/// Only the stamp's PRESENCE is consulted, never its value: presence means "the
+/// field keys belong to this payload", absence means "this payload came from a
+/// build that could not maintain them, so trust it instead". A constant keeps
+/// re-serialization byte-identical, so an unchanged workspace still emits no
+/// update (`store_tests`: "an unchanged workspace must not queue new CRDT edits").
+///
+/// Removable once every client is past the `node_fields` change — see
+/// `CLIENT_SYNC_PROTOCOL_VERSION` and the backend's
+/// `MIN_SUPPORTED_CLIENT_SYNC_PROTOCOL_VERSION`.
+const NODE_FIELD_SCHEMA: u32 = 1;
 
 /// The `node_fields` key for one field of one node.
 fn node_field_key(id: &str, field: &str) -> String {
@@ -424,8 +444,18 @@ impl YrsJsonDocument {
             .collect();
         let stored_nodes: HashMap<String, String> =
             string_map_entries(&nodes, &txn).into_iter().collect();
-        for entry in &snapshot.daily_queue {
-            let id = entry.scheme.to_string();
+        // The plain workspace can omit any scheme whose file was not loaded at
+        // this boundary, not only Daily Queue pages. `scheme_sync` is the
+        // durable ownership/index set; after `ensure_sync_metadata`, a binding
+        // there is live (or an intentionally retained daily) and must keep its
+        // node entry even when the materialized scheme is absent.
+        let retained_scheme_ids: Vec<String> = snapshot
+            .scheme_sync
+            .iter()
+            .filter(|entry| entry.sync.kind == SyncDocumentKind::Scheme)
+            .map(|entry| entry.scheme.to_string())
+            .collect();
+        for id in retained_scheme_ids {
             if !listed.insert(id.clone()) {
                 continue;
             }
@@ -447,6 +477,14 @@ impl YrsJsonDocument {
         for folder in &snapshot.folders {
             let id = folder.id.to_string();
             node_field_entries.push((node_field_key(&id, "name"), folder.name.clone()));
+            node_field_entries.push((
+                node_field_key(&id, "membership_parent"),
+                membership_parent.get(&id).cloned().unwrap_or_default(),
+            ));
+            node_field_entries.push((
+                node_field_key(&id, "position"),
+                positions.get(&id).cloned().unwrap_or_default(),
+            ));
             node_field_entries.push((node_field_key(&id, "expanded"), folder.expanded.to_string()));
             node_field_entries.push((
                 node_field_key(&id, "parent"),
@@ -460,6 +498,14 @@ impl YrsJsonDocument {
         for scheme in &snapshot.schemes {
             let id = scheme.id.to_string();
             node_field_entries.push((node_field_key(&id, "name"), scheme.name.clone()));
+            node_field_entries.push((
+                node_field_key(&id, "membership_parent"),
+                membership_parent.get(&id).cloned().unwrap_or_default(),
+            ));
+            node_field_entries.push((
+                node_field_key(&id, "position"),
+                positions.get(&id).cloned().unwrap_or_default(),
+            ));
             node_field_entries.push((
                 node_field_key(&id, "color_index"),
                 scheme.color_index.to_string(),
@@ -591,6 +637,9 @@ impl YrsJsonDocument {
             parent: String,
             position: String,
             payload: String,
+            /// See [`NODE_FIELD_SCHEMA`]: `None` means an older build wrote this
+            /// entry, so its payload wins over any `node_fields` key.
+            field_schema: Option<u32>,
         }
         let mut parsed: HashMap<String, ParsedNode> = HashMap::new();
         let mut folder_ids: HashSet<String> = HashSet::new();
@@ -607,6 +656,7 @@ impl YrsJsonDocument {
                     parent: entry.parent,
                     position: entry.position,
                     payload: entry.payload,
+                    field_schema: entry.field_schema,
                 },
             );
         }
@@ -631,6 +681,15 @@ impl YrsJsonDocument {
                 let Some(node) = parsed.get_mut(id) else {
                     continue;
                 };
+                // An unstamped entry was written by a build that predates
+                // `node_fields` (see `NODE_FIELD_SCHEMA`). It could not have
+                // written these keys, so they are stale and its payload — which
+                // carries that build's actual edit — is the authority. Applying
+                // them here is what silently reverted an older device's rename or
+                // recolour on every newer device.
+                if node.field_schema.is_none() {
+                    continue;
+                }
                 let Ok(mut payload) = serde_json::from_str::<serde_json::Value>(&node.payload)
                 else {
                     continue;
@@ -640,6 +699,14 @@ impl YrsJsonDocument {
                 };
                 for (field, raw) in fields {
                     let value = match field {
+                        "membership_parent" => {
+                            node.parent = raw.to_string();
+                            continue;
+                        }
+                        "position" => {
+                            node.position = raw.to_string();
+                            continue;
+                        }
                         "name" => serde_json::Value::String(raw.to_string()),
                         "expanded" | "gsync" => match raw {
                             "true" => serde_json::Value::Bool(true),
@@ -795,12 +862,20 @@ impl YrsJsonDocument {
                 } else if archived_top_folder_ids.contains(id_str) {
                     payload.parent
                 } else {
-                    payload.parent.map(|parent| {
-                        if legacy_root_ids.contains(&parent.to_string()) {
-                            root
-                        } else {
-                            parent
-                        }
+                    // `node.parent` is the independently merged membership
+                    // relation. The payload's parent is a redundant copy that
+                    // can come from a losing whole-node write; using it here
+                    // can rehome a folder even though its membership survived.
+                    let parent = node
+                        .parent
+                        .parse::<FolderId>()
+                        .ok()
+                        .filter(|parent| folder_ids.contains(&parent.to_string()))
+                        .unwrap_or(root);
+                    Some(if legacy_root_ids.contains(&parent.to_string()) {
+                        root
+                    } else {
+                        parent
                     })
                 };
                 folders.push(Folder {
@@ -980,6 +1055,9 @@ pub(crate) fn node_entry_json(
         parent: membership_parent.get(id).cloned().unwrap_or_default(),
         position: positions.get(id).cloned().unwrap_or_default(),
         payload,
+        // This build writes the per-field keys alongside the entry, so the
+        // entry is stamped. See `NODE_FIELD_SCHEMA`.
+        field_schema: Some(NODE_FIELD_SCHEMA),
     };
     Ok(serde_json::to_string(&entry)?)
 }
@@ -1205,4 +1283,291 @@ pub(crate) fn scheme_documents_by_id(
         .filter(|(_, meta)| meta.kind == SyncDocumentKind::Scheme)
         .map(|(scheme, meta)| (meta.id, *scheme))
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Build a one-scheme workspace and write its index the way this build does.
+    fn indexed_workspace(colour: u8) -> (YrsJsonDocument, SchemeId) {
+        let mut workspace = Workspace::new();
+        let scheme = Scheme::new("Plans", colour);
+        let scheme_id = scheme.id;
+        workspace.schemes.insert(scheme_id, scheme);
+        workspace
+            .folders
+            .get_mut(&workspace.root)
+            .unwrap()
+            .children
+            .push(NodeRef::Scheme(scheme_id));
+        workspace.ensure_sync_metadata();
+        let doc = YrsJsonDocument::new(workspace.sync.id, SyncDocumentKind::PersonalWorkspace);
+        doc.replace_snapshot(&workspace_document_snapshot(&workspace))
+            .expect("first index write");
+        (doc, scheme_id)
+    }
+
+    fn colour_of(doc: &YrsJsonDocument, scheme: SchemeId) -> u8 {
+        doc.snapshot()
+            .expect("read the index back")
+            .schemes
+            .iter()
+            .find(|entry| entry.id == scheme)
+            .expect("the scheme survives")
+            .color_index
+    }
+
+    fn indexed_workspace_with_folder() -> (YrsJsonDocument, SchemeId, FolderId) {
+        let mut workspace = Workspace::new();
+        let scheme = Scheme::new("Plans", 3);
+        let scheme_id = scheme.id;
+        let folder_id = FolderId::new();
+        workspace.schemes.insert(scheme_id, scheme);
+        workspace.folders.insert(
+            folder_id,
+            Folder {
+                id: folder_id,
+                name: "Destination".to_string(),
+                parent: Some(workspace.root),
+                children: vec![NodeRef::Scheme(scheme_id)],
+                expanded: true,
+            },
+        );
+        workspace
+            .folders
+            .get_mut(&workspace.root)
+            .unwrap()
+            .children
+            .push(NodeRef::Folder(folder_id));
+        workspace.ensure_sync_metadata();
+        let doc = YrsJsonDocument::new(workspace.sync.id, SyncDocumentKind::PersonalWorkspace);
+        doc.replace_snapshot(&workspace_document_snapshot(&workspace))
+            .expect("first index write");
+        (doc, scheme_id, folder_id)
+    }
+
+    /// MIXED FLEET: a build predating `node_fields` writes only the whole-node
+    /// entry, without the field-schema stamp. Its edit must win over the stale
+    /// per-field keys it could not update.
+    ///
+    /// Without this, every updated device silently reverts the older device's
+    /// rename/recolour and re-asserts the stale value on its next write, making
+    /// the loss sticky. Desktop and mobile ship from separate release trains, so
+    /// a mixed fleet is the normal state during a rollout.
+    #[test]
+    fn an_older_builds_whole_node_edit_wins_over_stale_field_keys() {
+        let (doc, scheme_id) = indexed_workspace(3);
+
+        // An older build recolours 3 -> 9: it regenerates the whole entry from
+        // its own struct, so the entry carries no stamp and `node_fields` is
+        // untouched.
+        {
+            let maps = WorkspaceMaps::get(&doc.doc);
+            let mut txn = doc.doc.transact_mut();
+            let key = scheme_id.to_string();
+            let raw = maps
+                .nodes
+                .get_as::<_, Option<String>>(&txn, &key)
+                .ok()
+                .flatten()
+                .expect("the scheme's node entry");
+            let mut entry: serde_json::Value = serde_json::from_str(&raw).expect("node entry json");
+            let object = entry.as_object_mut().expect("node entry object");
+            object.remove("field_schema");
+            let mut payload: serde_json::Value =
+                serde_json::from_str(object["payload"].as_str().expect("payload string"))
+                    .expect("payload json");
+            payload["color_index"] = serde_json::json!(9);
+            object.insert(
+                "payload".to_string(),
+                serde_json::Value::String(payload.to_string()),
+            );
+            maps.nodes.insert(
+                &mut txn,
+                key,
+                serde_json::to_string(&entry).expect("re-encode node entry"),
+            );
+        }
+
+        assert_eq!(
+            colour_of(&doc, scheme_id),
+            9,
+            "an older build's recolour was shadowed by a stale node_fields key"
+        );
+    }
+
+    /// The control for the test above: the per-field merge `node_fields` exists
+    /// for must still work. A concurrent write from a build that DOES maintain
+    /// the keys lands in `node_fields` while the whole-node payload keeps another
+    /// device's value — there the field key is authoritative, exactly as before.
+    ///
+    /// Without this, the compatibility check above could be "passed" by never
+    /// preferring the per-field keys at all, silently undoing the fix that
+    /// introduced them.
+    #[test]
+    fn a_current_builds_field_write_still_wins_over_a_stale_payload() {
+        let (doc, scheme_id) = indexed_workspace(3);
+
+        // A concurrent current-build device recoloured to 7: its field key won,
+        // while the whole-node payload still carries the other device's 3. The
+        // entry keeps its stamp, because a current build wrote it.
+        {
+            let maps = WorkspaceMaps::get(&doc.doc);
+            let mut txn = doc.doc.transact_mut();
+            maps.node_fields.insert(
+                &mut txn,
+                node_field_key(&scheme_id.to_string(), "color_index"),
+                "7".to_string(),
+            );
+        }
+
+        assert_eq!(
+            colour_of(&doc, scheme_id),
+            7,
+            "the per-field merge regressed: a current build's field write lost to \
+             a stale whole-node payload"
+        );
+    }
+
+    #[test]
+    fn a_current_membership_field_wins_over_a_stale_whole_node_parent() {
+        let (doc, scheme_id, destination) = indexed_workspace_with_folder();
+        let scheme_key = scheme_id.to_string();
+
+        // Simulate the whole-node half of a concurrent move retaining the old
+        // root membership while the per-field move records the destination.
+        {
+            let maps = WorkspaceMaps::get(&doc.doc);
+            let mut txn = doc.doc.transact_mut();
+            let raw = maps
+                .nodes
+                .get_as::<_, Option<String>>(&txn, &scheme_key)
+                .ok()
+                .flatten()
+                .expect("the scheme's node entry");
+            let mut entry: WorkspaceNodeEntry =
+                serde_json::from_str(&raw).expect("node entry json");
+            entry.parent = String::new();
+            maps.nodes.insert(
+                &mut txn,
+                scheme_key.clone(),
+                serde_json::to_string(&entry).expect("re-encode node entry"),
+            );
+            maps.node_fields.insert(
+                &mut txn,
+                node_field_key(&scheme_key, "membership_parent"),
+                destination.to_string(),
+            );
+        }
+
+        let snapshot = doc.snapshot().expect("materialize merged index");
+        let destination_folder = snapshot
+            .folders
+            .iter()
+            .find(|folder| folder.id == destination)
+            .expect("destination folder survives");
+        assert!(
+            destination_folder
+                .children
+                .contains(&NodeRef::Scheme(scheme_id)),
+            "the current membership move was discarded in favor of the stale node entry"
+        );
+    }
+
+    #[test]
+    fn an_unloaded_live_scheme_keeps_its_index_node() {
+        let (doc, scheme_id) = indexed_workspace(3);
+        let mut loaded = doc.snapshot().expect("materialize initial index");
+        loaded.schemes.clear();
+
+        assert!(
+            loaded
+                .scheme_sync
+                .iter()
+                .any(|entry| entry.scheme == scheme_id),
+            "the test workspace must retain the durable scheme binding"
+        );
+        doc.replace_snapshot(&loaded)
+            .expect("rewrite index from a partial workspace");
+
+        assert!(
+            doc.snapshot()
+                .expect("materialize retained index")
+                .schemes
+                .iter()
+                .any(|scheme| scheme.id == scheme_id),
+            "a live scheme binding must retain its node when its plain file is unloaded"
+        );
+    }
+
+    #[test]
+    fn folder_parent_materializes_from_merged_membership() {
+        let mut workspace = Workspace::new();
+        let parent_id = FolderId::new();
+        let child_id = FolderId::new();
+        workspace.folders.insert(
+            parent_id,
+            Folder {
+                id: parent_id,
+                name: "Parent".to_string(),
+                parent: Some(workspace.root),
+                children: vec![NodeRef::Folder(child_id)],
+                expanded: true,
+            },
+        );
+        workspace.folders.insert(
+            child_id,
+            Folder {
+                id: child_id,
+                name: "Child".to_string(),
+                parent: Some(parent_id),
+                children: Vec::new(),
+                expanded: true,
+            },
+        );
+        workspace
+            .folders
+            .get_mut(&workspace.root)
+            .unwrap()
+            .children
+            .push(NodeRef::Folder(parent_id));
+        workspace.ensure_sync_metadata();
+        let doc = YrsJsonDocument::new(workspace.sync.id, SyncDocumentKind::PersonalWorkspace);
+        doc.replace_snapshot(&workspace_document_snapshot(&workspace))
+            .expect("first index write");
+
+        let child_key = child_id.to_string();
+        let maps = WorkspaceMaps::get(&doc.doc);
+        let mut txn = doc.doc.transact_mut();
+        let raw = maps
+            .nodes
+            .get_as::<_, Option<String>>(&txn, &child_key)
+            .ok()
+            .flatten()
+            .expect("child node entry");
+        let mut entry: WorkspaceNodeEntry = serde_json::from_str(&raw).expect("node entry json");
+        let mut payload: serde_json::Value =
+            serde_json::from_str(&entry.payload).expect("folder payload json");
+        payload["parent"] = serde_json::Value::String(workspace.root.to_string());
+        entry.payload = payload.to_string();
+        maps.nodes.insert(
+            &mut txn,
+            child_key,
+            serde_json::to_string(&entry).expect("re-encode child node"),
+        );
+        drop(txn);
+
+        let materialized = doc.snapshot().expect("materialize merged folder index");
+        assert_eq!(
+            materialized
+                .folders
+                .iter()
+                .find(|folder| folder.id == child_id)
+                .expect("child folder survives")
+                .parent,
+            Some(parent_id),
+            "a stale redundant payload parent must not override membership"
+        );
+    }
 }

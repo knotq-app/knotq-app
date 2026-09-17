@@ -252,6 +252,10 @@ jobs:
         if: steps.filter.outputs.sync == 'true'
         uses: ./.github/actions/sync-stress
         with:
+          # The production fuzzer defaults to 6 seeds in its test harness. Keep
+          # the PR gate explicit so a harness default change cannot silently
+          # reduce production-path coverage again.
+          production-fuzz-seeds: "128"
           backend-repo-token: ${{ secrets.BACKEND_REPO_TOKEN }}
 
       - name: Sync line coverage (every file on the sync path above its floor)

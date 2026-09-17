@@ -20,8 +20,15 @@ inputs:
     description: Operations per seed for the WebSocket fuzz.
     default: "40"
   production-fuzz-seeds:
-    description: Seeds per configuration for the desktop production-path fuzzer.
-    default: "24"
+    description: >
+      Seeds per configuration for the desktop production-path fuzzer. Raised from
+      24 to 128 on 2026-09-16: a 60-seed local sweep found 7 failing seeds in EACH
+      of the two configurations, several of them outside the old 24 — and the ones
+      inside it had been failing unnoticed. This fuzzer drives the real AppState,
+      real disk and the real sync_snapshot path, so its seeds are the most
+      expensive and the most valuable; a shallow corpus here is how a
+      no-silent-loss violation reaches a release.
+    default: "128"
   production-fuzz-steps:
     description: Steps per seed for the desktop production-path fuzzer.
     default: "200"
@@ -81,6 +88,7 @@ runs:
           --test fresh_install_join --test offline_device_join --test starter_content_join
 
     - name: Desktop production-path fuzzer (real AppState, disk, sync_snapshot)
+      if: inputs.production-fuzz-seeds != '0'
       shell: bash
       env:
         KNOTQ_FUZZ_SEEDS: ${{ inputs.production-fuzz-seeds }}
