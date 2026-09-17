@@ -324,7 +324,16 @@ impl World {
             }
             16 => {
                 if let Some(s) = scheme {
-                    dev.delete_scheme(s);
+                    // A daily-bound scheme is unreachable by the product's
+                    // DeleteScheme: it is never in a folder's children (see
+                    // `normalize_folder_tree`), so the command returns
+                    // `SchemeMissing`. The harness helper hard-removes instead,
+                    // which manufactured an orphan daily binding the product
+                    // cannot create. `production_fuzz` already filters this the
+                    // same way (`actions.rs`: `!is_daily_queue_scheme`).
+                    if !dev.workspace.is_daily_queue_scheme(s) {
+                        dev.delete_scheme(s);
+                    }
                 }
             }
             17 => {
