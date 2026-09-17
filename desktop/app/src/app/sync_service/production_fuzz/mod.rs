@@ -727,6 +727,37 @@ fn desktop_production_single_account_fuzz() {
     });
 }
 
+/// Found by a 500-seed sweep of `desktop_production_single_account_fuzz`'s own
+/// configuration against unmodified main (the default `KNOTQ_FUZZ_SEEDS=6`
+/// never samples this seed) — see `app/TODO.md` item #0. Device 1 creates a
+/// scheme as an in-flight edit (after its own sync run has snapshotted state,
+/// before landing); the same run's landing separately has to fall back to
+/// `replace_workspace_from_sync` because an unrelated remote scheme binding
+/// (from another device's concurrent activity, around a server compaction
+/// sweep) isn't yet backed by a local CRDT document
+/// (`WorkspaceStore::merge_sync_crdt_states`'s guard,
+/// `desktop/state/src/store.rs`). The blind replace has no capture/reassert
+/// protection for a scheme created in flight (unlike item-field edits, which
+/// have one, though even that one is narrower than it looks — see the TODO).
+/// Reproduces identically in debug and release.
+#[test]
+#[ignore = "known gap: a scheme (or a field edit) made in flight can be lost when landing falls back to a blind workspace replace for an unrelated reason; see app/TODO.md item #0"]
+fn a_scheme_created_in_flight_survives_an_unrelated_replace_fallback() {
+    std::env::set_var("KNOTQ_SQUASH_MIN_STATE_BYTES", "0");
+    std::env::set_var("KNOTQ_SQUASH_MIN_RATIO", "1");
+    run_seed(
+        10_404,
+        Config {
+            accounts: 1,
+            initial_devices: 3,
+            max_devices: 4,
+            steps: env_usize("KNOTQ_FUZZ_STEPS", 120),
+            chaos: false,
+            maintenance_coverage: true,
+        },
+    );
+}
+
 #[test]
 #[ignore = "triage helper; replays KNOTQ_REPRO_SEED with the chaos configuration"]
 fn replay_production_seed() {
