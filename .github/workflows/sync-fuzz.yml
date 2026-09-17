@@ -157,6 +157,10 @@ jobs:
           # the WebSocket run.
           fuzz-seeds: "50"
           fuzz-steps: "200"
+          # deep-fuzz above already runs the production-path fuzzer at depth;
+          # this job is transport-focused, so do not pay for that same disk /
+          # AppState corpus a second time.
+          production-fuzz-seeds: "0"
           ws-fuzz-seeds: ${{ github.event.inputs.ws_seeds || '30' }}
           ws-fuzz-steps: ${{ github.event.inputs.ws_steps || '80' }}
           ws-hop-seeds: "8"

@@ -36,6 +36,11 @@ jobs:
           # A release runs deeper than PR CI — this is the last line of defence.
           fuzz-seeds: "800"
           fuzz-steps: "400"
+          # The production-path fuzzer was NOT raised here before, so a release ran
+          # it at the action default while the in-memory fuzzer ran at 800. That
+          # left the deepest, most production-faithful check as the shallowest part
+          # of the release gate. A 60-seed sweep found 7 failures per configuration.
+          production-fuzz-seeds: "300"
           ws-fuzz-seeds: "8"
           ws-fuzz-steps: "60"
           ws-hop-seeds: "3"

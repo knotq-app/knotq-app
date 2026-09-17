@@ -19,7 +19,8 @@ use std::path::{Path, PathBuf};
 use anyhow::{bail, Context, Result};
 use knotq_model::DocumentId;
 use knotq_sync::{
-    PersistedCrdtState, LOCAL_CRDT_STATE_DIR, LOCAL_CRDT_STATE_EXT, LOCAL_CRDT_STATE_FILE,
+    fold_pending_edits_into_state, PersistedCrdtState, LOCAL_CRDT_STATE_DIR, LOCAL_CRDT_STATE_EXT,
+    LOCAL_CRDT_STATE_FILE,
 };
 
 use crate::sync_state::sync_state_data_dir;
@@ -44,7 +45,9 @@ pub(crate) fn retired_crdt_state_path(workspace_path: &Path) -> PathBuf {
 pub fn load_crdt_state(workspace_path: &Path) -> Result<HashMap<DocumentId, Vec<u8>>> {
     let dir = crdt_state_dir(workspace_path);
     if !dir.is_dir() {
-        return load_single_blob(&crdt_state_path(workspace_path));
+        let mut states = load_single_blob(&crdt_state_path(workspace_path))?;
+        fold_pending_state(workspace_path, &mut states);
+        return Ok(states);
     }
 
     let mut states = load_from_dir(&dir)?;
@@ -66,7 +69,29 @@ pub fn load_crdt_state(workspace_path: &Path) -> Result<HashMap<DocumentId, Vec<
             Err(err) => eprintln!("unmigrated CRDT state blob is unreadable: {err:#}"),
         }
     }
+    fold_pending_state(workspace_path, &mut states);
     Ok(states)
+}
+
+fn fold_pending_state(workspace_path: &Path, states: &mut HashMap<DocumentId, Vec<u8>>) {
+    // The pending queue is durable before CRDT bytes. Fold it before callers
+    // construct live documents, including documents with no state file yet.
+    let pending = crate::sync_state::load_local_sync_state(workspace_path)
+        .map(|state| state.pending)
+        .unwrap_or_default();
+    for document in pending
+        .iter()
+        .map(|edit| edit.document)
+        .collect::<HashSet<_>>()
+    {
+        if let Some(existing) = states.get(&document).cloned() {
+            if let Some(folded) = fold_pending_edits_into_state(document, &existing, &pending) {
+                states.insert(document, folded);
+            }
+        } else if let Some(folded) = fold_pending_edits_into_state(document, &[], &pending) {
+            states.insert(document, folded);
+        }
+    }
 }
 
 pub(crate) fn load_from_dir(dir: &Path) -> Result<HashMap<DocumentId, Vec<u8>>> {
