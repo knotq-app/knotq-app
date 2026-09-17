@@ -269,6 +269,9 @@ pub(super) struct Attribution {
     destroyed_items: HashSet<ItemId>,
     destroyed_schemes: HashSet<SchemeId>,
     destroyed_folders: HashSet<FolderId>,
+    /// Where an item was moved to, for items whose scheme a local step changed.
+    /// See [`Attribution::moved_into_a_destroyed_scheme`].
+    moved_into: HashMap<ItemId, SchemeId>,
     writers: HashMap<Key, HashSet<usize>>,
 }
 
@@ -283,6 +286,15 @@ impl Attribution {
         for item in before.items.keys() {
             if !after.items.contains_key(item) {
                 self.destroyed_items.insert(*item);
+            }
+        }
+        // An item whose scheme changed in this step was MOVED. Remember where it
+        // went: if that destination is destroyed by any device, the item going
+        // with it is explained rather than lost. Recorded for every move, and
+        // consulted only when the destination turns out to be destroyed.
+        for (item, scheme) in &after.items {
+            if before.items.get(item).is_some_and(|from| from != scheme) {
+                self.moved_into.insert(*item, *scheme);
             }
         }
         for folder in before.folder_parent.keys() {
@@ -327,6 +339,26 @@ impl Attribution {
                 view,
                 view.scheme_parent.get(&scheme).copied().flatten(),
             )
+    }
+
+    /// An item moved into a scheme that some device then destroyed goes with
+    /// that scheme; its disappearance is explained, not a silent loss.
+    ///
+    /// The two steps are concurrent by construction: the moving device had not
+    /// yet pulled the destroy, so its own workspace still held the scheme,
+    /// `editable_schemes` still offered it as a target, and `insert_item`
+    /// legitimately applied. When the destroy wins the merge, the line has no
+    /// home to land in. (Production fuzz seed 10001: device 0 last synced at
+    /// step 51, device 1 permanently deleted the scheme at step 61, device 0
+    /// moved a line into it at step 92.)
+    ///
+    /// Deliberately narrow: it excuses ONLY an item whose recorded move
+    /// destination is itself destroyed. An item that vanishes from a live
+    /// scheme, or one that was never moved, is still a violation.
+    fn moved_into_a_destroyed_scheme(&self, item: ItemId) -> bool {
+        self.moved_into
+            .get(&item)
+            .is_some_and(|destination| self.destroyed_schemes.contains(destination))
     }
 
     fn moved_by_another_device(&self, device: usize, item: ItemId) -> bool {
@@ -427,6 +459,7 @@ impl Attribution {
             if after.items.contains_key(item)
                 || self.destroyed_items.contains(item)
                 || self.scheme_excused(before, *scheme)
+                || self.moved_into_a_destroyed_scheme(*item)
                 || self.moved_by_another_device(device, *item)
             {
                 continue;
