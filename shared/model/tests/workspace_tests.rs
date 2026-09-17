@@ -4,6 +4,54 @@ use knotq_model::{
     NodeRef, Scheme, SchemeId, SyncDocumentKind, Workspace, WorkspaceId, DAILY_QUEUE_COLOR_INDEX,
 };
 
+/// Destroying a scheme must leave NO reference behind — in particular no
+/// `daily_queue` binding. An orphan binding re-materializes the day as an empty
+/// page on the next sync and pushes that emptiness out as authoritative, which
+/// is a silent content loss no later pass can repair: a Daily outside the loaded
+/// window is also absent from `schemes`, so nothing downstream can tell a
+/// removed page from an unloaded one.
+#[test]
+fn removing_a_scheme_clears_its_daily_queue_binding() {
+    let date = NaiveDate::from_ymd_opt(2026, 9, 16).unwrap();
+    let mut workspace = Workspace::new();
+    let daily_id = daily_queue_scheme_id(date);
+    let mut daily = Scheme::new("Daily", DAILY_QUEUE_COLOR_INDEX);
+    daily.id = daily_id;
+    daily.items.push(Item::new("a row"));
+    workspace.schemes.insert(daily_id, daily);
+    workspace.daily_queue.insert(date, daily_id);
+
+    let removed = workspace.remove_scheme_completely(daily_id);
+
+    assert!(removed.is_some(), "the scheme itself is returned");
+    assert!(!workspace.schemes.contains_key(&daily_id));
+    assert!(
+        !workspace.daily_queue.values().any(|id| *id == daily_id),
+        "the daily-queue binding outlived the scheme it points at"
+    );
+    assert!(workspace.daily_queue_scheme_id(date).is_none());
+}
+
+/// The inverse guard: a Daily page that is merely UNLOADED (bound but absent
+/// from `schemes`, exactly what desktop does for days outside its window) must
+/// keep its binding. This is why the cleanup lives at the removal site rather
+/// than in a pass that prunes bindings whose scheme it cannot see.
+#[test]
+fn an_unloaded_daily_page_keeps_its_binding() {
+    let date = NaiveDate::from_ymd_opt(2026, 9, 17).unwrap();
+    let mut workspace = Workspace::new();
+    let daily_id = daily_queue_scheme_id(date);
+    workspace.daily_queue.insert(date, daily_id);
+
+    workspace.normalize_one_level_folders();
+
+    assert_eq!(
+        workspace.daily_queue_scheme_id(date),
+        Some(daily_id),
+        "normalization dropped the binding of a page that is unloaded, not removed"
+    );
+}
+
 #[test]
 fn normalize_removes_unreferenced_schemes_unless_recently_deleted() {
     let mut workspace = Workspace::new();

@@ -111,6 +111,34 @@ impl Workspace {
         self.deleted_scheme_origins.remove(&id);
     }
 
+    /// Remove a scheme and every reference the workspace keeps to it. THE single
+    /// chokepoint for genuinely destroying a scheme — use it instead of
+    /// `schemes.remove()` so no reference can outlive the scheme.
+    ///
+    /// The one that bites is `daily_queue`: a binding left pointing at a removed
+    /// scheme is an orphan that later re-materializes the day as an EMPTY page,
+    /// and the emptiness then syncs out as authoritative. Nothing prunes such a
+    /// binding afterwards, and nothing can: a Daily page that is merely outside
+    /// the loaded window is also absent from `schemes` (desktop loads only up to
+    /// today), so "absent scheme" cannot distinguish removed from unloaded.
+    /// Deleting on absence would destroy unloaded days — see the Daily-page
+    /// preservation in `replace_snapshot`. Hence clearing the binding HERE, at
+    /// the point where removal is actually known, rather than inferring it later.
+    ///
+    /// `scheme_sync` is deliberately left alone: `ensure_sync_metadata` already
+    /// retains bindings only for live schemes and re-mints deterministically, and
+    /// clearing it here would fight that re-mint.
+    pub fn remove_scheme_completely(&mut self, id: SchemeId) -> Option<Scheme> {
+        self.remove_scheme_from_archive(id);
+        self.daily_queue.retain(|_, bound| *bound != id);
+        for folder in self.folders.values_mut() {
+            folder
+                .children
+                .retain(|child| *child != NodeRef::Scheme(id));
+        }
+        self.schemes.remove(&id)
+    }
+
     pub fn remove_folder_from_archive(&mut self, id: FolderId) {
         if !self.recently_deleted_folders.contains(&id) {
             return;
