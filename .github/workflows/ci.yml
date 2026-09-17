@@ -146,6 +146,23 @@ jobs:
       - name: Validate repository agent assets
         run: ./.github/scripts/validate-agent-assets.sh
 
+  scheme-removal-chokepoint:
+    name: Scheme removal chokepoint
+    runs-on: ubuntu-24.04
+
+    steps:
+      - uses: actions/checkout@v6
+
+      # Destroying a scheme must go through `remove_scheme_completely`, which
+      # also clears the `daily_queue` binding. A bare `schemes.remove()` leaves
+      # that binding pointing at a removed id, and the next sync re-materializes
+      # the day as an EMPTY page which then syncs out as authoritative loss.
+      # Nothing downstream can repair it: an unloaded Daily page is also absent
+      # from `schemes`, so absence cannot distinguish removed from unloaded.
+      # Cheap to enforce here, impossible to detect later.
+      - name: Validate the scheme removal chokepoint
+        run: ./.github/scripts/validate-scheme-removal.sh
+
   perf-budget:
     name: Performance budget
     runs-on: ubuntu-24.04
