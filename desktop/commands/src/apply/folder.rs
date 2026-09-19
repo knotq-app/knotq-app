@@ -1,4 +1,7 @@
-use knotq_model::{DeletedFolderOrigin, Folder, FolderId, NodeRef, Workspace};
+use knotq_model::{
+    DeletedFolderOrigin, DeletedSchemeOrigin, Folder, FolderId, NodeRef, SchemeId, Workspace,
+    PERMANENT_DELETE_TOMBSTONE_POSITION,
+};
 
 use crate::invariants::{validate_position, CommandError};
 use crate::{ChangeSet, Command, CommandReceipt};
@@ -130,6 +133,18 @@ fn restore_deleted_folder(
 ) -> Result<CommandReceipt, CommandError> {
     if !folders.iter().any(|folder| folder.id == folder_id) {
         return Err(CommandError::FolderMissing(folder_id));
+    }
+
+    let restored_folder_ids = folders.iter().map(|folder| folder.id).collect::<Vec<_>>();
+    let restored_scheme_ids = schemes.iter().map(|scheme| scheme.id).collect::<Vec<_>>();
+    // A permanent delete leaves origin entries behind as CRDT tombstones.
+    // Restoration is the explicit acknowledgement that these ids may become
+    // live again, so clear every tombstone before rebuilding the archived tree.
+    for id in &restored_folder_ids {
+        workspace.deleted_folder_origins.remove(id);
+    }
+    for id in &restored_scheme_ids {
+        workspace.deleted_scheme_origins.remove(id);
     }
 
     for mut scheme in schemes {
@@ -269,8 +284,30 @@ fn permanently_delete_folder(
         .iter()
         .filter_map(|scheme_id| workspace.schemes.get(scheme_id).cloned())
         .collect::<Vec<_>>();
-    let origin = workspace.deleted_folder_origins.remove(&id);
+    // Keep the root origin as a tombstone for the destroyed subtree. The
+    // descendants get their own derived origins below, so every stale node is
+    // suppressed after a concurrent merge.
+    let root_origin = workspace.deleted_folder_origin(id);
     workspace.recently_deleted_folders.remove(trash_position);
+
+    let folder_tombstones = folder_ids
+        .iter()
+        .map(|folder_id| {
+            (
+                *folder_id,
+                folder_tombstone_origin(workspace, *folder_id, id, root_origin),
+            )
+        })
+        .collect::<Vec<_>>();
+    let scheme_tombstones = scheme_ids
+        .iter()
+        .map(|scheme_id| {
+            (
+                *scheme_id,
+                scheme_tombstone_origin(workspace, *scheme_id, id),
+            )
+        })
+        .collect::<Vec<_>>();
 
     for scheme_id in &scheme_ids {
         // See `remove_scheme_completely`: clears the archive state AND any
@@ -286,6 +323,12 @@ fn permanently_delete_folder(
             NodeRef::Folder(folder_id) => !folder_ids.contains(folder_id),
             NodeRef::Scheme(scheme_id) => !scheme_ids.contains(scheme_id),
         });
+    }
+    for (folder_id, origin) in folder_tombstones {
+        workspace.deleted_folder_origins.insert(folder_id, origin);
+    }
+    for (scheme_id, origin) in scheme_tombstones {
+        workspace.deleted_scheme_origins.insert(scheme_id, origin);
     }
 
     let touched = scheme_ids.iter().copied().fold(
@@ -303,10 +346,66 @@ fn permanently_delete_folder(
             position: trash_position,
             folders,
             schemes,
-            origin,
+            origin: root_origin,
         },
         touched,
     })
+}
+
+fn folder_tombstone_origin(
+    workspace: &Workspace,
+    folder_id: FolderId,
+    root_id: FolderId,
+    root_origin: Option<DeletedFolderOrigin>,
+) -> DeletedFolderOrigin {
+    if folder_id == root_id {
+        let origin = root_origin.unwrap_or(DeletedFolderOrigin {
+            parent: workspace.root,
+            position: 0,
+        });
+        return DeletedFolderOrigin {
+            position: PERMANENT_DELETE_TOMBSTONE_POSITION,
+            ..origin
+        };
+    }
+    let parent = workspace
+        .deleted_folder_origin(folder_id)
+        .map(|origin| origin.parent)
+        .or_else(|| {
+            workspace
+                .folders
+                .get(&folder_id)
+                .and_then(|folder| folder.parent)
+        })
+        .unwrap_or(workspace.root);
+    DeletedFolderOrigin {
+        parent,
+        position: PERMANENT_DELETE_TOMBSTONE_POSITION,
+    }
+}
+
+fn scheme_tombstone_origin(
+    workspace: &Workspace,
+    scheme_id: SchemeId,
+    fallback_folder: FolderId,
+) -> DeletedSchemeOrigin {
+    let folder = workspace
+        .deleted_scheme_origin(scheme_id)
+        .map(|origin| origin.folder)
+        .or_else(|| {
+            workspace.folders.iter().find_map(|(folder_id, folder)| {
+                folder
+                    .children
+                    .iter()
+                    .any(|child| *child == NodeRef::Scheme(scheme_id))
+                    .then_some(*folder_id)
+            })
+        })
+        .unwrap_or(fallback_folder);
+    DeletedSchemeOrigin {
+        folder,
+        position: PERMANENT_DELETE_TOMBSTONE_POSITION,
+    }
 }
 
 fn validate_folder_children(workspace: &Workspace, folder: &Folder) -> Result<(), CommandError> {

@@ -60,12 +60,18 @@ impl AppState {
         // workspace untouched.
         while let Some(entry) = self.undo_store.take_undo(scope) {
             self.sync_store_from_workspace();
+            let local_item_command = crate::moved_edits::command_touches_item(&entry.inverse)
+                .then(|| entry.inverse.clone());
             match self
                 .store
                 .apply_prechecked_local(entry.inverse, CommandOrigin::User)
             {
                 Ok(receipt) => {
                     self.sync_workspace_from_store();
+                    self.record_local_folder_command(&receipt.inverse);
+                    if let Some(command) = local_item_command {
+                        self.record_local_item_command(&command);
+                    }
                     self.after_workspace_change(&receipt.touched);
                     self.undo_store.record_redo(UndoEntry {
                         inverse: receipt.inverse.clone(),
@@ -87,12 +93,18 @@ impl AppState {
         let scope = self.active_undo_scope();
         while let Some(entry) = self.undo_store.take_redo(scope) {
             self.sync_store_from_workspace();
+            let local_item_command = crate::moved_edits::command_touches_item(&entry.inverse)
+                .then(|| entry.inverse.clone());
             match self
                 .store
                 .apply_prechecked_local(entry.inverse, CommandOrigin::User)
             {
                 Ok(receipt) => {
                     self.sync_workspace_from_store();
+                    self.record_local_folder_command(&receipt.inverse);
+                    if let Some(command) = local_item_command {
+                        self.record_local_item_command(&command);
+                    }
                     self.after_workspace_change(&receipt.touched);
                     self.undo_store.push_undo(UndoEntry {
                         inverse: receipt.inverse.clone(),
@@ -122,6 +134,9 @@ impl AppState {
         };
         let recurrence_key = recurrence_undo_key(&command);
         let scope = self.undo_scope_for(&command);
+        let folder_command = command.clone();
+        let local_item_command =
+            crate::moved_edits::command_touches_item(&command).then(|| command.clone());
         let before = self.nav_snapshot();
         self.sync_store_from_workspace();
         let receipt = self
@@ -129,6 +144,10 @@ impl AppState {
             .apply_prechecked_local(command, CommandOrigin::User)
             .ok()?;
         self.sync_workspace_from_store();
+        self.record_local_folder_command_with_inverse(&folder_command, Some(&receipt.inverse));
+        if let Some(command) = local_item_command {
+            self.record_local_item_command(&command);
+        }
         if !coalesce {
             let after = self.nav_snapshot();
             self.undo_store.push_undo(UndoEntry {

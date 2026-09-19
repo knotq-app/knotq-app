@@ -23,9 +23,8 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Mutex;
 
-use chrono::NaiveDate;
-
 use backend::Account;
+use chrono::NaiveDate;
 use device::{CrashPoint, DesktopDevice};
 use oracle::{diff_lines, Attribution, View};
 
@@ -160,10 +159,21 @@ impl World {
         action: impl FnOnce(&mut DesktopDevice, &mut Rng) -> R,
     ) -> R {
         let before = self.view(index);
+        let pending_before = self.devices[index].as_ref().unwrap().pending_commands();
         let device = self.devices[index].as_mut().unwrap();
         let result = action(device, &mut self.rng);
+        let pending_after = self.devices[index].as_ref().unwrap().pending_commands();
         let after = self.view(index);
         self.attribution.record_local(index, &before, &after);
+        let new_folders = after.newly_visible_folders(&before);
+        let new_schemes = after.newly_visible_schemes(&before);
+        let pending = pending_after
+            .iter()
+            .skip(pending_before.len())
+            .collect::<Vec<_>>();
+        self.attribution
+            .record_creation_intent(new_folders, new_schemes, pending.iter().copied());
+        self.attribution.record_command_intent(index, pending);
         result
     }
 
@@ -313,10 +323,16 @@ impl World {
             1 => CrashPoint::AfterWorkspace,
             _ => CrashPoint::AfterPending,
         };
+        let before = self.view(index);
         let device = self.devices[index].take().unwrap();
         self.devices[index] = Some(device.crash(point));
-        // Unsaved work is legitimately gone; whatever the device shows now is
-        // what later steps must preserve.
+        let after = self.view(index);
+        // A crash before the save reaches disk is an intentional boundary in
+        // this model: unsaved work is legitimately gone, and later sync checks
+        // must not misclassify that modeled loss as a passive sync deletion.
+        // Record the relaunch result as the crash's local effect; the accepted
+        // crash-persistence gap remains covered by its dedicated ignored test.
+        self.attribution.record_local(index, &before, &after);
         self.log(format!("device {index} crashed at {point:?}"));
     }
 
@@ -624,6 +640,7 @@ fn run_seeds(first_seed: u64, config: impl Fn() -> Config + Sync) {
     )
     .clamp(1, seeds.max(1));
     let next = AtomicUsize::new(0);
+    let completed = AtomicUsize::new(0);
     // Maintenance coverage is deliberately isolated to one seed per
     // configuration. The real production paths still run, but making every
     // corpus seed reset a CRDT epoch would make the census measure the
@@ -652,6 +669,10 @@ fn run_seeds(first_seed: u64, config: impl Fn() -> Config + Sync) {
                     }));
                     if let Err(payload) = outcome {
                         census(&failures).push((seed, panic_message(payload.as_ref())));
+                    }
+                    let finished = completed.fetch_add(1, Ordering::Relaxed) + 1;
+                    if finished.is_multiple_of(10) || finished == seeds {
+                        eprintln!("fuzz progress: {finished}/{seeds} seeds completed");
                     }
                 })
             })
@@ -755,6 +776,24 @@ fn a_scheme_created_in_flight_survives_an_unrelated_replace_fallback() {
             steps: env_usize("KNOTQ_FUZZ_STEPS", 120),
             chaos: false,
             maintenance_coverage: true,
+        },
+    );
+}
+
+/// Acknowledged item fields must remain journaled across later edits to the
+/// same item. Seed 10307 moves a stale copy into another scheme after a date
+/// edit followed by typing; the destination must retain both local changes.
+#[test]
+fn successive_acknowledged_item_edits_survive_a_later_move() {
+    run_seed(
+        10_307,
+        Config {
+            accounts: 1,
+            initial_devices: 3,
+            max_devices: 4,
+            steps: env_usize("KNOTQ_FUZZ_STEPS", 120),
+            chaos: false,
+            maintenance_coverage: false,
         },
     );
 }

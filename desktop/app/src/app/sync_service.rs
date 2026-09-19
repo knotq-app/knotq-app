@@ -167,6 +167,10 @@ struct SyncSnapshot {
     /// Which line fields each of `pending`'s store operations edits (see
     /// `LocalSyncState::queued_item_fields`).
     queued_item_fields: HashMap<knotq_model::OperationId, Vec<knotq_sync::QueuedItemFields>>,
+    /// Acknowledged local item provenance retained across relaunches.
+    recent_item_edits: HashMap<knotq_model::ItemId, knotq_sync::RecentItemEdit>,
+    /// Acknowledged local folder-index provenance retained across relaunches.
+    recent_folder_edits: HashMap<knotq_model::FolderId, knotq_sync::RecentFolderEdit>,
     /// This device's current CRDT document state, so the background sync seeds its
     /// CRDT from the UI store's latest local edits (with the same stable identity)
     /// rather than from a possibly-staler on-disk copy. Shared, not copied: this

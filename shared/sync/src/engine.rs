@@ -138,11 +138,16 @@ pub struct PullOutcome {
 
 /// A document whose pending edits the server accepted, with the local sequence the
 /// push covered, so the caller can clear those pending edits.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct PushedDocument {
     pub document: DocumentId,
     pub kind: SyncDocumentKind,
     pub through_local_sequence: u64,
+    /// Exact local operation identities included in this acknowledgement.
+    /// Landing uses these instead of only the sequence watermark so an edit
+    /// created during a previous landing cannot be mistaken for an in-flight
+    /// edit merely because it received the snapshot's boundary sequence.
+    pub sent_edits: Vec<(OperationId, u64)>,
     /// Exact server head returned for this push. A caller may use this as a
     /// post-push pull cursor only after retaining the integrity proof: a
     /// concurrent push can still make the acknowledged head incomplete from
@@ -873,19 +878,16 @@ fn batch_pull_and_apply_with_integrity_documents_inner(
             workspace = materialized;
             remote_updates_applied += 1;
         }
-        let duplicate_repairs = crdt_docs.duplicate_item_repair_schemes(&workspace);
-        if !duplicate_repairs.is_empty() {
-            // `materialized_workspace_repair` has already removed the losing
-            // copies from the workspace. Re-express just those schemes so the
-            // losing CRDT documents receive tombstones too; otherwise the next
-            // pre-pull stale-file repair would re-introduce the duplicate.
-            let repair = crdt_docs.sync_scheme_documents(&workspace, &duplicate_repairs);
-            for error in &repair.errors {
-                eprintln!("knotq sync: duplicate-item repair skipped: {error}");
-            }
-            queue_crdt_updates(local_state, &workspace, replica_id, repair.updates);
-            remote_updates_applied += 1;
-        }
+        // Do not tombstone the losing side of a duplicate item id here. A
+        // cross-document move is represented by independent CRDT documents;
+        // while a stale source delete and a destination insert are in flight,
+        // another replica can legitimately hold the same id in both. The
+        // materializer's deterministic dedupe gives every replica one visible
+        // owner. Destructively rewriting the losing document is unsafe: a
+        // replica that has not seen the move can then tombstone the other copy,
+        // and the item disappears from every document. Keeping both histories
+        // is lossless and convergent; later edits or a deliberate delete provide
+        // the only safe evidence for a tombstone.
     }
 
     let locally_repaired_documents = if let Some(repair) = local_repair {
@@ -910,12 +912,36 @@ fn batch_pull_and_apply_with_integrity_documents_inner(
                 ) else {
                     continue;
                 };
+                // `remote` is the materialized view, so deterministic
+                // cross-scheme dedupe may have hidden a live copy that is
+                // still present in this scheme's raw CRDT document. Keep
+                // those raw-only entries in the repair input and mark them
+                // touched: rewriting from the deduped view would otherwise
+                // tombstone the losing copy, and a later source move/delete
+                // could make the item disappear everywhere.
+                let raw_items = crdt_docs
+                    .raw_scheme_items(*scheme_id)
+                    .ok()
+                    .flatten()
+                    .unwrap_or_default();
+                let raw_ids: HashSet<String> =
+                    raw_items.iter().map(|item| item.id.to_string()).collect();
+                let mut local_items =
+                    crate::crdt::merge_raw_only_items(local, raw_items, None).items;
+                let remote_ids: HashSet<String> = remote
+                    .items
+                    .iter()
+                    .map(|item| item.id.to_string())
+                    .collect();
+                let mut touched = ahead.clone();
+                touched.extend(raw_ids.into_iter().filter(|id| !remote_ids.contains(id)));
                 let merged = crate::crdt::merge_items_for_adoption(
-                    &local.items,
+                    &local_items,
                     remote.items.clone(),
-                    ahead,
+                    &touched,
                 );
-                local.items = merged;
+                local_items = merged;
+                local.items = local_items;
             }
         }
         let outcome = crdt_docs.sync_scheme_documents(&repair_workspace, &repaired_schemes);
@@ -1003,7 +1029,6 @@ fn queue_local_only_documents_before_pull(
     if local_state.document_cursors.is_empty() {
         return None;
     }
-
     let known_documents = crdt_docs.known_document_ids();
     let mut missing_schemes = workspace
         .scheme_sync
@@ -1033,75 +1058,64 @@ fn queue_local_only_documents_before_pull(
     // unrelated document gives the stale CRDT a chance to overwrite the newer
     // plain scheme content.
     let mut local_ahead_items: HashMap<knotq_model::SchemeId, HashSet<String>> = HashMap::new();
-    // A duplicate item may already have been repaired in the materialized
-    // workspace while its losing CRDT document still contains the old copy.
-    // Such a copy is not a CRDT-only addition to preserve: it is the losing
-    // side of a deterministic placement repair and must be tombstoned on the
-    // next write. Items absent from every loaded scheme remain eligible for
-    // preservation, which is important for lazy/off-window Daily pages.
-    let locally_visible_item_ids: HashSet<String> = workspace
-        .schemes
-        .values()
-        .flat_map(|scheme| scheme.items.iter().map(|item| item.id.to_string()))
-        .collect();
-    // Per scheme, the CRDT's items as they stand now, for schemes whose plain
-    // copy is missing some of them (see below).
+    // Per scheme, the raw CRDT items as they stand now, for schemes whose plain
+    // copy is missing some of them (see below). This deliberately does not use
+    // `materialized_workspace_repair`: that view has already hidden duplicate
+    // ids in their deterministic winning scheme, while the losing document's
+    // live copy still must not be rewritten as a deletion.
     let mut crdt_only_items: HashMap<knotq_model::SchemeId, Vec<knotq_model::Item>> =
         HashMap::new();
-    if let Ok(materialized) = crdt_docs.materialized_workspace_repair(workspace, &|_| false) {
-        for (scheme_id, local) in &workspace.schemes {
-            let Some(crdt) = materialized.schemes.get(scheme_id) else {
-                continue;
-            };
-            if local.items == crdt.items
-                // An empty plain scheme is the known stale-file shape: a failed
-                // materialization/save can clear the UI snapshot while the
-                // durable CRDT still has content. Never turn that into a
-                // deletion; the normal materialization pass restores it.
-                || (local.items.is_empty() && !crdt.items.is_empty())
-            {
-                continue;
-            }
-            let crdt_by_id: HashMap<String, &knotq_model::Item> = crdt
-                .items
-                .iter()
-                .map(|item| (item.id.to_string(), item))
-                .collect();
-            let local_ids: HashSet<String> =
-                local.items.iter().map(|item| item.id.to_string()).collect();
-            let ahead: HashSet<String> = local
-                .items
-                .iter()
-                .filter(|item| {
-                    crdt_by_id
-                        .get(&item.id.to_string())
-                        .is_none_or(|crdt_item| **crdt_item != **item)
-                })
-                .map(|item| item.id.to_string())
-                .collect();
-            // Lines the CRDT has and the plain copy does not are NOT treated as
-            // local deletions. "Plain lacks it" is ambiguous — the user deleted
-            // it, or these files are simply behind the durable CRDT (a crash
-            // between the workspace and CRDT saves, a quit while a sync run had
-            // already saved its merged state). Reading it as a deletion made the
-            // repair tombstone lines nobody deleted, and an account switch then
-            // carried those tombstones into the destination account, where every
-            // device lost them (production fuzz seed 6: five lines across four
-            // schemes). A real deletion reaches the CRDT through the edit's own
-            // flush, not through this repair.
-            let _ = &local_ids;
-            let carried: Vec<knotq_model::Item> = crdt
-                .items
-                .iter()
-                .filter(|item| {
-                    let id = item.id.to_string();
-                    !local_ids.contains(&id) && !locally_visible_item_ids.contains(&id)
-                })
-                .cloned()
-                .collect();
-            if !carried.is_empty() {
-                crdt_only_items.insert(*scheme_id, crdt.items.clone());
-            }
+    for (scheme_id, local) in &workspace.schemes {
+        let Some(crdt_items) = crdt_docs.raw_scheme_items(*scheme_id).ok().flatten() else {
+            continue;
+        };
+        if local.items == crdt_items
+            // An empty plain scheme is the known stale-file shape: a failed
+            // materialization/save can clear the UI snapshot while the
+            // durable CRDT still has content. Never turn that into a
+            // deletion; the normal materialization pass restores it.
+            || (local.items.is_empty() && !crdt_items.is_empty())
+        {
+            continue;
+        }
+        let crdt_by_id: HashMap<String, &knotq_model::Item> = crdt_items
+            .iter()
+            .map(|item| (item.id.to_string(), item))
+            .collect();
+        let local_ids: HashSet<String> =
+            local.items.iter().map(|item| item.id.to_string()).collect();
+        let ahead: HashSet<String> = local
+            .items
+            .iter()
+            .filter(|item| {
+                crdt_by_id
+                    .get(&item.id.to_string())
+                    .is_none_or(|crdt_item| **crdt_item != **item)
+            })
+            .map(|item| item.id.to_string())
+            .collect();
+        // Lines the CRDT has and the plain copy does not are NOT treated as
+        // local deletions. "Plain lacks it" is ambiguous — the user deleted
+        // it, these files are simply behind the durable CRDT, or materialization
+        // kept the same id in another scheme. Reading it as a deletion made the
+        // repair tombstone lines nobody deleted, and an account switch then
+        // carried those tombstones into the destination account, where every
+        // device lost them (production fuzz seed 6: five lines across four
+        // schemes). A real deletion reaches the CRDT through the edit's own
+        // flush, not through this repair.
+        let missing_from_plain: Vec<_> = crdt_items
+            .iter()
+            .filter(|item| !local_ids.contains(&item.id.to_string()))
+            .cloned()
+            .collect();
+        if !missing_from_plain.is_empty() {
+            // Preserve the complete raw scheme snapshot while reconciling. The
+            // materialized workspace may intentionally omit a duplicate copy,
+            // but replace_scheme would otherwise turn that omission into a
+            // destructive tombstone.
+            crdt_only_items.insert(*scheme_id, crdt_items);
+        }
+        if !ahead.is_empty() || !missing_from_plain.is_empty() {
             local_ahead_items.insert(*scheme_id, ahead);
         }
     }
@@ -1310,6 +1324,7 @@ pub fn batch_push_pending(
                         document: ack.document,
                         kind: sent.kind,
                         through_local_sequence: ack.through_local_sequence,
+                        sent_edits: ack.sent_edits.clone(),
                         server_sequence,
                     });
                 }

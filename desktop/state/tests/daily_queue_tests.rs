@@ -87,6 +87,32 @@ fn carryover_inserts_into_empty_today() {
     }
 }
 
+#[test]
+fn carryover_replaces_a_colliding_blank_placeholder() {
+    let mut previous = Scheme::new("Yesterday", 0);
+    let carried = Item::new("Finish draft");
+    let carried_id = carried.id;
+    previous.items.push(carried);
+
+    let mut today = Scheme::new("Today", 0);
+    let mut placeholder = Item::new("");
+    placeholder.id = carried_id;
+    today.items.push(placeholder);
+
+    let Some(Command::Batch(commands)) =
+        daily_queue_carryover_command(previous.id, date(2026, 6, 15), &previous, today.id, &today)
+    else {
+        panic!("expected carryover batch");
+    };
+
+    assert!(commands.iter().any(|command| {
+        matches!(command, Command::ReplaceItem { scheme, item } if *scheme == today.id && item.id == carried_id)
+    }));
+    assert!(!commands.iter().any(|command| {
+        matches!(command, Command::DeleteItem { scheme, item } if *scheme == today.id && *item == carried_id)
+    }));
+}
+
 /// Re-running carryover after it already carried (today holds the source ids)
 /// must be a no-op — the id-based skip is what makes a double click or a
 /// sync-race re-roll idempotent.
@@ -100,6 +126,58 @@ fn carryover_is_idempotent_once_ids_are_in_today() {
     let command =
         daily_queue_carryover_command(previous.id, date(2026, 6, 15), &previous, today.id, &today);
     assert!(command.is_none(), "repeat carryover must be a no-op");
+}
+
+#[test]
+fn carryover_does_not_recarry_a_displaced_archive_copy() {
+    let previous_date = date(2026, 6, 15);
+    let live = Item::new("Finish draft");
+    let mut archived = live.clone();
+    archived.id = daily_queue_displaced_item_id(live.id, previous_date);
+
+    let mut previous = Scheme::new("Yesterday", 0);
+    previous.items.push(archived);
+    let mut today = Scheme::new("Today", 0);
+    today.items.push(live);
+
+    let command =
+        daily_queue_carryover_command(previous.id, previous_date, &previous, today.id, &today);
+    assert!(
+        command.is_none(),
+        "a historical displaced row must stay on its source day"
+    );
+}
+
+#[test]
+fn carryover_skips_an_archive_copy_when_the_live_pair_arrives_together() {
+    let previous_date = date(2026, 6, 15);
+    let live = Item::new("Finish draft");
+    let live_id = live.id;
+    let mut archived = live.clone();
+    archived.id = daily_queue_displaced_item_id(live_id, previous_date);
+
+    let mut previous = Scheme::new("Yesterday", 0);
+    previous.items = vec![live, archived.clone()];
+    let mut today = Scheme::new("Today", 0);
+    today.items.push(Item::new(""));
+
+    let Some(Command::Batch(commands)) =
+        daily_queue_carryover_command(previous.id, previous_date, &previous, today.id, &today)
+    else {
+        panic!("the live row should still carry");
+    };
+    assert!(
+        commands.iter().any(
+            |command| matches!(command, Command::InsertItem { item, .. } if item.id == live_id)
+        ),
+        "the live row must carry"
+    );
+    assert!(
+        !commands.iter().any(
+            |command| matches!(command, Command::InsertItem { scheme, item, .. } if *scheme == today.id && item.id == archived.id)
+        ),
+        "the displaced archive row must stay on the source day"
+    );
 }
 
 #[test]

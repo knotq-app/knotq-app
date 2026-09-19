@@ -31,7 +31,7 @@ pub use dates::{
 pub use dispatch::CommandDispatcher;
 pub use events::{AppEvent, EventBus};
 pub use external::{ExternalModification, ExternalModificationQueue};
-pub use moved_edits::LocalItemEdits;
+pub use moved_edits::{LocalFolderEdits, LocalItemEdits, LocalSchemeEdits};
 pub use notification_state::{reschedule_notifications, NotificationState};
 pub use selection::{Selection, View};
 pub use session::{EditorSession, EditorSessions, SchemeEditorMenuState};

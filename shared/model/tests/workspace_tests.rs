@@ -84,6 +84,36 @@ fn normalize_removes_unreferenced_schemes_unless_recently_deleted() {
 }
 
 #[test]
+fn normalize_preserves_permanent_delete_tombstones() {
+    let mut workspace = Workspace::new();
+    let scheme = Scheme::new("Destroyed", 0);
+    let scheme_id = scheme.id;
+    workspace.schemes.insert(scheme_id, scheme);
+    workspace.deleted_scheme_origins.insert(
+        scheme_id,
+        knotq_model::DeletedSchemeOrigin {
+            folder: workspace.root,
+            position: knotq_model::PERMANENT_DELETE_TOMBSTONE_POSITION,
+        },
+    );
+
+    let folder_id = FolderId::new();
+    workspace.deleted_folder_origins.insert(
+        folder_id,
+        knotq_model::DeletedFolderOrigin {
+            parent: workspace.root,
+            position: knotq_model::PERMANENT_DELETE_TOMBSTONE_POSITION,
+        },
+    );
+
+    workspace.schemes.remove(&scheme_id);
+    workspace.normalize_one_level_folders();
+
+    assert!(workspace.deleted_scheme_origins.contains_key(&scheme_id));
+    assert!(workspace.deleted_folder_origins.contains_key(&folder_id));
+}
+
+#[test]
 fn normalize_preserves_nested_folders() {
     let mut workspace = Workspace::new();
     let child = FolderId::new();

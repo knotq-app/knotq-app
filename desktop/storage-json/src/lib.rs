@@ -50,7 +50,10 @@ pub use settings::{
     SettingsLoadError,
 };
 pub use sync_state::{
-    load_local_sync_state, save_local_sync_state, save_pending_crdt_edits,
+    begin_workspace_save_recovery, clear_workspace_save_recovery, load_local_sync_state,
+    load_workspace_save_recovery, merge_recent_folder_edits, merge_recent_item_edits,
+    replace_pending_crdt_edits_with_item_fields, replace_recent_folder_edits,
+    replace_recent_item_edits, save_local_sync_state, save_pending_crdt_edits,
     save_pending_crdt_edits_with_item_fields, sync_state_data_dir, sync_state_path,
 };
 pub use upgrade::{

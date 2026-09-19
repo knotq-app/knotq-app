@@ -9,6 +9,7 @@ use knotq_model::{
 };
 use knotq_sync::PendingCrdtEdit;
 
+use crate::moved_edits::{EditedFolderFields, LocalItemEdits};
 use crate::{
     CrdtSaveScope, DailyQueueState, EditorSessions, EditorUndoGroup, EventBus, NotificationState,
     RetainedCompletedItems, Selection, UndoScope, UndoStore, View, WorkspaceDirtyState,
@@ -31,6 +32,23 @@ pub struct AppState {
     pub(crate) daily_queue: DailyQueueState,
     pub(crate) notifications: NotificationState,
     pub(crate) event_bus: EventBus,
+    /// Complete values of recently edited items, retained until a later move
+    /// landing has had a chance to re-express them in the destination document.
+    pub(crate) recent_local_item_edits: LocalItemEdits,
+    pub(crate) recent_local_folder_edits:
+        HashMap<knotq_model::FolderId, (knotq_model::Folder, EditedFolderFields)>,
+    /// Bounded retries for an acknowledged folder repair. A stale whole-index
+    /// snapshot may need more than one re-expression, but retrying forever can
+    /// fight a legitimate concurrent rename and wedge settling.
+    pub(crate) folder_reassertions: HashMap<knotq_model::FolderId, u8>,
+    pub(crate) suppress_local_folder_journal: bool,
+    /// The last scheme in which each acknowledged item journal entry was
+    /// observed after a sync landing. A move repair is a one-shot bridge into
+    /// that destination; repeating it every pull lets concurrent stale copies
+    /// fight forever.
+    pub(crate) recent_moved_item_landed_schemes: HashMap<knotq_model::ItemId, SchemeId>,
+    pub(crate) recent_moved_item_landed_values: HashMap<knotq_model::ItemId, knotq_model::Item>,
+    pub(crate) suppress_local_item_journal: bool,
     // Monotonic counter bumped by every route that can change `workspace` or
     // `retained_completed`.
     content_revision: u64,
@@ -93,7 +111,7 @@ impl AppState {
         };
         let workspace = store.workspace().clone();
         let dirty_schemes = store.dirty().schemes.clone();
-        Self {
+        let state = Self {
             store,
             settings: settings.clone(),
             dirty_schemes,
@@ -109,6 +127,13 @@ impl AppState {
             daily_queue: daily_queue.clone(),
             notifications,
             event_bus: EventBus::default(),
+            recent_local_item_edits: LocalItemEdits::default(),
+            recent_local_folder_edits: HashMap::new(),
+            folder_reassertions: HashMap::new(),
+            suppress_local_folder_journal: false,
+            recent_moved_item_landed_schemes: HashMap::new(),
+            recent_moved_item_landed_values: HashMap::new(),
+            suppress_local_item_journal: false,
             content_revision: 0,
             schedule_revision: 0,
             scheme_schedule_revisions: HashMap::new(),
@@ -127,7 +152,8 @@ impl AppState {
             daily_queue_loaded_calendar_months: daily_queue.loaded_calendar_months,
             window_size: settings.window_size,
             window_position: settings.window_position,
-        }
+        };
+        state
     }
 
     pub fn subscribe(&mut self) -> std::sync::mpsc::Receiver<crate::AppEvent> {
@@ -154,6 +180,22 @@ impl AppState {
     /// working copy of. Exposed so tests can assert the two stay in step.
     pub fn store_workspace(&self) -> &Workspace {
         self.store.workspace()
+    }
+
+    /// Restore CRDT edits that survived the previous process into the live
+    /// store. They remain queued, but their already-materialized workspace
+    /// content is not replayed as commands.
+    pub fn restore_pending_crdt_edits(
+        &mut self,
+        pending: impl IntoIterator<Item = PendingCrdtEdit>,
+    ) {
+        self.store.restore_pending_crdt_edits(pending);
+    }
+
+    /// Re-express plain-file edits from a save that stopped before its CRDT
+    /// checkpoint completed. See [`WorkspaceStore::recover_workspace_save`].
+    pub fn recover_workspace_save(&mut self, base: Workspace) {
+        self.store.recover_workspace_save(base);
     }
 
     /// Revision of everything the workspace-derived views read. Bumped by every
@@ -425,6 +467,15 @@ impl AppState {
             .clear_pushed_crdt_edits(document, through_local_sequence, snapshot_watermark)
     }
 
+    pub fn clear_pushed_crdt_edits_exact(
+        &mut self,
+        document: DocumentId,
+        sent_edits: &[(knotq_model::OperationId, u64)],
+    ) -> usize {
+        self.store
+            .clear_pushed_crdt_edits_exact(document, sent_edits)
+    }
+
     /// Hand the app's save bookkeeping (which files are dirty) to the store. The
     /// workspace itself cannot have drifted: `workspace` is read-only.
     pub fn sync_store_from_workspace(&mut self) {
@@ -436,6 +487,17 @@ impl AppState {
         self.workspace = WorkspaceView::new(self.store.workspace().clone());
         self.sync_workspace_from_store_dirty();
         self.bump_content_revision();
+    }
+
+    /// Complete the sync landing projection after local item repairs. The
+    /// store owns CRDT materialization and duplicate-placement resolution; the
+    /// UI state only mirrors its result.
+    pub fn reconcile_item_placements(&mut self) -> bool {
+        let changed = self.store.reconcile_item_placements();
+        if changed {
+            self.sync_workspace_from_store();
+        }
+        changed
     }
 
     /// Refresh the local workspace copy after a command, carrying over the
@@ -495,6 +557,20 @@ impl AppState {
         self.store.indexed()
     }
 
+    /// Commands that have been accepted locally but not acknowledged by sync.
+    ///
+    /// The production-path fuzzer uses this to attribute an idempotent command
+    /// whose visible before/after value is the same (for example, expanding a
+    /// folder that was already expanded on a stale replica). Keeping the
+    /// accessor here avoids exposing the store's queue representation.
+    pub fn pending_commands(&self) -> Vec<Command> {
+        self.store
+            .pending_operations()
+            .iter()
+            .map(|operation| operation.command.clone())
+            .collect()
+    }
+
     pub fn sync_workspace_from_store_dirty(&mut self) {
         self.dirty_schemes = self.store.dirty().schemes.clone();
         self.index_dirty = self.store.dirty().index;
@@ -507,8 +583,20 @@ impl AppState {
     ) -> Result<CommandReceipt, CommandError> {
         self.sync_store_from_workspace();
         let text_only = command.changes_only_item_text();
+        let folder_command = (!matches!(origin, CommandOrigin::Migration)).then(|| command.clone());
+        let item_command = (!matches!(origin, CommandOrigin::Migration)
+            && crate::moved_edits::command_touches_item(&command))
+        .then(|| command.clone());
         let receipt = self.store.apply_prechecked_local(command, origin)?;
         self.sync_workspace_from_store_reusing_untouched(&receipt.touched, text_only);
+        if !matches!(origin, CommandOrigin::Migration) && !self.suppress_local_folder_journal {
+            if let Some(command) = folder_command {
+                self.record_local_folder_command_with_inverse(&command, Some(&receipt.inverse));
+            }
+        }
+        if let Some(command) = item_command.filter(|_| !self.suppress_local_item_journal) {
+            self.record_local_item_command(&command);
+        }
         Ok(receipt)
     }
 
@@ -595,6 +683,18 @@ impl AppState {
     /// the rebuilt state can leave the proposer with a different insertion
     /// order than a fresh device that materializes the server state.
     pub fn replace_workspace_from_squash<B: AsRef<[u8]>>(
+        &mut self,
+        workspace: Workspace,
+        crdt_states: HashMap<DocumentId, B>,
+    ) -> bool {
+        self.replace_workspace_from_sync_inner(workspace, crdt_states, true)
+    }
+
+    /// Adopt the complete result of a sync run when no edit was made while it
+    /// was in flight. Applying the run's full CRDT states directly avoids
+    /// replaying a stale live document through the incremental merge path; the
+    /// background run has already performed the authoritative Yrs merge.
+    pub fn replace_workspace_from_sync_result<B: AsRef<[u8]>>(
         &mut self,
         workspace: Workspace,
         crdt_states: HashMap<DocumentId, B>,

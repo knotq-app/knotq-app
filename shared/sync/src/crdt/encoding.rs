@@ -127,6 +127,32 @@ pub(crate) fn stable_scheme_population_client_id(document: DocumentId, content: 
     document_namespace_client_id(u64::from_le_bytes(bytes))
 }
 
+/// Bump alongside [`WORKSPACE_POPULATION_ENCODING_VERSION`] whenever the bytes
+/// [`YrsJsonDocument::replace_snapshot`] writes change — see
+/// `SCHEME_POPULATION_ENCODING_VERSION` for why.
+pub(crate) const WORKSPACE_POPULATION_ENCODING_VERSION: u32 = 1;
+
+/// Deterministic clientID for the first population of an empty workspace-index
+/// document from `content` (a serialized workspace snapshot). Every replica
+/// that populates `document` from identical content encodes byte-identical
+/// operations under it, so Yjs integrates them once instead of every node
+/// becoming a genuinely concurrent write between two installs' independent
+/// from-scratch populations of the SAME account content. Different content
+/// hashes to a different clientID, so two different populations never share
+/// an id. Document namespace: it authors map content, mirroring
+/// `stable_scheme_population_client_id`.
+pub(crate) fn stable_workspace_population_client_id(document: DocumentId, content: &[u8]) -> u64 {
+    let mut hasher = Sha256::new();
+    hasher.update(b"knotq.crdt.workspace_population_client_id");
+    hasher.update(WORKSPACE_POPULATION_ENCODING_VERSION.to_le_bytes());
+    hasher.update(document.0.as_bytes());
+    hasher.update(content);
+    let digest = hasher.finalize();
+    let mut bytes = [0u8; 8];
+    bytes.copy_from_slice(&digest[..8]);
+    document_namespace_client_id(u64::from_le_bytes(bytes))
+}
+
 pub(crate) fn encode_inline_embed(inline: &Inline) -> anyhow::Result<String> {
     Ok(format!(
         "{INLINE_EMBED_PREFIX}{}",

@@ -20,7 +20,8 @@
 use std::collections::{BTreeMap, HashMap, HashSet};
 
 use chrono::NaiveDate;
-use knotq_model::{FolderId, ItemId, NodeRef, SchemeId, Workspace};
+use knotq_commands::Command;
+use knotq_model::{daily_queue_displaced_item_id, FolderId, ItemId, NodeRef, SchemeId, Workspace};
 
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub(super) enum Subject {
@@ -245,6 +246,22 @@ impl View {
         keys
     }
 
+    pub(super) fn newly_visible_folders(&self, before: &View) -> Vec<FolderId> {
+        self.folder_parent
+            .keys()
+            .filter(|folder| !before.folder_parent.contains_key(folder))
+            .copied()
+            .collect()
+    }
+
+    pub(super) fn newly_visible_schemes(&self, before: &View) -> Vec<SchemeId> {
+        self.scheme_parent
+            .keys()
+            .filter(|scheme| !before.scheme_parent.contains_key(scheme))
+            .copied()
+            .collect()
+    }
+
     /// Every line a user could see, sorted — two devices converged iff equal.
     pub(super) fn convergence_lines(&self) -> Vec<String> {
         let mut lines: Vec<String> = self
@@ -272,12 +289,42 @@ pub(super) struct Attribution {
     /// Where an item was moved to, for items whose scheme a local step changed.
     /// See [`Attribution::moved_into_a_destroyed_scheme`].
     moved_into: HashMap<ItemId, SchemeId>,
+    /// A newly-created node can be temporarily re-homed to root when its
+    /// requested parent is absent from a stale replica. When the parent arrives
+    /// through sync, the node returns to the parent the local create intended;
+    /// that is not an unexplained remote move.
+    created_folder_parent: HashMap<FolderId, FolderId>,
+    created_scheme_parent: HashMap<SchemeId, FolderId>,
     writers: HashMap<Key, HashSet<usize>>,
+    /// Non-seed item writes can make a stale duplicate become the visible
+    /// deterministic winner without any placement command.
+    item_writers: HashMap<ItemId, HashSet<usize>>,
+    /// Placements observed in each device's local view. These are evidence for
+    /// a duplicate-winner switch during a later sync.
+    observed_item_placements: HashMap<(usize, ItemId), SchemeId>,
+    /// A displaced Daily Queue row is a derived archive copy of the live row
+    /// that was carried forward. Its metadata can legitimately converge from
+    /// a stale copy to the live row's winning value, even though no command
+    /// directly edited the derived id.
+    archive_sources: HashMap<ItemId, ItemId>,
 }
 
 impl Attribution {
+    fn record_archive_relationships(&mut self, view: &View) {
+        for source in view.items.keys() {
+            for (date, scheme) in &view.daily {
+                let displaced = daily_queue_displaced_item_id(*source, *date);
+                if view.items.get(&displaced) == Some(scheme) {
+                    self.archive_sources.insert(displaced, *source);
+                }
+            }
+        }
+    }
+
     /// Record a local step on `device`.
     pub(super) fn record_local(&mut self, device: usize, before: &View, after: &View) {
+        self.record_archive_relationships(before);
+        self.record_archive_relationships(after);
         for scheme in before.schemes.keys() {
             if !after.schemes.contains_key(scheme) {
                 self.destroyed_schemes.insert(*scheme);
@@ -286,6 +333,20 @@ impl Attribution {
         for item in before.items.keys() {
             if !after.items.contains_key(item) {
                 self.destroyed_items.insert(*item);
+            }
+        }
+        for (folder, parent) in &after.folder_parent {
+            if !before.folder_parent.contains_key(folder) {
+                if let Some(parent) = parent {
+                    self.created_folder_parent.insert(*folder, *parent);
+                }
+            }
+        }
+        for (scheme, parent) in &after.scheme_parent {
+            if !before.scheme_parent.contains_key(scheme) {
+                if let Some(parent) = parent {
+                    self.created_scheme_parent.insert(*scheme, *parent);
+                }
             }
         }
         // An item whose scheme changed in this step was MOVED. Remember where it
@@ -305,15 +366,190 @@ impl Attribution {
         for (key, value) in &after.fields {
             if before.fields.get(key) != Some(value) {
                 self.writers.entry(*key).or_default().insert(device);
+                if let Subject::Item(item) = key.0 {
+                    self.item_writers.entry(item).or_default().insert(device);
+                }
             }
+        }
+        for (item, scheme) in &after.items {
+            self.observed_item_placements
+                .insert((device, *item), *scheme);
+        }
+    }
+
+    /// Record fields explicitly targeted by accepted local commands, including
+    /// commands that are idempotent on the issuing device's stale view.
+    ///
+    /// A before/after diff cannot see `SetFolderExpanded { expanded: true }`
+    /// when the local copy already says `true`, but that command still creates
+    /// a legitimate CRDT write. Without this intent record, a later merge can
+    /// move the value on another device and the oracle would call the change a
+    /// silent loss even though another device did issue the write.
+    pub(super) fn record_command_intent<'a>(
+        &mut self,
+        device: usize,
+        commands: impl IntoIterator<Item = &'a Command>,
+    ) {
+        for command in commands {
+            self.record_one_command_intent(device, command);
+        }
+    }
+
+    pub(super) fn record_creation_intent<'a>(
+        &mut self,
+        folders: impl IntoIterator<Item = FolderId>,
+        schemes: impl IntoIterator<Item = SchemeId>,
+        commands: impl IntoIterator<Item = &'a Command>,
+    ) {
+        let mut folders = folders.into_iter();
+        let mut schemes = schemes.into_iter();
+        for command in commands {
+            self.record_one_creation_intent(command, &mut folders, &mut schemes);
+        }
+    }
+
+    fn record_one_creation_intent(
+        &mut self,
+        command: &Command,
+        folders: &mut impl Iterator<Item = FolderId>,
+        schemes: &mut impl Iterator<Item = SchemeId>,
+    ) {
+        match command {
+            Command::CreateFolder { parent, .. } => {
+                if let Some(folder) = folders.next() {
+                    self.created_folder_parent.insert(folder, *parent);
+                }
+            }
+            Command::CreateScheme { folder, .. } => {
+                if let Some(scheme) = schemes.next() {
+                    self.created_scheme_parent.insert(scheme, *folder);
+                }
+            }
+            Command::Batch(commands) => {
+                for command in commands {
+                    self.record_one_creation_intent(command, folders, schemes);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn record_one_command_intent(&mut self, device: usize, command: &Command) {
+        let mut write = |subject: Subject, field: Field| {
+            self.writers
+                .entry((subject, field))
+                .or_default()
+                .insert(device);
+            if let Subject::Item(item) = subject {
+                self.item_writers.entry(item).or_default().insert(device);
+            }
+        };
+        match command {
+            Command::Batch(commands) => {
+                for command in commands {
+                    self.record_one_command_intent(device, command);
+                }
+            }
+            Command::CreateFolder { .. } => {}
+            Command::RestoreFolder {
+                parent: _parent,
+                folder,
+                ..
+            } => {
+                // Restoring a folder can be idempotent in the issuing
+                // device's view, but it still rewrites the folder snapshot
+                // into the workspace CRDT. Attribute every visible field it
+                // carries so a later merge is not mistaken for a silent
+                // expansion/name/parent/archive loss.
+                write(Subject::Folder(folder.id), Field::FolderName);
+                write(Subject::Folder(folder.id), Field::FolderParent);
+                write(Subject::Folder(folder.id), Field::FolderExpanded);
+                write(Subject::Folder(folder.id), Field::FolderArchived);
+            }
+            Command::RestoreDeletedFolder {
+                folders, schemes, ..
+            } => {
+                for folder in folders {
+                    write(Subject::Folder(folder.id), Field::FolderName);
+                    write(Subject::Folder(folder.id), Field::FolderParent);
+                    write(Subject::Folder(folder.id), Field::FolderExpanded);
+                    write(Subject::Folder(folder.id), Field::FolderArchived);
+                }
+                for scheme in schemes {
+                    write(Subject::Scheme(scheme.id), Field::SchemeName);
+                    write(Subject::Scheme(scheme.id), Field::SchemeParent);
+                    write(Subject::Scheme(scheme.id), Field::SchemeColor);
+                    write(Subject::Scheme(scheme.id), Field::SchemeSource);
+                    write(Subject::Scheme(scheme.id), Field::SchemeArchived);
+                    for item in &scheme.items {
+                        write(Subject::Item(item.id), Field::ItemContent);
+                        write(Subject::Item(item.id), Field::ItemMeta);
+                        write(Subject::Item(item.id), Field::ItemIndent);
+                        write(Subject::Item(item.id), Field::ItemPlacement);
+                    }
+                }
+            }
+            Command::RenameFolder { id, .. } => write(Subject::Folder(*id), Field::FolderName),
+            Command::SetFolderExpanded { id, .. } => {
+                write(Subject::Folder(*id), Field::FolderExpanded)
+            }
+            Command::DeleteFolder { id } | Command::PermanentlyDeleteFolder { id } => {
+                write(Subject::Folder(*id), Field::FolderArchived)
+            }
+            Command::CreateScheme { .. }
+            | Command::RestoreScheme { .. }
+            | Command::RestoreDeletedScheme { .. } => {}
+            Command::RenameScheme { id, .. } => write(Subject::Scheme(*id), Field::SchemeName),
+            Command::SetSchemeColor { id, .. } => write(Subject::Scheme(*id), Field::SchemeColor),
+            Command::SetSchemeGsync { id, .. } | Command::SetSchemeSource { id, .. } => {
+                write(Subject::Scheme(*id), Field::SchemeSource)
+            }
+            Command::DeleteScheme { id } | Command::PermanentlyDeleteScheme { id } => {
+                write(Subject::Scheme(*id), Field::SchemeArchived)
+            }
+            Command::MoveNode { node, .. } => match node {
+                NodeRef::Folder(id) => write(Subject::Folder(*id), Field::FolderParent),
+                NodeRef::Scheme(id) => write(Subject::Scheme(*id), Field::SchemeParent),
+            },
+            Command::EnsureDailyQueue { .. } => {}
+            Command::InsertItem { item, .. } => {
+                write(Subject::Item(item.id), Field::ItemContent);
+                write(Subject::Item(item.id), Field::ItemMeta);
+                write(Subject::Item(item.id), Field::ItemIndent);
+                write(Subject::Item(item.id), Field::ItemPlacement);
+            }
+            Command::UpdateItemText { item, .. } => write(Subject::Item(*item), Field::ItemContent),
+            Command::ReplaceItem { item, .. } => {
+                write(Subject::Item(item.id), Field::ItemContent);
+                write(Subject::Item(item.id), Field::ItemMeta);
+                write(Subject::Item(item.id), Field::ItemIndent);
+                write(Subject::Item(item.id), Field::ItemPlacement);
+            }
+            Command::SetItemIndent { item, .. } => write(Subject::Item(*item), Field::ItemIndent),
+            Command::SetItemMarker { item, .. }
+            | Command::SetItemMarkerFamily { item, .. }
+            | Command::SetItemDate { item, .. }
+            | Command::SetItemRecurrence { item, .. }
+            | Command::SetItemPriority { item, .. }
+            | Command::SetOccurrenceNotificationOffset { item, .. }
+            | Command::ToggleOccurrence { item, .. } => {
+                write(Subject::Item(*item), Field::ItemMeta)
+            }
+            Command::DeleteItem { item, .. } => write(Subject::Item(*item), Field::ItemPlacement),
+            Command::ReorderItem { .. } => {}
         }
     }
 
     /// Record a starting state every device begins with (the seeded starter
     /// workspace): all of its fields count as written by `device`.
     pub(super) fn record_seed(&mut self, device: usize, view: &View) {
+        self.record_archive_relationships(view);
         for key in view.fields.keys() {
             self.writers.entry(*key).or_default().insert(device);
+        }
+        for (item, scheme) in &view.items {
+            self.observed_item_placements
+                .insert((device, *item), *scheme);
         }
     }
 
@@ -374,6 +610,66 @@ impl Attribution {
             .is_some_and(|writers| writers.iter().any(|writer| *writer != device))
     }
 
+    /// A stale duplicate can become the visible winner when another device
+    /// edits that copy. The item appears to move during sync even though no
+    /// placement field was written in that step; the remote metadata write and
+    /// the other device's observed placement are the proof that this is the
+    /// deterministic cross-document dedupe transition, not silent movement.
+    fn duplicate_winner_switch(&self, device: usize, item: ItemId, new_placement: &str) -> bool {
+        let Some(writers) = self.item_writers.get(&item) else {
+            return false;
+        };
+        writers.iter().any(|writer| {
+            *writer != device
+                && self
+                    .observed_item_placements
+                    .get(&(*writer, item))
+                    .is_some_and(|scheme| scheme.to_string() == new_placement)
+        })
+    }
+
+    /// A stale duplicate can briefly make a previously acknowledged move look
+    /// like it was undone during materialization. The landing then reasserts
+    /// the device's own last observed placement. This is not a new remote
+    /// write, but it is also not a loss: the value is returning to the exact
+    /// placement that this device already authored and still observes as its
+    /// intended result.
+    fn local_placement_reassertion(
+        &self,
+        device: usize,
+        item: ItemId,
+        new_placement: &str,
+    ) -> bool {
+        if device == usize::MAX {
+            return false;
+        }
+        self.writers
+            .get(&(Subject::Item(item), Field::ItemPlacement))
+            .is_some_and(|writers| writers.contains(&device))
+            && self
+                .observed_item_placements
+                .get(&(device, item))
+                .is_some_and(|scheme| scheme.to_string() == new_placement)
+    }
+
+    fn derived_archive_field_explained(&self, device: usize, key: &Key) -> bool {
+        let (Subject::Item(item), field) = *key else {
+            return false;
+        };
+        if !matches!(
+            field,
+            Field::ItemContent | Field::ItemMeta | Field::ItemIndent
+        ) {
+            return false;
+        }
+        let Some(source) = self.archive_sources.get(&item) else {
+            return false;
+        };
+        self.writers
+            .get(&(Subject::Item(*source), field))
+            .is_some_and(|writers| writers.iter().any(|writer| *writer != device))
+    }
+
     /// A scheme inside a folder some device archived is archived with it, even
     /// when that device never saw the scheme there: another device moved it in
     /// concurrently and the merge marks it. No device's own step changed the
@@ -389,8 +685,14 @@ impl Attribution {
         let mut hops = 0;
         while let Some(folder) = current {
             let archive = (Subject::Folder(folder), Field::FolderArchived);
-            if view.fields.get(&archive).map(String::as_str) == Some("true")
-                && self.writers.contains_key(&archive)
+            // A permanently deleted folder is no longer present in `view`,
+            // but a scheme concurrently created under it still gets the
+            // folder's archive semantics during index materialization. The
+            // explicit archive writer is the proof this is derived state,
+            // rather than an unexplained missing parent.
+            if self.writers.contains_key(&archive)
+                && (view.fields.get(&archive).map(String::as_str) == Some("true")
+                    || self.destroyed_folders.contains(&folder))
             {
                 return true;
             }
@@ -430,9 +732,49 @@ impl Attribution {
         if new != "root" && new != "None" {
             return false;
         }
+        if let Subject::Scheme(scheme) = key.0 {
+            // A scheme created under a folder can survive as an archived node
+            // when another device permanently deletes that folder from a stale
+            // view. Its parent becoming None is derived tombstone behavior, not
+            // an unexplained move. The creation-parent record is the only
+            // evidence needed, and keeps this exception narrower than excusing
+            // every root/None transition.
+            if new == "None"
+                && self
+                    .created_scheme_parent
+                    .get(&scheme)
+                    .is_some_and(|folder| self.destroyed_folders.contains(folder))
+            {
+                return true;
+            }
+        }
         self.destroyed_folders
             .iter()
             .any(|folder| *old == format!("{:?}", Some(*folder)))
+    }
+
+    /// A scheme created under a folder can be restored under a different
+    /// folder while another replica still carries the original parent. When
+    /// that stale replica later observes the original folder being archived,
+    /// workspace-index materialization may detach the scheme (`parent = None`)
+    /// even though no device issued a move to `None`.
+    ///
+    /// This is deliberately limited to the scheme's recorded creation parent,
+    /// an explicit archive writer for that exact folder, and the derived
+    /// `None` destination. A normal move between live folders is not excused.
+    fn reparented_by_an_archived_origin(&self, device: usize, key: &Key, new: &str) -> bool {
+        let (Subject::Scheme(scheme), Field::SchemeParent) = *key else {
+            return false;
+        };
+        if new != "None" {
+            return false;
+        }
+        let Some(origin) = self.created_scheme_parent.get(&scheme) else {
+            return false;
+        };
+        self.writers
+            .get(&(Subject::Folder(*origin), Field::FolderArchived))
+            .is_some_and(|writers| writers.iter().any(|writer| *writer != device))
     }
 
     /// Check a passive step (`label`) on `device`: every disappearance and
@@ -526,13 +868,72 @@ impl Attribution {
                             && after
                                 .root
                                 .is_some_and(|root| *old == format!("{:?}", Some(root)))));
+                // Archived schemes are intentionally removed from the active
+                // folder tree during workspace-index materialization. A stale
+                // in-memory copy can still show the old parent immediately
+                // before that normalization; the archive bit staying true
+                // proves this is index cleanup, not a user move or data loss.
+                let archived_scheme_detach = match key {
+                    (Subject::Scheme(scheme), Field::SchemeParent) => {
+                        let archive_key = (Subject::Scheme(*scheme), Field::SchemeArchived);
+                        before.fields.get(&archive_key).map(String::as_str) == Some("true")
+                            && after.fields.get(&archive_key).map(String::as_str) == Some("true")
+                    }
+                    _ => false,
+                };
+                let locally_created_parent_restored = match key {
+                    (Subject::Folder(folder), Field::FolderParent) => self
+                        .created_folder_parent
+                        .get(folder)
+                        .is_some_and(|parent| *new == format!("{:?}", Some(*parent))),
+                    (Subject::Scheme(scheme), Field::SchemeParent) => self
+                        .created_scheme_parent
+                        .get(scheme)
+                        .is_some_and(|parent| *new == format!("{:?}", Some(*parent))),
+                    _ => false,
+                };
+                // Permanent deletion of a folder also removes the schemes it
+                // contained, even when this replica's stale view had that
+                // scheme under a different parent. The tombstoned scheme can
+                // therefore surface as `parent = None` during index merge;
+                // the local disappearance record is the causal writer for
+                // that derived parent transition.
+                let destroyed_node_detach = match key {
+                    (Subject::Scheme(scheme), Field::SchemeParent) => {
+                        self.destroyed_schemes.contains(scheme)
+                    }
+                    (Subject::Folder(folder), Field::FolderParent) => {
+                        self.destroyed_folders.contains(folder)
+                    }
+                    _ => false,
+                };
+                let duplicate_winner_switch = match key {
+                    (Subject::Item(item), Field::ItemPlacement) => {
+                        self.duplicate_winner_switch(device, *item, new)
+                    }
+                    _ => false,
+                };
+                let local_placement_reassertion = match key {
+                    (Subject::Item(item), Field::ItemPlacement) => {
+                        self.local_placement_reassertion(device, *item, new)
+                    }
+                    _ => false,
+                };
                 let explained = self
                     .writers
                     .get(key)
                     .is_some_and(|writers| writers.iter().any(|writer| *writer != device))
                     || self.archived_with_its_folder(key, new, after)
+                    || self.archived_with_its_folder(key, new, before)
                     || parent_unchanged_across_root_change
-                    || self.reparented_by_a_destroyed_folder(key, old, new);
+                    || archived_scheme_detach
+                    || locally_created_parent_restored
+                    || destroyed_node_detach
+                    || self.reparented_by_a_destroyed_folder(key, old, new)
+                    || self.reparented_by_an_archived_origin(device, key, new)
+                    || duplicate_winner_switch
+                    || local_placement_reassertion
+                    || self.derived_archive_field_explained(device, key);
                 if !explained {
                     violations.push(format!(
                         "device {device}: {label} changed {key:?} with no other device ever writing it: {old} -> {new}"

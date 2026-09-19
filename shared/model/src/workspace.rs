@@ -151,6 +151,11 @@ pub struct DeletedSchemeOrigin {
     pub position: usize,
 }
 
+/// Sentinel position used only for a permanent-delete tombstone. Real archive
+/// origins are positions inside a `Vec`, so this value cannot describe a
+/// restorable archive location.
+pub const PERMANENT_DELETE_TOMBSTONE_POSITION: usize = usize::MAX;
+
 /// Where an archived folder lived before deletion, so it restores to the same place.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct DeletedFolderOrigin {

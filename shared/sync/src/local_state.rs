@@ -1,7 +1,10 @@
 use std::collections::{HashMap, HashSet, VecDeque};
 
 use chrono::{DateTime, Utc};
-use knotq_model::{DocumentId, OperationId, ReplicaId, SyncDocumentKind, Workspace, WorkspaceId};
+use knotq_model::{
+    DocumentId, FolderId, ItemId, OperationId, ReplicaId, SchemeId, SyncDocumentKind, Workspace,
+    WorkspaceId,
+};
 use serde::{Deserialize, Serialize};
 use yrs::updates::{decoder::Decode, encoder::Encode};
 use yrs::{Doc, ReadTxn, StateVector, Transact, Update};
@@ -58,6 +61,35 @@ pub fn fold_pending_edits_into_state<'a>(
 pub struct QueuedItemFields {
     pub item: String,
     pub fields: u32,
+}
+
+/// Acknowledged item edit retained across a desktop relaunch so a later
+/// cross-document move can still bridge the fields this device authored.
+/// `item` is the last complete local value; `fields` is the append-only mask
+/// understood by the desktop state layer.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct RecentItemEdit {
+    pub scheme: SchemeId,
+    pub item: String,
+    pub fields: u32,
+}
+
+/// Acknowledged folder-index metadata retained so a later stale workspace
+/// materialization cannot silently undo a local rename or expansion toggle.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct RecentFolderEdit {
+    pub folder: FolderId,
+    pub name: String,
+    pub expanded: bool,
+    /// Bit 0 = name, bit 1 = expanded. Append-only for future fields.
+    pub fields: u8,
+    /// Value observed immediately before the local edit, when available. A
+    /// recovery bridge may reapply its value only when the landed copy still
+    /// has this predecessor; a different value is a legitimate remote edit.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub previous_name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub previous_expanded: Option<bool>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -159,6 +191,23 @@ pub struct LocalSyncState {
     /// re-applied. Absent in older files; entries whose edit is gone are pruned.
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
     pub queued_item_fields: HashMap<OperationId, Vec<QueuedItemFields>>,
+    /// Acknowledged desktop item edits. Older sync-state files omit this and
+    /// deserialize to an empty journal.
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub recent_item_edits: HashMap<ItemId, RecentItemEdit>,
+    /// Acknowledged folder metadata edits retained across relaunches.
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub recent_folder_edits: HashMap<FolderId, RecentFolderEdit>,
+    /// The workspace as it existed immediately before the last save began.
+    ///
+    /// Desktop writes this before replacing the plain workspace files and
+    /// clears it only after the pending queue and CRDT documents are durable.
+    /// If the process dies in that window, the next launch can distinguish
+    /// edits present only in the plain files from the pre-existing workspace
+    /// and re-express them as CRDT deltas. Older sync-state files simply omit
+    /// this optional checkpoint.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workspace_save_recovery: Option<String>,
     /// Last applied recovery generation (see [`SYNC_STATE_RECOVERY_VERSION`]).
     /// Absent in older files, so it defaults to 0 and triggers the heal.
     #[serde(default)]
@@ -698,6 +747,22 @@ pub fn queue_workspace_bootstrap_updates(
         .into_iter()
         .filter(|document| reseed_all || remote_latest.get(document).copied().unwrap_or(0) == 0)
         .collect();
+    // A device bootstrapping its workspace-index document for the first time
+    // (the common case: the very first account this device ever syncs to)
+    // otherwise pushes it under whatever clientID it happened to be
+    // constructed with. Populate deterministically FIRST — before the heal
+    // pass below, which would otherwise beat it to an empty document and
+    // reseed it under a fresh random clientID instead — so this device's push
+    // can deduplicate against another device's independent population of the
+    // same (by now canonical, post-sign-in) content instead of racing it. A
+    // no-op when the document already has content.
+    let workspace_populated = bootstrap_documents.contains(&workspace.sync.id)
+        && crdt
+            .populate_workspace_if_unpopulated(workspace)
+            .unwrap_or_else(|err| {
+                eprintln!("bootstrap: populate workspace CRDT document failed: {err:#}");
+                false
+            });
     // Before snapshotting, repair any document whose full state would fail the
     // server's schema validation — a scheme added to the workspace outside the
     // command path (e.g. desktop's direct Daily Queue creation) leaves an empty
@@ -710,9 +775,18 @@ pub fn queue_workspace_bootstrap_updates(
     // partial items and materialization skips them identically on every replica, so
     // the snapshot pushes fine and all replicas converge — see
     // validate_scheme_document. Healing here is now only for an empty, schema-less
-    // document, e.g. desktop's direct Daily Queue creation before its first pull.)
+    // document, e.g. desktop's direct Daily Queue creation before its first pull.
+    // The workspace-index document is excluded here when it was just populated
+    // deterministically above — it's already seeded, so this pass leaves it
+    // alone, and its clientID stays the deterministic one.)
     let healed = crdt.heal_schema_invalid_documents_for_documents(workspace, &bootstrap_documents);
-    let healed_set: HashSet<DocumentId> = healed.iter().copied().collect();
+    let mut healed_set: HashSet<DocumentId> = healed.iter().copied().collect();
+    // Treat the just-populated workspace document exactly like a heal for the
+    // "trust the fresh snapshot over stale pending deltas" check below — it
+    // rewrote the document's state vector from scratch the same way a heal does.
+    if workspace_populated {
+        healed_set.insert(workspace.sync.id);
+    }
     let mut next_sequence = sync_state
         .pending
         .iter()

@@ -44,11 +44,20 @@ impl TestDevice {
     }
 
     pub fn remove_line(&mut self, scheme_id: SchemeId, index: usize) {
-        let items = &mut self.scheme_mut(scheme_id).items;
-        if index < items.len() {
-            items.remove(index);
-            self.record_changes(WorkspaceCrdtChangeSet::default().touch_scheme(scheme_id));
-        }
+        let removed = {
+            let items = &mut self.scheme_mut(scheme_id).items;
+            (index < items.len()).then(|| items.remove(index).id)
+        };
+        let Some(removed) = removed else {
+            return;
+        };
+        let mut changes = WorkspaceCrdtChangeSet::default().touch_scheme(scheme_id);
+        changes
+            .deleted_items
+            .entry(scheme_id)
+            .or_default()
+            .insert(removed.to_string());
+        self.record_changes(changes);
     }
 
     pub fn reorder_reverse(&mut self, scheme_id: SchemeId) {
@@ -327,7 +336,11 @@ impl TestDevice {
         let mut scheme = Scheme::new("Daily", 0);
         scheme.id = daily_id;
         for line in lines {
-            scheme.items.push(Item::new(*line));
+            let mut item = Item::new(*line);
+            if lines.len() == 1 && line.trim().is_empty() {
+                item.id = daily_queue_placeholder_item_id(date);
+            }
+            scheme.items.push(item);
         }
         self.workspace.schemes.insert(daily_id, scheme);
         self.workspace.daily_queue.insert(date, daily_id);
@@ -355,7 +368,11 @@ impl TestDevice {
         let mut scheme = Scheme::new("Daily", 0);
         scheme.id = daily_id;
         for line in lines {
-            scheme.items.push(Item::new(*line));
+            let mut item = Item::new(*line);
+            if lines.len() == 1 && line.trim().is_empty() {
+                item.id = daily_queue_placeholder_item_id(date);
+            }
+            scheme.items.push(item);
         }
         self.workspace.schemes.insert(daily_id, scheme);
         self.workspace.daily_queue.insert(date, daily_id);
@@ -443,7 +460,9 @@ impl TestDevice {
         let carried_ids: Vec<ItemId> = carried_items.iter().map(|i| i.id).collect();
 
         // Re-identify the archived source rows (their ids now live in today) with the
-        // deterministic displaced id, stripping date annotations.
+        // deterministic displaced id, stripping date annotations. Keep the ids that
+        // this batch explicitly removes so the sync layer does not mistake their raw
+        // CRDT copies for hidden cross-scheme duplicates and reinsert them.
         {
             let previous = self.scheme_mut(previous_id);
             for item in previous.items.iter_mut() {
@@ -456,10 +475,12 @@ impl TestDevice {
 
         // Insert the carried rows into today; a blank placeholder is deleted rather
         // than its id reused, so every carried row keeps its source id.
+        let placeholder_id = self.workspace.scheme(today_id).and_then(|scheme| {
+            (dq_scheme_is_blank(scheme) && !scheme.items.is_empty()).then(|| scheme.items[0].id)
+        });
         {
             let today_scheme = self.scheme_mut(today_id);
-            let had_placeholder =
-                dq_scheme_is_blank(today_scheme) && !today_scheme.items.is_empty();
+            let had_placeholder = placeholder_id.is_some();
             let mut position = if had_placeholder {
                 1
             } else {
@@ -475,11 +496,22 @@ impl TestDevice {
             }
         }
 
-        self.record_changes(
-            WorkspaceCrdtChangeSet::default()
-                .touch_scheme(previous_id)
-                .touch_scheme(today_id),
-        );
+        let mut changes = WorkspaceCrdtChangeSet::default()
+            .touch_scheme(previous_id)
+            .touch_scheme(today_id);
+        changes
+            .deleted_items
+            .entry(previous_id)
+            .or_default()
+            .extend(carried_ids.iter().map(ToString::to_string));
+        if let Some(placeholder_id) = placeholder_id {
+            changes
+                .deleted_items
+                .entry(today_id)
+                .or_default()
+                .insert(placeholder_id.to_string());
+        }
+        self.record_changes(changes);
         Some(carried_texts)
     }
 
@@ -529,11 +561,12 @@ impl TestDevice {
                 .children
                 .retain(|child| *child != NodeRef::Scheme(scheme_id));
         }
-        // Step 2: remove from recently_deleted (archive state) if present.
+        // Step 2: remove from recently_deleted (archive membership) but retain
+        // the permanent-delete origin. That origin is the CRDT tombstone that
+        // prevents a stale replica from reintroducing the scheme.
         self.workspace
             .recently_deleted
             .retain(|id| *id != scheme_id);
-        self.workspace.deleted_scheme_origins.remove(&scheme_id);
         // Step 3: remove the scheme itself — this triggers scheme_sync cleanup in
         // ensure_sync_metadata on the next sync.
         self.workspace.schemes.remove(&scheme_id);

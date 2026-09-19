@@ -7,15 +7,19 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 
 use chrono::NaiveDate;
+use knotq_commands::Command;
 use knotq_model::{AppSettings, Workspace};
 use knotq_state::{daily_queue_default_window_start, AppState};
 use knotq_storage_json::{
-    load_workspace_with_options, run_pending_upgrades, save_pending_crdt_edits_with_item_fields,
+    begin_workspace_save_recovery, load_local_sync_state, load_workspace_save_recovery,
+    load_workspace_with_options, replace_pending_crdt_edits_with_item_fields, run_pending_upgrades,
     save_workspace, save_workspace_incremental, WorkspaceLoadOptions,
 };
 
 use super::super::landing::{
-    adopt_sync_workspace, capture_local_item_edits, clear_pushed_edits, reassert_local_item_edits,
+    adopt_sync_workspace, capture_local_folder_edits, capture_local_item_edits,
+    capture_local_scheme_edits, clear_pushed_edits, reassert_local_folder_edits,
+    reassert_local_item_edits, reassert_local_scheme_edits, reassert_recent_moved_item_edits,
     run_changed_workspace,
 };
 use super::super::snapshot::sync_snapshot_in;
@@ -41,6 +45,7 @@ pub(super) struct DesktopDevice {
 pub(super) struct InFlightSync {
     pub(super) result: anyhow::Result<SyncRunResult>,
     watermark: u64,
+    baseline: Workspace,
 }
 
 impl InFlightSync {
@@ -111,8 +116,14 @@ impl DesktopDevice {
             bootstrap.save_blocked_reason
         );
         let crdt_states = crate::app::constructor::restored_crdt_states(&workspace_path);
+        let sync_state = load_local_sync_state(&workspace_path).unwrap_or_default();
+        let pending_crdt_edits = sync_state.pending;
+        let recent_item_edits = sync_state.recent_item_edits;
+        let recent_folder_edits = sync_state.recent_folder_edits;
+        let workspace_save_recovery = load_workspace_save_recovery(&workspace_path)
+            .expect("load workspace save recovery marker");
         let initial_sequence = crate::app::constructor::restored_initial_sequence(&workspace_path);
-        let state = AppState::new(
+        let mut state = AppState::new(
             bootstrap.workspace,
             settings,
             today,
@@ -121,6 +132,12 @@ impl DesktopDevice {
             crdt_states,
             initial_sequence,
         );
+        if let Some(base) = workspace_save_recovery {
+            state.recover_workspace_save(base);
+        }
+        state.restore_pending_crdt_edits(pending_crdt_edits);
+        state.restore_recent_item_edits(recent_item_edits);
+        state.restore_recent_folder_edits(recent_folder_edits);
         Self {
             index,
             data_dir,
@@ -134,6 +151,10 @@ impl DesktopDevice {
 
     pub(super) fn today(&self) -> NaiveDate {
         self.state.daily_queue_today
+    }
+
+    pub(super) fn pending_commands(&self) -> Vec<Command> {
+        self.state.pending_commands()
     }
 
     pub(super) fn set_today(&mut self, today: NaiveDate) {
@@ -175,6 +196,8 @@ impl DesktopDevice {
         }
         let pending = self.state.pending_crdt_edits();
         let queued_item_fields = self.state.queued_item_fields();
+        let recent_item_edits = self.state.recent_item_edits();
+        let recent_folder_edits = self.state.recent_folder_edits();
         let (scope, handles) = self.state.take_crdt_save_scope();
         let dirty_ids = std::mem::take(&mut self.state.dirty_schemes);
         self.state.index_dirty = false;
@@ -189,6 +212,8 @@ impl DesktopDevice {
             &dirty_ids,
             &pending,
             &queued_item_fields,
+            &recent_item_edits,
+            &recent_folder_edits,
             scope,
             &crdt_states,
         );
@@ -247,6 +272,12 @@ impl DesktopDevice {
         match point {
             CrashPoint::BeforeSave => {}
             CrashPoint::AfterWorkspace | CrashPoint::AfterPending => {
+                let recovery_base =
+                    load_workspace_with_options(&workspace_path, WorkspaceLoadOptions::all())
+                        .expect("load the pre-crash workspace")
+                        .unwrap_or_else(|| state.workspace.clone());
+                begin_workspace_save_recovery(&workspace_path, &recovery_base)
+                    .expect("write the pre-crash save checkpoint");
                 let dirty_ids = std::mem::take(&mut state.dirty_schemes);
                 let workspace = state.workspace.clone();
                 let _ = if dirty_ids.is_empty() {
@@ -255,7 +286,7 @@ impl DesktopDevice {
                     save_workspace_incremental(&workspace_path, &workspace, &dirty_ids)
                 };
                 if matches!(point, CrashPoint::AfterPending) {
-                    let _ = save_pending_crdt_edits_with_item_fields(
+                    let _ = replace_pending_crdt_edits_with_item_fields(
                         &workspace_path,
                         &state.pending_crdt_edits(),
                         &state.queued_item_fields(),
@@ -293,14 +324,16 @@ impl DesktopDevice {
     ) -> Option<InFlightSync> {
         let account_settings = self.state.settings.sync_account.clone()?;
         self.state.sync_store_from_workspace();
-        let pending = self.state.pending_crdt_edits();
         let crdt_states = self.state.crdt_document_state_handles();
+        let pending = self.state.pending_crdt_edits();
         let snapshot = SyncSnapshot {
             workspace: self.state.workspace.clone(),
             account: account_settings,
             replica_id: self.state.settings.replica_id,
             pending,
             queued_item_fields: self.state.queued_item_fields(),
+            recent_item_edits: self.state.recent_item_edits(),
+            recent_folder_edits: self.state.recent_folder_edits(),
             crdt_states,
             notification_defaults: self.state.settings.notification_defaults,
             reuse_schedule: None,
@@ -308,6 +341,7 @@ impl DesktopDevice {
             allow_squash,
         };
         let watermark = self.state.local_edit_watermark();
+        let baseline = snapshot.workspace.clone();
         let result = sync_snapshot_in(
             SyncEnvironment {
                 workspace_path: &self.workspace_path,
@@ -318,30 +352,51 @@ impl DesktopDevice {
             snapshot,
         );
         self.run_in_flight = true;
-        Some(InFlightSync { result, watermark })
+        Some(InFlightSync {
+            result,
+            watermark,
+            baseline,
+        })
     }
 
     /// Land a finished run the way the sync task's UI-thread closure does, then
     /// run the save it signals. Returns the run's error, if it failed.
     pub(super) fn land_sync(&mut self, run: InFlightSync) -> Option<anyhow::Error> {
         self.run_in_flight = false;
-        match run.result {
+        let InFlightSync {
+            result,
+            watermark,
+            baseline,
+        } = run;
+        match result {
             Ok(result) => {
                 let local_item_edits =
-                    capture_local_item_edits(&self.state, &result.queued_item_fields);
-                clear_pushed_edits(&mut self.state, &result.pushed, run.watermark);
+                    capture_local_item_edits(&self.state, &result.queued_item_fields, &baseline);
+                self.state.remember_captured_item_edits(&local_item_edits);
+                let local_scheme_edits = capture_local_scheme_edits(&self.state);
+                let local_folder_edits = capture_local_folder_edits(&self.state, &result.workspace);
+                clear_pushed_edits(&mut self.state, &result.pushed, watermark);
                 if run_changed_workspace(
                     result.remote_updates_applied,
                     result.local_workspace_changed,
                 ) {
+                    self.state.hydrate_recent_item_edits();
                     adopt_sync_workspace(
                         &mut self.state,
                         result.workspace,
                         result.crdt_states,
-                        run.watermark,
+                        watermark,
                         result.squash_applied,
                     );
-                    reassert_local_item_edits(&mut self.state, local_item_edits);
+                    let item_repairs = reassert_local_item_edits(&mut self.state, local_item_edits)
+                        | reassert_recent_moved_item_edits(
+                            &mut self.state,
+                            &std::collections::HashSet::new(),
+                        );
+                    let _placement_reconciled =
+                        item_repairs && self.state.reconcile_item_placements();
+                    reassert_local_scheme_edits(&mut self.state, local_scheme_edits);
+                    reassert_local_folder_edits(&mut self.state, local_folder_edits);
                 }
                 let _ = self.save();
                 None

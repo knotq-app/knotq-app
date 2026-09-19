@@ -3337,6 +3337,7 @@ dependencies = [
  "knotq-storage-json",
  "knotq-sync",
  "serde",
+ "serde_json",
 ]
 
 [[package]]

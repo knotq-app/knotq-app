@@ -726,7 +726,7 @@ impl Harness {
     pub fn assert_scheme_items(&self, key: DeviceKey, scheme: SchemeId, expected: &[&str]) {
         let actual = self.device(key).scheme_item_texts(scheme);
         let expected = expected.iter().map(|t| t.to_string()).collect::<Vec<_>>();
-        assert_eq!(actual, expected);
+        assert_eq!(actual, expected, "{key:?}: scheme {scheme} items mismatch");
     }
 
     pub fn assert_scheme_items_unordered(

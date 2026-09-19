@@ -2,8 +2,12 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
-use knotq_model::OperationId;
-use knotq_sync::{LocalSyncState, PendingCrdtEdit, QueuedItemFields, LOCAL_SYNC_STATE_FILE};
+use knotq_model::{ItemId, OperationId, Workspace};
+use knotq_sync::{
+    LocalSyncState, PendingCrdtEdit, QueuedItemFields, RecentFolderEdit, RecentItemEdit,
+    LOCAL_SYNC_STATE_FILE,
+};
+use std::collections::HashMap;
 
 pub fn sync_state_data_dir(workspace_path: &Path) -> PathBuf {
     let workspace_dir = workspace_path.parent().unwrap_or_else(|| Path::new("."));
@@ -74,6 +78,37 @@ pub fn save_local_sync_state(workspace_path: &Path, state: &LocalSyncState) -> R
     crate::files::write_atomic(&path, json.as_bytes())
 }
 
+/// Record the plain workspace that is on disk before a paired workspace/CRDT
+/// save starts. The marker lives beside the sync cursors so it is written
+/// atomically with the rest of the durable checkpoint. It is intentionally
+/// kept until the CRDT state has been written too: a process can die after the
+/// workspace file is replaced but before the queue or CRDT files are updated.
+pub fn begin_workspace_save_recovery(workspace_path: &Path, workspace: &Workspace) -> Result<()> {
+    let mut state = load_local_sync_state(workspace_path)?;
+    state.workspace_save_recovery =
+        Some(serde_json::to_string(workspace).context("serialize workspace save recovery base")?);
+    save_local_sync_state(workspace_path, &state)
+}
+
+/// Load the pre-save workspace captured by a paired-save recovery marker.
+pub fn load_workspace_save_recovery(workspace_path: &Path) -> Result<Option<Workspace>> {
+    let state = load_local_sync_state(workspace_path)?;
+    state
+        .workspace_save_recovery
+        .as_deref()
+        .map(|raw| serde_json::from_str(raw).context("parse workspace save recovery base"))
+        .transpose()
+}
+
+/// Clear a completed paired workspace/CRDT save's recovery marker.
+pub fn clear_workspace_save_recovery(workspace_path: &Path) -> Result<()> {
+    let mut state = load_local_sync_state(workspace_path)?;
+    if state.workspace_save_recovery.take().is_some() {
+        save_local_sync_state(workspace_path, &state)?;
+    }
+    Ok(())
+}
+
 pub fn save_pending_crdt_edits(workspace_path: &Path, pending: &[PendingCrdtEdit]) -> Result<()> {
     save_pending_crdt_edits_with_item_fields(workspace_path, pending, &Default::default())
 }
@@ -101,6 +136,86 @@ pub fn save_pending_crdt_edits_with_item_fields(
         }
     }
     state.prune_queued_item_fields();
+    save_local_sync_state(workspace_path, &state)
+}
+
+/// Replace the durable pending queue with the live store snapshot.
+///
+/// A normal background sync owns its complete `LocalSyncState` and writes it
+/// directly. The UI save path only has the live pending edits, though, so the
+/// old append-only helper could resurrect an edit that the UI had already
+/// acknowledged and cleared. That stale edit then got pushed forever on every
+/// subsequent sync. Metadata owned by the sync engine (cursors, account
+/// identity, recovery flags) remains intact; only the queue is reconciled.
+pub fn replace_pending_crdt_edits_with_item_fields(
+    workspace_path: &Path,
+    pending: &[PendingCrdtEdit],
+    item_fields: &std::collections::HashMap<OperationId, Vec<QueuedItemFields>>,
+) -> Result<()> {
+    let mut state = load_local_sync_state(workspace_path)?;
+    state.pending = pending.iter().cloned().collect();
+    for (operation, fields) in item_fields {
+        if pending.iter().any(|edit| edit.operation_id == *operation) {
+            state.record_queued_item_fields(*operation, fields.clone());
+        }
+    }
+    state.prune_queued_item_fields();
+    save_local_sync_state(workspace_path, &state)
+}
+
+/// Merge the in-memory acknowledged item journal into the durable sync state.
+/// A save racing a sync must not erase provenance needed by a later moved-item
+/// repair.
+pub fn merge_recent_item_edits(
+    workspace_path: &Path,
+    records: &HashMap<ItemId, RecentItemEdit>,
+) -> Result<()> {
+    if records.is_empty() {
+        return Ok(());
+    }
+    let mut state = load_local_sync_state(workspace_path)?;
+    state
+        .recent_item_edits
+        .extend(records.iter().map(|(item, record)| (*item, record.clone())));
+    save_local_sync_state(workspace_path, &state)
+}
+
+/// Merge acknowledged folder-index provenance into the durable sync state.
+pub fn merge_recent_folder_edits(
+    workspace_path: &Path,
+    records: &HashMap<knotq_model::FolderId, RecentFolderEdit>,
+) -> Result<()> {
+    if records.is_empty() {
+        return Ok(());
+    }
+    let mut state = load_local_sync_state(workspace_path)?;
+    state.recent_folder_edits.extend(
+        records
+            .iter()
+            .map(|(folder, record)| (*folder, record.clone())),
+    );
+    save_local_sync_state(workspace_path, &state)
+}
+
+/// Replace the acknowledged item journal during the shutdown flush. Unlike a
+/// background save, shutdown has the complete in-memory state and must be able
+/// to retire entries that are no longer safe to replay after a restart.
+pub fn replace_recent_item_edits(
+    workspace_path: &Path,
+    records: &HashMap<ItemId, RecentItemEdit>,
+) -> Result<()> {
+    let mut state = load_local_sync_state(workspace_path)?;
+    state.recent_item_edits = records.clone();
+    save_local_sync_state(workspace_path, &state)
+}
+
+/// Replace the acknowledged folder-index journal during shutdown.
+pub fn replace_recent_folder_edits(
+    workspace_path: &Path,
+    records: &HashMap<knotq_model::FolderId, RecentFolderEdit>,
+) -> Result<()> {
+    let mut state = load_local_sync_state(workspace_path)?;
+    state.recent_folder_edits = records.clone();
     save_local_sync_state(workspace_path, &state)
 }
 
@@ -168,6 +283,24 @@ mod tests {
         assert_eq!(backups.len(), 1);
         assert_eq!(fs::read(dir.join(&backups[0])).unwrap(), b"{not valid json");
 
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn workspace_save_recovery_round_trips_and_clears() {
+        let dir =
+            std::env::temp_dir().join(format!("knotq-workspace-save-recovery-{}", Uuid::new_v4()));
+        let workspace_path = dir.join("workspace").join("workspace.json");
+        let base = Workspace::new();
+
+        begin_workspace_save_recovery(&workspace_path, &base).unwrap();
+        assert_eq!(
+            load_workspace_save_recovery(&workspace_path).unwrap(),
+            Some(base)
+        );
+
+        clear_workspace_save_recovery(&workspace_path).unwrap();
+        assert_eq!(load_workspace_save_recovery(&workspace_path).unwrap(), None);
         let _ = fs::remove_dir_all(dir);
     }
 }

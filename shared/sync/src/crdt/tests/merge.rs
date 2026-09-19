@@ -80,6 +80,65 @@ fn concurrent_content_edits_to_distinct_items_merge_without_duplicates() {
 }
 
 #[test]
+fn moved_item_can_be_retyped_after_the_target_state_is_restored() {
+    let source_document = DocumentId::new();
+    let target_document = DocumentId::new();
+    let mut source = Scheme::new("Source", 0);
+    let item = Item::new("old text");
+    source.items.push(item.clone());
+    let target = Scheme::new("Target", 0);
+
+    // A and B start from the same two scheme documents.
+    let source_a = YrsSchemeDocument::from_scheme(source_document, &source).unwrap();
+    let target_a = YrsSchemeDocument::from_scheme(target_document, &target).unwrap();
+    let source_base = source_a.encode_state_v1();
+    let target_base = target_a.encode_state_v1();
+
+    let source_b = YrsSchemeDocument::new(source_document);
+    source_b.apply_update_v1(&source_base).unwrap();
+    let target_b = YrsSchemeDocument::new(target_document);
+    target_b.apply_update_v1(&target_base).unwrap();
+
+    // A moves the item by deleting it from source and inserting the same value
+    // into target. B receives the move before making its own edit.
+    let mut moved_source = source.clone();
+    moved_source.items.clear();
+    let source_move = source_a
+        .sync_scheme(&moved_source)
+        .unwrap()
+        .unwrap()
+        .update_v1;
+    let mut moved_target = target.clone();
+    moved_target.items.push(item.clone());
+    let target_move = target_a
+        .sync_scheme(&moved_target)
+        .unwrap()
+        .unwrap()
+        .update_v1;
+    source_b.apply_update_v1(&source_move).unwrap();
+    target_b.apply_update_v1(&target_move).unwrap();
+    assert_eq!(target_b.scheme_items().unwrap()[0].text(), "old text");
+
+    // This is the relaunch boundary: reconstruct B's target document from its
+    // persisted full state before applying the acknowledged local edit.
+    let restored_target = YrsSchemeDocument::new(target_document);
+    restored_target
+        .apply_update_v1(&target_b.encode_state_v1())
+        .unwrap();
+    let mut retyped = moved_target;
+    retyped.items[0].set_text("new text");
+    let retype = restored_target
+        .sync_scheme(&retyped)
+        .unwrap()
+        .unwrap()
+        .update_v1;
+
+    // The server merges A's move and B's retype; A then receives B's update.
+    target_a.apply_update_v1(&retype).unwrap();
+    assert_eq!(target_a.scheme_items().unwrap()[0].text(), "new text");
+}
+
+#[test]
 fn concurrent_image_embeds_on_distinct_items_merge() {
     let document = DocumentId::new();
     let mut base = Scheme::new("Plan", 0);
@@ -474,4 +533,75 @@ fn readding_a_tombstoned_item_untombstones_it() {
     peer.apply_update_v1(&doc.encode_update_v1(&peer.state_vector_v1()).unwrap())
         .unwrap();
     assert_eq!(texts(&peer), vec!["First", "Second"]);
+}
+
+#[test]
+fn moving_an_item_again_after_undo_survives_a_concurrent_tombstone() {
+    let source_document = DocumentId::new();
+    let target_document = DocumentId::new();
+    let item = Item::new("carried");
+    let mut source = Scheme::new("Source", 0);
+    source.items.push(item.clone());
+    let target = Scheme::new("Target", 0);
+
+    let source_a = YrsSchemeDocument::from_scheme(source_document, &source).unwrap();
+    let target_a = YrsSchemeDocument::from_scheme(target_document, &target).unwrap();
+    let source_base = source_a.encode_state_v1();
+    let target_base = target_a.encode_state_v1();
+    let source_b = YrsSchemeDocument::new(source_document);
+    source_b.apply_update_v1(&source_base).unwrap();
+    let target_b = YrsSchemeDocument::new(target_document);
+    target_b.apply_update_v1(&target_base).unwrap();
+
+    // First move: source -> target.
+    let mut source_empty = source.clone();
+    source_empty.items.clear();
+    let source_move_1 = source_a
+        .sync_scheme(&source_empty)
+        .unwrap()
+        .unwrap()
+        .update_v1;
+    let mut target_with_item = target.clone();
+    target_with_item.items.push(item.clone());
+    let target_move_1 = target_a
+        .sync_scheme(&target_with_item)
+        .unwrap()
+        .unwrap()
+        .update_v1;
+    source_b.apply_update_v1(&source_move_1).unwrap();
+    target_b.apply_update_v1(&target_move_1).unwrap();
+
+    // Undo on B: target -> source. This leaves a tombstone in target.
+    let source_undo = source_b.sync_scheme(&source).unwrap().unwrap().update_v1;
+    let target_undo = target_b.sync_scheme(&target).unwrap().unwrap().update_v1;
+    source_a.apply_update_v1(&source_undo).unwrap();
+    target_a.apply_update_v1(&target_undo).unwrap();
+
+    // Move it again from the resurrected source into the tombstoned target.
+    let source_move_2 = source_a
+        .sync_scheme(&source_empty)
+        .unwrap()
+        .unwrap()
+        .update_v1;
+    let target_move_2 = target_a
+        .sync_scheme(&target_with_item)
+        .unwrap()
+        .unwrap()
+        .update_v1;
+
+    // The server sees all operations in transport order, while a fresh peer
+    // reconstructs the same merged state from the complete history.
+    let server_source = YrsSchemeDocument::new(source_document);
+    server_source.apply_update_v1(&source_base).unwrap();
+    server_source.apply_update_v1(&source_move_1).unwrap();
+    server_source.apply_update_v1(&source_undo).unwrap();
+    server_source.apply_update_v1(&source_move_2).unwrap();
+    let server_target = YrsSchemeDocument::new(target_document);
+    server_target.apply_update_v1(&target_base).unwrap();
+    server_target.apply_update_v1(&target_move_1).unwrap();
+    server_target.apply_update_v1(&target_undo).unwrap();
+    server_target.apply_update_v1(&target_move_2).unwrap();
+
+    assert!(server_source.scheme_items().unwrap().is_empty());
+    assert_eq!(server_target.scheme_items().unwrap(), vec![item]);
 }

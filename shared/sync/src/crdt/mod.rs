@@ -18,7 +18,7 @@ use chrono::{DateTime, NaiveDate};
 use knotq_model::{
     DeletedFolderOrigin, DeletedSchemeOrigin, DocumentId, Folder, FolderId, Inline, Item,
     ItemContent, ItemId, ItemMarker, NodeRef, ReplicaId, Scheme, SchemeId, SchemeSource,
-    SyncDocumentKind, SyncDocumentMeta, Workspace,
+    SyncDocumentKind, SyncDocumentMeta, Workspace, PERMANENT_DELETE_TOMBSTONE_POSITION,
 };
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -220,6 +220,11 @@ const NODE_KIND_SCHEME: &str = "scheme";
 pub struct WorkspaceCrdtChangeSet {
     pub workspace: bool,
     pub schemes: HashSet<SchemeId>,
+    /// Item ids explicitly deleted by the local command batch, keyed by their
+    /// source scheme. A scheme edit must preserve raw CRDT copies that are
+    /// hidden by workspace-wide duplicate placement; only an explicit delete
+    /// is evidence that such a copy should be tombstoned.
+    pub deleted_items: HashMap<SchemeId, HashSet<String>>,
 }
 
 impl WorkspaceCrdtChangeSet {
@@ -236,10 +241,13 @@ impl WorkspaceCrdtChangeSet {
     pub fn merge(&mut self, other: Self) {
         self.workspace |= other.workspace;
         self.schemes.extend(other.schemes);
+        for (scheme, items) in other.deleted_items {
+            self.deleted_items.entry(scheme).or_default().extend(items);
+        }
     }
 
     pub fn is_empty(&self) -> bool {
-        !self.workspace && self.schemes.is_empty()
+        !self.workspace && self.schemes.is_empty() && self.deleted_items.is_empty()
     }
 }
 
@@ -1079,6 +1087,39 @@ impl WorkspaceCrdtDocuments {
         }))
     }
 
+    /// Like [`Self::reidentify_workspace_document`], but for a document that
+    /// was populated deterministically (see [`Self::populate_workspace_if_unpopulated`])
+    /// from content that still carried this replica's own pre-canonicalization
+    /// identity rather than the account's. A plain re-key only rebinds the
+    /// document; the population inside it is still hashed under the wrong
+    /// identity, so it can never deduplicate with another replica's population
+    /// of the same logical content. This rebuilds the population under
+    /// `canonical_base` (the same content, canonicalized) and re-applies
+    /// `edited_canonical` (this replica's current content, canonicalized) as an
+    /// ordinary edit on top — see [`YrsJsonDocument::repopulate_canonically`].
+    pub fn repopulate_workspace_canonically(
+        &mut self,
+        canonical_base: &Workspace,
+        edited_canonical: &Workspace,
+        new_id: DocumentId,
+    ) -> anyhow::Result<()> {
+        let canonical_snapshot = workspace_document_snapshot(canonical_base);
+        let edited_snapshot = workspace_document_snapshot(edited_canonical);
+        let fresh =
+            self.workspace
+                .repopulate_canonically(&canonical_snapshot, &edited_snapshot, new_id)?;
+        self.workspace = fresh;
+        Ok(())
+    }
+
+    /// Whether the workspace-index payload changes between two materialized
+    /// workspaces. Scheme item edits intentionally do not count: those belong
+    /// to scheme content documents and must not cause a redundant workspace
+    /// snapshot during first-sync identity adoption.
+    pub fn workspace_document_differs(&self, left: &Workspace, right: &Workspace) -> bool {
+        workspace_document_snapshot(left) != workspace_document_snapshot(right)
+    }
+
     /// Rewrite any owned document whose current full state would fail the server's
     /// schema validation — i.e. an empty document with no schema root — by
     /// repopulating it from the materialized `workspace`. Such documents exist when
@@ -1320,12 +1361,59 @@ impl WorkspaceCrdtDocuments {
         changeset: &WorkspaceCrdtChangeSet,
         bases: &HashMap<SchemeId, Scheme>,
     ) -> WorkspaceCrdtSyncOutcome {
-        // A doc absent from `self.schemes` is authored from an empty base, so it gets a
-        // fresh identity (`None`); the stable clientID is reserved for from-bytes restore
-        // in `from_states` to prevent `(clientID, clock)` reuse across incarnations.
-        self.sync_changes_with_scheme_factory(workspace, changeset, bases, move |_, document_id| {
-            YrsSchemeDocument::for_replica(document_id, None)
-        })
+        self.sync_changes_with_bases_and_workspace_base(workspace, changeset, bases, None)
+    }
+
+    /// [`Self::sync_changes_with_bases`], additionally given what the WHOLE
+    /// workspace held before the edits being written, for when the
+    /// workspace-index document itself had never been populated when those
+    /// edits were made (see [`Self::workspace_document_is_unpopulated`]). The
+    /// index is then populated from `workspace_base` first (deterministic
+    /// clientID, see [`Self::populate_workspace_if_unpopulated`]), so the
+    /// edits land as an ordinary delta on top instead of racing another
+    /// device's independent population of the same base content.
+    pub fn sync_changes_with_bases_and_workspace_base(
+        &mut self,
+        workspace: &Workspace,
+        changeset: &WorkspaceCrdtChangeSet,
+        bases: &HashMap<SchemeId, Scheme>,
+        workspace_base: Option<&Workspace>,
+    ) -> WorkspaceCrdtSyncOutcome {
+        let workspace_was_unpopulated = if let Some(base) = workspace_base {
+            match self.populate_workspace_if_unpopulated(base) {
+                Ok(populated) => populated,
+                Err(err) => {
+                    let mut outcome = WorkspaceCrdtSyncOutcome::default();
+                    outcome.push_error("workspace CRDT population", err);
+                    return outcome;
+                }
+            }
+        } else {
+            false
+        };
+        let mut outcome = self.sync_changes_with_scheme_factory(
+            workspace,
+            changeset,
+            bases,
+            move |_, document_id| YrsSchemeDocument::for_replica(document_id, None),
+        );
+        // Population happens before the incremental write, but the captured
+        // delta only contains the latter. A pending update must be usable by a
+        // fresh peer that has never seen this workspace document, so promote
+        // the workspace update to the complete post-edit state when this was
+        // the first population. This is still idempotent on an existing peer:
+        // the update contains the same Yrs structs, not a second population.
+        if workspace_was_unpopulated {
+            if let Some(update) = outcome
+                .updates
+                .iter_mut()
+                .find(|update| update.kind == SyncDocumentKind::PersonalWorkspace)
+            {
+                update.update_v1 = self.workspace.encode_state_v1();
+                update.touched_items.clear();
+            }
+        }
+        outcome
     }
 
     /// Whether `scheme`'s document has never been populated on this replica —
@@ -1339,6 +1427,32 @@ impl WorkspaceCrdtDocuments {
         self.schemes
             .get(&scheme)
             .is_none_or(|document| document.is_unpopulated())
+    }
+
+    /// Whether the workspace-index document has never been populated on this
+    /// replica — see [`Self::scheme_document_is_unpopulated`], same idea one
+    /// level up.
+    pub fn workspace_document_is_unpopulated(&self) -> bool {
+        !self.workspace.is_seeded()
+    }
+
+    /// Populate the workspace-index document from `workspace`'s current
+    /// content, if it has never been populated — a no-op otherwise. Uses a
+    /// deterministic, content-derived clientID (see
+    /// `YrsJsonDocument::populate`) rather than leaving the document for
+    /// whatever writes to it first to pick a random one.
+    ///
+    /// Returns whether it actually populated the document (`false` when it
+    /// was already seeded) — the caller needs this to treat the document like
+    /// a heal: any pending delta queued against the pre-population (empty)
+    /// state vector is stale once this rewrites it from scratch.
+    pub fn populate_workspace_if_unpopulated(&self, workspace: &Workspace) -> anyhow::Result<bool> {
+        if self.workspace_document_is_unpopulated() {
+            self.workspace
+                .populate(&workspace_document_snapshot(workspace))?;
+            return Ok(true);
+        }
+        Ok(false)
     }
 
     /// Write the given schemes' content documents from `workspace`, and nothing
@@ -1420,11 +1534,18 @@ impl WorkspaceCrdtDocuments {
             // A document-set change (a scheme added or removed) must re-emit the
             // full workspace state so a server that lost the document can rebuild
             // it; an ordinary edit emits only the incremental diff.
-            let force = workspace_documents_missing || workspace_documents_removed;
-            match self
+            let desired = workspace_document_snapshot(workspace);
+            let archive_changed = self
                 .workspace
-                .sync_snapshot(&workspace_document_snapshot(workspace), force)
-            {
+                .snapshot()
+                .map(|current| {
+                    current.recently_deleted != desired.recently_deleted
+                        || current.recently_deleted_folders != desired.recently_deleted_folders
+                })
+                .unwrap_or(true);
+            let force =
+                workspace_documents_missing || workspace_documents_removed || archive_changed;
+            match self.workspace.sync_snapshot(&desired, force) {
                 Ok(Some(update)) => outcome.updates.push(update),
                 Ok(None) => {}
                 Err(err) => outcome.push_error("workspace CRDT update", err),
@@ -1471,11 +1592,25 @@ impl WorkspaceCrdtDocuments {
             // window): decode its real bytes so the edit diffs against real
             // history instead of an empty base.
             self.hydrate_deferred(id);
+            // Materialization intentionally hides duplicate item ids in losing
+            // schemes, but the raw document still owns those copies. A normal
+            // local edit to this scheme must not interpret that visibility choice
+            // as a deletion. Preserve raw-only items unless this command batch
+            // explicitly deleted that id in this scheme; the latter is the only
+            // causal evidence needed to emit a tombstone.
+            let sync_scheme = self
+                .schemes
+                .get(&id)
+                .and_then(|document| document.scheme_items().ok())
+                .map(|raw_items| {
+                    merge_raw_only_items(scheme, raw_items, changeset.deleted_items.get(&id))
+                })
+                .unwrap_or_else(|| scheme.clone());
             match self
                 .schemes
                 .entry(id)
                 .or_insert_with(|| new_scheme_document(id, meta.id))
-                .sync_scheme_from_base(bases.get(&id), scheme)
+                .sync_scheme_from_base(bases.get(&id), &sync_scheme)
             {
                 Ok(Some(update)) => outcome.updates.push(update),
                 Ok(None) => {}
@@ -1517,7 +1652,8 @@ impl WorkspaceCrdtDocuments {
                 continue;
             }
             workspace_update_eligible_for_materialization = true;
-            match self.workspace.apply_update_v1(&update.update_v1) {
+            let apply_result = self.workspace.apply_update_v1(&update.update_v1);
+            match apply_result {
                 // Only a merge that actually changed the document counts as
                 // applied. An echo of this replica's own push (the server
                 // broadcasts `changed` to every device, including the origin)
@@ -1806,6 +1942,21 @@ impl WorkspaceCrdtDocuments {
         self.materialize_workspace_inner(current, false, trust_empty_crdt)
     }
 
+    /// Read one live scheme document without applying workspace-wide duplicate
+    /// placement dedupe. The pre-pull repair path needs the raw per-document
+    /// item set: a copy hidden by materialization is still authoritative CRDT
+    /// history and must not be rewritten as a deletion merely because the same
+    /// id is visible in another scheme.
+    pub(crate) fn raw_scheme_items(
+        &self,
+        scheme_id: SchemeId,
+    ) -> anyhow::Result<Option<Vec<Item>>> {
+        self.schemes
+            .get(&scheme_id)
+            .map(YrsSchemeDocument::scheme_items)
+            .transpose()
+    }
+
     /// The exhaustive variant: every deferred daily is decoded too, so the
     /// result is the complete picture of what the CRDT holds. Rebuilding this
     /// and comparing it against disk is how a data directory is checked for
@@ -1975,6 +2126,55 @@ impl WorkspaceCrdtDocuments {
             );
         }
 
+        // A loaded scheme can be absent from the merged `nodes` map while its
+        // durable `scheme_sync` binding and Daily Queue index entry survive.
+        // This happens when a device that has the page loaded adopts an index
+        // snapshot produced by a lazy device: the lazy snapshot intentionally
+        // omits the page body, but it must not make an already-loaded page
+        // disappear from the receiving workspace. Keep the current metadata
+        // and prefer the authoritative CRDT body when one is available.
+        let retained_loaded_schemes: Vec<SchemeId> = current
+            .schemes
+            .keys()
+            .filter(|id| {
+                !workspace.schemes.contains_key(id)
+                    && workspace
+                        .scheme_sync
+                        .get(id)
+                        .is_some_and(|sync| sync.kind == SyncDocumentKind::Scheme)
+            })
+            .copied()
+            .collect();
+        for scheme_id in retained_loaded_schemes {
+            let Some(current_scheme) = current.schemes.get(&scheme_id) else {
+                continue;
+            };
+            let items = if let Some(items) = self
+                .schemes
+                .get(&scheme_id)
+                .and_then(|document| document.scheme_items().ok())
+            {
+                items
+            } else if let Some(deferred) = self.deferred.get(&scheme_id) {
+                deferred_live_document(deferred)
+                    .and_then(|document| document.scheme_items())
+                    .unwrap_or_else(|_| current_scheme.items.clone())
+            } else {
+                current_scheme.items.clone()
+            };
+            workspace.schemes.insert(
+                scheme_id,
+                Scheme {
+                    id: scheme_id,
+                    name: current_scheme.name.clone(),
+                    color_index: current_scheme.color_index,
+                    gsync: current_scheme.gsync,
+                    source: current_scheme.source.clone(),
+                    items,
+                },
+            );
+        }
+
         // An item id is globally unique. A concurrent move is represented as
         // a tombstone in the source document plus a live insert in the target;
         // when two devices choose different targets, both inserts are otherwise
@@ -1989,6 +2189,43 @@ impl WorkspaceCrdtDocuments {
     }
 }
 
+/// Add live items present in the raw scheme document but hidden from the plain
+/// workspace by cross-document duplicate-id materialization. Keep the local
+/// workspace's order for visible items, and project each hidden item's prior raw
+/// position into that list so a later source deletion reveals it in a stable spot.
+pub(crate) fn merge_raw_only_items(
+    scheme: &Scheme,
+    raw_items: Vec<Item>,
+    deleted_items: Option<&HashSet<String>>,
+) -> Scheme {
+    let local_ids: HashSet<String> = scheme
+        .items
+        .iter()
+        .map(|item| item.id.to_string())
+        .collect();
+    let deleted_items = deleted_items.cloned().unwrap_or_default();
+    let mut extras: Vec<(usize, Item)> = raw_items
+        .into_iter()
+        .enumerate()
+        .filter(|(_, item)| {
+            let id = item.id.to_string();
+            !local_ids.contains(&id) && !deleted_items.contains(&id)
+        })
+        .collect();
+    if extras.is_empty() {
+        return scheme.clone();
+    }
+
+    let mut merged = scheme.clone();
+    // Insert from right to left so each raw position is measured against the
+    // original visible list rather than being shifted by an earlier insert.
+    extras.sort_by_key(|(position, _)| *position);
+    for (position, item) in extras.into_iter().rev() {
+        merged.items.insert(position.min(merged.items.len()), item);
+    }
+    merged
+}
+
 fn dedupe_materialized_items(workspace: &mut Workspace) {
     let mut scheme_ids: Vec<SchemeId> = workspace.schemes.keys().copied().collect();
     scheme_ids.sort();
@@ -2001,41 +2238,7 @@ fn dedupe_materialized_items(workspace: &mut Workspace) {
     }
 }
 
-impl WorkspaceCrdtDocuments {
-    /// Return the materialized scheme documents that still contain a losing
-    /// copy after [`materialized_workspace_repair`] removed duplicate item ids.
-    /// The caller re-expresses those schemes through the normal CRDT write path,
-    /// which tombstones the losing copy durably. Deferred documents are excluded
-    /// so an off-window Daily page remains byte-for-byte untouched.
-    pub(crate) fn duplicate_item_repair_schemes(&self, workspace: &Workspace) -> Vec<SchemeId> {
-        let mut scheme_ids: Vec<SchemeId> = self
-            .schemes
-            .keys()
-            .copied()
-            .filter(|id| workspace.schemes.contains_key(id))
-            .collect();
-        scheme_ids.sort();
-
-        let mut owners: HashMap<ItemId, SchemeId> = HashMap::new();
-        let mut losers = HashSet::new();
-        for scheme_id in scheme_ids {
-            let Some(document) = self.schemes.get(&scheme_id) else {
-                continue;
-            };
-            let Ok(items) = document.scheme_items() else {
-                continue;
-            };
-            for item in items {
-                if owners.insert(item.id, scheme_id).is_some() {
-                    losers.insert(scheme_id);
-                }
-            }
-        }
-        let mut losers: Vec<SchemeId> = losers.into_iter().collect();
-        losers.sort();
-        losers
-    }
-}
+impl WorkspaceCrdtDocuments {}
 
 /// Item-granular three-way merge for epoch adoption, with the local pending
 /// edits' `touched` set standing in for the missing common base:

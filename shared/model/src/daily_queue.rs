@@ -26,6 +26,9 @@ const DAILY_QUEUE_DOCUMENT_NAMESPACE: [u8; 16] = [
 const DAILY_QUEUE_DISPLACED_ITEM_NAMESPACE: [u8; 16] = [
     0x9e, 0x5c, 0x2b, 0x41, 0x0f, 0x8a, 0x4d, 0x96, 0xb3, 0x27, 0x64, 0xd1, 0x7a, 0x0e, 0x58, 0xc2,
 ];
+const DAILY_QUEUE_PLACEHOLDER_ITEM_NAMESPACE: [u8; 16] = [
+    0x4b, 0x92, 0x17, 0x6e, 0x3a, 0xd0, 0x45, 0x81, 0xa6, 0x2f, 0x73, 0xc8, 0x0d, 0x54, 0xbe, 0x19,
+];
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct DailyQueueConfig;
@@ -96,6 +99,20 @@ pub fn daily_queue_displaced_item_id(source: ItemId, source_date: NaiveDate) -> 
     ItemId(stable_daily_uuid(
         DAILY_QUEUE_DISPLACED_ITEM_NAMESPACE,
         &name,
+    ))
+}
+
+/// Deterministic [`ItemId`] for the blank editing row created for a daily page.
+///
+/// The row is scaffolding, not user content. Giving it identity derived from the
+/// date means two devices that open the same empty day offline delete the same Yrs
+/// item when carryover replaces the placeholder, instead of each leaving the
+/// other's random blank row behind after merge. Existing pages with older random
+/// placeholders remain readable; new pages use this identity going forward.
+pub fn daily_queue_placeholder_item_id(date: NaiveDate) -> ItemId {
+    ItemId(stable_daily_uuid(
+        DAILY_QUEUE_PLACEHOLDER_ITEM_NAMESPACE,
+        &date.to_string(),
     ))
 }
 

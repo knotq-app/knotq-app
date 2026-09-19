@@ -4,7 +4,9 @@ use chrono::Local;
 use gpui::{Context, ScrollHandle};
 use gpui_component::VirtualListScrollHandle;
 use knotq_state::{daily_queue_default_window_start, AppState};
-use knotq_storage_json::{load_crdt_state, load_local_sync_state, workspace_path};
+use knotq_storage_json::{
+    load_crdt_state, load_local_sync_state, load_workspace_save_recovery, workspace_path,
+};
 
 use super::auto_update::{spawn_auto_update_task, AutoUpdateUiStatus};
 use super::bootstrap::{load_or_seed, load_settings_bootstrap};
@@ -130,6 +132,15 @@ impl KnotQApp {
         // This stays active even when account sync is hidden/compiled out, so a
         // future sync-capable build can reuse the local CRDT history.
         let crdt_states = restored_crdt_states(&workspace_path());
+        let sync_state = load_local_sync_state(&workspace_path()).unwrap_or_default();
+        let pending_crdt_edits = sync_state.pending;
+        let recent_item_edits = sync_state.recent_item_edits;
+        let recent_folder_edits = sync_state.recent_folder_edits;
+        let workspace_save_recovery = load_workspace_save_recovery(&workspace_path())
+            .unwrap_or_else(|err| {
+                eprintln!("restore workspace save recovery marker failed: {err:#}");
+                None
+            });
 
         let initial_sequence = restored_initial_sequence(&workspace_path());
 
@@ -268,6 +279,12 @@ impl KnotQApp {
             onboarding_phase,
             onboarding_page: 0,
         };
+        if let Some(base) = workspace_save_recovery {
+            app.state.recover_workspace_save(base);
+        }
+        app.state.restore_pending_crdt_edits(pending_crdt_edits);
+        app.state.restore_recent_item_edits(recent_item_edits);
+        app.state.restore_recent_folder_edits(recent_folder_edits);
         // Reopen the screen from the last session. Skipped during first-launch
         // onboarding (which drives its own navigation); a saved scheme that was
         // deleted in the meantime falls back to the default Union view.

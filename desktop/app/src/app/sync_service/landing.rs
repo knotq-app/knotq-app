@@ -2,7 +2,7 @@
 //! makes on the UI thread once `sync_snapshot` returns, kept out of the GPUI
 //! closure so the production-path fuzzer runs exactly the same steps.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use knotq_model::{DocumentId, Workspace};
@@ -17,14 +17,10 @@ use knotq_sync::PushedDocument;
 pub(super) fn clear_pushed_edits(
     state: &mut AppState,
     pushed: &[PushedDocument],
-    local_edit_watermark: u64,
+    _local_edit_watermark: u64,
 ) {
     for pushed in pushed {
-        state.clear_pushed_crdt_edits(
-            pushed.document,
-            pushed.through_local_sequence,
-            local_edit_watermark,
-        );
+        state.clear_pushed_crdt_edits_exact(pushed.document, &pushed.sent_edits);
     }
     state.drop_unbound_pending_crdt_edits();
 }
@@ -35,8 +31,20 @@ pub(super) fn clear_pushed_edits(
 pub(super) fn capture_local_item_edits(
     state: &AppState,
     queued: &[knotq_sync::QueuedItemFields],
+    baseline: &Workspace,
 ) -> knotq_state::LocalItemEdits {
-    state.capture_local_item_edits(queued)
+    state.capture_local_item_edits(queued, baseline)
+}
+
+pub(super) fn capture_local_scheme_edits(state: &AppState) -> knotq_state::LocalSchemeEdits {
+    state.capture_local_scheme_edits()
+}
+
+pub(super) fn capture_local_folder_edits(
+    state: &AppState,
+    incoming: &Workspace,
+) -> knotq_state::LocalFolderEdits {
+    state.capture_local_folder_edits(incoming)
 }
 
 /// After landing: re-apply this device's line edits to lines another device
@@ -47,6 +55,31 @@ pub(super) fn reassert_local_item_edits(
     captured: knotq_state::LocalItemEdits,
 ) -> bool {
     state.reassert_local_item_edits(captured) > 0
+}
+
+pub(super) fn reassert_recent_moved_item_edits(
+    state: &mut AppState,
+    skip_items: &HashSet<knotq_model::ItemId>,
+) -> bool {
+    state.reassert_recent_moved_item_edits(skip_items) > 0
+}
+
+pub(super) fn reconcile_item_placements(state: &mut AppState) -> bool {
+    state.reconcile_item_placements()
+}
+
+pub(super) fn reassert_local_scheme_edits(
+    state: &mut AppState,
+    captured: knotq_state::LocalSchemeEdits,
+) -> bool {
+    state.reassert_local_scheme_edits(captured) > 0
+}
+
+pub(super) fn reassert_local_folder_edits(
+    state: &mut AppState,
+    captured: knotq_state::LocalFolderEdits,
+) -> bool {
+    state.reassert_local_folder_edits(captured) > 0
 }
 
 /// Whether a run's result has to be landed on the live workspace at all.
@@ -69,10 +102,12 @@ pub(super) fn adopt_sync_workspace(
     local_edit_watermark: u64,
     squash_applied: bool,
 ) -> bool {
-    let merged = state.has_local_edits_since(local_edit_watermark)
-        && state.merge_workspace_from_sync(&workspace, &crdt_states);
+    let has_local_edits = state.has_local_edits_since(local_edit_watermark);
+    let merged = has_local_edits && state.merge_workspace_from_sync(&workspace, &crdt_states);
     if merged {
         true
+    } else if !has_local_edits {
+        state.replace_workspace_from_sync(workspace, crdt_states)
     } else if squash_applied {
         state.replace_workspace_from_squash(workspace, crdt_states)
     } else {

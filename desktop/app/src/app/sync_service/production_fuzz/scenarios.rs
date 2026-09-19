@@ -256,6 +256,64 @@ fn an_edit_after_a_crash_between_the_queue_and_crdt_saves_is_kept() {
     world.settle_and_assert();
 }
 
+/// A clean relaunch must carry a durable pending edit into the new live store.
+/// The save path reconciles the on-disk queue with that store snapshot; without
+/// restoring the queue at launch, this otherwise-safe replacement erased an
+/// edit that had been saved but had not reached the server yet.
+#[test]
+fn a_pending_edit_survives_a_clean_relaunch_until_it_is_pushed() {
+    let mut world = world(90_019, 1);
+    let a = world.add_device(Some(0));
+    world.sync(a, 0);
+    let (scheme, item) = world.local(a, |device, _| {
+        let scheme = device
+            .state
+            .workspace
+            .schemes
+            .values()
+            .find(|scheme| !scheme.items.is_empty())
+            .expect("starter scheme with a line")
+            .id;
+        add_line(device, scheme, "saved before relaunch");
+        let item = device
+            .state
+            .workspace
+            .scheme(scheme)
+            .and_then(|scheme| scheme.items.last())
+            .expect("saved line")
+            .id;
+        (scheme, item)
+    });
+    world.devices[a]
+        .as_mut()
+        .unwrap()
+        .save()
+        .expect("save pending edit");
+    assert!(
+        world.devices[a].as_mut().unwrap().pending_edit_count() > 0,
+        "the edit should be durable but not pushed yet"
+    );
+    world.relaunch(a);
+    assert!(
+        world.devices[a].as_mut().unwrap().pending_edit_count() > 0,
+        "relaunch dropped the durable pending edit"
+    );
+    world.sync(a, 0);
+    let b = world.add_device(Some(0));
+    world.sync(b, 0);
+    assert!(
+        world.devices[b]
+            .as_ref()
+            .unwrap()
+            .state
+            .workspace
+            .scheme(scheme)
+            .is_some_and(|scheme| scheme.item(item).is_some()),
+        "the pending edit did not reach a fresh device"
+    );
+    world.settle_and_assert();
+}
+
 /// Fuzz seed 5: a fresh install's first sync lands through the merge while an
 /// edit made during the run is still unpushed. That edit's index update names
 /// the pre-sign-in root, which must be folded into the account's root — not
@@ -313,18 +371,21 @@ fn a_first_sync_with_an_in_flight_edit_leaves_no_second_root_folder() {
 /// Fuzz seed 1: a fresh install recolours a scheme while its first sync is in
 /// flight, and the colour never reaches the account.
 ///
-/// Part of it is fixed: landing used to clear the in-flight edit as pushed
-/// because the run pushed through the same sequence under an edit of its own
-/// (`in_flight_landing_tests`). What remains is the workspace index. A
-/// never-synced install has no saved index state, so its first index write is a
-/// full population authored under a random client id — with the new colour
-/// already in it. The account's index is an equally full population from
-/// another device, so every scheme entry is a concurrent pair and the account's
-/// entry can win on client id alone. The fix mirrors scheme content: populate
-/// the index from the pre-edit workspace under a deterministic client id, then
-/// write the edit as a delta after it.
+/// Fixed: landing used to clear the in-flight edit as pushed because the run
+/// pushed through the same sequence under an edit of its own
+/// (`in_flight_landing_tests`). The remaining gap was the workspace index. A
+/// never-synced install has no saved index state, so its first index write is
+/// a full population authored under this device's own pre-canonical
+/// (per-install-random) `sync.id` — with the new colour already in it. The
+/// account's index is an equally full population from another device, but
+/// under the account's canonical identity, so the population portions never
+/// hash-match and the edit races the account's population instead of landing
+/// as a delta on top of it. Fixed by rebuilding the population under the
+/// canonical identity once it's known (`repopulate_workspace_canonically`)
+/// and queuing its full state as the push, rather than relying on an
+/// incremental diff that finds nothing new relative to the freshly-rebuilt
+/// document. See `app/TODO.md` item 1.
 #[test]
-#[ignore = "known gap: a never-synced install's index population loses to the account's on first sign-in"]
 fn an_edit_made_while_a_sync_is_in_flight_is_pushed() {
     let mut world = world(90_014, 1);
     let a = world.add_device(Some(0));
@@ -694,6 +755,95 @@ fn a_line_retyped_while_another_device_moves_it_keeps_the_new_text() {
     world.settle_and_assert();
 }
 
+/// The source edit can be acknowledged before a different device moves the
+/// stale copy. It is no longer in the pending queue when the move lands, so
+/// the landing journal must still carry the complete source value forward.
+#[test]
+fn an_acknowledged_source_edit_survives_a_later_stale_move() {
+    let mut world = world(90_021, 1);
+    let a = world.add_device(Some(0));
+    world.sync(a, 0);
+    let b = world.add_device(Some(0));
+    world.sync(b, 0);
+    world.sync(a, 0);
+    let (source, target, line) = {
+        let workspace = world.devices[a].as_ref().unwrap().state.workspace.clone();
+        let mut schemes: Vec<_> = workspace
+            .schemes
+            .values()
+            .filter(|scheme| {
+                !workspace.daily_queue.values().any(|id| *id == scheme.id)
+                    && scheme.items.len() >= 2
+            })
+            .map(|scheme| scheme.id)
+            .collect();
+        schemes.sort();
+        let source = schemes[0];
+        (
+            source,
+            schemes[1],
+            workspace.scheme(source).unwrap().items[0].id,
+        )
+    };
+
+    // B's edit is fully acknowledged before A performs the stale move.
+    world.local(b, |device, _| {
+        device
+            .state
+            .apply_command(Command::UpdateItemText {
+                scheme: source,
+                item: line,
+                text: "acknowledged source edit".to_string(),
+            })
+            .expect("retype line");
+    });
+    world.sync(b, 0);
+
+    world.local(a, |device, _| {
+        let workspace = device.state.workspace.clone();
+        let moved = workspace
+            .scheme(source)
+            .unwrap()
+            .item(line)
+            .unwrap()
+            .clone();
+        let position = workspace.scheme(target).unwrap().items.len();
+        device
+            .state
+            .apply_command(Command::Batch(vec![
+                Command::DeleteItem {
+                    scheme: source,
+                    item: line,
+                },
+                Command::InsertItem {
+                    scheme: target,
+                    position,
+                    item: moved,
+                },
+            ]))
+            .expect("move stale line");
+    });
+    world.sync(a, 0);
+    world.sync(b, 0);
+    world.sync(b, 0);
+    world.sync(a, 0);
+
+    for index in [a, b] {
+        let workspace = &world.devices[index].as_ref().unwrap().state.workspace;
+        let holders: Vec<_> = workspace
+            .schemes
+            .values()
+            .filter_map(|scheme| scheme.item(line).map(|item| (scheme.id, item.text())))
+            .collect();
+        assert_eq!(
+            holders,
+            vec![(target, "acknowledged source edit".to_string())],
+            "device {index}: the acknowledged source edit must follow the move"
+        );
+    }
+    world.settle_and_assert();
+}
+
 /// A sync run saves another device's move of a line, and the user quits before
 /// the run lands. The shutdown flush writes the store's older workspace over the
 /// run's files, and with the run's cursors kept the move was never pulled again:
@@ -933,20 +1083,11 @@ fn install_switched_to_another_account_before_its_first_sync_joins_it() {
     world.settle_and_assert();
 }
 
-/// KNOWN GAP — kept runnable so the fix can be proven against it.
-///
-/// A brand-new install that has never synced crashes after the save task wrote
-/// its workspace files but before it wrote the pending queue and CRDT state.
-/// On relaunch its edits exist only in the plain files: the CRDT is unseeded
-/// and nothing is queued, so the first sync adopts the account's index and
-/// those edits disappear. `HEAD` behaves the same way.
-///
-/// Seeding the CRDT from the plain files at launch was tried and made things
-/// strictly worse: it pushes an entire index lineage authored under the
-/// pre-sign-in identity, which loses content elsewhere. The real fix is to
-/// re-root a pre-sign-in lineage inside the CRDT index at first sign-in.
+/// A crash between the plain workspace save and the pending/CRDT checkpoint
+/// must preserve offline edits. The save-recovery base is written before the
+/// workspace replacement and turns the post-relaunch plain-file delta back
+/// into ordinary CRDT updates on the next launch.
 #[test]
-#[ignore = "known gap: never-synced install crashing between its workspace and CRDT saves"]
 fn new_install_crashed_before_its_first_sync_joins_the_account() {
     let mut world = world(90_005, 1);
     seed_account(&mut world);

@@ -9,7 +9,9 @@ use knotq_model::{ItemId, ItemKind, OccurrenceId, SchemeId, Workspace};
 use knotq_rrule::ItemOccurrenceExt;
 use knotq_state::CrdtSaveScope;
 use knotq_storage_json::{
-    save_crdt_state, save_crdt_state_incremental, save_pending_crdt_edits_with_item_fields,
+    begin_workspace_save_recovery, clear_workspace_save_recovery, load_workspace_with_options,
+    merge_recent_item_edits, replace_pending_crdt_edits_with_item_fields, save_crdt_state,
+    save_crdt_state_incremental, WorkspaceLoadOptions,
 };
 
 use super::{
@@ -28,9 +30,17 @@ pub(crate) fn write_save_snapshot(
     dirty_ids: &std::collections::HashSet<SchemeId>,
     pending_crdt_edits: &[knotq_sync::PendingCrdtEdit],
     queued_item_fields: &HashMap<knotq_model::OperationId, Vec<knotq_sync::QueuedItemFields>>,
+    recent_item_edits: &HashMap<knotq_model::ItemId, knotq_sync::RecentItemEdit>,
+    recent_folder_edits: &HashMap<knotq_model::FolderId, knotq_sync::RecentFolderEdit>,
     crdt_scope: CrdtSaveScope,
     crdt_states: &HashMap<knotq_model::DocumentId, std::sync::Arc<[u8]>>,
 ) -> anyhow::Result<()> {
+    // Leave a pre-save checkpoint before touching the plain workspace files.
+    // If the process dies after those files are replaced but before the queue
+    // or CRDT state is written, startup can reconstruct the missing deltas.
+    let recovery_base = load_workspace_with_options(path, WorkspaceLoadOptions::all())?
+        .unwrap_or_else(|| workspace.clone());
+    begin_workspace_save_recovery(path, &recovery_base)?;
     let result = if dirty_ids.is_empty() {
         save_workspace(path, workspace)
     } else {
@@ -41,8 +51,14 @@ pub(crate) fn write_save_snapshot(
     // rather than rebuilding.
     result
         .and_then(|_| {
-            save_pending_crdt_edits_with_item_fields(path, pending_crdt_edits, queued_item_fields)
+            replace_pending_crdt_edits_with_item_fields(
+                path,
+                pending_crdt_edits,
+                queued_item_fields,
+            )
         })
+        .and_then(|_| merge_recent_item_edits(path, recent_item_edits))
+        .and_then(|_| knotq_storage_json::merge_recent_folder_edits(path, recent_folder_edits))
         .and_then(|_| match crdt_scope {
             // Only a full save may remove a file, so it is the one that sweeps
             // documents that went away and retires the legacy blob.
@@ -52,6 +68,7 @@ pub(crate) fn write_save_snapshot(
             CrdtSaveScope::Only(_) if crdt_states.is_empty() => Ok(()),
             CrdtSaveScope::Only(_) => save_crdt_state_incremental(path, crdt_states),
         })
+        .and_then(|_| clear_workspace_save_recovery(path))
 }
 
 pub(crate) fn spawn_save_task(
@@ -96,6 +113,8 @@ pub(crate) fn spawn_save_task(
                         let t0 = std::time::Instant::now();
                         let pending_crdt_edits = app.state.pending_crdt_edits();
                         let queued_item_fields = app.state.queued_item_fields();
+                        let recent_item_edits = app.state.recent_item_edits();
+                        let recent_folder_edits = app.state.recent_folder_edits();
                         let t_pending = t0.elapsed();
                         // Handles, not bytes. Serializing a large scheme's CRDT
                         // is several milliseconds and this block runs on the UI
@@ -133,6 +152,8 @@ pub(crate) fn spawn_save_task(
                             dirty_ids,
                             pending_crdt_edits,
                             queued_item_fields,
+                            recent_item_edits,
+                            recent_folder_edits,
                             crdt_scope,
                             crdt_state_handles,
                         ))
@@ -145,6 +166,8 @@ pub(crate) fn spawn_save_task(
                     dirty_ids,
                     pending_crdt_edits,
                     queued_item_fields,
+                    recent_item_edits,
+                    recent_folder_edits,
                     crdt_scope,
                     crdt_state_handles,
                 )) =
@@ -168,6 +191,8 @@ pub(crate) fn spawn_save_task(
                                 &dirty_ids,
                                 &pending_crdt_edits,
                                 &queued_item_fields,
+                                &recent_item_edits,
+                                &recent_folder_edits,
                                 crdt_scope,
                                 &crdt_states,
                             )

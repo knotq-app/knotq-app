@@ -77,6 +77,41 @@ fn restore_and_materialization_include_lazy_daily_queue_documents() {
 }
 
 #[test]
+fn materialization_keeps_loaded_scheme_when_lazy_index_omits_its_node() {
+    use yrs::{Map, ReadTxn, Transact};
+
+    let date = NaiveDate::from_ymd_opt(2026, 9, 16).unwrap();
+    let daily_id = daily_queue_scheme_id(date);
+    let mut workspace = Workspace::new();
+    let mut daily = Scheme::new("Daily", DAILY_QUEUE_COLOR_INDEX);
+    daily.id = daily_id;
+    daily.items.push(Item::new("moved line"));
+    workspace.daily_queue.insert(date, daily_id);
+    workspace.schemes.insert(daily_id, daily);
+    workspace.ensure_sync_metadata();
+
+    let docs = WorkspaceCrdtDocuments::try_new(&workspace).unwrap();
+    let state = docs.document_states()[&workspace.sync.id].clone();
+    let scratch = yrs::Doc::new();
+    scratch
+        .transact_mut()
+        .apply_update(yrs::updates::decoder::Decode::decode_v1(&state).unwrap())
+        .unwrap();
+    let before = scratch.transact().state_vector();
+    scratch
+        .get_or_insert_map("nodes")
+        .remove(&mut scratch.transact_mut(), &daily_id.to_string());
+    let deletion = scratch.transact().encode_diff_v1(&before);
+    docs.workspace.apply_update_v1(&deletion).unwrap();
+
+    let repaired = docs
+        .materialized_workspace_repair(&workspace, &|_| false)
+        .unwrap();
+    assert_eq!(repaired.schemes[&daily_id].items[0].text(), "moved line");
+    assert_eq!(repaired.daily_queue_scheme_id(date), Some(daily_id));
+}
+
+#[test]
 fn empty_lazy_daily_state_is_not_reseeded_as_schema_less_document() {
     let date = NaiveDate::from_ymd_opt(2026, 9, 1).unwrap();
     let daily_id = daily_queue_scheme_id(date);
@@ -384,6 +419,47 @@ fn remote_workspace_materialization_keeps_trash_and_daily_queue_out_of_sidebar()
     assert_eq!(
         outcome.workspace.daily_queue_scheme_id(daily_date),
         Some(daily_id)
+    );
+}
+
+#[test]
+fn permanent_delete_tombstone_suppresses_a_concurrent_stale_node() {
+    let mut live = Workspace::new();
+    let scheme = add_root_scheme(&mut live, "Will be destroyed");
+    let mut deleted = live.clone();
+    deleted
+        .folders
+        .get_mut(&deleted.root)
+        .unwrap()
+        .children
+        .retain(|child| *child != NodeRef::Scheme(scheme));
+    let origin = knotq_model::DeletedSchemeOrigin {
+        folder: deleted.root,
+        position: knotq_model::PERMANENT_DELETE_TOMBSTONE_POSITION,
+    };
+    deleted.deleted_scheme_origins.insert(scheme, origin);
+    deleted.schemes.remove(&scheme);
+    deleted.ensure_sync_metadata();
+
+    let stale = WorkspaceCrdtDocuments::try_new(&live).unwrap();
+    let tombstoned = WorkspaceCrdtDocuments::try_new(&deleted).unwrap();
+    let merged = WorkspaceCrdtDocuments::empty(&deleted);
+    merged
+        .workspace
+        .apply_update_v1(&stale.document_states()[&live.sync.id])
+        .unwrap();
+    merged
+        .workspace
+        .apply_update_v1(&tombstoned.document_states()[&deleted.sync.id])
+        .unwrap();
+
+    let materialized = merged
+        .materialized_workspace_repair(&deleted, &|_| false)
+        .unwrap();
+    assert!(!materialized.schemes.contains_key(&scheme));
+    assert_eq!(
+        materialized.deleted_scheme_origins.get(&scheme),
+        Some(&origin)
     );
 }
 
@@ -750,4 +826,61 @@ fn a_first_pull_that_carries_the_workspace_document_still_bootstraps() {
         outcome.workspace_errors
     );
     assert!(outcome.applied > 0, "the pull must apply");
+}
+
+/// FIRST-SYNC IDENTITY RACE
+/// (`an_edit_made_while_a_sync_is_in_flight_is_pushed` in the desktop
+/// production fuzzer), one level up from `workspace_index::tests`' raw
+/// `YrsJsonDocument` proof: at the `WorkspaceCrdtDocuments` level, device A
+/// has already fully synced an account from `base` content. Device B is a
+/// second, never-synced device with the SAME base content, which edits
+/// (recolours) locally before its own first sync completes — modeling "an
+/// edit made while the first sync is still in flight". B's push (built via
+/// `sync_changes_with_bases_and_workspace_base`, since B's index document has
+/// never been populated) must merge into A without B's edit being discarded.
+#[test]
+fn workspace_crdt_documents_merge_an_edit_made_during_a_shared_first_sync_base() {
+    let mut base = Workspace::new();
+    let scheme_id = add_root_scheme(&mut base, "Plans");
+    base.schemes.get_mut(&scheme_id).unwrap().color_index = 3;
+    base.ensure_sync_metadata();
+
+    // Device A: already fully synced this exact base content, its very first
+    // push having gone through `populate_workspace_if_unpopulated` (mirroring
+    // `queue_workspace_bootstrap_updates`, which every device's true first
+    // sync goes through when it has no local edit to base-populate from).
+    let mut device_a = WorkspaceCrdtDocuments::empty(&base);
+    device_a.populate_workspace_if_unpopulated(&base).unwrap();
+    device_a
+        .sync_changes(&base, &WorkspaceCrdtChangeSet::default().workspace())
+        .updates;
+
+    // Device B: never synced, populates its index from the SAME base, then
+    // edits locally (recolour) before its own first sync completes.
+    let mut edited = base.clone();
+    edited.schemes.get_mut(&scheme_id).unwrap().color_index = 7;
+    let mut device_b = WorkspaceCrdtDocuments::empty(&base);
+    let push = device_b.sync_changes_with_bases_and_workspace_base(
+        &edited,
+        &WorkspaceCrdtChangeSet::default().workspace(),
+        &HashMap::new(),
+        Some(&base),
+    );
+    assert!(
+        push.errors.is_empty(),
+        "device b's push failed: {:?}",
+        push.errors
+    );
+
+    // Merge B's push into A, as if it reached the account.
+    let outcome = device_a.apply_remote_updates(&base, &stored_updates(base.id, push.updates));
+    assert!(
+        outcome.workspace_is_ok(),
+        "merge failed: {:?}",
+        outcome.workspace_errors
+    );
+    assert_eq!(
+        outcome.workspace.schemes[&scheme_id].color_index, 7,
+        "the edit made while populating device b's first-sync base was lost in the merge"
+    );
 }

@@ -47,10 +47,10 @@ use std::collections::{BTreeMap, HashMap};
 use base64::Engine as _;
 use chrono::{Duration, NaiveDate, Utc};
 use knotq_model::{
-    daily_queue_displaced_item_id, daily_queue_scheme_id, CalendarProvider, DocumentId, Folder,
-    FolderId, ImageAssetFormat, ImageInline, ImportedCalendarSource, Item, ItemId, ItemMarker,
-    NodeRef, OperationId, ReplicaId, Scheme, SchemeId, SchemeSource, SyncDocumentKind, Workspace,
-    WorkspaceId,
+    daily_queue_displaced_item_id, daily_queue_placeholder_item_id, daily_queue_scheme_id,
+    CalendarProvider, DocumentId, Folder, FolderId, ImageAssetFormat, ImageInline,
+    ImportedCalendarSource, Item, ItemId, ItemMarker, NodeRef, OperationId, ReplicaId, Scheme,
+    SchemeId, SchemeSource, SyncDocumentKind, Workspace, WorkspaceId,
 };
 use knotq_sync::{
     batch_pull_and_apply, batch_push_pending, queue_workspace_bootstrap_updates, BatchPushRequest,

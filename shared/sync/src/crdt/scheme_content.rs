@@ -42,6 +42,10 @@ pub struct YrsSchemeDocument {
     /// walking the whole document.
     capture: UpdateCapture,
     shadow: Mutex<Option<StoredItemsShadow>>,
+    /// Presence metadata is added by ordinary local writes. Deterministic
+    /// population scratch documents keep it disabled so their historical
+    /// byte-identical encoding remains unchanged.
+    presence_enabled: bool,
     /// Cleared by an observer on *any* update to the document — a remote apply, a
     /// re-seed, our own writes. `replace_scheme` re-arms it only after it has
     /// refreshed the shadow, so the shadow can never describe a document that
@@ -81,6 +85,7 @@ impl YrsSchemeDocument {
             encode_cache,
             capture,
             shadow: Mutex::new(None),
+            presence_enabled: true,
             shadow_valid,
         }
     }
@@ -97,6 +102,7 @@ impl YrsSchemeDocument {
             encode_cache,
             capture,
             shadow: Mutex::new(None),
+            presence_enabled: true,
             shadow_valid,
         }
     }
@@ -286,13 +292,24 @@ impl YrsSchemeDocument {
         // function of the content.
         let key = serde_json::to_vec(&serde_json::to_value(content)?)?;
         let client_id = super::encoding::stable_scheme_population_client_id(self.id, &key);
-        let scratch = Self::new_with_client_id(self.id, client_id);
+        let mut scratch = Self::new_with_client_id(self.id, client_id);
+        scratch.presence_enabled = false;
         scratch.replace_scheme_inner(content)?;
         let population = scratch.encode_state_v1();
         self.doc
             .transact_mut()
             .apply_update(Update::decode_v1(&population)?)?;
         Ok(())
+    }
+
+    fn presence_epoch(&self) -> String {
+        let state = self.state_vector_v1();
+        let digest = Sha256::digest(&state);
+        let digest = digest
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>();
+        format!("{:016x}-{digest}", self.doc.client_id().get())
     }
 
     fn replace_scheme_inner(&self, scheme: &Scheme) -> anyhow::Result<HashSet<String>> {
@@ -346,6 +363,7 @@ impl YrsSchemeDocument {
         // before the real transaction on every keystroke; the maps have existed
         // since the document was constructed (`init_scheme_maps`), so this is a
         // lookup that was paying for a write.
+        let presence_epoch = self.presence_epoch();
         let mut txn = self.doc.transact_mut();
         let metadata = txn.get_or_insert_map("scheme_file");
         let items_by_id = txn.get_or_insert_map("items_by_id");
@@ -496,7 +514,6 @@ impl YrsSchemeDocument {
             }
             computed
         };
-
         // Sweeping stale entries means walking every key the document holds and
         // parsing it. When the shadow was reusable that is pure repetition: the
         // shadow is invalidated by ANY update to the document, so nothing has
@@ -536,13 +553,7 @@ impl YrsSchemeDocument {
             // scheme the user has deleted lines from paid that for each of them,
             // permanently. It also reported the item as touched, which is wrong:
             // this pass changed nothing about it.
-            if has_schema
-                && item_map
-                    .get_as::<_, Option<bool>>(&txn, "deleted")
-                    .ok()
-                    .flatten()
-                    .unwrap_or(false)
-            {
+            if has_schema && read_stored_item(&item_map, &txn).deleted {
                 continue;
             }
             touched.insert(key.clone());
@@ -551,7 +562,7 @@ impl YrsSchemeDocument {
                 // concurrent with another replica's edit detaches the map and loses
                 // fields ("item schema missing"), wedging the scheme; a tombstone keeps a
                 // valid map that merges with concurrent edits. Materialization skips it.
-                item_map.insert(&mut txn, "deleted", true);
+                tombstone_item(&item_map, &mut txn)?;
             } else {
                 // Already a partial/clobbered entry (schema missing, e.g. from a legacy
                 // hard-remove race). Hard-remove it: tombstoning would leave it
@@ -646,8 +657,20 @@ impl YrsSchemeDocument {
                     let item_map =
                         items_by_id.insert(&mut txn, item_id.clone(), MapPrelim::default());
                     write_new_item(&item_map, &mut txn, item, position, &next_snapshot)?;
+                    if self.presence_enabled {
+                        ensure_item_presence(&item_map, &mut txn, id, None)?;
+                    }
                 }
                 Some(item_map) => {
+                    if self.presence_enabled {
+                        ensure_item_presence(
+                            &item_map,
+                            &mut txn,
+                            id,
+                            prev.is_some_and(|stored| stored.deleted)
+                                .then_some(presence_epoch.as_str()),
+                        )?;
+                    }
                     match item_text_ref(&item_map, &txn) {
                         Some(text_ref) => {
                             let current = match prev {
@@ -812,22 +835,18 @@ impl YrsSchemeDocument {
     pub(crate) fn scheme_items(&self) -> anyhow::Result<Vec<Item>> {
         Ok(self
             .sorted_entries()?
+            // Skip partial entries (empty snapshot) left by a pre-tombstone concurrent
+            // remove/edit clobber, so materialization stays consistent across replicas.
             .into_iter()
-            // Skip tombstoned items, and any partial entry (empty snapshot) left by a
-            // pre-tombstone concurrent remove/edit clobber, so materialization stays
-            // consistent across replicas instead of failing the whole scheme.
-            .filter(|(_, entry)| !entry.deleted && !entry.snapshot_json.is_empty())
+            .filter(|(_, entry)| !entry.snapshot_json.is_empty())
             .filter_map(|(_, entry)| {
                 // Non-content fields come merged per field (`StoredItem::meta`); the
                 // ordered inline stream comes from the Text CRDT, which is the source
                 // of truth. Tolerate a partial: a snapshot that fails to parse is
-                // skipped rather than failing the whole scheme load. Every replica
-                // holds the same merged CRDT, so each skips the same item and they
-                // converge — matching the server's tolerant validation (see
-                // validate_scheme_document).
+                // skipped rather than failing the whole scheme load.
                 let mut item = entry.meta?;
                 item.content = ItemContent::from_inlines(entry.content);
-                Some(item)
+                (!entry.deleted).then_some(item)
             })
             .collect())
     }
@@ -890,6 +909,59 @@ pub(crate) fn item_text_ref(item_map: &MapRef, txn: &impl ReadTxn) -> Option<Tex
         Some(Out::YText(text)) => Some(text),
         _ => None,
     }
+}
+
+fn presence_map_ref(item_map: &MapRef, txn: &impl ReadTxn) -> Option<MapRef> {
+    match item_map.get(txn, "presence") {
+        Some(Out::YMap(map)) => Some(map),
+        _ => None,
+    }
+}
+
+fn active_presence_adds(presence: &MapRef, txn: &impl ReadTxn) -> Vec<String> {
+    let removed: HashSet<String> = presence
+        .keys(txn)
+        .filter_map(|key| key.strip_prefix("r:").map(str::to_string))
+        .collect();
+    presence
+        .keys(txn)
+        .filter_map(|key| key.strip_prefix("a:").map(str::to_string))
+        .filter(|tag| !removed.contains(tag))
+        .collect()
+}
+
+fn ensure_item_presence(
+    item_map: &MapRef,
+    txn: &mut TransactionMut,
+    item_id: ItemId,
+    resurrection_epoch: Option<&str>,
+) -> anyhow::Result<()> {
+    let presence = presence_map_ref(item_map, txn)
+        .unwrap_or_else(|| item_map.insert(txn, "presence", MapPrelim::default()));
+    if active_presence_adds(&presence, txn).is_empty() {
+        let tag = resurrection_epoch
+            .map(|epoch| format!("resurrect:{epoch}:{item_id}"))
+            .unwrap_or_else(|| format!("seed:{item_id}"));
+        add_presence_tag_to_map(&presence, txn, tag);
+    }
+    Ok(())
+}
+
+fn add_presence_tag_to_map(presence: &MapRef, txn: &mut TransactionMut, tag: String) {
+    presence.insert(txn, format!("a:{tag}"), true);
+}
+
+fn tombstone_item(item_map: &MapRef, txn: &mut TransactionMut) -> anyhow::Result<()> {
+    if let Some(presence) = presence_map_ref(item_map, txn) {
+        for tag in active_presence_adds(&presence, txn) {
+            presence.insert(txn, format!("r:{tag}"), true);
+        }
+    }
+    // Retain the scalar for older clients. New clients derive presence from the
+    // observed add/remove tags, so an older concurrent `deleted=true` cannot
+    // erase a newer resurrection.
+    item_map.insert(txn, "deleted", true);
+    Ok(())
 }
 
 /// Build the deterministic creation sub-update for a new item: its skeleton (see
@@ -970,6 +1042,15 @@ pub(crate) fn read_stored_item(item_map: &MapRef, txn: &impl ReadTxn) -> StoredI
     let snapshot_json = str_field("snapshot_json");
     let meta = materialize_item_meta(item_map, txn, &snapshot_json);
     let meta_json = meta.as_ref().and_then(|meta| item_snapshot_json(meta).ok());
+    let deleted = presence_map_ref(item_map, txn)
+        .map(|presence| active_presence_adds(&presence, txn).is_empty())
+        .unwrap_or_else(|| {
+            item_map
+                .get_as::<_, Option<bool>>(txn, "deleted")
+                .ok()
+                .flatten()
+                .unwrap_or(false)
+        });
     StoredItem {
         position: str_field("position"),
         snapshot_json,
@@ -993,11 +1074,7 @@ pub(crate) fn read_stored_item(item_map: &MapRef, txn: &impl ReadTxn) -> StoredI
         has_text,
         content: reconcile_content_shadow(content, content_shadow.as_deref()),
         content_shadow,
-        deleted: item_map
-            .get_as::<_, Option<bool>>(txn, "deleted")
-            .ok()
-            .flatten()
-            .unwrap_or(false),
+        deleted,
     }
 }
 
@@ -1215,9 +1292,7 @@ pub(crate) fn write_item_fields(
     let prev_meta = previous.and_then(|stored| stored.meta.as_ref());
     let changed = |index: usize, same: &dyn Fn(&Item) -> bool| {
         prev_meta.is_none_or(|meta| {
-            !previous
-                .is_some_and(|stored| stored.metadata_field_present(index))
-                || !same(meta)
+            !previous.is_some_and(|stored| stored.metadata_field_present(index)) || !same(meta)
         })
     };
     // `schema` and `id` are immutable identity fields. They are written once at

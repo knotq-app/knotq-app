@@ -251,6 +251,66 @@ impl YrsJsonDocument {
         }))
     }
 
+    /// Write `content` into this unseeded document as one deterministic update:
+    /// built in a scratch document whose clientID is a hash of the document id
+    /// and the exact content (`stable_workspace_population_client_id`), then
+    /// applied here. Mirrors `YrsSchemeDocument::populate` — see that method's
+    /// doc comment for why: every replica populating this document from the
+    /// SAME content produces byte-identical operations, which Yjs integrates
+    /// once instead of treating every node as a genuinely concurrent write
+    /// decided by clientID alone.
+    pub(crate) fn populate(&self, content: &WorkspaceDocumentSnapshot) -> anyhow::Result<()> {
+        let key = serde_json::to_vec(content)?;
+        let client_id = super::encoding::stable_workspace_population_client_id(self.id, &key);
+        let scratch = Self::new_with_client_id(self.id, self.kind, client_id);
+        scratch.replace_snapshot(content)?;
+        let population = scratch.encode_state_v1();
+        self.doc
+            .transact_mut()
+            .apply_update(Update::decode_v1(&population)?)?;
+        Ok(())
+    }
+
+    /// Re-key an already-populated document onto a canonical identity, keeping
+    /// any edit made on top of its (pre-canonicalization) population.
+    ///
+    /// A device populates its workspace-index document deterministically from
+    /// whatever workspace content it holds at the time (see [`Self::populate`]).
+    /// Before this device has adopted the account's canonical identity, that
+    /// content still carries this device's own per-install-random `sync.id` —
+    /// baked into the population's content hash — so it can never match
+    /// another device's population of the SAME logical starter content under
+    /// the account's real identity. A plain re-key
+    /// ([`super::WorkspaceCrdtDocuments::reidentify_workspace_document`]) only
+    /// rebinds the document's external id; the wrong-hashed population inside
+    /// it is unchanged, so it still won't deduplicate.
+    ///
+    /// Fix: build a fresh document, populate it from `canonical_base` (the
+    /// same content this document was populated from, canonicalized), then
+    /// write `edited_canonical` (this document's CURRENT content —
+    /// canonicalized the same way, edits included) into it as an ordinary
+    /// `replace_snapshot` — exactly how the original edit was written the
+    /// first time. That makes the edit a fresh, direct write on top of the
+    /// canonical population, causally following it — not a replayed byte
+    /// diff whose origin pointers reference structs the canonical population
+    /// never had, which the previous version of this method got wrong (it
+    /// left the edit competing with another replica's identical population
+    /// write as if genuinely concurrent, decided by clientID and liable to
+    /// lose). The population portion is unaffected either way — it collapses
+    /// into a no-op against a matching population, by the same mechanism
+    /// [`Self::populate`] relies on.
+    pub(crate) fn repopulate_canonically(
+        &self,
+        canonical_base: &WorkspaceDocumentSnapshot,
+        edited_canonical: &WorkspaceDocumentSnapshot,
+        new_id: DocumentId,
+    ) -> anyhow::Result<Self> {
+        let fresh = Self::new(new_id, self.kind);
+        fresh.populate(canonical_base)?;
+        fresh.replace_snapshot(edited_canonical)?;
+        Ok(fresh)
+    }
+
     pub(crate) fn replace_snapshot(
         &self,
         snapshot: &WorkspaceDocumentSnapshot,
@@ -278,6 +338,34 @@ impl YrsJsonDocument {
         let stored_deleted_folder_positions = string_map_entries(&recently_deleted_folders, &txn)
             .into_iter()
             .collect::<HashMap<_, _>>();
+        let permanently_deleted_scheme_ids = snapshot
+            .deleted_scheme_origins
+            .iter()
+            .map(|entry| entry.scheme)
+            .filter(|id| {
+                snapshot
+                    .deleted_scheme_origins
+                    .iter()
+                    .find(|entry| entry.scheme == *id)
+                    .is_some_and(|entry| {
+                        entry.origin.position == PERMANENT_DELETE_TOMBSTONE_POSITION
+                    })
+            })
+            .collect::<HashSet<_>>();
+        let permanently_deleted_folder_ids = snapshot
+            .deleted_folder_origins
+            .iter()
+            .map(|entry| entry.folder)
+            .filter(|id| {
+                snapshot
+                    .deleted_folder_origins
+                    .iter()
+                    .find(|entry| entry.folder == *id)
+                    .is_some_and(|entry| {
+                        entry.origin.position == PERMANENT_DELETE_TOMBSTONE_POSITION
+                    })
+            })
+            .collect::<HashSet<_>>();
 
         // Derive each node's parent and sibling order from the authoritative
         // folder.children lists, then assign fractional positions per parent group
@@ -324,6 +412,9 @@ impl YrsJsonDocument {
 
         let mut node_entries: Vec<(String, String)> = Vec::new();
         for folder in &snapshot.folders {
+            if permanently_deleted_folder_ids.contains(&folder.id) {
+                continue;
+            }
             let id = folder.id.to_string();
             ensure_position(&id, &mut positions);
             let payload = serde_json::to_string(&FolderPayload {
@@ -343,6 +434,9 @@ impl YrsJsonDocument {
             ));
         }
         for scheme in &snapshot.schemes {
+            if permanently_deleted_scheme_ids.contains(&scheme.id) {
+                continue;
+            }
             let id = scheme.id.to_string();
             ensure_position(&id, &mut positions);
             let payload = serde_json::to_string(scheme)?;
@@ -363,6 +457,11 @@ impl YrsJsonDocument {
             .recently_deleted
             .iter()
             .map(|id| id.to_string())
+            .filter(|id| {
+                id.parse::<SchemeId>()
+                    .map(|id| !permanently_deleted_scheme_ids.contains(&id))
+                    .unwrap_or(true)
+            })
             .collect::<Vec<_>>();
         let mut deleted_positions: HashMap<String, String> = HashMap::new();
         assign_fractional_positions(
@@ -381,9 +480,23 @@ impl YrsJsonDocument {
             .collect::<Vec<_>>();
 
         let scheme_sync_entries =
-            json_map_entries(&snapshot.scheme_sync, |e| (e.scheme.to_string(), &e.sync))?;
+            json_map_entries(&snapshot.scheme_sync, |e| (e.scheme.to_string(), &e.sync))?
+                .into_iter()
+                .filter(|(id, _)| {
+                    id.parse::<SchemeId>()
+                        .map(|id| !permanently_deleted_scheme_ids.contains(&id))
+                        .unwrap_or(true)
+                })
+                .collect::<Vec<_>>();
         let folder_sync_entries =
-            json_map_entries(&snapshot.folder_sync, |e| (e.folder.to_string(), &e.sync))?;
+            json_map_entries(&snapshot.folder_sync, |e| (e.folder.to_string(), &e.sync))?
+                .into_iter()
+                .filter(|(id, _)| {
+                    id.parse::<FolderId>()
+                        .map(|id| !permanently_deleted_folder_ids.contains(&id))
+                        .unwrap_or(true)
+                })
+                .collect::<Vec<_>>();
         let mut daily_queue_entries = Vec::with_capacity(snapshot.daily_queue.len());
         for entry in &snapshot.daily_queue {
             daily_queue_entries.push((entry.date.to_string(), entry.scheme.to_string()));
@@ -397,6 +510,11 @@ impl YrsJsonDocument {
             .recently_deleted_folders
             .iter()
             .map(|id| id.to_string())
+            .filter(|id| {
+                id.parse::<FolderId>()
+                    .map(|id| !permanently_deleted_folder_ids.contains(&id))
+                    .unwrap_or(true)
+            })
             .collect::<Vec<_>>();
         let mut deleted_folder_positions: HashMap<String, String> = HashMap::new();
         assign_fractional_positions(
@@ -453,6 +571,7 @@ impl YrsJsonDocument {
             .scheme_sync
             .iter()
             .filter(|entry| entry.sync.kind == SyncDocumentKind::Scheme)
+            .filter(|entry| !permanently_deleted_scheme_ids.contains(&entry.scheme))
             .map(|entry| entry.scheme.to_string())
             .collect();
         for id in retained_scheme_ids {
@@ -475,6 +594,9 @@ impl YrsJsonDocument {
         let mut node_field_entries: Vec<(String, String)> = Vec::new();
         let mut rebuilt_nodes: HashSet<String> = HashSet::new();
         for folder in &snapshot.folders {
+            if permanently_deleted_folder_ids.contains(&folder.id) {
+                continue;
+            }
             let id = folder.id.to_string();
             node_field_entries.push((node_field_key(&id, "name"), folder.name.clone()));
             node_field_entries.push((
@@ -496,6 +618,9 @@ impl YrsJsonDocument {
             rebuilt_nodes.insert(id);
         }
         for scheme in &snapshot.schemes {
+            if permanently_deleted_scheme_ids.contains(&scheme.id) {
+                continue;
+            }
             let id = scheme.id.to_string();
             node_field_entries.push((node_field_key(&id, "name"), scheme.name.clone()));
             node_field_entries.push((
@@ -604,6 +729,8 @@ impl YrsJsonDocument {
         let raw_recently_deleted = string_map_entries(&recently_deleted_map, &txn);
         let raw_daily_queue = string_map_entries(&daily_queue_map, &txn);
         let raw_recently_deleted_folders = string_map_entries(&recently_deleted_folders_map, &txn);
+        let raw_deleted_scheme_origins = string_map_entries(&deleted_origins_map, &txn);
+        let raw_deleted_folder_origins = string_map_entries(&deleted_folder_origins_map, &txn);
         let deleted_scheme_ids = raw_recently_deleted
             .iter()
             .map(|(id, _)| id.clone())
@@ -618,6 +745,27 @@ impl YrsJsonDocument {
         let archived_top_folder_ids = raw_recently_deleted_folders
             .iter()
             .map(|(id, _)| id.clone())
+            .collect::<HashSet<_>>();
+        // An origin without a matching archive entry is the durable marker for
+        // a permanent delete. Ignore the old node even if a stale replica
+        // reintroduces it into the additive CRDT map.
+        let permanently_deleted_scheme_ids = raw_deleted_scheme_origins
+            .iter()
+            .filter_map(|(id, raw)| {
+                serde_json::from_str::<DeletedSchemeOrigin>(raw)
+                    .ok()
+                    .filter(|origin| origin.position == PERMANENT_DELETE_TOMBSTONE_POSITION)
+                    .map(|_| id.clone())
+            })
+            .collect::<HashSet<_>>();
+        let permanently_deleted_folder_ids = raw_deleted_folder_origins
+            .iter()
+            .filter_map(|(id, raw)| {
+                serde_json::from_str::<DeletedFolderOrigin>(raw)
+                    .ok()
+                    .filter(|origin| origin.position == PERMANENT_DELETE_TOMBSTONE_POSITION)
+                    .map(|_| id.clone())
+            })
             .collect::<HashSet<_>>();
 
         let read_meta = |key: &str| -> anyhow::Result<String> {
@@ -644,6 +792,11 @@ impl YrsJsonDocument {
         let mut parsed: HashMap<String, ParsedNode> = HashMap::new();
         let mut folder_ids: HashSet<String> = HashSet::new();
         for (key, value) in string_map_entries(&nodes, &txn) {
+            if permanently_deleted_scheme_ids.contains(&key)
+                || permanently_deleted_folder_ids.contains(&key)
+            {
+                continue;
+            }
             let entry: WorkspaceNodeEntry =
                 serde_json::from_str(&value).with_context(|| format!("node invalid: {key}"))?;
             if entry.kind == NODE_KIND_FOLDER {
@@ -921,6 +1074,7 @@ impl YrsJsonDocument {
 
         let mut deleted = raw_recently_deleted
             .into_iter()
+            .filter(|(id, _)| !permanently_deleted_scheme_ids.contains(id))
             .map(|(id, position)| {
                 let scheme = id
                     .parse::<SchemeId>()
@@ -962,6 +1116,7 @@ impl YrsJsonDocument {
 
         let mut scheme_sync = string_map_entries(&scheme_sync_map, &txn)
             .into_iter()
+            .filter(|(scheme, _)| !permanently_deleted_scheme_ids.contains(scheme))
             .map(|(scheme, sync)| {
                 Ok::<_, anyhow::Error>(SchemeSyncEntry {
                     scheme: scheme
@@ -976,6 +1131,7 @@ impl YrsJsonDocument {
 
         let mut folder_sync = string_map_entries(&folder_sync_map, &txn)
             .into_iter()
+            .filter(|(folder, _)| !permanently_deleted_folder_ids.contains(folder))
             .map(|(folder, sync)| {
                 Ok::<_, anyhow::Error>(FolderSyncEntry {
                     folder: folder
@@ -990,6 +1146,7 @@ impl YrsJsonDocument {
 
         let mut deleted_folders = raw_recently_deleted_folders
             .into_iter()
+            .filter(|(id, _)| !permanently_deleted_folder_ids.contains(id))
             .map(|(id, position)| {
                 let folder = id
                     .parse::<FolderId>()
@@ -1187,6 +1344,19 @@ pub(crate) fn workspace_document_snapshot(workspace: &Workspace) -> WorkspaceDoc
     let mut scheme_sync = workspace
         .scheme_sync
         .iter()
+        // An origin without a live/archive scheme is a permanent-delete
+        // tombstone. Do not keep its content-document binding alive in the
+        // workspace index, or the stale node can be retained by the lazy-scheme
+        // preservation path below.
+        .filter(|(scheme, _)| {
+            !workspace
+                .deleted_scheme_origins
+                .get(scheme)
+                .is_some_and(|origin| origin.position == PERMANENT_DELETE_TOMBSTONE_POSITION)
+                && (workspace.schemes.contains_key(scheme)
+                    || workspace.recently_deleted.contains(scheme)
+                    || !workspace.deleted_scheme_origins.contains_key(scheme))
+        })
         .map(|(scheme, sync)| SchemeSyncEntry {
             scheme: *scheme,
             sync: sync.clone(),
@@ -1197,6 +1367,15 @@ pub(crate) fn workspace_document_snapshot(workspace: &Workspace) -> WorkspaceDoc
     let mut folder_sync = workspace
         .folder_sync
         .iter()
+        .filter(|(folder, _)| {
+            !workspace
+                .deleted_folder_origins
+                .get(folder)
+                .is_some_and(|origin| origin.position == PERMANENT_DELETE_TOMBSTONE_POSITION)
+                && (workspace.folders.contains_key(folder)
+                    || workspace.recently_deleted_folders.contains(folder)
+                    || !workspace.deleted_folder_origins.contains_key(folder))
+        })
         .map(|(folder, sync)| FolderSyncEntry {
             folder: *folder,
             sync: sync.clone(),
@@ -1318,6 +1497,49 @@ mod tests {
             .color_index
     }
 
+    #[test]
+    fn independently_edited_index_fields_merge_after_shared_population() {
+        let (workspace, scheme_id) = one_scheme_workspace(0);
+        let base = workspace_document_snapshot(&workspace);
+        let mut renamed = workspace.clone();
+        renamed.schemes.get_mut(&scheme_id).unwrap().name = "Renamed".to_string();
+        let mut recoloured = workspace;
+        recoloured.schemes.get_mut(&scheme_id).unwrap().color_index = 7;
+
+        let left = YrsJsonDocument::new(base.sync.id, SyncDocumentKind::PersonalWorkspace);
+        let right = YrsJsonDocument::new(base.sync.id, SyncDocumentKind::PersonalWorkspace);
+        left.populate(&base).expect("left population");
+        right.populate(&base).expect("right population");
+        left.replace_snapshot(&workspace_document_snapshot(&renamed))
+            .expect("left rename");
+        right
+            .replace_snapshot(&workspace_document_snapshot(&recoloured))
+            .expect("right recolour");
+
+        left.apply_update_v1(&right.encode_state_v1())
+            .expect("merge right into left");
+        right
+            .apply_update_v1(&left.encode_state_v1())
+            .expect("merge left into right");
+
+        let left = left.snapshot().expect("left snapshot");
+        let right = right.snapshot().expect("right snapshot");
+        let left_scheme = left
+            .schemes
+            .iter()
+            .find(|entry| entry.id == scheme_id)
+            .unwrap();
+        let right_scheme = right
+            .schemes
+            .iter()
+            .find(|entry| entry.id == scheme_id)
+            .unwrap();
+        assert_eq!(left_scheme.name, "Renamed");
+        assert_eq!(right_scheme.name, "Renamed");
+        assert_eq!(left_scheme.color_index, 7);
+        assert_eq!(right_scheme.color_index, 7);
+    }
+
     fn indexed_workspace_with_folder() -> (YrsJsonDocument, SchemeId, FolderId) {
         let mut workspace = Workspace::new();
         let scheme = Scheme::new("Plans", 3);
@@ -1345,6 +1567,190 @@ mod tests {
         doc.replace_snapshot(&workspace_document_snapshot(&workspace))
             .expect("first index write");
         (doc, scheme_id, folder_id)
+    }
+
+    #[test]
+    fn archived_folder_round_trips_through_incremental_index_update() {
+        let mut workspace = Workspace::new();
+        let folder_id = FolderId::new();
+        workspace.folders.insert(
+            folder_id,
+            Folder {
+                id: folder_id,
+                name: "Archive me".to_string(),
+                parent: Some(workspace.root),
+                children: Vec::new(),
+                expanded: true,
+            },
+        );
+        workspace
+            .folders
+            .get_mut(&workspace.root)
+            .unwrap()
+            .children
+            .push(NodeRef::Folder(folder_id));
+        workspace.ensure_sync_metadata();
+        let doc = YrsJsonDocument::new(workspace.sync.id, SyncDocumentKind::PersonalWorkspace);
+        doc.replace_snapshot(&workspace_document_snapshot(&workspace))
+            .expect("initial index write");
+        workspace
+            .folders
+            .get_mut(&workspace.root)
+            .unwrap()
+            .children
+            .clear();
+        workspace.mark_folder_deleted_from(folder_id, workspace.root, 0);
+        doc.replace_snapshot(&workspace_document_snapshot(&workspace))
+            .expect("archive index write");
+        assert!(doc
+            .snapshot()
+            .expect("materialize archive")
+            .recently_deleted_folders
+            .contains(&folder_id));
+    }
+
+    fn one_scheme_workspace(colour: u8) -> (Workspace, SchemeId) {
+        let mut workspace = Workspace::new();
+        let scheme = Scheme::new("Plans", colour);
+        let scheme_id = scheme.id;
+        workspace.schemes.insert(scheme_id, scheme);
+        workspace
+            .folders
+            .get_mut(&workspace.root)
+            .unwrap()
+            .children
+            .push(NodeRef::Scheme(scheme_id));
+        workspace.ensure_sync_metadata();
+        (workspace, scheme_id)
+    }
+
+    /// FIRST-SYNC IDENTITY RACE, part 1: `populate` must be a pure function of
+    /// content, not of which device (or how many prior writes) called it.
+    /// Without this, two devices independently populating the workspace-index
+    /// document from the SAME account content author it under two different,
+    /// effectively-random clientIDs, and Yjs resolves every entry as a
+    /// genuinely concurrent write decided by clientID alone -- silently
+    /// discarding one side's, even when nothing was actually edited.
+    #[test]
+    fn two_independent_populations_of_the_same_content_are_byte_identical() {
+        let (workspace, _scheme_id) = one_scheme_workspace(3);
+        let snapshot = workspace_document_snapshot(&workspace);
+
+        let device_a = YrsJsonDocument::new(workspace.sync.id, SyncDocumentKind::PersonalWorkspace);
+        device_a.populate(&snapshot).expect("device a populate");
+        let device_b = YrsJsonDocument::new(workspace.sync.id, SyncDocumentKind::PersonalWorkspace);
+        device_b.populate(&snapshot).expect("device b populate");
+
+        assert_eq!(
+            device_a.encode_state_v1(),
+            device_b.encode_state_v1(),
+            "two independent populations of identical content must be byte-identical"
+        );
+    }
+
+    /// FIRST-SYNC IDENTITY RACE, part 2: the actual bug
+    /// (`an_edit_made_while_a_sync_is_in_flight_is_pushed` in the desktop
+    /// production fuzzer). Device A already populated the account's index from
+    /// `base`. Device B populates from the SAME base, then edits (recolours)
+    /// before ever syncing -- modeling "an edit made while the first sync is
+    /// still in flight". B's edit must survive merging into A.
+    #[test]
+    fn an_edit_made_while_populating_from_a_shared_base_survives_merge() {
+        let (base, scheme_id) = one_scheme_workspace(3);
+        let base_snapshot = workspace_document_snapshot(&base);
+
+        let device_a = YrsJsonDocument::new(base.sync.id, SyncDocumentKind::PersonalWorkspace);
+        device_a
+            .populate(&base_snapshot)
+            .expect("device a populate");
+
+        let device_b = YrsJsonDocument::new(base.sync.id, SyncDocumentKind::PersonalWorkspace);
+        device_b
+            .populate(&base_snapshot)
+            .expect("device b populate");
+        let mut edited = base.clone();
+        edited.schemes.get_mut(&scheme_id).unwrap().color_index = 7;
+        device_b
+            .replace_snapshot(&workspace_document_snapshot(&edited))
+            .expect("device b edit");
+
+        // Merge B's state into A, as if B's edit had reached the account.
+        device_a
+            .apply_update_v1(&device_b.encode_state_v1())
+            .expect("merge b into a");
+
+        assert_eq!(
+            colour_of(&device_a, scheme_id),
+            7,
+            "an edit made while populating from a shared base must survive the merge"
+        );
+    }
+
+    /// FIRST-SYNC IDENTITY RACE, part 3: the PRECISE bug
+    /// (`an_edit_made_while_a_sync_is_in_flight_is_pushed`) — unlike part 2
+    /// above, device A and device B populate under DIFFERENT identities (each
+    /// device's own per-install-random one), exactly as real installs do
+    /// before either has adopted the account's canonical id. A plain re-key
+    /// (`reidentify_workspace_document`) only rebinds the document; it cannot
+    /// fix this, because the wrong-hashed population is still inside. Only
+    /// `repopulate_canonically` — recomputing the population under the shared,
+    /// canonical identity while preserving the edit made on top of the old
+    /// one — can make the two sides' STARTER CONTENT actually deduplicate.
+    #[test]
+    fn devices_that_populated_under_different_pre_canonical_identities_still_converge() {
+        let (base, scheme_id) = one_scheme_workspace(3);
+        let base_snapshot = workspace_document_snapshot(&base);
+
+        // Device A: already established the account under its OWN identity
+        // (the common case — the first device to ever sync becomes canonical).
+        let device_a = YrsJsonDocument::new(base.sync.id, SyncDocumentKind::PersonalWorkspace);
+        device_a
+            .populate(&base_snapshot)
+            .expect("device a populate");
+
+        // Device B: a DIFFERENT install, own random pre-sign-in identity —
+        // populates from the identical logical content, but under a DIFFERENT
+        // document id, so `populate`'s content hash (which embeds the id)
+        // differs even though every other byte of the content is the same.
+        let pre_canonical_id = DocumentId(uuid::Uuid::new_v4());
+        let mut pre_canonical_base = base.clone();
+        pre_canonical_base.sync.id = pre_canonical_id;
+        let pre_canonical_snapshot = workspace_document_snapshot(&pre_canonical_base);
+        let device_b = YrsJsonDocument::new(pre_canonical_id, SyncDocumentKind::PersonalWorkspace);
+        device_b
+            .populate(&pre_canonical_snapshot)
+            .expect("device b populate under its own pre-sign-in identity");
+
+        let mut edited = pre_canonical_base.clone();
+        edited.schemes.get_mut(&scheme_id).unwrap().color_index = 7;
+        device_b
+            .replace_snapshot(&workspace_document_snapshot(&edited))
+            .expect("device b edit (recolour) before its first sync lands");
+
+        // Device B canonicalizes via `repopulate_canonically` instead of a
+        // plain re-key, then merges into device A. `edited_canonical` is the
+        // SAME edit, but canonicalized (sync.id swapped to the account's) —
+        // mirroring what `canonicalize_personal_sync_identity_with_change`
+        // does to the live model workspace before this is called for real.
+        let mut edited_canonical = edited.clone();
+        edited_canonical.sync.id = base.sync.id;
+        let canonicalized = device_b
+            .repopulate_canonically(
+                &base_snapshot,
+                &workspace_document_snapshot(&edited_canonical),
+                base.sync.id,
+            )
+            .expect("repopulate canonically");
+        device_a
+            .apply_update_v1(&canonicalized.encode_state_v1())
+            .expect("merge canonically-repopulated device b into device a");
+
+        assert_eq!(
+            colour_of(&device_a, scheme_id),
+            7,
+            "an edit made while populating under a pre-sign-in identity must \
+             survive canonicalization and merge into the account"
+        );
     }
 
     /// MIXED FLEET: a build predating `node_fields` writes only the whole-node

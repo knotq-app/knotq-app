@@ -1,4 +1,7 @@
-use knotq_model::{FolderId, NodeRef, Scheme, SchemeId, SchemeSource, Workspace};
+use knotq_model::{
+    FolderId, NodeRef, Scheme, SchemeId, SchemeSource, Workspace,
+    PERMANENT_DELETE_TOMBSTONE_POSITION,
+};
 
 use crate::invariants::{is_valid_scheme_parent, validate_position, CommandError};
 use crate::{ChangeSet, Command, CommandReceipt};
@@ -129,6 +132,10 @@ fn restore_deleted_scheme(
         item.enforce_marker_constraints();
     }
     let id = scheme.id;
+    // A permanent delete leaves a durable origin tombstone so stale replicas
+    // cannot resurrect the scheme. Restoring it is the explicit operation that
+    // clears that tombstone again.
+    workspace.deleted_scheme_origins.remove(&id);
     workspace.schemes.insert(id, scheme);
     workspace.mark_scheme_deleted_at(id, position);
     if let Some(origin) = origin {
@@ -276,6 +283,18 @@ fn permanently_delete_scheme(
     let removed = workspace
         .remove_scheme_completely(id)
         .ok_or(CommandError::SchemeMissing(id))?;
+    // `remove_scheme_completely` removes ordinary archive membership, but the
+    // restore origin is retained as a CRDT tombstone for this permanently
+    // destroyed id.
+    if let Some(origin) = origin {
+        workspace.deleted_scheme_origins.insert(
+            id,
+            knotq_model::DeletedSchemeOrigin {
+                position: PERMANENT_DELETE_TOMBSTONE_POSITION,
+                ..origin
+            },
+        );
+    }
     Ok(CommandReceipt {
         inverse: Command::RestoreDeletedScheme {
             position: trash_position,

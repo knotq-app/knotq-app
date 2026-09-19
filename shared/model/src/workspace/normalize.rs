@@ -1,6 +1,6 @@
 use std::collections::HashSet;
 
-use crate::{FolderId, SchemeId};
+use crate::{FolderId, SchemeId, PERMANENT_DELETE_TOMBSTONE_POSITION};
 
 use super::{NodeRef, Workspace};
 
@@ -52,7 +52,15 @@ impl Workspace {
             self.recently_deleted_folders.iter().copied().collect();
         let folder_origins_before = self.deleted_folder_origins.len();
         self.deleted_folder_origins
-            .retain(|id, _| archived_folder_ids.contains(id));
+            // An origin for an absent node is a permanent-delete tombstone. It
+            // must survive normalization even though the corresponding archive
+            // entry is gone: a stale replica can otherwise merge the old node
+            // back into the workspace and make it live again.
+            .retain(|id, origin| {
+                archived_folder_ids.contains(id)
+                    || !self.folders.contains_key(id)
+                    || origin.position == PERMANENT_DELETE_TOMBSTONE_POSITION
+            });
         if self.deleted_folder_origins.len() != folder_origins_before {
             changed = true;
         }
@@ -165,7 +173,14 @@ impl Workspace {
         let deleted_ids: HashSet<SchemeId> = self.recently_deleted.iter().copied().collect();
         let origins_before = self.deleted_scheme_origins.len();
         self.deleted_scheme_origins
-            .retain(|id, _| deleted_ids.contains(id));
+            // See the folder-origin retention above. A missing scheme with an
+            // origin is a durable permanent-delete tombstone, not an orphaned
+            // bit of restore metadata.
+            .retain(|id, origin| {
+                deleted_ids.contains(id)
+                    || !self.schemes.contains_key(id)
+                    || origin.position == PERMANENT_DELETE_TOMBSTONE_POSITION
+            });
         if self.deleted_scheme_origins.len() != origins_before {
             changed = true;
         }

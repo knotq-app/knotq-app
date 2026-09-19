@@ -1,7 +1,7 @@
 use chrono::NaiveDate;
 use knotq_model::{
-    daily_queue_scheme_id, daily_queue_scheme_name, Item, Scheme, Workspace,
-    DAILY_QUEUE_COLOR_INDEX,
+    daily_queue_placeholder_item_id, daily_queue_scheme_id, daily_queue_scheme_name, Item, Scheme,
+    Workspace, DAILY_QUEUE_COLOR_INDEX,
 };
 
 use crate::invariants::CommandError;
@@ -31,7 +31,9 @@ pub(crate) fn ensure_daily_queue(
         scheme
     });
     if scheme.items.is_empty() {
-        scheme.items.push(Item::new(""));
+        let mut placeholder = Item::new("");
+        placeholder.id = daily_queue_placeholder_item_id(date);
+        scheme.items.push(placeholder);
     }
     Ok(CommandReceipt {
         inverse: Command::Batch(Vec::new()),

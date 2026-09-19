@@ -58,12 +58,48 @@ pub fn daily_queue_carryover_command(
     // re-created a just-carried row never inserts a second copy — and the shared
     // ids let the CRDT item-skeleton merge collapse two devices' concurrent
     // carries of the same row into one item instead of doubling it.
-    let existing: HashSet<ItemId> = today.items.iter().map(|item| item.id).collect();
+    let placeholder_id = if daily_queue_scheme_is_blank(today) {
+        today.items.first().map(|item| item.id)
+    } else {
+        None
+    };
+    let mut existing: HashSet<ItemId> = today.items.iter().map(|item| item.id).collect();
+    // A carryover leaves a deterministic, date-scoped archive copy on the
+    // source day. That copy is historical scaffolding, not another live task:
+    // when a device later re-runs carryover against the same source day, it
+    // must not carry the archive row forward a second time. The live source id
+    // is still present in today's page, so this check is causal and does not
+    // rely on guessing from user-visible fields (an ordinary undated task can
+    // look exactly like an archived copy).
+    let mut archived_copy_ids: HashSet<ItemId> = today
+        .items
+        .iter()
+        .map(|item| daily_queue_displaced_item_id(item.id, previous_date))
+        .collect();
+    // The live source row and its archive copy can arrive together from a
+    // concurrent carryover. In that case the live row may not have reached
+    // `today` on this replica yet, but the pair is self-describing in the
+    // source document: one row's deterministic displaced id is another row's
+    // id. Preserve the pair's historical half in place.
+    let previous_ids: HashSet<ItemId> = previous.items.iter().map(|item| item.id).collect();
+    archived_copy_ids.extend(previous.items.iter().filter_map(|item| {
+        let displaced = daily_queue_displaced_item_id(item.id, previous_date);
+        previous_ids.contains(&displaced).then_some(displaced)
+    }));
+    // A blank placeholder is scaffolding, not a carried item. Its id may
+    // collide with a real row from the previous day, so let that row reach the
+    // collision-safe replacement path below.
+    if let Some(placeholder_id) = placeholder_id {
+        existing.remove(&placeholder_id);
+    }
 
     let mut commands = Vec::new();
     let mut carried_items = Vec::new();
 
     for (source_position, item) in previous.items.iter().enumerate() {
+        if archived_copy_ids.contains(&item.id) {
+            continue;
+        }
         if daily_queue_item_is_fully_complete_task(item) {
             continue;
         }
@@ -97,32 +133,66 @@ pub fn daily_queue_carryover_command(
     }
 
     // When today is just its blank placeholder row, drop that row so carried items
-    // don't sit under a leading blank. It is DELETED rather than its id reused for
-    // the first carried row, so every carried row keeps its source id.
-    let placeholder_id = if daily_queue_scheme_is_blank(today) {
-        today.items.first().map(|item| item.id)
-    } else {
-        None
-    };
-
-    let mut position = if placeholder_id.is_some() {
-        1
-    } else {
-        today.items.len()
-    };
-    for item in carried_items {
-        commands.push(Command::InsertItem {
-            scheme: today_id,
-            position,
-            item,
-        });
-        position += 1;
-    }
+    // don't sit under a leading blank. If the placeholder happens to have the
+    // same id as a carried row (older daily pages can legitimately have this
+    // fixed placeholder id), replace it in place instead of emitting a
+    // delete+insert pair. The latter would create a tombstone for the very id
+    // the carry-over is trying to keep, and its undo would reintroduce the same
+    // cross-device delete/re-add race.
     if let Some(placeholder_id) = placeholder_id {
-        commands.push(Command::DeleteItem {
-            scheme: today_id,
-            item: placeholder_id,
-        });
+        if let Some(collision) = carried_items
+            .iter()
+            .position(|item| item.id == placeholder_id)
+        {
+            // Insert any rows that precede the colliding row first; the
+            // placeholder shifts right and ReplaceItem locates it by id.
+            for (position, item) in carried_items.iter().take(collision).cloned().enumerate() {
+                commands.push(Command::InsertItem {
+                    scheme: today_id,
+                    position,
+                    item,
+                });
+            }
+            commands.push(Command::ReplaceItem {
+                scheme: today_id,
+                item: carried_items[collision].clone(),
+            });
+            let position = collision + 1;
+            for (offset, item) in carried_items
+                .iter()
+                .skip(collision + 1)
+                .cloned()
+                .enumerate()
+            {
+                commands.push(Command::InsertItem {
+                    scheme: today_id,
+                    position: position + offset,
+                    item,
+                });
+            }
+        } else {
+            commands.push(Command::DeleteItem {
+                scheme: today_id,
+                item: placeholder_id,
+            });
+            for (position, item) in carried_items.into_iter().enumerate() {
+                commands.push(Command::InsertItem {
+                    scheme: today_id,
+                    position,
+                    item,
+                });
+            }
+        }
+    } else {
+        let mut position = today.items.len();
+        for item in carried_items {
+            commands.push(Command::InsertItem {
+                scheme: today_id,
+                position,
+                item,
+            });
+            position += 1;
+        }
     }
 
     (!commands.is_empty()).then_some(Command::Batch(commands))

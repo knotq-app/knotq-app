@@ -68,6 +68,11 @@ pub(super) fn sync_snapshot_in(
         )
     });
     let server_workspace_id = sync_workspace_id(&snapshot.account, workspace.id);
+    // Keep the pre-sign-in content available for the first-join workspace-index
+    // re-root below. Its random local WorkspaceId is part of the deterministic
+    // population input, so merely relabelling the document would leave this
+    // device's starter history incompatible with the account's canonical one.
+    let pre_canonical_workspace = workspace.clone();
     // Capture the workspace document's id before adopting the account's canonical
     // identity, so an account switch can carry its content to the new id below.
     let previous_workspace_document_id = workspace.sync.id;
@@ -76,6 +81,18 @@ pub(super) fn sync_snapshot_in(
     workspace.ensure_sync_metadata();
 
     let mut local_state = load_local_sync_state(path).unwrap_or_default();
+    // A never-synced install is joining this account, not switching away from
+    // another one. Its starter scheme snapshots can contain items the account
+    // already deleted, so reseeding every existing scheme after the pull would
+    // resurrect those items under fresh CRDT identities. The normal bootstrap
+    // below still seeds genuinely new local schemes and queued local edits are
+    // merged normally; exhaustive scheme reseeding is only for a real account
+    // switch, where carrying this device's prior account content is required.
+    let had_prior_sync_identity = local_state.workspace_id.is_some()
+        || local_state
+            .server_url
+            .as_deref()
+            .is_some_and(|url| !url.is_empty());
     // One-time recovery: clear stale pull cursors so this sync re-pulls and
     // re-merges every document, repairing any workspace left diverged by the earlier
     // push-failure desync.
@@ -90,6 +107,12 @@ pub(super) fn sync_snapshot_in(
     for (operation, fields) in snapshot.queued_item_fields {
         local_state.record_queued_item_fields(operation, fields);
     }
+    local_state
+        .recent_item_edits
+        .extend(snapshot.recent_item_edits);
+    local_state
+        .recent_folder_edits
+        .extend(snapshot.recent_folder_edits);
     local_state.prune_queued_item_fields();
 
     let transport = env.transport;
@@ -160,6 +183,36 @@ pub(super) fn sync_snapshot_in(
     };
     let mut crdt_docs =
         WorkspaceCrdtDocuments::from_states(&workspace, snapshot.replica_id, &crdt_states)?;
+    if account_switched && !had_prior_sync_identity {
+        let mut canonical_base = pre_canonical_workspace.clone();
+        canonical_base.canonicalize_personal_sync_identity_with_change(server_workspace_id);
+        canonical_base.ensure_sync_metadata();
+        // The local CRDT was populated before sign-in. Rebuild that population
+        // under the account's canonical identity, then re-express the current
+        // plain workspace as an ordinary edit on top. This preserves offline and
+        // in-flight local edits while making untouched starter content byte-
+        // identical to every other first joiner, so Yjs can deduplicate it.
+        crdt_docs.repopulate_workspace_canonically(
+            &canonical_base,
+            &workspace,
+            workspace.sync.id,
+        )?;
+        let update = crdt_docs
+            .full_snapshot_updates_for_documents(&std::collections::HashSet::from([workspace
+                .sync
+                .id]))
+            .updates
+            .into_iter()
+            .next();
+        if let Some(update) = update {
+            queue_reidentified_workspace_update(
+                &mut local_state,
+                snapshot.replica_id,
+                &workspace,
+                update,
+            );
+        }
+    }
     if let Some(update) = reidentified_workspace {
         queue_reidentified_workspace_update(
             &mut local_state,
@@ -205,7 +258,7 @@ pub(super) fn sync_snapshot_in(
             &mut crdt_docs,
         )?;
     }
-    if account_switched {
+    if account_switched && had_prior_sync_identity {
         // Re-seed only after adopting the destination account's workspace index.
         // Queueing before the pull could retain a source-account-only scheme as an
         // orphan pending document; if the destination already had a tombstoned base
@@ -304,6 +357,10 @@ pub(super) fn sync_snapshot_in(
         }
     }
     local_state.prune_queued_item_fields();
+    // The paired workspace and CRDT state are durable by this point. A
+    // relaunch can therefore no longer need the pre-save plain-workspace base,
+    // even if the network push itself failed and the pending edits remain.
+    local_state.workspace_save_recovery = None;
     save_local_sync_state(path, &local_state)?;
     // The push's own self-heal may have repopulated a schema-less document after
     // the capture above; persist the healed state so this device's future diffs

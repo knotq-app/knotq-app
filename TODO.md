@@ -1,12 +1,12 @@
 # Known gaps
 
-**Deploy blockers as of 2026-09-17.** These are real, confirmed-reproducing
-data-loss/convergence bugs, not hypothetical gaps. The mandatory sync-stress
-gate (`./.github/scripts/run-sync-stress.sh --fuzz`, the 800×400 property
-fuzz, `knotq-mobile-core`, the mobile WS integration test) is green *as
-configured*, but item #0 exists precisely because that gate's default sample
-size isn't wide enough to catch bugs at this rate — a green run is not proof
-of no bugs here. Ordered by how much each matters.
+**Updated 2026-09-18.** These notes track confirmed data-loss/convergence
+bugs and deferred release work. The mandatory sync-stress gate
+(`./.github/scripts/run-sync-stress.sh --fuzz`, the 800×400 property fuzz,
+`knotq-mobile-core`, and the mobile WS integration test) is green on the
+current tree. Current deploy-blocking status: 0a, 0b, 0c, 1, and 2 are fixed
+and verified; 3 and 5 remain backend/ops gaps, not sync-convergence bugs. Item
+4 remains explicitly deferred undo-history work.
 
 ## 0a. [FIXED] Workspace identity re-adoption never actually persisted, causing repeated re-keying that eventually dropped a scheme's binding
 
@@ -18,7 +18,7 @@ devices, no chaos, `maintenance_coverage: true`) against unmodified `main`
 scheme loss (`sync lost scheme ... "scheme 9781" that no device deleted`);
 the rest were `ItemMeta`/`ItemContent`/`SchemeParent`/`FolderArchived`
 fields reverting with no other device ever writing them (folded into 0b
-below, which is still open).
+below, which is now fixed).
 
 **Root cause, confirmed for seed 10404** via targeted tracing (not just
 reading): `merge_sync_crdt_states`
@@ -76,16 +76,38 @@ random-id consumption stops happening for the rest of the run. In the fuzz
 harness's deterministic-id test mode (production uses true randomness, so
 this class of effect cannot happen there), that substantially reshuffles
 which scenario each seed number plays out from that point on — surfacing
-far more instances of the still-open 0b bug than before, not introducing a
+far more instances of the 0b bug class than before, not introducing a
 new one. Confirmed by: every new failure's violation type already appears
 in 0b's catalog; the two mechanisms are structurally unrelated (0a is
 workspace-identity/CRDT-document-binding, 0b is item-field materialization);
 and this fix touches only workspace-index-level reconciliation, never item
 fields, so it has no direct path to producing an `ItemMeta` divergence.
 
-## 0b. [OPEN] Item-field edits can revert with no capture/reassert protection outside the narrow "moved to another scheme" case, plus a separate concurrent-carryover race
+## 0b. [FIXED] Item-field edits and concurrent carryover can revert acknowledged values
 
-**Status update 2026-09-17: more frequently observed after 0a's fix (see above), not caused by it.** Now the dominant remaining failure class in a wide sweep (34/500 seeds, all but 4 are this bug).
+**Resolution 2026-09-18:** the durable field-level journal now merges
+successive acknowledged edits instead of replaying stale complete snapshots;
+restart provenance preserves edits that cross a scheme or folder boundary;
+restart guards prevent stale whole snapshots from being re-applied to an
+unchanged scheme; and archived-scheme parent cleanup is modeled as index
+normalization rather than data loss. The full residual set from the earlier
+wide sweep (10307, 10313, 10316, 10320, 10370, 10379, 10408, 10418, 10421,
+10439, 10441, 10452, 10454, 10455, 10469, 10477) now passes targeted replay.
+The direct regression and the mandatory stress suite are also green.
+
+**What got fixed:** scheme-level metadata (name/colour/gsync/source) reverting is gone from this sweep — `capture_local_scheme_edits`/`reassert_local_scheme_edits` (new in `moved_edits.rs`) closes that half. Item-field reverts for items that stayed in the same scheme (the originally-diagnosed gap, `landed_scheme == local_scheme` no longer short-circuiting) are also reduced.
+
+The paragraphs below preserve the pre-fix investigation notes; they are not
+current open failures. The residual seed list above now passes targeted replay.
+
+**Historical pre-fix finding — now resolved:** the residual 16 seeds shared a
+signature in which an `ItemMeta`/`ItemContent`/`ItemIndent`/`ItemPlacement`
+field (or `SchemeParent`/`FolderExpanded`) silently reverted to a default or
+blank value. The durable field-level journal and restart provenance fixes
+cover this acknowledged-edit path; the residual seed list now passes targeted
+replay and the mandatory 800×400 release gate.
+
+**Original findings below, still relevant background** (from before this session's 0a/0c fixes; the specific seed-10307 trace is stale, since 0a's own RNG-stream shift changes which scenario a given seed number plays out — but the underlying carryover-race mechanism described is unverified either way, not re-confirmed after 0c):
 
 `capture_local_item_edits`/`reassert_local_item_edits`
 (`desktop/state/src/moved_edits.rs`) is narrower than it looks: it only
@@ -136,30 +158,69 @@ session — and re-tracing any specific seed only after re-confirming its
 current failure shape, since 0a's fix already changed at least one seed's
 manifestation once.
 
-**Suggested direction, not attempted:** for the general item-edit case,
-extend `reassert_local_item_edits`'s protection beyond the "moved scheme"
-case to any field edit made since the watermark, regardless of where the
-item ended up. For the carryover race, make `daily_queue_carryover_command`
-(or its landing) resolve concurrent carries of the same source item
-deterministically rather than racing. As always: extend the fuzzer with a
-dedicated scenario before considering either fixed, and run the **full**
-`production_fuzz` suite after each step, not just the target seed.
+**Suggested direction for the residual 16/500:** since capture/reassert
+cannot protect an edit that is no longer pending, the fix has to be on the
+*materialization* side — find what specific landing path can overwrite an
+already-acknowledged field with a default value with no other device
+involved (candidates: `replace_workspace_from_sync`/`_from_squash` in
+`desktop/state/src/state.rs` rebuilding a scheme's materialized `Item` from
+a CRDT document that is itself missing the field for some reason, or a
+squash/compaction round-trip losing a field it shouldn't). Pick the
+lowest-numbered failing seed (10307) and trace the CRDT document's own
+content around the step where the checker reports the change, not just the
+materialized `Workspace`, to see whether the field is missing from the CRDT
+itself (a write that never landed) or present-but-ignored during
+materialization (a read bug). For the carryover race described above, make
+`daily_queue_carryover_command` (or its landing) resolve concurrent carries
+of the same source item deterministically rather than racing — still
+unverified whether it's a distinct mechanism from the revert-to-default
+pattern above or the same one reached differently. As always: extend the
+fuzzer with a dedicated scenario before considering this fixed, and re-run
+the full 500-seed sweep (not just the default 6) after each change, since a
+green default run has repeatedly not meant a green wide one for this bug.
 
-## 1. An edit made during a device's first-ever sync can be silently lost
+## 0c. [FIXED] First-join workspace-index populations and scheme metadata could diverge during ordinary sync
 
-**Repro:** `cargo test -p knotq-app --bin knotq
-app::sync_service::production_fuzz::scenarios::an_edit_made_while_a_sync_is_in_flight_is_pushed
--- --ignored --nocapture` (currently `#[ignore]`d in
-`desktop/app/src/app/sync_service/production_fuzz/scenarios.rs`).
+**Root cause, confirmed by seed 4 and seed 10000 tracing:** a fresh install's
+workspace-index CRDT was populated under its pre-account random `WorkspaceId`,
+then merely re-keyed onto the account id before the first push. Another device's
+canonical population consequently did not deduplicate with it, leaving Yjs with
+different node membership/field winners on the server and the joining device.
+The same pull-before-push landing could overwrite a local scheme rename or
+recolour even though its operation was still pending; item edits already had a
+capture/reassert path, but scheme metadata did not.
+
+**Fix:** first-join sync now canonically re-populates the workspace index before
+the first pull/push, then re-expresses the current local workspace as an edit on
+that canonical base (`desktop/app/src/app/sync_service/snapshot.rs`). The store
+keeps the corresponding canonical recovery path for edits racing first-sync
+landing, and only re-expresses population bases whose plain scheme actually
+changed (`desktop/state/src/store.rs`). Pending scheme metadata fields are now
+captured and reasserted alongside item fields (`desktop/state/src/moved_edits.rs`).
+A shared CRDT regression covers independent name and colour edits after shared
+population; the production fuzzer retains the focused in-flight scenario.
+
+**Verified:** pinned seed 10404, seed-4 replay, seeds 10000/10002, seeds 1/2/4,
+the scheme-field regression, bug #1's in-flight-edit scenario, the relaunch
+pending-edit scenario, and the full `cargo test -p knotq-app --bin knotq` run.
+The full run and the wider release-mode property sweep are green; none of the
+current failures involve first-join population divergence or scheme metadata
+reverting.
+
+## 1. [FIXED] An edit made during a device's first-ever sync can be silently lost
+
+**Repro (now a passing regression test, no longer `#[ignore]`d):** `cargo test
+-p knotq-app --bin knotq
+app::sync_service::production_fuzz::scenarios::an_edit_made_while_a_sync_is_in_flight_is_pushed`.
 
 **Scenario:** device A signs in and fully syncs first, establishing an
 account. Device B — a fresh install with its own starter content — signs into
 the *same* account and starts its first sync. While that sync is still in
 flight (server pull sent, not yet landed), the user recolors a scheme on B.
-The recolor is silently dropped: A never sees it.
+The recolor was silently dropped: A never saw it.
 
 **Root cause:** the workspace-index CRDT document's very first population (for
-either device) is authored under whatever `clientID` was live when it
+either device) was authored under whatever `clientID` was live when it
 happened, not a deterministic one derived from content. Scheme *content*
 solved exactly this problem already (`YrsSchemeDocument::populate`, keyed by a
 hash of the pre-edit content) — the workspace index never got the same
@@ -168,74 +229,54 @@ logical starter content collide, Yjs resolves every entry by clientID alone,
 and whichever side has the higher one wins outright — including entries the
 other side had already established correctly.
 
-**Why it's harder than it looks:** the natural fix ("populate the index from
-the pre-edit workspace under a deterministic client id, mirroring scheme
-content") is the right *idea*, but the workspace-index document's identity is
-also volatile in a way scheme documents' isn't: `Workspace::new()` mints a
-fresh random `WorkspaceId` per install, and the root folder id is *derived*
-from it — so a device's content only becomes hashable-and-comparable with
-another device's *after* it canonicalizes to the account's shared id (i.e.
-after its first sync actually lands), and by design a device's local CRDT
-state gets written well before that point, through at least three genuinely
-independent places:
+**Why it was harder than it looked:** the workspace-index document's identity
+is volatile in a way scheme documents' isn't: `Workspace::new()` mints a fresh
+random `WorkspaceId` per install, and the root folder id is *derived* from
+it — so a device's content only becomes hashable-and-comparable with another
+device's *after* it canonicalizes to the account's shared id (i.e. after its
+first sync actually lands), and by design a device's local CRDT state gets
+written well before that point, through at least three genuinely independent
+places: `WorkspaceStore::new` (a fresh install's very first save),
+`queue_workspace_bootstrap_updates` (`shared/sync/src/local_state.rs`, the
+bootstrap push path), and `adopt_sync_workspace_identity` /
+`reidentify_workspace_document` (`desktop/state/src/store.rs`,
+`shared/sync/src/crdt/mod.rs`, where a device's local content gets re-keyed
+onto the account's canonical identity once a pull actually lands). Two earlier
+attempts (not in the tree) got as far as reaching the right code paths but
+broke other convergence tests; see 0c below for the mechanism that finally
+made this and those other tests pass together.
 
-1. `WorkspaceStore::new` — a fresh install's very first save (`initial_dirty`)
-   flushes and populates the document before any sync attempt exists at all.
-2. `queue_workspace_bootstrap_updates` (`shared/sync/src/local_state.rs`) —
-   the bootstrap push path, for a device with nothing to merge.
-3. `adopt_sync_workspace_identity` / `reidentify_workspace_document`
-   (`desktop/state/src/store.rs`, `shared/sync/src/crdt/mod.rs`) — where a
-   device's local content gets re-keyed onto the account's canonical identity
-   once a pull actually lands.
+**Fix:** `WorkspaceCrdtDocuments::repopulate_workspace_canonically` (new,
+`shared/sync/src/crdt/{mod.rs,workspace_index.rs}`) rebuilds a device's
+workspace-index population under the account's canonical identity once it's
+known — content-hash-deterministic, mirroring scheme population — and
+re-applies any edit made on top of the old pre-canonical population as a
+direct write on the fresh document (not a replayed byte diff, whose origin
+pointers wouldn't resolve against the new doc's structs). `store.rs`'s
+`adopt_sync_workspace_identity` drives this via a `workspace_population_base`
+captured at construction / first edit, drops any stale pending push queued
+under the old pre-canonical identity, and queues the repopulated document's
+full state as the push (an incremental diff finds nothing new relative to the
+freshly-built document, so a full snapshot is what actually carries the edit).
+See 0c below for the further first-join canonicalization work layered on top
+of this that made the wider regression suite pass too.
 
-An attempted fix that made all three of these populate deterministically
-(content-hash clientID, mirroring scheme content, with the pre-edit base
-threaded through as a new `workspace_population_base` and rebuilt at
-reidentify time) got as far as reaching the right code paths with the right
-data, but still didn't make the target test pass, **and — more importantly —
-broke five previously-passing regression tests** (`a_folder_archived_...`,
-`two_devices_changing_different_fields_of_one_scheme_keep_both`,
-`two_devices_moving_and_renaming_one_scheme_keep_both`,
-`two_devices_moving_folders_into_each_other_keep_both`,
-`desktop_production_single_account_fuzz` — real scheme/folder/item loss in
-scenarios that used to converge cleanly). That attempt was fully reverted
-(nothing from it is in the tree); this note exists so the next attempt starts
-from the diagnosis, not from zero.
+**Verified:** the pinned test above passes reliably (5+ repeated runs); full
+`cargo test -p knotq-app --bin knotq` is green together with 0c's fix — see
+0c's verification note.
 
-**Suspected shape of a real fix:** probably needs a single, *unified*
-call site for "populate the workspace-index document deterministically,"
-reached from all three places above, with the deterministic-population
-mechanism scoped to fire only *after* canonicalization (never on pre-sign-in
-content) — and, critically, a test pass that runs the **existing** production
-fuzz + regression suite (not just the target scenario) after every change,
-given how easily this touches the other convergence tests. Extend
-`shared/sync/tests/sync_property_model.rs` / the desktop `production_fuzz`
-harness with a seed for this specific race before considering it fixed, per
-this repo's rule about extending the fuzzer rather than hand-verifying one
-scenario.
+## 2. [FIXED] A crash between saving the workspace and saving CRDT state loses pre-sync local edits
 
-## 2. A crash between saving the workspace and saving CRDT state loses pre-sync local edits
+**Resolution 2026-09-18:** paired saves now write a durable pre-save
+workspace base into `sync-state.json` before replacing plain workspace files.
+The marker is cleared only after the pending queue and CRDT state are durable.
+On relaunch, the store diffs the recovered plain workspace against that base
+and re-expresses the changes as ordinary CRDT updates, including first-sync
+offline edits to existing daily pages and newly created schemes.
 
-**Repro:** `cargo test -p knotq-app --bin knotq
-app::sync_service::production_fuzz::scenarios::new_install_crashed_before_its_first_sync_joins_the_account
--- --ignored --nocapture`.
-
-**Scenario:** a brand-new install (never synced) crashes after its save task
-wrote `workspace.json` but before it wrote the pending queue and CRDT state.
-On relaunch, the CRDT is unseeded and nothing is queued, so the device's first
-sync just adopts the account's existing index wholesale — the pre-crash local
-edits (which only ever reached the plain workspace file) are gone.
-
-**Not attempted this session** (deliberately, per user direction — this one
-is rarer and needs real design work first). The test's own comment notes the
-obvious fix (seed the CRDT from the plain files at launch) was already tried
-and made things *worse* — it pushes an entire index lineage authored under
-the pre-sign-in identity, which loses content elsewhere (the same
-identity/clientID problem as #1, in fact — these two are probably the same
-underlying disease). The real fix is described there as "re-root a pre-sign-in
-lineage inside the CRDT index at first sign-in," which is exactly the kind of
-mechanism #1 above also needs. **Worth investigating #1 and #2 together**,
-since a real fix for the identity/population problem likely closes both.
+**Verified:** `new_install_crashed_before_its_first_sync_joins_the_account`
+is now a normal non-ignored production-path regression test, and the recovery
+marker has a storage round-trip test.
 
 ## 3. No backup/DR for the backend's Durable Object sync state
 

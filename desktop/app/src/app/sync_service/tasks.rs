@@ -289,11 +289,15 @@ async fn run_sync_attempt(
             app.state.sync_store_from_workspace();
             let t_store = t0.elapsed();
             let t1 = std::time::Instant::now();
-            let pending = app.state.pending_crdt_edits();
-            let t_pending = t1.elapsed();
-            let t2 = std::time::Instant::now();
             let crdt_states = app.state.crdt_document_state_handles();
-            let t_handles = t2.elapsed();
+            let t_handles = t1.elapsed();
+            // Flushing CRDT writes can append a deferred operation. Capture
+            // the queue only after that flush, otherwise the snapshot carries
+            // document bytes whose operation is absent from its watermark and
+            // can be replayed as stale content after a later landing/compaction.
+            let t2 = std::time::Instant::now();
+            let pending = app.state.pending_crdt_edits();
+            let t_pending = t2.elapsed();
             if step {
                 let ms = |d: std::time::Duration| d.as_secs_f64() * 1000.0;
                 eprintln!(
@@ -349,6 +353,8 @@ async fn run_sync_attempt(
                 replica_id: app.settings.replica_id,
                 pending,
                 queued_item_fields: app.state.queued_item_fields(),
+                recent_item_edits: app.state.recent_item_edits(),
+                recent_folder_edits: app.state.recent_folder_edits(),
                 crdt_states,
                 notification_defaults,
                 reuse_schedule,
@@ -372,6 +378,7 @@ async fn run_sync_attempt(
         return AttemptOutcome::Done;
     };
 
+    let baseline = snapshot.workspace.clone();
     let result = cx
         .background_executor()
         .spawn(async move { sync_snapshot(snapshot) })
@@ -394,8 +401,15 @@ async fn run_sync_attempt(
                 if squash_attempted {
                     app.last_squash_attempt_at = Some(Utc::now());
                 }
-                let local_item_edits =
-                    super::landing::capture_local_item_edits(&app.state, &queued_item_fields);
+                let local_item_edits = super::landing::capture_local_item_edits(
+                    &app.state,
+                    &queued_item_fields,
+                    &baseline,
+                );
+                app.state.remember_captured_item_edits(&local_item_edits);
+                let local_scheme_edits = super::landing::capture_local_scheme_edits(&app.state);
+                let local_folder_edits =
+                    super::landing::capture_local_folder_edits(&app.state, &workspace);
                 super::landing::clear_pushed_edits(&mut app.state, &pushed, local_edit_watermark);
                 // Cache the schedule this run used against the generation it was
                 // computed at, so the next run can skip recomputing it when nothing
@@ -425,6 +439,7 @@ async fn run_sync_attempt(
                     remote_updates_applied,
                     local_workspace_changed,
                 ) {
+                    app.state.hydrate_recent_item_edits();
                     let scheme_scroll_restore = if app.selection.view == View::Scheme {
                         app.selection
                             .scheme_id
@@ -436,16 +451,32 @@ async fn run_sync_attempt(
                         .then(|| app.daily_queue_scroll_handle.offset());
                     // Most runs while typing are the pusher's own document
                     // echoing back and move nothing; see `adopt_sync_workspace`.
-                    let workspace_changed = super::landing::adopt_sync_workspace(
+                    let adopted = super::landing::adopt_sync_workspace(
                         &mut app.state,
                         workspace,
                         crdt_states,
                         local_edit_watermark,
                         squash_applied,
-                    ) | super::landing::reassert_local_item_edits(
-                        &mut app.state,
-                        local_item_edits,
                     );
+                    let item_repairs =
+                        super::landing::reassert_local_item_edits(&mut app.state, local_item_edits)
+                            | super::landing::reassert_recent_moved_item_edits(
+                                &mut app.state,
+                                &std::collections::HashSet::new(),
+                            );
+                    let placement_reconciled =
+                        item_repairs && super::landing::reconcile_item_placements(&mut app.state);
+                    let workspace_changed = adopted
+                        | item_repairs
+                        | placement_reconciled
+                        | super::landing::reassert_local_scheme_edits(
+                            &mut app.state,
+                            local_scheme_edits,
+                        )
+                        | super::landing::reassert_local_folder_edits(
+                            &mut app.state,
+                            local_folder_edits,
+                        );
                     crate::frame_log::count(&crate::frame_log::WORKSPACE_REPLACED);
                     // The CRDT documents advanced even on an echo, so the save
                     // signal is unconditional; the rest only matters when the

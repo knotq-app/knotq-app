@@ -247,18 +247,16 @@ pub fn scenario_h_calendar_import_lifecycle(h: &mut Harness) {
     assert_eq!(source.calendar_id, "primary");
 
     // A re-imports with changed/removed events (simulate gsync update).
-    // Directly mutate items to simulate a gsync re-import that removes one event,
-    // then add a new event via the normal API which calls record_changes.
-    {
-        let device = h.device_mut_for_surgery(D0);
-        device
-            .scheme_mut_pub(cal)
-            .items
-            .retain(|item| item.text() != "1:1");
-        // record the retained change so it queues as CRDT updates
-        let changes = knotq_sync::WorkspaceCrdtChangeSet::default().touch_scheme(cal);
-        device.record_changes(changes);
-    }
+    // Remove the event through the same causal deletion path as a gsync
+    // re-import, then add a new event through the normal API. The deletion id
+    // is part of the changeset so raw CRDT copies cannot be mistaken for a
+    // hidden cross-scheme duplicate and reintroduced during repair.
+    let removed_index = h.device(D0).workspace.schemes[&cal]
+        .items
+        .iter()
+        .position(|item| item.text() == "1:1")
+        .expect("calendar event to remove");
+    h.remove_line(D0, cal, removed_index);
     h.append_line(D0, cal, "planning session"); // add new event
 
     h.sync(D0);

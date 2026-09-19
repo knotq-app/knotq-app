@@ -128,6 +128,18 @@ pub struct WorkspaceStore {
     // flush populates the document from it before writing the edit, so the edit
     // lands as an edit (`WorkspaceCrdtDocuments::sync_changes_with_bases`).
     population_bases: HashMap<SchemeId, Scheme>,
+    // Same idea one level up: what the whole workspace held just before the
+    // first edit made while the workspace-index CRDT document had never been
+    // populated (either at construction — a fresh install's very first save —
+    // or from a later edit). Without this, that edit's index write competes
+    // on equal footing (clientID alone) against the account's own from-scratch
+    // population arriving from another device, and can silently lose — see
+    // `an_edit_made_while_a_sync_is_in_flight_is_pushed`. Read (never taken)
+    // by `flush_crdt`; the sole consumer that takes it is
+    // `merge_sync_crdt_states`, which must capture it before ANY flush this
+    // landing triggers (including ones earlier than its own, e.g.
+    // `drop_unbound_pending_crdt_edits`) — see its call site.
+    workspace_population_base: Option<Workspace>,
 }
 
 impl WorkspaceStore {
@@ -148,6 +160,31 @@ impl WorkspaceStore {
         dirty.index |= sync_metadata_dirty;
         let indexed = IndexedWorkspace::build(workspace.clone());
         let crdt = restored_workspace_crdt(&workspace, replica_id, &crdt_states);
+        // A device with no saved CRDT state (a genuinely fresh install, or one
+        // that never reached its first successful save) constructs an
+        // unpopulated workspace document here. `dirty=all` below means the
+        // very first save flushes it before any edit command — let alone one
+        // made while a sync is in flight — ever gets a chance to record a
+        // population base for it. Capture the base NOW, so if this device
+        // later adopts an account's canonical identity (first sign-in), that
+        // adoption can still rebuild this document deterministically instead
+        // of being stuck with whatever clientID the first save used.
+        let workspace_population_base = crdt
+            .workspace_document_is_unpopulated()
+            .then(|| workspace.clone());
+        // A crash between the plain workspace save and the CRDT save leaves
+        // every scheme's content only in the plain files too. Preserve those
+        // pre-sign-in bases at construction so first-sync canonicalization can
+        // re-root them just like the workspace index, instead of adopting the
+        // account's content and silently discarding the offline workspace.
+        let population_bases = workspace
+            .schemes
+            .iter()
+            .filter_map(|(scheme_id, scheme)| {
+                crdt.scheme_document_is_unpopulated(*scheme_id)
+                    .then(|| (*scheme_id, scheme.clone()))
+            })
+            .collect();
         Self {
             workspace,
             indexed,
@@ -164,8 +201,88 @@ impl WorkspaceStore {
             crdt_save_scope: CrdtSaveScope::All,
             deferred_crdt: WorkspaceCrdtChangeSet::default(),
             deferred_since: 0,
-            population_bases: HashMap::new(),
+            population_bases,
+            workspace_population_base,
         }
+    }
+
+    /// Restore the durable CRDT queue into the live store before the first save
+    /// of a relaunched session. The queue is deliberately not materialized as
+    /// commands: the plain workspace and CRDT states already contain its
+    /// content, while these updates still have to be carried forward until a
+    /// sync acknowledges them. Keeping them as synthetic operations gives the
+    /// normal save path an accurate complete snapshot, so reconciling the
+    /// on-disk queue with the live store cannot discard an edit that was
+    /// persisted by the previous session but has not reached the server.
+    pub fn restore_pending_crdt_edits(
+        &mut self,
+        pending: impl IntoIterator<Item = PendingCrdtEdit>,
+    ) {
+        for edit in pending {
+            let update = edit.as_update();
+            if let Some(operation) = self.pending_operations.iter_mut().find(|operation| {
+                operation.id == edit.operation_id && operation.sequence == edit.local_sequence
+            }) {
+                operation.crdt_updates.push(update);
+                continue;
+            }
+            self.pending_operations.push_back(StoreOperation {
+                id: edit.operation_id,
+                workspace_id: edit.workspace_id,
+                replica_id: edit.replica_id,
+                sequence: edit.local_sequence,
+                origin: CommandOrigin::User,
+                created_at: edit.created_at,
+                command: Command::Batch(Vec::new()),
+                crdt_updates: vec![update],
+            });
+            self.next_sequence = self
+                .next_sequence
+                .max(edit.local_sequence.saturating_add(1));
+        }
+    }
+
+    /// Recover edits that reached the plain workspace files before a paired
+    /// CRDT save completed.
+    ///
+    /// The recovery base is written before the workspace file is replaced. A
+    /// relaunch therefore has enough information to turn the plain-file delta
+    /// back into the same CRDT operation the normal command path would have
+    /// produced. This is especially important for a first-sync install: an
+    /// edited daily page must be queued as a local delta, not mistaken for
+    /// untouched starter content when the account's existing page is pulled.
+    pub fn recover_workspace_save(&mut self, base: Workspace) {
+        self.flush_crdt();
+        let current = self.workspace.clone();
+        let mut changes = WorkspaceCrdtChangeSet::default();
+
+        if self.crdt.workspace_document_is_unpopulated() {
+            if self.crdt.workspace_document_differs(&base, &current) {
+                self.workspace_population_base = Some(base.clone());
+                changes.workspace = true;
+            }
+        } else if self.crdt.workspace_document_differs(&base, &current) {
+            changes.workspace = true;
+        }
+
+        for (scheme_id, scheme) in &current.schemes {
+            let changed = base.schemes.get(scheme_id) != Some(scheme);
+            if !changed {
+                continue;
+            }
+            if self.crdt.scheme_document_is_unpopulated(*scheme_id) {
+                if let Some(previous) = base.schemes.get(scheme_id) {
+                    self.population_bases.insert(*scheme_id, previous.clone());
+                }
+            }
+            changes.schemes.insert(*scheme_id);
+        }
+
+        if changes.is_empty() {
+            return;
+        }
+        self.defer_crdt(changes);
+        self.flush_crdt();
     }
 
     /// Reconcile any deferred CRDT changes (see `deferred_crdt`) into the CRDT
@@ -188,9 +305,21 @@ impl WorkspaceStore {
         // whether this is a stall worth chasing.
         let started = crdt_flush_timing().then(std::time::Instant::now);
         let bases = std::mem::take(&mut self.population_bases);
-        let outcome = self
-            .crdt
-            .sync_changes_with_bases(&self.workspace, &changes, &bases);
+        // NOT taken (unlike `bases` above): a scheme's population base can
+        // only ever be consumed here, but the workspace's may still be needed
+        // by `merge_sync_crdt_states`/`adopt_sync_workspace_identity` LATER in
+        // the SAME landing — pending cleanup (`drop_unbound_pending_crdt_edits`)
+        // flushes before that runs. Populating from it here is safe to repeat:
+        // once populated, `workspace_document_is_unpopulated` is false, so an
+        // unconsumed base sitting here across several flushes just means it is
+        // offered — and ignored — every time until something actually takes
+        // it (only `merge_sync_crdt_states` does).
+        let outcome = self.crdt.sync_changes_with_bases_and_workspace_base(
+            &self.workspace,
+            &changes,
+            &bases,
+            self.workspace_population_base.as_ref(),
+        );
         if let Some(started) = started {
             let elapsed = started.elapsed().as_secs_f64() * 1000.0;
             eprintln!(
@@ -340,6 +469,38 @@ impl WorkspaceStore {
         true
     }
 
+    /// Rebuild the visible item placement after a sync landing has authored
+    /// local repair commands. Those commands update the CRDT documents, but
+    /// they must not create a second materialization path that can leave one
+    /// item visible in two schemes. The CRDT projection owns the one-item/
+    /// one-placement rule, so this is the single reconciliation boundary.
+    pub fn reconcile_item_placements(&mut self) -> bool {
+        self.flush_crdt();
+        let Ok(workspace) = self
+            .crdt
+            .materialized_workspace_repair(&self.workspace, &|_| false)
+        else {
+            return false;
+        };
+        let mut changed_schemes = HashSet::new();
+        for (scheme_id, projected) in workspace.schemes {
+            let Some(current) = self.workspace.schemes.get_mut(&scheme_id) else {
+                continue;
+            };
+            if current.items != projected.items {
+                current.items = projected.items;
+                changed_schemes.insert(scheme_id);
+            }
+        }
+        if changed_schemes.is_empty() {
+            return false;
+        }
+        self.index_stale = true;
+        self.dirty.schemes.extend(changed_schemes);
+        self.crdt_save_scope.widen_to_all();
+        true
+    }
+
     /// Normalize the workspace index (dangling archive entries, folder tree
     /// shape) and record the result like any other index edit. Returns whether
     /// anything changed.
@@ -480,6 +641,33 @@ impl WorkspaceStore {
         cleared
     }
 
+    /// Clear exactly the local edits acknowledged by a completed sync run.
+    /// The sequence watermark remains a fallback for older callers, but exact
+    /// operation identities are required when a landing created an operation
+    /// at the same sequence boundary as the run snapshot.
+    pub fn clear_pushed_crdt_edits_exact(
+        &mut self,
+        document: DocumentId,
+        sent_edits: &[(OperationId, u64)],
+    ) -> usize {
+        if sent_edits.is_empty() {
+            return 0;
+        }
+        let sent: std::collections::HashSet<(OperationId, u64)> =
+            sent_edits.iter().copied().collect();
+        let mut cleared = 0;
+        for operation in &mut self.pending_operations {
+            let before = operation.crdt_updates.len();
+            operation.crdt_updates.retain(|update| {
+                !(update.document == document && sent.contains(&(operation.id, operation.sequence)))
+            });
+            cleared += before - operation.crdt_updates.len();
+        }
+        self.pending_operations
+            .retain(|operation| !operation.crdt_updates.is_empty());
+        cleared
+    }
+
     /// Drop unpushed edits addressed to a document this workspace no longer binds
     /// (a scheme permanently deleted after it was edited), returning how many.
     ///
@@ -534,6 +722,7 @@ impl WorkspaceStore {
         let direct_changes = WorkspaceCrdtChangeSet {
             workspace: dirty.index,
             schemes: dirty.schemes.clone(),
+            ..WorkspaceCrdtChangeSet::default()
         };
         self.replace_workspace_with_crdt_states(workspace, dirty, clear_pending_operations, states);
         self.record_direct_crdt_changes(direct_changes);
@@ -601,6 +790,11 @@ impl WorkspaceStore {
         self.index_stale = true;
         self.crdt = restored_workspace_crdt(&self.workspace, self.replica_id, &crdt_states);
         self.population_bases.clear();
+        // The replacement states are already the canonical sync result. A
+        // pre-sign-in population base must not survive the replacement or the
+        // next landing will treat the now-canonical document as another
+        // first-sync adoption and enqueue a duplicate full snapshot forever.
+        self.workspace_population_base = None;
         // Every document is a fresh object built from bytes that need not match
         // what is on disk, and the workspace may have lost documents whose files
         // must be swept.
@@ -726,6 +920,58 @@ impl WorkspaceStore {
         // `self.crdt` directly; anything deferred must land there first or it is
         // lost the moment `self.workspace` is overwritten with the merge result.
         self.flush_crdt();
+        // A crash can leave plain scheme files ahead of an entirely unseeded
+        // CRDT with no pending operation to trigger `flush_crdt`. Re-express
+        // those schemes now, before applying the account's state, so their
+        // deterministic population and offline edits merge into the remote
+        // document instead of being discarded by first-sync replacement.
+        if !self.population_bases.is_empty() {
+            let bases = std::mem::take(&mut self.population_bases);
+            // `population_bases` also contains untouched starter schemes on a
+            // fresh install. Re-expressing those schemes while adopting an
+            // account is wrong: the account's remote document is authoritative
+            // for content this device has never edited, and a full snapshot of
+            // the starter copy can resurrect lines the account deleted. A
+            // scheme whose plain copy differs from its captured base, however,
+            // has a real local edit (including an edit made while the first
+            // sync was in flight) and must still be re-expressed before the
+            // remote state is merged.
+            let changed_bases: HashMap<_, _> = bases
+                .into_iter()
+                .filter(|(scheme_id, base)| {
+                    self.workspace
+                        .schemes
+                        .get(scheme_id)
+                        .is_some_and(|scheme| scheme != base)
+                })
+                .collect();
+            let schemes = changed_bases.keys().copied().collect();
+            let outcome = self.crdt.sync_changes_with_bases(
+                &self.workspace,
+                &WorkspaceCrdtChangeSet {
+                    workspace: false,
+                    schemes,
+                    ..WorkspaceCrdtChangeSet::default()
+                },
+                &changed_bases,
+            );
+            if !outcome.updates.is_empty() {
+                self.pending_operations.push_back(StoreOperation {
+                    id: OperationId::new(),
+                    workspace_id: self.workspace.id,
+                    replica_id: self.replica_id,
+                    sequence: self.next_sequence,
+                    origin: CommandOrigin::User,
+                    created_at: Utc::now(),
+                    command: Command::Batch(Vec::new()),
+                    crdt_updates: outcome.updates,
+                });
+                self.next_sequence += 1;
+            }
+            for error in outcome.errors {
+                eprintln!("sync merge: re-root scheme document: {error}");
+            }
+        }
         // The run adopted the account's canonical workspace identity (first sign-in,
         // or an account switch) while this store still holds the pre-sign-in one.
         // Its workspace document then never matches ours: the merge would skip the
@@ -756,6 +1002,33 @@ impl WorkspaceStore {
             return false;
         }
         let received_at = Utc::now();
+        // `flush_crdt` above integrates edits made while the background run
+        // was in flight, but the run's full document states were captured
+        // before those edits existed. Applying those states afterwards can
+        // therefore leave a locally re-added item tombstoned again (notably a
+        // Daily Queue carry-over: the plain workspace still shows the move,
+        // while the target CRDT document remains deleted). Keep the exact
+        // queued deltas and replay them after the run state below. This is a
+        // causal replay of the already-authored operations, not a fresh
+        // whole-workspace rewrite, so unrelated remote fields are untouched.
+        let in_flight_updates: Vec<StoredCrdtUpdate> = self
+            .pending_operations
+            .iter()
+            .flat_map(|operation| {
+                operation
+                    .crdt_updates
+                    .iter()
+                    .map(|update| StoredCrdtUpdate {
+                        workspace_id: self.workspace.id,
+                        document: update.document,
+                        kind: update.kind,
+                        replica_id: self.replica_id,
+                        sequence: operation.sequence,
+                        received_at,
+                        update_v1: update.update_v1.clone(),
+                    })
+            })
+            .collect();
         // `crdt_states` always carries EVERY document, but a sync typically changes a
         // handful. Applying an unchanged document's full state is a costly no-op
         // (decode + integrate the whole document) and doing it for all documents is
@@ -790,7 +1063,13 @@ impl WorkspaceStore {
                 })
             })
             .collect::<Vec<_>>();
-        let outcome = self.crdt.apply_remote_updates(&self.workspace, &updates);
+        // Route the full CRDT states against the sync result's canonical index,
+        // not the stale UI index. The background snapshot includes loaded
+        // on-disk Daily pages that may be absent from `self.workspace` after a
+        // lazy reload; using the latter makes their valid content look like an
+        // orphan and drops it during landing. In-flight local edits are replayed
+        // below, so the canonical index here does not discard them.
+        let mut outcome = self.crdt.apply_remote_updates(sync_workspace, &updates);
         for error in &outcome.workspace_errors {
             eprintln!("sync merge workspace error: {}", error.message);
         }
@@ -804,6 +1083,30 @@ impl WorkspaceStore {
             }
             eprintln!("sync merge document error: {}", error.message);
             mergeable = false;
+        }
+        if mergeable && !in_flight_updates.is_empty() {
+            let replayed = self
+                .crdt
+                .apply_remote_updates(&outcome.workspace, &in_flight_updates);
+            for error in &replayed.workspace_errors {
+                eprintln!("sync merge local replay workspace error: {}", error.message);
+            }
+            for error in &replayed.document_errors {
+                if !error.unknown_scheme_document {
+                    eprintln!("sync merge local replay document error: {}", error.message);
+                    mergeable = false;
+                }
+            }
+            if replayed.workspace_is_ok()
+                && replayed
+                    .document_errors
+                    .iter()
+                    .all(|error| error.unknown_scheme_document)
+            {
+                outcome = replayed;
+            } else {
+                mergeable = false;
+            }
         }
         if !mergeable {
             return false;
@@ -829,15 +1132,116 @@ impl WorkspaceStore {
         if workspace.sync.id != sync_workspace.sync.id {
             return false;
         }
-        if let Err(err) = self
-            .crdt
-            .reidentify_workspace_document(sync_workspace.sync.id)
+        // A mismatched identity can mean two very different things: this
+        // device's own content is still waiting to settle onto an account it
+        // is genuinely joining (its schemes are the account's schemes, just
+        // unkeyed), or this device already had a DIFFERENT account's content
+        // loaded and is now switching accounts entirely (chaos-fuzz account
+        // switches; also possible if a prior landing's identity adoption
+        // never persisted). Re-keying or repopulating in the second case
+        // would carry the old account's schemes forward under the new
+        // account's id — or, worse, push them as a full snapshot that
+        // clobbers the new account's real content server-side. Guard on
+        // disjointness rather than trying to name "which account": if this
+        // device already holds schemes and NONE of them are schemes the
+        // incoming account knows about, this is not an unsettled identity,
+        // it is unrelated content — refuse so the caller falls back to
+        // `replace_workspace_from_sync`, which is built to safely adopt
+        // wholesale-different content instead of merging it.
+        if !self.workspace.schemes.is_empty()
+            && self
+                .workspace
+                .schemes
+                .keys()
+                .all(|id| !sync_workspace.schemes.contains_key(id))
         {
-            eprintln!("sync merge: re-identify workspace document: {err:#}");
             return false;
         }
+        // A document populated from `workspace_population_base` (this
+        // replica's content before it ever adopted an account identity) is
+        // hashed under this replica's own pre-canonical `sync.id` — a plain
+        // re-key can't fix that, since it only rebinds the document without
+        // touching the wrong-hashed population inside. Rebuild the population
+        // under the now-known canonical identity instead, keeping the edit
+        // made on top of it. See `repopulate_workspace_canonically`.
+        let mut index_changed = false;
+        let repopulated = if let Some(base) = self.workspace_population_base.as_ref() {
+            let mut canonical_base = base.clone();
+            canonical_base.canonicalize_personal_sync_identity_with_change(sync_workspace.id);
+            canonical_base.ensure_sync_metadata();
+            // What matters for the outgoing snapshot is whether THIS device
+            // made a real edit on top of its own pre-sync base — not whether
+            // its (not-yet-merged) content differs from the account's. A
+            // device that simply hasn't merged the account's state yet always
+            // differs from `sync_workspace` in that direction (the account
+            // knows about content this device has never seen, e.g. another
+            // device's scheme), and pushing THIS device's narrower content as
+            // a full snapshot would overwrite that content server-side —
+            // exactly the scheme-loss bug `0a` fixed a different path into.
+            index_changed = self
+                .crdt
+                .workspace_document_differs(&canonical_base, &workspace);
+            if let Err(err) = self.crdt.repopulate_workspace_canonically(
+                &canonical_base,
+                &workspace,
+                sync_workspace.sync.id,
+            ) {
+                eprintln!("sync merge: repopulate workspace document canonically: {err:#}");
+                return false;
+            }
+            self.workspace_population_base = None;
+            true
+        } else {
+            if let Err(err) = self
+                .crdt
+                .reidentify_workspace_document(sync_workspace.sync.id)
+            {
+                eprintln!("sync merge: re-identify workspace document: {err:#}");
+                return false;
+            }
+            false
+        };
         self.workspace = workspace;
-        self.remap_pending_workspace_document(previous_document, sync_workspace.sync.id);
+        if repopulated {
+            // The repopulation above already folds any pre-canonical edit into
+            // the new canonical document (see `repopulate_workspace_canonically`).
+            // Any pending push queued for the OLD document before this landing
+            // was captured from that now-replaced document and shares no causal
+            // history with the fresh one — relabeling its `document` field the
+            // way `remap_pending_workspace_document` does for a plain re-key
+            // would push stale, foreign-clientID bytes under the canonical id
+            // instead of the edit the repopulation already carried forward.
+            // Drop it.
+            self.drop_pending_workspace_document_updates(previous_document);
+            // `fresh` (built inside `repopulate_workspace_canonically`) already
+            // holds the population AND the edit as of its own construction, so
+            // there is no "before" left within it for an incremental diff to
+            // find — the flush below's `sync_snapshot` correctly sees no change
+            // relative to what `fresh` already has and pushes nothing. Queue the
+            // document's full state directly instead, the same way a first-ever
+            // bootstrap does: it merges into any base (the server's old
+            // population, another device's) by shared clientID/clock, so the
+            // edit still lands even though it is sent as a whole snapshot
+            // rather than a delta.
+            let full = self
+                .crdt
+                .full_snapshot_updates_for_documents(&HashSet::from([sync_workspace.sync.id]));
+            if index_changed && !full.updates.is_empty() {
+                self.pending_operations.push_back(StoreOperation {
+                    id: OperationId::new(),
+                    workspace_id: self.workspace.id,
+                    replica_id: self.replica_id,
+                    sequence: self.next_sequence,
+                    origin: CommandOrigin::User,
+                    created_at: Utc::now(),
+                    command: Command::Batch(Vec::new()),
+                    crdt_updates: full.updates,
+                });
+                self.next_sequence += 1;
+            }
+        } else {
+            self.remap_pending_workspace_document(previous_document, sync_workspace.sync.id);
+        }
         self.dirty.index = true;
         self.index_stale = true;
         // `reidentify_workspace_document` only re-keys the document's external
@@ -866,10 +1270,24 @@ impl WorkspaceStore {
         }
     }
 
+    /// Discard any unpushed edits addressed to workspace document `document` —
+    /// used instead of [`Self::remap_pending_workspace_document`] after
+    /// [`WorkspaceCrdtDocuments::repopulate_workspace_canonically`], whose
+    /// output already carries forward whatever those edits contained. See the
+    /// call site in `adopt_sync_workspace_identity`.
+    fn drop_pending_workspace_document_updates(&mut self, document: DocumentId) {
+        for operation in &mut self.pending_operations {
+            operation
+                .crdt_updates
+                .retain(|update| update.document != document);
+        }
+    }
+
     /// Remember what each scheme `command` writes holds right now, for schemes
     /// whose CRDT document has never been populated (see `population_bases`).
     fn record_population_bases(&mut self, command: &Command) {
-        for scheme_id in command.crdt_documents().schemes {
+        let documents = command.crdt_documents();
+        for scheme_id in documents.schemes {
             if self.population_bases.contains_key(&scheme_id)
                 || !self.crdt.scheme_document_is_unpopulated(scheme_id)
             {
@@ -878,6 +1296,12 @@ impl WorkspaceStore {
             if let Some(scheme) = self.workspace.schemes.get(&scheme_id) {
                 self.population_bases.insert(scheme_id, scheme.clone());
             }
+        }
+        if documents.workspace
+            && self.workspace_population_base.is_none()
+            && self.crdt.workspace_document_is_unpopulated()
+        {
+            self.workspace_population_base = Some(self.workspace.clone());
         }
     }
 
@@ -1037,9 +1461,65 @@ fn restored_workspace_crdt<B: AsRef<[u8]>>(
 
 fn crdt_change_set_for_command(command: &Command) -> WorkspaceCrdtChangeSet {
     let documents = command.crdt_documents();
+    let mut deleted_items: HashMap<SchemeId, HashSet<String>> = HashMap::new();
+    collect_deleted_item_ids(command, &mut deleted_items);
+    // A batch may delete a placeholder and insert the carried row with the
+    // same id in that scheme. The final workspace still owns that id, so the
+    // delete is not a tombstone intent for the CRDT document. Keep the marker
+    // only for ids that remain absent after the batch; cross-scheme moves still
+    // retain the source delete because their insert is in another scheme.
+    let mut inserted_items: HashMap<SchemeId, HashSet<String>> = HashMap::new();
+    collect_inserted_item_ids(command, &mut inserted_items);
+    for (scheme, inserted) in inserted_items {
+        if let Some(deleted) = deleted_items.get_mut(&scheme) {
+            deleted.retain(|item| !inserted.contains(item));
+        }
+    }
+    deleted_items.retain(|_, items| !items.is_empty());
     WorkspaceCrdtChangeSet {
         workspace: documents.workspace,
         schemes: documents.schemes.into_iter().collect(),
+        deleted_items,
+    }
+}
+
+fn collect_deleted_item_ids(
+    command: &Command,
+    deleted_items: &mut HashMap<SchemeId, HashSet<String>>,
+) {
+    match command {
+        Command::DeleteItem { scheme, item } => {
+            deleted_items
+                .entry(*scheme)
+                .or_default()
+                .insert(item.to_string());
+        }
+        Command::Batch(commands) => {
+            for command in commands {
+                collect_deleted_item_ids(command, deleted_items);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn collect_inserted_item_ids(
+    command: &Command,
+    inserted_items: &mut HashMap<SchemeId, HashSet<String>>,
+) {
+    match command {
+        Command::InsertItem { scheme, item, .. } => {
+            inserted_items
+                .entry(*scheme)
+                .or_default()
+                .insert(item.id.to_string());
+        }
+        Command::Batch(commands) => {
+            for command in commands {
+                collect_inserted_item_ids(command, inserted_items);
+            }
+        }
+        _ => {}
     }
 }
 

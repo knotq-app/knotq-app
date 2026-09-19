@@ -2,7 +2,8 @@ use std::collections::HashMap;
 
 use knotq_commands::{Command, CommandOrigin};
 use knotq_model::{
-    AppSettings, DocumentId, Item, ItemId, NodeRef, ReplicaId, Scheme, SchemeId, Workspace,
+    daily_queue_scheme_id, daily_queue_scheme_name, AppSettings, DocumentId, Item, ItemId, NodeRef,
+    ReplicaId, Scheme, SchemeId, Workspace,
 };
 use knotq_state::AppState;
 use knotq_sync::{WorkspaceCrdtChangeSet, WorkspaceCrdtDocuments};
@@ -220,6 +221,53 @@ fn merge_preserves_local_edits_made_during_sync_run() {
 }
 
 #[test]
+fn merge_preserves_item_move_made_during_sync_run() {
+    let (mut state, (source, item_id), (target, _)) = two_scheme_state();
+    let snapshot = state.workspace.clone();
+    let snapshot_states = state.crdt_document_states();
+    let (result_workspace, result_states) =
+        simulated_sync_run_rename(&snapshot, &snapshot_states, source, "Renamed remotely");
+
+    let item = state
+        .workspace
+        .scheme(source)
+        .unwrap()
+        .item(item_id)
+        .unwrap()
+        .clone();
+    state
+        .apply_prechecked_local_command(
+            Command::Batch(vec![
+                Command::DeleteItem {
+                    scheme: source,
+                    item: item_id,
+                },
+                Command::InsertItem {
+                    scheme: target,
+                    position: 0,
+                    item,
+                },
+            ]),
+            CommandOrigin::User,
+        )
+        .unwrap();
+
+    assert!(state.merge_workspace_from_sync(&result_workspace, &result_states));
+    assert!(state
+        .workspace
+        .scheme(source)
+        .unwrap()
+        .item(item_id)
+        .is_none());
+    assert!(state
+        .workspace
+        .scheme(target)
+        .unwrap()
+        .item(item_id)
+        .is_some());
+}
+
+#[test]
 fn merge_preserves_scheme_created_during_sync_run() {
     let (mut state, scheme_id) = app_state_with_scheme("Plans");
 
@@ -259,6 +307,32 @@ fn merge_preserves_scheme_created_during_sync_run() {
     assert!(
         state.workspace.scheme(direct_id).is_some(),
         "a scheme created directly while the sync run was in flight must survive the merge"
+    );
+}
+
+#[test]
+fn merge_routes_loaded_scheme_against_sync_index() {
+    let (mut state, _) = app_state_with_scheme("Plans");
+    let date = date(2026, 6, 12);
+    let daily_id = daily_queue_scheme_id(date);
+
+    // The background sync loaded a Daily page from disk even though the live
+    // UI workspace is still lazy and does not contain that page.
+    let mut sync_workspace = state.workspace.clone();
+    let mut daily = Scheme::new(daily_queue_scheme_name(date), 0);
+    daily.id = daily_id;
+    daily.items.push(Item::new("persisted daily line"));
+    sync_workspace.daily_queue.insert(date, daily_id);
+    sync_workspace.schemes.insert(daily_id, daily);
+    sync_workspace.ensure_sync_metadata();
+    let sync_states = WorkspaceCrdtDocuments::try_new(&sync_workspace)
+        .unwrap()
+        .document_states();
+
+    assert!(state.merge_workspace_from_sync(&sync_workspace, &sync_states));
+    assert_eq!(
+        state.workspace.scheme(daily_id).unwrap().items[0].text(),
+        "persisted daily line"
     );
 }
 

@@ -1,8 +1,8 @@
 use chrono::Utc;
 use knotq_state::AppState;
 use knotq_storage_json::{
-    load_local_sync_state, save_crdt_state, save_local_sync_state,
-    save_pending_crdt_edits_with_item_fields,
+    load_local_sync_state, replace_pending_crdt_edits_with_item_fields,
+    replace_recent_folder_edits, replace_recent_item_edits, save_crdt_state, save_local_sync_state,
 };
 
 use super::{save_workspace, workspace_path, KnotQApp};
@@ -17,8 +17,16 @@ pub(crate) fn write_shutdown_workspace(
     save_workspace(path, &state.workspace)?;
     state.dirty_schemes.clear();
     state.index_dirty = false;
+    let recent_item_edits = state.recent_item_edits();
+    if let Err(err) = replace_recent_item_edits(path, &recent_item_edits) {
+        eprintln!("shutdown item edit journal flush failed: {err:#}");
+    }
+    let recent_folder_edits = state.recent_folder_edits();
+    if let Err(err) = replace_recent_folder_edits(path, &recent_folder_edits) {
+        eprintln!("shutdown folder edit journal flush failed: {err:#}");
+    }
     // Keep the persisted CRDT state in lockstep with the workspace.
-    if let Err(err) = save_pending_crdt_edits_with_item_fields(
+    if let Err(err) = replace_pending_crdt_edits_with_item_fields(
         path,
         &state.pending_crdt_edits(),
         &state.queued_item_fields(),
