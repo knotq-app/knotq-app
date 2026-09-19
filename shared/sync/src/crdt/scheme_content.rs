@@ -288,9 +288,12 @@ impl YrsSchemeDocument {
     /// with every other: a line's text was inserted once per device, and a line
     /// one device deleted came back from another device's copy.
     fn populate(&self, content: &Scheme) -> anyhow::Result<()> {
-        // Through `Value`, whose object keys are ordered, so the key is a pure
-        // function of the content.
-        let key = serde_json::to_vec(&serde_json::to_value(content)?)?;
+        // Serialize the model directly. Going through serde_json::Value is not
+        // canonical: a workspace build may enable serde_json's `preserve_order`
+        // feature, changing the Value map implementation and therefore the
+        // population client id for the same scheme. Struct serialization keeps
+        // the declared field order independent of the surrounding feature graph.
+        let key = serde_json::to_vec(content)?;
         let client_id = super::encoding::stable_scheme_population_client_id(self.id, &key);
         let mut scratch = Self::new_with_client_id(self.id, client_id);
         scratch.presence_enabled = false;

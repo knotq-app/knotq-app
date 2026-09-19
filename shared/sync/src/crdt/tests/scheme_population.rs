@@ -120,7 +120,7 @@ fn a_document_is_populated_only_once() {
 /// different operations under the same `(clientID, clock)`.
 #[test]
 fn scheme_population_encoding_is_pinned() {
-    const PINNED: &str = "74c2eff839f054532dbfedb6e9ca7c97950d8e516fe79a0477ef403d35571348";
+    const PINNED: &str = "71a309041e7b46b33a7d3fbfa7a82778e4a0a0222f879d99a294c21ddfb0d5ff";
     let document: DocumentId = "00000000-0000-8000-8000-000000000201".parse().unwrap();
     let doc = YrsSchemeDocument::new(document);
     doc.sync_scheme(&starter()).unwrap();

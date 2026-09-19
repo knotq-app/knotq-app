@@ -481,15 +481,14 @@ impl TestDevice {
         {
             let today_scheme = self.scheme_mut(today_id);
             let had_placeholder = placeholder_id.is_some();
-            let mut position = if had_placeholder {
+            let start_position = if had_placeholder {
                 1
             } else {
                 today_scheme.items.len()
             };
-            for item in carried_items {
+            for (position, item) in (start_position..).zip(carried_items) {
                 let at = position.min(today_scheme.items.len());
                 today_scheme.items.insert(at, item);
-                position += 1;
             }
             if had_placeholder {
                 today_scheme.items.remove(0);

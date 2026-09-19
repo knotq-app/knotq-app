@@ -77,7 +77,7 @@ pub(crate) fn stable_item_seed_client_id(item_id: &str) -> u64 {
 /// the same clientID would reuse `(clientID, clock)` for different operations,
 /// which Yjs cannot merge. `scheme_population_encoding_is_pinned` fails whenever
 /// those bytes move, so the bump cannot be forgotten.
-pub(crate) const SCHEME_POPULATION_ENCODING_VERSION: u32 = 2;
+pub(crate) const SCHEME_POPULATION_ENCODING_VERSION: u32 = 3;
 
 /// Deterministic clientID for the first population of an empty scheme document
 /// from `content` (the serialized scheme it is populated with). Every replica

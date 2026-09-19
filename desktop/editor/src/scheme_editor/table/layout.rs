@@ -2,7 +2,6 @@ use std::collections::HashMap;
 
 use gpui::{Hsla, WrappedLine};
 
-use super::super::*;
 use super::*;
 
 impl SchemeEditor {

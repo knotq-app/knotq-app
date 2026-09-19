@@ -1,6 +1,5 @@
 use gpui::Corners;
 
-use super::super::*;
 use super::*;
 
 impl SchemeEditor {

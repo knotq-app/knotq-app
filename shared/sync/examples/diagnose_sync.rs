@@ -125,7 +125,7 @@ fn main() {
         // Also: pending-only (no base), the server's view if it had no base.
         if had_base {
             let only: Vec<&[u8]> = updates.iter().map(|u| u.as_slice()).collect();
-            if let Err(e) = validate_crdt_update_sequence(kind, only.into_iter()) {
+            if let Err(e) = validate_crdt_update_sequence(kind, only) {
                 println!("        (pending-only, no base) -> {e:#}");
             }
         }

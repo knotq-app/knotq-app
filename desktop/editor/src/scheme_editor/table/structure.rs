@@ -1,6 +1,5 @@
 use knotq_model::Table;
 
-use super::super::*;
 use super::*;
 
 impl SchemeEditor {
