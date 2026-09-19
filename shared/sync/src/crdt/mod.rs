@@ -1271,7 +1271,7 @@ impl WorkspaceCrdtDocuments {
             .map(|doc| (doc.id, doc.encode_state_v1().len()))
             .filter(|(_, len)| *len >= min_state_bytes)
             .collect();
-        candidates.sort_by(|left, right| right.1.cmp(&left.1));
+        candidates.sort_by_key(|left| std::cmp::Reverse(left.1));
         candidates
     }
 

@@ -1228,14 +1228,14 @@ fn queue_crdt_updates(
         return;
     }
     let operation_id = OperationId::new();
-    let mut next_sequence = local_state
+    let next_sequence = local_state
         .pending
         .iter()
         .map(|edit| edit.local_sequence)
         .max()
         .unwrap_or(0)
         + 1;
-    for update in updates {
+    for (next_sequence, update) in (next_sequence..).zip(updates) {
         local_state.push_pending(PendingCrdtEdit {
             operation_id,
             workspace_id: workspace.id,
@@ -1247,7 +1247,6 @@ fn queue_crdt_updates(
             update_v1: update.update_v1,
             touched_items: update.touched_items,
         });
-        next_sequence += 1;
     }
 }
 

@@ -14,7 +14,7 @@ impl PersistedCrdtState {
             })
             .collect::<Vec<_>>();
         // Stable order keeps the on-disk file diff-friendly and deterministic.
-        documents.sort_by(|a, b| a.document.0.cmp(&b.document.0));
+        documents.sort_by_key(|a| a.document.0);
         Self { documents }
     }
 
