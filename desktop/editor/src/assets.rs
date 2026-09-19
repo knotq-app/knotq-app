@@ -32,13 +32,10 @@ fn data_dir() -> PathBuf {
         return dir;
     }
 
-    #[cfg(not(target_os = "windows"))]
+    #[cfg(target_os = "macos")]
     if let Ok(home) = std::env::var("HOME") {
         let home = PathBuf::from(home);
-        #[cfg(target_os = "macos")]
-        {
-            return home.join("Library/Application Support/KnotQ");
-        }
+        return home.join("Library/Application Support/KnotQ");
     }
     PathBuf::from(".")
 }
