@@ -1,6 +1,6 @@
 use chrono::{TimeZone, Utc};
 use knotq_commands::{Command, DateKind, WorkspaceCommandExt};
-use knotq_model::{Item, ItemMarker, NodeRef, Workspace};
+use knotq_model::{Item, ItemMarker, NodeRef, Workspace, PERMANENT_DELETE_TOMBSTONE_POSITION};
 
 mod support;
 
@@ -10,28 +10,54 @@ use support::{create_folder, create_scheme, roundtrip, snapshot};
 fn apply_then_inverse_restores_folder_scheme_and_item_state() {
     let mut workspace = Workspace::new();
     let root = workspace.root;
-    let original = snapshot(&workspace);
-    roundtrip(
-        &mut workspace,
-        Command::CreateFolder {
+    let receipt = workspace
+        .apply(Command::CreateFolder {
             parent: root,
             name: "Projects".into(),
             position: None,
+        })
+        .unwrap();
+    let created_folder = match &receipt.inverse {
+        Command::Batch(commands) => match commands.first() {
+            Some(Command::DeleteFolder { id }) => *id,
+            other => panic!("unexpected create-folder inverse: {other:?}"),
         },
-        original,
+        other => panic!("unexpected create-folder inverse: {other:?}"),
+    };
+    workspace.apply(receipt.inverse).unwrap();
+    // Undoing a created node permanently removes it, but deliberately leaves a
+    // durable tombstone so a stale synced replica cannot resurrect the node.
+    assert!(!workspace.folders.contains_key(&created_folder));
+    assert_eq!(
+        workspace
+            .deleted_folder_origin(created_folder)
+            .map(|origin| origin.position),
+        Some(PERMANENT_DELETE_TOMBSTONE_POSITION)
     );
 
     let folder_id = create_folder(&mut workspace, root);
-    let original = snapshot(&workspace);
-    roundtrip(
-        &mut workspace,
-        Command::CreateScheme {
+    let receipt = workspace
+        .apply(Command::CreateScheme {
             folder: folder_id,
             name: "S".into(),
             color_index: 1,
             position: None,
+        })
+        .unwrap();
+    let created_scheme = match &receipt.inverse {
+        Command::Batch(commands) => match commands.first() {
+            Some(Command::DeleteScheme { id }) => *id,
+            other => panic!("unexpected create-scheme inverse: {other:?}"),
         },
-        original,
+        other => panic!("unexpected create-scheme inverse: {other:?}"),
+    };
+    workspace.apply(receipt.inverse).unwrap();
+    assert!(!workspace.schemes.contains_key(&created_scheme));
+    assert_eq!(
+        workspace
+            .deleted_scheme_origin(created_scheme)
+            .map(|origin| origin.position),
+        Some(PERMANENT_DELETE_TOMBSTONE_POSITION)
     );
 
     let scheme_id = create_scheme(&mut workspace, folder_id);

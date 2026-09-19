@@ -158,6 +158,7 @@ impl FileLock {
         }
         let file = OpenOptions::new()
             .create(true)
+            .truncate(false)
             .read(true)
             .write(true)
             .open(path)
@@ -728,14 +729,12 @@ fn next_pending_wait(now: DateTime<Utc>) -> Result<Option<StdDuration>> {
 }
 
 fn prune_durable_state(state: &mut DurableNotificationState, now: DateTime<Utc>) {
-    state.pending.retain(|_, request| {
-        request
-            .expires_at
-            .map_or(true, |expires_at| expires_at > now)
-    });
+    state
+        .pending
+        .retain(|_, request| request.expires_at.is_none_or(|expires_at| expires_at > now));
     state
         .delivered
-        .retain(|_, entry| entry.expires_at.map_or(true, |expires_at| expires_at > now));
+        .retain(|_, entry| entry.expires_at.is_none_or(|expires_at| expires_at > now));
 }
 
 fn install_autostart_entry() -> Result<()> {
