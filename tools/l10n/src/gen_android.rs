@@ -40,6 +40,18 @@ pub fn run(catalogs: &Catalogs, config: &TargetConfig) -> Result<()> {
                     if pattern.contains('%') {
                         attributes.push_str(" formatted=\"false\"");
                     }
+                    // Catalogs intentionally allow a locale to omit a key and
+                    // fall back to English. Tell Android lint that the default
+                    // resource is complete by design; otherwise every newly
+                    // extracted English-only string becomes a release error.
+                    if locale.code == "en"
+                        && !key.starts_with("web.")
+                        && catalogs.locales.iter().any(|other| {
+                            other.code != "en" && !catalogs.by_locale[&other.code].contains_key(key)
+                        })
+                    {
+                        attributes.push_str(" tools:ignore=\"MissingTranslation\"");
+                    }
                     // Website copy is present in the shared catalog so the
                     // generator can keep one key space, but it is never an
                     // Android surface and should not create translation
