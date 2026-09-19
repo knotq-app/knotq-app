@@ -139,6 +139,67 @@ fn moved_item_can_be_retyped_after_the_target_state_is_restored() {
 }
 
 #[test]
+fn concurrent_source_edit_and_cross_scheme_move_keep_the_destination_copy() {
+    let source_document = DocumentId::new();
+    let target_document = DocumentId::new();
+    let item = Item::new("old text");
+    let mut source = Scheme::new("Source", 0);
+    source.items.push(item.clone());
+    let target = Scheme::new("Target", 0);
+
+    let source_mover = YrsSchemeDocument::from_scheme(source_document, &source).unwrap();
+    let target_mover = YrsSchemeDocument::from_scheme(target_document, &target).unwrap();
+    let source_base = source_mover.encode_state_v1();
+    let target_base = target_mover.encode_state_v1();
+
+    let source_editor = YrsSchemeDocument::new(source_document);
+    source_editor.apply_update_v1(&source_base).unwrap();
+    let target_editor = YrsSchemeDocument::new(target_document);
+    target_editor.apply_update_v1(&target_base).unwrap();
+
+    let mut source_without_item = source.clone();
+    source_without_item.items.clear();
+    let source_move = source_mover
+        .sync_scheme(&source_without_item)
+        .unwrap()
+        .unwrap()
+        .update_v1;
+    let mut target_with_item = target.clone();
+    target_with_item.items.push(item.clone());
+    let target_move = target_mover
+        .sync_scheme(&target_with_item)
+        .unwrap()
+        .unwrap()
+        .update_v1;
+
+    let mut edited_source = source;
+    edited_source.items[0].set_text("edited concurrently");
+    let source_edit = source_editor
+        .sync_scheme(&edited_source)
+        .unwrap()
+        .unwrap()
+        .update_v1;
+
+    let merged_source = YrsSchemeDocument::new(source_document);
+    merged_source.apply_update_v1(&source_base).unwrap();
+    merged_source.apply_update_v1(&source_move).unwrap();
+    merged_source.apply_update_v1(&source_edit).unwrap();
+    let merged_target = YrsSchemeDocument::new(target_document);
+    merged_target.apply_update_v1(&target_base).unwrap();
+    merged_target.apply_update_v1(&target_move).unwrap();
+
+    assert!(
+        merged_source.scheme_items().unwrap().is_empty(),
+        "the source tombstone must win over a concurrent edit"
+    );
+    assert_eq!(
+        merged_target.scheme_items().unwrap(),
+        vec![item],
+        "the destination copy remains the move's authoritative placement"
+    );
+}
+
+#[test]
 fn concurrent_image_embeds_on_distinct_items_merge() {
     let document = DocumentId::new();
     let mut base = Scheme::new("Plan", 0);

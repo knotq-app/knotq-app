@@ -1042,15 +1042,24 @@ pub(crate) fn read_stored_item(item_map: &MapRef, txn: &impl ReadTxn) -> StoredI
     let snapshot_json = str_field("snapshot_json");
     let meta = materialize_item_meta(item_map, txn, &snapshot_json);
     let meta_json = meta.as_ref().and_then(|meta| item_snapshot_json(meta).ok());
+    let scalar_deleted = item_map
+        .get_as::<_, Option<bool>>(txn, "deleted")
+        .ok()
+        .flatten()
+        .unwrap_or(false);
     let deleted = presence_map_ref(item_map, txn)
-        .map(|presence| active_presence_adds(&presence, txn).is_empty())
-        .unwrap_or_else(|| {
-            item_map
-                .get_as::<_, Option<bool>>(txn, "deleted")
-                .ok()
-                .flatten()
-                .unwrap_or(false)
-        });
+        .map(|presence| {
+            let active = active_presence_adds(&presence, txn);
+            // Population snapshots from before presence tracking have only the
+            // legacy `deleted` scalar. A concurrent edit on such a snapshot
+            // adds a presence map containing the normal `seed` tag, but it is
+            // not a resurrection of a concurrent tombstone. Keep the scalar
+            // tombstone authoritative unless the edit explicitly re-added the
+            // item through the resurrection path below.
+            let explicit_resurrection = active.iter().any(|tag| tag.starts_with("resurrect:"));
+            (scalar_deleted && !explicit_resurrection) || active.is_empty()
+        })
+        .unwrap_or(scalar_deleted);
     StoredItem {
         position: str_field("position"),
         snapshot_json,

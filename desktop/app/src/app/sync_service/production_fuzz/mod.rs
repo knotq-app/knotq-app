@@ -21,7 +21,7 @@ mod scenarios;
 
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::Mutex;
+use std::sync::{Mutex, OnceLock};
 
 use backend::Account;
 use chrono::NaiveDate;
@@ -67,6 +67,11 @@ struct World {
     /// What each account's server materializes, as of the last sync against it.
     server_views: Vec<View>,
     devices: Vec<Option<DesktopDevice>>,
+    /// Account identity represented by the last passive check for each device.
+    /// A sync after sign-in/account switch intentionally changes the visible
+    /// workspace from the old account to the new one; that boundary must not be
+    /// attributed as a deletion on the new account's first pull.
+    passive_accounts: Vec<Option<usize>>,
     rng: Rng,
     attribution: Attribution,
     violations: Vec<String>,
@@ -95,6 +100,7 @@ impl World {
             accounts: (0..config.accounts).map(Account::new).collect(),
             server_views: (0..config.accounts).map(|_| View::default()).collect(),
             devices: Vec::new(),
+            passive_accounts: Vec::new(),
             rng: Rng::new(seed),
             attribution: Attribution::default(),
             violations: Vec::new(),
@@ -138,6 +144,7 @@ impl World {
             device.sign_in(&self.accounts[account]);
         }
         self.devices.push(Some(device));
+        self.passive_accounts.push(None);
         self.log(format!("device {index} installed, account {account:?}"));
         index
     }
@@ -252,7 +259,11 @@ impl World {
             "device {index} synced account {account}: {}",
             error.map_or("ok".to_string(), |err| format!("{err:#}"))
         ));
-        self.check(index, "sync", &before, &after);
+        let account_changed = self.passive_accounts[index] != Some(account);
+        if !account_changed {
+            self.check(index, "sync", &before, &after);
+        }
+        self.passive_accounts[index] = Some(account);
         self.audit_server(account, index);
     }
 
@@ -604,6 +615,11 @@ fn env_usize(key: &str, default: usize) -> usize {
 }
 
 fn run_seed(seed: u64, config: Config) {
+    let maintenance_coverage = config.maintenance_coverage;
+    with_fuzz_test_environment(maintenance_coverage, || run_seed_inner(seed, config));
+}
+
+fn run_seed_inner(seed: u64, config: Config) {
     let steps = config.steps;
     let mut world = World::new(seed, config);
     for _ in 0..steps {
@@ -613,14 +629,54 @@ fn run_seed(seed: u64, config: Config) {
 }
 
 fn run_seeds(first_seed: u64, config: impl Fn() -> Config + Sync) {
-    if config().maintenance_coverage {
-        // The production fuzz drives the real sync_snapshot path, so these
-        // test-only thresholds must be read by build_squash_proposal itself.
+    let maintenance_coverage = config().maintenance_coverage;
+    with_fuzz_test_environment(maintenance_coverage, || run_seeds_inner(first_seed, config));
+}
+
+/// The fuzzer's squash thresholds are process environment variables because
+/// the production engine intentionally has no test-only configuration API.
+/// Cargo runs these tests in parallel, so changing them without a test-wide
+/// lock lets the fixed regression scenarios change the corpus being measured.
+/// Keep the production API untouched while making each test's environment a
+/// properly scoped resource.
+fn with_fuzz_test_environment<R>(maintenance_coverage: bool, f: impl FnOnce() -> R) -> R {
+    static ENV_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+    let _lock = ENV_LOCK
+        .get_or_init(|| Mutex::new(()))
+        .lock()
+        .unwrap_or_else(|err| err.into_inner());
+    let previous_min_state = std::env::var_os("KNOTQ_SQUASH_MIN_STATE_BYTES");
+    let previous_min_ratio = std::env::var_os("KNOTQ_SQUASH_MIN_RATIO");
+    if maintenance_coverage {
         // Zero bytes makes the fuzzer's small scheme documents candidates and
         // a ratio of one accepts any history-free rebuild that is not larger.
         std::env::set_var("KNOTQ_SQUASH_MIN_STATE_BYTES", "0");
         std::env::set_var("KNOTQ_SQUASH_MIN_RATIO", "1");
     }
+    struct RestoreEnv {
+        min_state: Option<std::ffi::OsString>,
+        min_ratio: Option<std::ffi::OsString>,
+    }
+    impl Drop for RestoreEnv {
+        fn drop(&mut self) {
+            match self.min_state.take() {
+                Some(value) => std::env::set_var("KNOTQ_SQUASH_MIN_STATE_BYTES", value),
+                None => std::env::remove_var("KNOTQ_SQUASH_MIN_STATE_BYTES"),
+            }
+            match self.min_ratio.take() {
+                Some(value) => std::env::set_var("KNOTQ_SQUASH_MIN_RATIO", value),
+                None => std::env::remove_var("KNOTQ_SQUASH_MIN_RATIO"),
+            }
+        }
+    }
+    let _restore = RestoreEnv {
+        min_state: previous_min_state,
+        min_ratio: previous_min_ratio,
+    };
+    f()
+}
+
+fn run_seeds_inner(first_seed: u64, config: impl Fn() -> Config + Sync) {
     // Belt and braces: nothing here resolves the global data directory, but a
     // stray call must never reach the user's real KnotQ data.
     static GUARD: std::sync::Once = std::sync::Once::new();
@@ -665,7 +721,7 @@ fn run_seeds(first_seed: u64, config: impl Fn() -> Config + Sync) {
                     let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                         let mut seed_config = config();
                         seed_config.maintenance_coverage &= seed == maintenance_seed;
-                        run_seed(seed, seed_config)
+                        run_seed_inner(seed, seed_config)
                     }));
                     if let Err(payload) = outcome {
                         census(&failures).push((seed, panic_message(payload.as_ref())));
@@ -765,8 +821,6 @@ fn desktop_production_single_account_fuzz() {
 /// runs too late. Reproduces identically in debug and release.
 #[test]
 fn a_scheme_created_in_flight_survives_an_unrelated_replace_fallback() {
-    std::env::set_var("KNOTQ_SQUASH_MIN_STATE_BYTES", "0");
-    std::env::set_var("KNOTQ_SQUASH_MIN_RATIO", "1");
     run_seed(
         10_404,
         Config {

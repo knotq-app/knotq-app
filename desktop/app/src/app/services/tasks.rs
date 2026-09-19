@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::path::Path;
 use std::time::Duration as StdDuration;
 
 use async_channel::Receiver;
@@ -24,17 +25,32 @@ use super::{
 /// The disk half of a save: the workspace (whole, or only the dirty schemes),
 /// then the pending CRDT queue, then the CRDT document states in `crdt_scope`.
 /// Shared by the save task and the production-path sync fuzzer.
-pub(crate) fn write_save_snapshot(
-    path: &std::path::Path,
-    workspace: &Workspace,
-    dirty_ids: &std::collections::HashSet<SchemeId>,
-    pending_crdt_edits: &[knotq_sync::PendingCrdtEdit],
-    queued_item_fields: &HashMap<knotq_model::OperationId, Vec<knotq_sync::QueuedItemFields>>,
-    recent_item_edits: &HashMap<knotq_model::ItemId, knotq_sync::RecentItemEdit>,
-    recent_folder_edits: &HashMap<knotq_model::FolderId, knotq_sync::RecentFolderEdit>,
-    crdt_scope: CrdtSaveScope,
-    crdt_states: &HashMap<knotq_model::DocumentId, std::sync::Arc<[u8]>>,
-) -> anyhow::Result<()> {
+pub(crate) struct SaveSnapshot<'a> {
+    pub(crate) path: &'a Path,
+    pub(crate) workspace: &'a Workspace,
+    pub(crate) dirty_ids: &'a std::collections::HashSet<SchemeId>,
+    pub(crate) pending_crdt_edits: &'a [knotq_sync::PendingCrdtEdit],
+    pub(crate) queued_item_fields:
+        &'a HashMap<knotq_model::OperationId, Vec<knotq_sync::QueuedItemFields>>,
+    pub(crate) recent_item_edits: &'a HashMap<knotq_model::ItemId, knotq_sync::RecentItemEdit>,
+    pub(crate) recent_folder_edits:
+        &'a HashMap<knotq_model::FolderId, knotq_sync::RecentFolderEdit>,
+    pub(crate) crdt_scope: CrdtSaveScope,
+    pub(crate) crdt_states: &'a HashMap<knotq_model::DocumentId, std::sync::Arc<[u8]>>,
+}
+
+pub(crate) fn write_save_snapshot(snapshot: SaveSnapshot<'_>) -> anyhow::Result<()> {
+    let SaveSnapshot {
+        path,
+        workspace,
+        dirty_ids,
+        pending_crdt_edits,
+        queued_item_fields,
+        recent_item_edits,
+        recent_folder_edits,
+        crdt_scope,
+        crdt_states,
+    } = snapshot;
     // Leave a pre-save checkpoint before touching the plain workspace files.
     // If the process dies after those files are replaced but before the queue
     // or CRDT state is written, startup can reconstruct the missing deltas.
@@ -185,17 +201,17 @@ pub(crate) fn spawn_save_task(
                                 .into_iter()
                                 .map(|(document, handle)| (document, handle.encode()))
                                 .collect();
-                            write_save_snapshot(
-                                &path,
-                                &ws,
-                                &dirty_ids,
-                                &pending_crdt_edits,
-                                &queued_item_fields,
-                                &recent_item_edits,
-                                &recent_folder_edits,
+                            write_save_snapshot(SaveSnapshot {
+                                path: &path,
+                                workspace: &ws,
+                                dirty_ids: &dirty_ids,
+                                pending_crdt_edits: &pending_crdt_edits,
+                                queued_item_fields: &queued_item_fields,
+                                recent_item_edits: &recent_item_edits,
+                                recent_folder_edits: &recent_folder_edits,
                                 crdt_scope,
-                                &crdt_states,
-                            )
+                                crdt_states: &crdt_states,
+                            })
                         })
                         .await;
                     if let Err(err) = result {

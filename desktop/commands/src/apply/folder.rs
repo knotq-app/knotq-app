@@ -396,8 +396,7 @@ fn scheme_tombstone_origin(
             workspace.folders.iter().find_map(|(folder_id, folder)| {
                 folder
                     .children
-                    .iter()
-                    .any(|child| *child == NodeRef::Scheme(scheme_id))
+                    .contains(&NodeRef::Scheme(scheme_id))
                     .then_some(*folder_id)
             })
         })

@@ -374,6 +374,29 @@ pub(super) fn sync_snapshot_in(
     };
     push_result?;
 
+    // A successful push changes the local CRDT documents even when the pull
+    // before it was empty.  The workspace materialized above therefore cannot
+    // be returned as-is: it predates the accepted local edits, while the CRDT
+    // states we hand to landing already contain them.  Keep the two halves of a
+    // sync result self-consistent by materializing once more from those final
+    // documents.  Without this boundary, a crash/relaunch recovery or an
+    // in-flight landing can adopt a pre-push workspace index beside post-push
+    // CRDT bytes and silently undo a carry-over, archive/restore, or metadata
+    // edit on the next sync.
+    let pushed_documents: std::collections::HashSet<_> =
+        pushed.iter().map(|document| document.document).collect();
+    let pushed_scheme_documents: std::collections::HashSet<_> = workspace
+        .scheme_sync
+        .iter()
+        .filter_map(|(scheme, metadata)| pushed_documents.contains(&metadata.id).then_some(*scheme))
+        .collect();
+    let post_push_workspace = crdt_docs.materialized_workspace_repair(&workspace, &|scheme| {
+        pushed_scheme_documents.contains(scheme)
+    })?;
+    if post_push_workspace != workspace {
+        workspace = post_push_workspace;
+        save_workspace(path, &workspace)?;
+    }
     // Retry media after the CRDT push using a head map that treats newly pushed
     // documents as present, so successful pre-push uploads are not re-sent but
     // skipped or changed local assets still get uploaded.

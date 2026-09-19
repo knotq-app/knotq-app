@@ -180,10 +180,8 @@ impl WorkspaceStore {
         let population_bases = workspace
             .schemes
             .iter()
-            .filter_map(|(scheme_id, scheme)| {
-                crdt.scheme_document_is_unpopulated(*scheme_id)
-                    .then(|| (*scheme_id, scheme.clone()))
-            })
+            .filter(|(scheme_id, _)| crdt.scheme_document_is_unpopulated(**scheme_id))
+            .map(|(scheme_id, scheme)| (*scheme_id, scheme.clone()))
             .collect();
         Self {
             workspace,
@@ -278,11 +276,30 @@ impl WorkspaceStore {
             changes.schemes.insert(*scheme_id);
         }
 
-        if changes.is_empty() {
-            return;
+        if !changes.is_empty() {
+            self.defer_crdt(changes);
+            self.flush_crdt();
         }
-        self.defer_crdt(changes);
-        self.flush_crdt();
+
+        // The recovery marker pairs the plain workspace save with the CRDT
+        // save, but a process can die after either half.  In that window the
+        // persisted CRDT may already contain the newer projection while the
+        // plain workspace still contains the older one.  Re-express the
+        // visible store from the recovered documents before the first sync
+        // snapshot; otherwise the first sync after relaunch reports an
+        // apparent local edit that is only recovery catching up the UI.
+        let Ok(recovered) = self
+            .crdt
+            .materialized_workspace_repair(&self.workspace, &|_| false)
+        else {
+            return;
+        };
+        if recovered != self.workspace {
+            self.workspace = recovered;
+            self.index_stale = true;
+            self.dirty = WorkspaceDirtyState::all(&self.workspace);
+            self.crdt_save_scope.widen_to_all();
+        }
     }
 
     /// Reconcile any deferred CRDT changes (see `deferred_crdt`) into the CRDT

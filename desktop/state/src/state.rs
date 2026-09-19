@@ -111,7 +111,7 @@ impl AppState {
         };
         let workspace = store.workspace().clone();
         let dirty_schemes = store.dirty().schemes.clone();
-        let state = Self {
+        Self {
             store,
             settings: settings.clone(),
             dirty_schemes,
@@ -152,8 +152,7 @@ impl AppState {
             daily_queue_loaded_calendar_months: daily_queue.loaded_calendar_months,
             window_size: settings.window_size,
             window_position: settings.window_position,
-        };
-        state
+        }
     }
 
     pub fn subscribe(&mut self) -> std::sync::mpsc::Receiver<crate::AppEvent> {
@@ -196,6 +195,10 @@ impl AppState {
     /// checkpoint completed. See [`WorkspaceStore::recover_workspace_save`].
     pub fn recover_workspace_save(&mut self, base: Workspace) {
         self.store.recover_workspace_save(base);
+        // `WorkspaceStore` may have re-materialized a CRDT-ahead projection
+        // during recovery. Keep the UI-facing copy and its dirty bookkeeping
+        // in lockstep before the first post-launch sync snapshot.
+        self.sync_workspace_from_store();
     }
 
     /// Revision of everything the workspace-derived views read. Bumped by every

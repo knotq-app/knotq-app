@@ -919,10 +919,20 @@ impl Attribution {
                     }
                     _ => false,
                 };
+                // A run can push this device's local operation and crash before
+                // landing it. The next run then pulls the device's own write,
+                // so a field may change with no *other* device as writer. The
+                // attribution set records that command before the crash; treat
+                // the self-echo as explained just like a remote writer.
+                let local_write_echo = self
+                    .writers
+                    .get(key)
+                    .is_some_and(|writers| writers.contains(&device));
                 let explained = self
                     .writers
                     .get(key)
                     .is_some_and(|writers| writers.iter().any(|writer| *writer != device))
+                    || local_write_echo
                     || self.archived_with_its_folder(key, new, after)
                     || self.archived_with_its_folder(key, new, before)
                     || parent_unchanged_across_root_change

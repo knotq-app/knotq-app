@@ -206,17 +206,18 @@ impl DesktopDevice {
             .into_iter()
             .map(|(document, handle)| (document, handle.encode()))
             .collect();
-        let result = crate::app::services::write_save_snapshot(
-            &self.workspace_path,
-            &workspace,
-            &dirty_ids,
-            &pending,
-            &queued_item_fields,
-            &recent_item_edits,
-            &recent_folder_edits,
-            scope,
-            &crdt_states,
-        );
+        let result =
+            crate::app::services::write_save_snapshot(crate::app::services::SaveSnapshot {
+                path: &self.workspace_path,
+                workspace: &workspace,
+                dirty_ids: &dirty_ids,
+                pending_crdt_edits: &pending,
+                queued_item_fields: &queued_item_fields,
+                recent_item_edits: &recent_item_edits,
+                recent_folder_edits: &recent_folder_edits,
+                crdt_scope: scope,
+                crdt_states: &crdt_states,
+            });
         if result.is_err() {
             self.state.dirty_schemes.extend(dirty_ids);
             self.state.index_dirty = true;

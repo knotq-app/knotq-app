@@ -81,8 +81,11 @@ pub struct RecentFolderEdit {
     pub folder: FolderId,
     pub name: String,
     pub expanded: bool,
-    /// Bit 0 = name, bit 1 = expanded. Append-only for future fields.
+    /// Bit 0 = name, bit 1 = expanded, bit 2 = archived. Append-only for
+    /// future fields.
     pub fields: u8,
+    #[serde(default)]
+    pub archived: bool,
     /// Value observed immediately before the local edit, when available. A
     /// recovery bridge may reapply its value only when the landed copy still
     /// has this predecessor; a different value is a legitimate remote edit.
@@ -90,6 +93,14 @@ pub struct RecentFolderEdit {
     pub previous_name: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub previous_expanded: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub previous_archived: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub restore_parent: Option<FolderId>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub restore_position: Option<usize>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub restore_schemes: Vec<knotq_model::SchemeId>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]

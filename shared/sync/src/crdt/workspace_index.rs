@@ -1349,10 +1349,10 @@ pub(crate) fn workspace_document_snapshot(workspace: &Workspace) -> WorkspaceDoc
         // workspace index, or the stale node can be retained by the lazy-scheme
         // preservation path below.
         .filter(|(scheme, _)| {
-            !workspace
+            workspace
                 .deleted_scheme_origins
                 .get(scheme)
-                .is_some_and(|origin| origin.position == PERMANENT_DELETE_TOMBSTONE_POSITION)
+                .is_none_or(|origin| origin.position != PERMANENT_DELETE_TOMBSTONE_POSITION)
                 && (workspace.schemes.contains_key(scheme)
                     || workspace.recently_deleted.contains(scheme)
                     || !workspace.deleted_scheme_origins.contains_key(scheme))
@@ -1368,10 +1368,10 @@ pub(crate) fn workspace_document_snapshot(workspace: &Workspace) -> WorkspaceDoc
         .folder_sync
         .iter()
         .filter(|(folder, _)| {
-            !workspace
+            workspace
                 .deleted_folder_origins
                 .get(folder)
-                .is_some_and(|origin| origin.position == PERMANENT_DELETE_TOMBSTONE_POSITION)
+                .is_none_or(|origin| origin.position != PERMANENT_DELETE_TOMBSTONE_POSITION)
                 && (workspace.folders.contains_key(folder)
                     || workspace.recently_deleted_folders.contains(folder)
                     || !workspace.deleted_folder_origins.contains_key(folder))

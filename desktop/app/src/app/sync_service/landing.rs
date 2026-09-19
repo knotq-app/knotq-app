@@ -107,7 +107,15 @@ pub(super) fn adopt_sync_workspace(
     if merged {
         true
     } else if !has_local_edits {
-        state.replace_workspace_from_sync(workspace, crdt_states)
+        // The sync result is a complete, already-merged snapshot. When no
+        // local command landed while the request was in flight, adopting it
+        // wholesale is the canonical boundary: incrementally unioning it with
+        // a stale local CRDT can preserve an operation the server never
+        // accepted (for example a reasserted move's position/text), leaving
+        // this device different even though its pending queue is empty. The
+        // incremental path is reserved for the only case that needs it: a
+        // local edit that must be replayed over the returned snapshot.
+        state.replace_workspace_from_sync_result(workspace, crdt_states)
     } else if squash_applied {
         state.replace_workspace_from_squash(workspace, crdt_states)
     } else {

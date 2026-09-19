@@ -851,9 +851,7 @@ fn workspace_crdt_documents_merge_an_edit_made_during_a_shared_first_sync_base()
     // sync goes through when it has no local edit to base-populate from).
     let mut device_a = WorkspaceCrdtDocuments::empty(&base);
     device_a.populate_workspace_if_unpopulated(&base).unwrap();
-    device_a
-        .sync_changes(&base, &WorkspaceCrdtChangeSet::default().workspace())
-        .updates;
+    device_a.sync_changes(&base, &WorkspaceCrdtChangeSet::default().workspace());
 
     // Device B: never synced, populates its index from the SAME base, then
     // edits locally (recolour) before its own first sync completes.

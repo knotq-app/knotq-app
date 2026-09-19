@@ -17,9 +17,9 @@ mod tasks;
 pub(crate) use hang_probe::spawn as spawn_hang_probe;
 #[cfg(test)]
 pub(crate) use shutdown::{abandon_unlanded_sync_run, write_shutdown_workspace};
-#[cfg(test)]
-pub(crate) use tasks::write_save_snapshot;
 pub(crate) use tasks::{spawn_notification_task, spawn_save_task, spawn_timeline_task};
+#[cfg(test)]
+pub(crate) use tasks::{write_save_snapshot, SaveSnapshot};
 
 pub(super) const SAVE_DEBOUNCE: StdDuration = StdDuration::from_secs(2);
 /// Backoff before re-signalling a save after a failed write (disk full,

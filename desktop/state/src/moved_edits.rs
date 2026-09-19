@@ -391,30 +391,42 @@ pub struct LocalSchemeEdits {
 pub(crate) struct EditedFolderFields {
     pub(crate) name: bool,
     pub(crate) expanded: bool,
+    pub(crate) archived: bool,
     /// Restored from durable state after a restart; consumed by one recovery
     /// landing rather than acting as a permanent conflict resolver.
     restart_bridge: bool,
     previous_name: Option<String>,
     previous_expanded: Option<bool>,
+    previous_archived: Option<bool>,
+    desired_archived: Option<bool>,
+    restore_parent: Option<knotq_model::FolderId>,
+    restore_position: Option<usize>,
+    restore_schemes: Vec<knotq_model::SchemeId>,
 }
 
 impl EditedFolderFields {
     fn bits(&self) -> u8 {
-        u8::from(self.name) | (u8::from(self.expanded) << 1)
+        u8::from(self.name) | (u8::from(self.expanded) << 1) | (u8::from(self.archived) << 2)
     }
 
     fn from_bits(bits: u8) -> Self {
         Self {
             name: bits & 1 != 0,
             expanded: bits & 2 != 0,
+            archived: bits & 4 != 0,
             restart_bridge: false,
             previous_name: None,
             previous_expanded: None,
+            previous_archived: None,
+            desired_archived: None,
+            restore_parent: None,
+            restore_position: None,
+            restore_schemes: Vec::new(),
         }
     }
 
     fn any(&self) -> bool {
-        self.name || self.expanded
+        self.name || self.expanded || self.archived
     }
 
     fn apply(&self, landed: &mut knotq_model::Folder, local: &knotq_model::Folder) {
@@ -472,6 +484,8 @@ fn record_folder(
     match command {
         Command::RenameFolder { id, .. } => mark(*id, |fields| fields.name = true),
         Command::SetFolderExpanded { id, .. } => mark(*id, |fields| fields.expanded = true),
+        Command::RestoreFolder { folder, .. } => mark(folder.id, |fields| fields.archived = true),
+        Command::DeleteFolder { id } => mark(*id, |fields| fields.archived = true),
         Command::Batch(commands) => {
             for command in commands {
                 record_folder(fields, command);
@@ -502,17 +516,42 @@ impl AppState {
             let Some(value) = workspace.folders.get(&folder) else {
                 continue;
             };
+            let mut edited = edited;
+            if edited.archived {
+                edited.desired_archived = Some(workspace.is_folder_deleted(folder));
+                if !workspace.is_folder_deleted(folder) {
+                    edited.restore_parent = value.parent;
+                    edited.restore_position = value.parent.and_then(|parent| {
+                        workspace
+                            .folders
+                            .get(&parent)?
+                            .children
+                            .iter()
+                            .position(|child| *child == knotq_model::NodeRef::Folder(folder))
+                    });
+                    edited.restore_schemes =
+                        workspace.subtree_scheme_ids(folder).into_iter().collect();
+                }
+            }
             self.recent_local_folder_edits
                 .entry(folder)
                 .and_modify(|(current, existing)| {
                     *current = value.clone();
                     existing.name |= edited.name;
                     existing.expanded |= edited.expanded;
+                    existing.archived |= edited.archived;
                     if edited.name {
                         existing.previous_name = edited.previous_name.clone();
                     }
                     if edited.expanded {
                         existing.previous_expanded = edited.previous_expanded;
+                    }
+                    if edited.archived {
+                        existing.previous_archived = edited.previous_archived;
+                        existing.desired_archived = edited.desired_archived;
+                        existing.restore_parent = edited.restore_parent;
+                        existing.restore_position = edited.restore_position;
+                        existing.restore_schemes = edited.restore_schemes.clone();
                     }
                     // A fresh local command supersedes a restart bridge. Its
                     // pending operation is captured at the next landing.
@@ -537,6 +576,12 @@ fn record_folder_predecessors(
             Command::SetFolderExpanded { id, .. },
             Some(Command::SetFolderExpanded { expanded, .. }),
         ) => fields.entry(*id).or_default().previous_expanded = Some(*expanded),
+        (Command::RestoreFolder { folder, .. }, Some(Command::DeleteFolder { .. })) => {
+            fields.entry(folder.id).or_default().previous_archived = Some(true)
+        }
+        (Command::DeleteFolder { id }, Some(Command::RestoreFolder { .. })) => {
+            fields.entry(*id).or_default().previous_archived = Some(false)
+        }
         (Command::Batch(commands), Some(Command::Batch(inverses))) => {
             for (command, inverse) in commands.iter().zip(inverses) {
                 record_folder_predecessors(fields, command, Some(inverse));
@@ -754,12 +799,25 @@ impl AppState {
                     // across successive commands. A later text edit must not
                     // forget an earlier date/marker edit before a stale move
                     // arrives from another device.
-                    entry.get_mut().0 = scheme;
-                    if !is_default_item_placeholder(&found)
-                        || is_default_item_placeholder(&entry.get().1)
-                    {
-                        entry.get_mut().1 = found;
+                    let preserve_source =
+                        (entry.get().2.whole || entry.get().2.content || entry.get().2.indent)
+                            && !edited.whole
+                            && !edited.content
+                            && !edited.indent;
+                    if !preserve_source {
+                        entry.get_mut().0 = scheme;
                     }
+                    // Completion/recurrence maintenance can touch an item
+                    // after an earlier whole-value edit has moved into a
+                    // second document. When `preserve_source` is true, the
+                    // original source stays in the journal; otherwise the
+                    // explicit local command's scheme becomes the source.
+                    let existing = entry.get().1.clone();
+                    entry.get_mut().1 = if is_default_item_placeholder(&existing) {
+                        found
+                    } else {
+                        edited.apply(&existing, &found)
+                    };
                     entry.get_mut().2.union(edited);
                     entry.get_mut().2.restart_bridge = false;
                     entry.get_mut().2.restart_guard = false;
@@ -801,12 +859,21 @@ impl AppState {
             self.recent_moved_item_landed_values.remove(item);
             match tracked.entry(*item) {
                 std::collections::hash_map::Entry::Occupied(mut entry) => {
-                    entry.get_mut().0 = *scheme;
-                    if !is_default_item_placeholder(value)
-                        || is_default_item_placeholder(&entry.get().1)
-                    {
-                        entry.get_mut().1 = value.clone();
+                    // Keep the source document of an acknowledged edit stable
+                    // while a sync landing moves its visible copy. A queued
+                    // field record is provenance for the old command, not a
+                    // fresh local move; changing this scheme to `locate(...)`
+                    // would make the destination look like the source and
+                    // disable the bridge that re-expresses the edit.
+                    if captured.placements.contains_key(item) {
+                        entry.get_mut().0 = *scheme;
                     }
+                    let existing = entry.get().1.clone();
+                    entry.get_mut().1 = if is_default_item_placeholder(&existing) {
+                        value.clone()
+                    } else {
+                        edited.apply(&existing, value)
+                    };
                     entry.get_mut().2.union(edited);
                 }
                 std::collections::hash_map::Entry::Vacant(entry) => {
@@ -989,6 +1056,7 @@ impl AppState {
             let entry = fields.entry(*folder).or_default();
             entry.name |= edited.name;
             entry.expanded |= edited.expanded;
+            entry.archived |= edited.archived;
             entry.restart_bridge |= edited.restart_bridge;
             if entry.previous_name.is_none() {
                 entry.previous_name = edited.previous_name.clone();
@@ -996,16 +1064,38 @@ impl AppState {
             if entry.previous_expanded.is_none() {
                 entry.previous_expanded = edited.previous_expanded;
             }
+            if entry.previous_archived.is_none() {
+                entry.previous_archived = edited.previous_archived;
+            }
+            entry.desired_archived = edited.desired_archived;
+            entry.restore_parent = edited.restore_parent;
+            entry.restore_position = edited.restore_position;
+            entry.restore_schemes = edited.restore_schemes.clone();
         }
         let workspace = self.store.workspace();
         let edits: HashMap<_, _> = fields
             .into_iter()
             .filter(|(_, edited)| edited.any())
-            .filter_map(|(folder, edited)| {
-                workspace
-                    .folders
-                    .get(&folder)
-                    .map(|folder| (folder.id, (folder.clone(), edited)))
+            .filter_map(|(folder, mut edited)| {
+                workspace.folders.get(&folder).map(|folder| {
+                    if edited.archived {
+                        edited.desired_archived = Some(workspace.is_folder_deleted(folder.id));
+                        if !workspace.is_folder_deleted(folder.id) {
+                            edited.restore_parent = folder.parent;
+                            edited.restore_position =
+                                folder.parent.and_then(|parent| {
+                                    workspace.folders.get(&parent)?.children.iter().position(
+                                        |child| *child == knotq_model::NodeRef::Folder(folder.id),
+                                    )
+                                });
+                            edited.restore_schemes = workspace
+                                .subtree_scheme_ids(folder.id)
+                                .into_iter()
+                                .collect();
+                        }
+                    }
+                    (folder.id, (folder.clone(), edited))
+                })
             })
             .collect();
         LocalFolderEdits { edits }
@@ -1045,14 +1135,34 @@ impl AppState {
                     fields.expanded = false;
                     fields.previous_expanded = None;
                 }
+                let landed_archived = workspace.is_folder_deleted(folder);
+                if fields.archived
+                    && fields
+                        .previous_archived
+                        .is_some_and(|previous| landed_archived != previous)
+                {
+                    fields.archived = false;
+                    fields.previous_archived = None;
+                }
                 if !fields.any() {
                     completed.insert(folder);
                     continue;
                 }
                 let mut merged = landed.clone();
                 fields.apply(&mut merged, &local);
-                let guarded = fields.previous_name.is_some() || fields.previous_expanded.is_some();
-                if merged != *landed
+                let descendant_restore_needed = fields.desired_archived == Some(false)
+                    && fields
+                        .restore_schemes
+                        .iter()
+                        .any(|scheme| workspace.is_scheme_deleted(*scheme));
+                let folder_archive_needed = fields
+                    .desired_archived
+                    .is_some_and(|desired| desired != landed_archived);
+                let archive_needed = folder_archive_needed || descendant_restore_needed;
+                let guarded = fields.previous_name.is_some()
+                    || fields.previous_expanded.is_some()
+                    || fields.previous_archived.is_some();
+                if (merged != *landed || archive_needed)
                     && self.folder_reassertions.get(&folder).copied().unwrap_or(0) >= 4
                     && !guarded
                 {
@@ -1077,7 +1187,55 @@ impl AppState {
                         },
                     ));
                 }
-                if merged == *landed && !guarded {
+                if folder_archive_needed {
+                    if fields.desired_archived == Some(true) {
+                        commands.push((folder, Command::DeleteFolder { id: folder }));
+                    } else {
+                        let parent = fields
+                            .restore_parent
+                            .or(local.parent)
+                            .unwrap_or(workspace.root);
+                        let position = fields.restore_position.unwrap_or(0).min(
+                            workspace.folders.get(&parent).map_or(0, |parent_folder| {
+                                parent_folder
+                                    .children
+                                    .iter()
+                                    .filter(|child| **child != knotq_model::NodeRef::Folder(folder))
+                                    .count()
+                            }),
+                        );
+                        commands.push((
+                            folder,
+                            Command::RestoreFolder {
+                                parent,
+                                position,
+                                folder: local.clone(),
+                            },
+                        ));
+                    }
+                }
+                if descendant_restore_needed {
+                    let position = workspace
+                        .folders
+                        .get(&folder)
+                        .map_or(0, |folder| folder.children.len());
+                    for scheme_id in &fields.restore_schemes {
+                        let Some(scheme) = workspace.schemes.get(scheme_id).cloned() else {
+                            continue;
+                        };
+                        if workspace.is_scheme_deleted(*scheme_id) {
+                            commands.push((
+                                folder,
+                                Command::RestoreScheme {
+                                    folder,
+                                    position,
+                                    scheme,
+                                },
+                            ));
+                        }
+                    }
+                }
+                if merged == *landed && !archive_needed && !guarded {
                     // An unguarded bridge has landed its value, so it must not
                     // replay forever. Guarded entries retain their predecessor
                     // so a later stale landing can be repaired safely without
@@ -1099,12 +1257,16 @@ impl AppState {
         for (folder, command) in commands {
             if !matches!(
                 &command,
-                Command::RenameFolder { .. } | Command::SetFolderExpanded { .. }
+                Command::RenameFolder { .. }
+                    | Command::SetFolderExpanded { .. }
+                    | Command::DeleteFolder { .. }
+                    | Command::RestoreFolder { .. }
+                    | Command::RestoreScheme { .. }
             ) {
                 continue;
             }
             if self
-                .apply_prechecked_local_command(command, CommandOrigin::User)
+                .apply_prechecked_local_command(command.clone(), CommandOrigin::User)
                 .is_ok()
             {
                 applied += 1;
@@ -1151,6 +1313,11 @@ impl AppState {
             fields.restart_bridge = true;
             fields.previous_name = record.previous_name;
             fields.previous_expanded = record.previous_expanded;
+            fields.previous_archived = record.previous_archived;
+            fields.desired_archived = fields.archived.then_some(record.archived);
+            fields.restore_parent = record.restore_parent;
+            fields.restore_position = record.restore_position;
+            fields.restore_schemes = record.restore_schemes;
             self.recent_local_folder_edits
                 .insert(folder, (value, fields));
         }
@@ -1172,6 +1339,13 @@ impl AppState {
                         fields: fields.bits(),
                         previous_name: fields.previous_name.clone(),
                         previous_expanded: fields.previous_expanded,
+                        archived: fields
+                            .desired_archived
+                            .unwrap_or_else(|| self.store.workspace().is_folder_deleted(*folder)),
+                        previous_archived: fields.previous_archived,
+                        restore_parent: fields.restore_parent,
+                        restore_position: fields.restore_position,
+                        restore_schemes: fields.restore_schemes.clone(),
                     },
                 )
             })
@@ -1219,20 +1393,33 @@ impl AppState {
             .into_iter()
             .filter(|(_, edited)| edited.any())
             .filter_map(|(item, edited)| {
-                let preferred = preferred_schemes.get(&item).and_then(|scheme| {
-                    workspace
-                        .scheme(*scheme)
-                        .and_then(|value| value.item(item).map(|found| (*scheme, found)))
-                });
-                preferred
+                // A queued field mask can outlive the workspace snapshot that
+                // produced it. After a relaunch, that snapshot may still be
+                // the old copy of a line even though the journal already
+                // contains this device's newer value. The journal is updated
+                // synchronously with every accepted local item command, so it
+                // is the authoritative value source whenever it exists;
+                // queued/workspace state supplies the value only for items
+                // without a journal entry yet.
+                self.recent_local_item_edits
+                    .edits
+                    .get(&item)
+                    .map(|(scheme, value, _)| (*scheme, value))
+                    .or_else(|| {
+                        preferred_schemes.get(&item).and_then(|scheme| {
+                            workspace
+                                .scheme(*scheme)
+                                .and_then(|value| value.item(item).map(|found| (*scheme, found)))
+                        })
+                    })
                     .or_else(|| locate(workspace, item))
-                    .and_then(|(scheme, found)| {
+                    .map(|(scheme, found)| {
                         let mut net_fields = edited;
                         net_fields.retain_net_changes(
                             found,
                             locate(baseline, item).map(|(_, baseline)| baseline),
                         );
-                        Some((item, (scheme, found.clone(), edited)))
+                        (item, (scheme, found.clone(), edited))
                     })
             })
             .collect();
@@ -1399,7 +1586,7 @@ impl AppState {
                     // materialized a competing scheme snapshot. Recreate it at
                     // the end of its original editable scheme; the item id is
                     // stable, so the CRDT insert is idempotent on other devices.
-                    if !local.external.is_some()
+                    if local.external.is_none()
                         && workspace.scheme(local_scheme).is_some()
                         && !workspace.is_scheme_read_only(local_scheme)
                         && !workspace.is_scheme_deleted(local_scheme)
@@ -1454,13 +1641,23 @@ impl AppState {
                     // journal replay there would be a second, non-causal
                     // conflict resolver and can make two valid edits ping-pong
                     // forever.
-                    if landed_scheme == local_scheme {
+                    let changed_after_bridge = self
+                        .recent_moved_item_landed_values
+                        .get(&item)
+                        .is_some_and(|previous| {
+                            previous != landed && (edited.whole || edited.content || edited.indent)
+                        });
+                    if landed_scheme == local_scheme && !changed_after_bridge {
                         observed_destinations.push((item, landed_scheme, landed.clone()));
                         continue;
                     } else if self
                         .recent_moved_item_landed_schemes
                         .get(&item)
                         .is_some_and(|scheme| *scheme == landed_scheme)
+                        && !self
+                            .recent_moved_item_landed_values
+                            .get(&item)
+                            .is_some_and(|previous| previous != landed && edited.whole)
                     {
                         // This destination has already been observed for this
                         // journal generation. It may now contain a concurrent
@@ -1486,7 +1683,27 @@ impl AppState {
                     consumed_restart_bridges.insert(item);
                 }
                 let merged = edited.apply(landed, &local);
-                if merged != *landed {
+                // A moved line can already look correct in the destination
+                // workspace while the destination CRDT still carries a stale
+                // snapshot behind its field-wise view.  A later metadata-only
+                // write can make that hidden snapshot win for content/indent
+                // (the visible line then jumps back even though nobody edited
+                // those fields).  Re-express the complete authored value once
+                // on a genuinely new destination so the destination document
+                // has the same causal snapshot as the visible bridge.
+                let first_destination_bridge = moved_only
+                    && landed_scheme != local_scheme
+                    && !self.recent_moved_item_landed_schemes.contains_key(&item)
+                    && edited.whole;
+                let changed_after_destination_bridge = moved_only
+                    && self
+                        .recent_moved_item_landed_values
+                        .get(&item)
+                        .is_some_and(|previous| {
+                            previous != landed && (edited.whole || edited.content || edited.indent)
+                        });
+                if merged != *landed || first_destination_bridge || changed_after_destination_bridge
+                {
                     commands.push(Command::ReplaceItem {
                         scheme: landed_scheme,
                         item: merged,
@@ -1517,8 +1734,29 @@ impl AppState {
                 Command::ReplaceItem { item, .. } => item.id,
                 _ => continue,
             };
-            match self.apply_prechecked_local_command(command, CommandOrigin::User) {
-                Ok(_) => applied += 1,
+            match self.apply_prechecked_local_command(command.clone(), CommandOrigin::User) {
+                Ok(_) => {
+                    applied += 1;
+                    if moved_only {
+                        if let Command::ReplaceItem { scheme, item } = &command {
+                            if let Some(current) = self
+                                .store
+                                .workspace()
+                                .scheme(*scheme)
+                                .and_then(|scheme| scheme.item(item.id))
+                            {
+                                // The bridge guard records the value after its
+                                // repair, not the stale value that triggered
+                                // it. Otherwise the next no-op sync would see
+                                // its own repair as a new remote divergence.
+                                self.recent_moved_item_landed_schemes
+                                    .insert(item.id, *scheme);
+                                self.recent_moved_item_landed_values
+                                    .insert(item.id, current.clone());
+                            }
+                        }
+                    }
+                }
                 Err(err) => eprintln!(
                     "sync: could not re-apply this device's edit to moved line {item}: {err:?}"
                 ),

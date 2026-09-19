@@ -34,7 +34,10 @@ ALLOWED = {
     "shared/model/src/workspace/sync_identity.rs",
 }
 
-CALL = re.compile(r"schemes\s*\.\s*remove\s*\(")
+# Match the actual `schemes` map, not a longer identifier such as
+# `recent_moved_item_landed_schemes`. The latter is unrelated bookkeeping and
+# must not be mistaken for removal of a workspace scheme.
+CALL = re.compile(r"(?<![A-Za-z0-9_])schemes\s*\.\s*remove\s*\(")
 offenders = []
 
 for root in ("shared", "desktop", "tools"):
