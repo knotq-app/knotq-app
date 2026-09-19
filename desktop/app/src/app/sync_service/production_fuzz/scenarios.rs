@@ -1391,6 +1391,7 @@ fn install_prepared(world: &mut World, workspace: knotq_model::Workspace) -> usi
     world.attribution.record_seed(index, &seeded);
     device.sign_in(&world.accounts[0]);
     world.devices.push(Some(device));
+    world.passive_accounts.push(None);
     index
 }
 

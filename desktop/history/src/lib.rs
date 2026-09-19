@@ -147,7 +147,7 @@ pub fn list_workspace_snapshots(workspace_dir: &Path) -> Result<Vec<WorkspaceSna
             label: format_snapshot_label(snapshot.timestamp),
         })
         .collect::<Vec<_>>();
-    snapshots.sort_by(|a, b| b.timestamp.cmp(&a.timestamp));
+    snapshots.sort_by_key(|a| std::cmp::Reverse(a.timestamp));
     snapshots.dedup_by(|a, b| a.id == b.id);
     Ok(snapshots)
 }
