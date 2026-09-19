@@ -184,14 +184,12 @@ pub fn daily_queue_carryover_command(
             }
         }
     } else {
-        let mut position = today.items.len();
-        for item in carried_items {
+        for (position, item) in (today.items.len()..).zip(carried_items) {
             commands.push(Command::InsertItem {
                 scheme: today_id,
                 position,
                 item,
             });
-            position += 1;
         }
     }
 
