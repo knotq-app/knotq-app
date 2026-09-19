@@ -1,10 +1,12 @@
+#[cfg(target_os = "macos")]
+use std::ffi::OsStr;
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 #[cfg(any(target_os = "macos", target_os = "linux"))]
-use std::process::{Command, Output, Stdio};
+use std::process::Command as PlatformCommand;
 #[cfg(any(target_os = "macos", target_os = "linux"))]
-use std::{ffi::OsStr, process::Command as PlatformCommand};
+use std::process::{Command, Output, Stdio};
 
 use anyhow::{anyhow, bail, Context, Result};
 #[cfg(any(target_os = "macos", target_os = "linux"))]
@@ -213,7 +215,7 @@ fn ensure_output_success(output: Output, action: &str) -> Result<()> {
     ))
 }
 
-#[cfg(any(target_os = "macos", target_os = "linux"))]
+#[cfg(target_os = "macos")]
 fn sync_dir_filtered(
     source: &Path,
     destination: &Path,
@@ -232,7 +234,7 @@ fn sync_dir_filtered(
     Ok(())
 }
 
-#[cfg(any(target_os = "macos", target_os = "linux"))]
+#[cfg(target_os = "macos")]
 fn delete_stale_entries(
     source: &Path,
     destination: &Path,
