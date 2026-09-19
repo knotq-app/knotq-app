@@ -517,10 +517,10 @@ async fn install_or_refresh_ready_update(
     }
 }
 
-fn running_app_path(cx: &mut gpui::AsyncApp) -> anyhow::Result<PathBuf> {
+fn running_app_path(_cx: &mut gpui::AsyncApp) -> anyhow::Result<PathBuf> {
     #[cfg(target_os = "macos")]
     {
-        cx.update(|cx| cx.app_path())?
+        _cx.update(|cx| cx.app_path())?
     }
 
     #[cfg(not(target_os = "macos"))]

@@ -2,6 +2,7 @@ use knotq_model::{
     ImageAssetFormat, ImageInline, Inline, Item, ItemContent, SchemeId, Table, TableCell,
 };
 use knotq_sync::WorkspaceCrdtChangeSet;
+use std::collections::HashSet;
 use uuid::Uuid;
 
 use super::{DeviceKey, Harness};
@@ -26,8 +27,30 @@ pub fn set_item_content(
 
 pub fn replace_scheme_items(h: &mut Harness, key: DeviceKey, scheme: SchemeId, items: Vec<Item>) {
     let device = h.device_mut_for_surgery(key);
-    device.scheme_mut_pub(scheme).items = items;
-    device.record_changes(WorkspaceCrdtChangeSet::default().touch_scheme(scheme));
+    let removed = {
+        let scheme_data = device.scheme_mut_pub(scheme);
+        let old_ids: HashSet<String> = scheme_data
+            .items
+            .iter()
+            .map(|item| item.id.to_string())
+            .collect();
+        let new_ids: HashSet<String> = items.iter().map(|item| item.id.to_string()).collect();
+        scheme_data.items = items;
+        old_ids
+            .difference(&new_ids)
+            .cloned()
+            .collect::<HashSet<_>>()
+    };
+
+    let mut changes = WorkspaceCrdtChangeSet::default().touch_scheme(scheme);
+    if !removed.is_empty() {
+        changes
+            .deleted_items
+            .entry(scheme)
+            .or_default()
+            .extend(removed);
+    }
+    device.record_changes(changes);
 }
 
 pub fn item_content(h: &Harness, device: DeviceKey, scheme: SchemeId, index: usize) -> Vec<Inline> {
