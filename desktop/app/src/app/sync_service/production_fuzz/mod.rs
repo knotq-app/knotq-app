@@ -923,9 +923,17 @@ fn replay_production_seed() {
     // it, so mirror the two sweeps exactly: `KNOTQ_REPRO_SEED=<n>` replays
     // `desktop_production_sync_fuzz`'s seed n, and `KNOTQ_REPRO_PLAIN=1`
     // replays `desktop_production_single_account_fuzz`'s (whose seeds start at
-    // 10_000). `KNOTQ_REPRO_MAINTENANCE=0` drops the maintenance steps, which
-    // is how a few pinned regressions were originally found.
+    // 10_000).
+    //
+    // Including the maintenance steps, which `run_seeds_inner` gives to the
+    // *first* seed of a sweep and no other — squashing on every seed would
+    // make the census measure the maintenance schedule rather than ordinary
+    // sync. Getting this wrong is not a detail: a seed replayed with the wrong
+    // answer here is a different scenario, and several sweep failures replay
+    // green. `KNOTQ_REPRO_MAINTENANCE=0`/`=1` overrides it.
     let chaos = std::env::var("KNOTQ_REPRO_PLAIN").is_err();
+    let first_seed_of_sweep = if chaos { 1 } else { 10_000 };
+    let maintenance_by_default = usize::from(seed == first_seed_of_sweep);
     run_seed(
         seed,
         Config {
@@ -934,7 +942,7 @@ fn replay_production_seed() {
             max_devices: if chaos { 5 } else { 4 },
             steps: env_usize("KNOTQ_FUZZ_STEPS", 120),
             chaos,
-            maintenance_coverage: env_usize("KNOTQ_REPRO_MAINTENANCE", 1) != 0,
+            maintenance_coverage: env_usize("KNOTQ_REPRO_MAINTENANCE", maintenance_by_default) != 0,
         },
     );
 }

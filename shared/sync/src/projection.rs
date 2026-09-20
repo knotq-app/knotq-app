@@ -236,9 +236,32 @@ fn compare_schemes(
                 .filter(|item| !scheme.items.iter().any(|line| line.id == item.id))
                 .map(|item| format!("{:?}", item.id))
                 .collect();
+            // Same ids, different counts, means one side holds an id twice.
+            // Say so: "only in the workspace: []; only in the CRDT: []" reads
+            // as a contradiction otherwise, and a repeated id is a different
+            // bug from a misplaced one.
+            let repeated = |items: &[knotq_model::Item]| {
+                let mut seen = HashSet::new();
+                let mut twice: Vec<String> = items
+                    .iter()
+                    .filter(|item| !seen.insert(item.id))
+                    .map(|item| format!("{:?}", item.id))
+                    .collect();
+                twice.sort();
+                twice.dedup();
+                twice
+            };
+            let repeats = match (repeated(&scheme.items), repeated(&other.items)) {
+                (workspace, crdt) if workspace.is_empty() && crdt.is_empty() => String::new(),
+                (workspace, crdt) => format!(
+                    "; repeated in the workspace: [{}]; repeated in the CRDT: [{}]",
+                    workspace.join(", "),
+                    crdt.join(", "),
+                ),
+            };
             lines.push(format!(
                 "scheme {id:?} has {} item(s), the CRDT has {}; only in the workspace: [{}]; \
-                 only in the CRDT: [{}]",
+                 only in the CRDT: [{}]{repeats}",
                 scheme.items.len(),
                 other.items.len(),
                 missing.join(", "),

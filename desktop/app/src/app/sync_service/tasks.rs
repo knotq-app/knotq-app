@@ -464,8 +464,17 @@ async fn run_sync_attempt(
                                 &mut app.state,
                                 &std::collections::HashSet::new(),
                             );
-                    let placement_reconciled =
-                        item_repairs && super::landing::reconcile_item_placements(&mut app.state);
+                    // A landing has to end with the device satisfying the
+                    // projection law: what it shows is what its own documents
+                    // hold. The reasserts are not the only way the two can
+                    // part — where a line lives is resolved per document, so
+                    // adopting a merge can leave the visible copy somewhere
+                    // the documents no longer agree on (production fuzz chaos
+                    // seed 52). Skipped only for a landing that moved nothing,
+                    // which is most of them while typing (the pusher's own
+                    // document echoing back) and cannot have broken anything.
+                    let placement_reconciled = (adopted || item_repairs)
+                        && super::landing::reconcile_item_placements(&mut app.state);
                     let workspace_changed = adopted
                         | item_repairs
                         | placement_reconciled

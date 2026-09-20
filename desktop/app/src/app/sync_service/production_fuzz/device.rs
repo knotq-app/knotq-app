@@ -466,7 +466,7 @@ impl DesktopDevice {
                     result.local_workspace_changed,
                 ) {
                     self.state.hydrate_recent_item_edits();
-                    adopt_sync_workspace(
+                    let adopted = adopt_sync_workspace(
                         &mut self.state,
                         result.workspace,
                         result.crdt_states,
@@ -479,7 +479,7 @@ impl DesktopDevice {
                             &std::collections::HashSet::new(),
                         );
                     let _placement_reconciled =
-                        item_repairs && self.state.reconcile_item_placements();
+                        (adopted || item_repairs) && self.state.reconcile_item_placements();
                     reassert_local_scheme_edits(&mut self.state, local_scheme_edits);
                     reassert_local_folder_edits(&mut self.state, local_folder_edits);
                 }
