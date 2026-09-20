@@ -210,6 +210,17 @@ impl World {
         // which has a reproducer — so it is excused per device rather than
         // silently weakened for everyone.
         if self.projection_excused[index] {
+            // Still worth seeing. An excused device is where the remaining
+            // account-switch failures live (TODO 0i), and its divergence is
+            // usually the first sign of one — so a traced run reports it,
+            // marked, instead of staying silent.
+            if self.trace {
+                if let Some(device) = self.devices[index].as_mut() {
+                    for divergence in device.projection_divergences() {
+                        self.log(format!("PROJECTION (excused) {divergence}"));
+                    }
+                }
+            }
             return;
         }
         let Some(device) = self.devices[index].as_mut() else {

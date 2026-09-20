@@ -409,13 +409,37 @@ accounts is still held to the law on every local step, landing and relaunch,
 in both fuzz configurations.
 
 **Not the same thing as the account-switch data loss the oracle finds.** With
-the exclusion in place, chaos seed 16 still fails at that depth — but on the
-*existing* no-silent-loss oracle, not on this law: "sync lost scheme … that no
-device deleted", plus lost items, a lost folder and a lost Daily Queue binding,
-all on a device that switched accounts. That is a separate, pre-existing
-account-switch data-loss bug at a depth the default 6-seed corpus never
-samples; it is not a projection-law finding and is not caused by anything in
-this session's changes. It deserves its own investigation.
+the exclusion in place, chaos seeds 26 and 112 still fail at that depth — but
+on the *existing* no-silent-loss oracle, not on this law: "sync lost scheme …
+that no device deleted". That is a separate, pre-existing account-switch
+data-loss bug (commit `4abec2a` fails seed 112 too, without any of this
+session's changes), at a depth the default corpus never samples.
+
+**What seed 112 shows, as of 2026-09-20 — start here.** Device 4 creates
+"scheme 7563" on account 0 at step 71. Device 2 lives on account 1, signs into
+account 0 at step 125 and syncs at 126 (so it should hold 7563), has a sync
+fail at 165, crashes at 166, relaunches at 189, and at 191 pushes 6 documents —
+after which the *server* no longer has 7563, and device 4 loses it at 194.
+
+Device 2 does **not** break the projection law at any point (a traced run now
+prints `PROJECTION (excused)` lines for a switched device, and seed 112 emits
+none), so its plain workspace and its own documents agree: its index genuinely
+does not hold 7563 by then. The question is therefore not "how did device 2's
+two halves diverge" but **"how did device 2's push delete an entry its document
+never carried a tombstone for"** — which points at the account-switch re-seed
+(`queue_account_switch_reseed`) and workspace-document re-identification
+(`adopt_sync_workspace_identity` / `reidentify_workspace_document`) publishing
+this device's index as the account's, rather than merging into it. A plain Yjs
+merge cannot remove an entry the pusher never saw; a re-key or a full re-seed
+can.
+
+Chaos seed 26 is the same oracle violation on a device that also switched
+accounts, and is worth replaying alongside it:
+
+```sh
+KNOTQ_REPRO_SEED=112 KNOTQ_FUZZ_STEPS=200 KNOTQ_FUZZ_TRACE=1 \
+  cargo test --release -p knotq-app replay_production_seed -- --ignored --nocapture
+```
 
 **Where to start:** the divergence is already on disk, so check the halves
 after each write in `sync_snapshot_in` during the switch — the run's
