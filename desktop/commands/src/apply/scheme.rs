@@ -104,12 +104,17 @@ fn restore_scheme(
             .children
             .retain(|child| *child != NodeRef::Scheme(id));
     }
-    workspace
-        .folders
-        .get_mut(&folder)
-        .unwrap()
-        .children
-        .insert(position, NodeRef::Scheme(id));
+    // `position` indexes the list the caller saw, which still contained this
+    // scheme; the detach above just removed it, so the list can be one shorter
+    // here than it was at the check. Restoring a scheme that was the folder's
+    // only child at position 1 would then insert into an empty list and panic —
+    // in the app, a crash (production fuzz single-account seeds 10041, 10117).
+    // Clamp rather than reject: the position was valid for what the caller was
+    // looking at, and an undo must not be refused because the same scheme is
+    // still attached somewhere.
+    let children = &mut workspace.folders.get_mut(&folder).unwrap().children;
+    let at = position.min(children.len());
+    children.insert(at, NodeRef::Scheme(id));
     workspace.schemes.insert(id, scheme);
     Ok(CommandReceipt {
         inverse: Command::DeleteScheme { id },

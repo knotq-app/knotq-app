@@ -88,3 +88,52 @@ fn permanently_delete_scheme_is_undoable_to_trash() {
         })
     );
 }
+
+/// Restoring a scheme into the folder it is already in must not be able to
+/// index past the end of that folder.
+///
+/// `RestoreScheme` detaches the scheme from *every* folder before inserting it
+/// at `position`, so the target's child list can be one shorter at the insert
+/// than it was at the check. A scheme that is already the folder's only child,
+/// restored at position 1, validated against a length of 1 and then inserted
+/// into an empty list — a panic, and in the app a crash (production fuzz
+/// single-account seeds 10041 and 10117).
+#[test]
+fn restoring_a_scheme_into_the_folder_it_already_sits_in_does_not_panic() {
+    let mut workspace = Workspace::new();
+    let root = workspace.root;
+    let folder = create_folder(&mut workspace, root);
+    let scheme_id = create_scheme(&mut workspace, folder);
+    let scheme = workspace.schemes[&scheme_id].clone();
+    assert_eq!(workspace.folders[&folder].children.len(), 1);
+
+    // Position 1 is "after the one child" — which is this very scheme, so once
+    // it is detached there is nothing to be after.
+    let result = workspace.apply(Command::RestoreScheme {
+        folder,
+        position: 1,
+        scheme: scheme.clone(),
+    });
+
+    assert!(result.is_ok(), "restoring in place must be accepted");
+    assert_eq!(
+        workspace.folders[&folder].children,
+        vec![NodeRef::Scheme(scheme_id)],
+        "and must leave exactly one copy of it in the folder"
+    );
+
+    // A position that is genuinely out of range is still rejected, and rejects
+    // before anything is mutated.
+    let before = workspace.clone();
+    assert!(workspace
+        .apply(Command::RestoreScheme {
+            folder,
+            position: 9,
+            scheme,
+        })
+        .is_err());
+    assert_eq!(
+        workspace.folders[&folder].children, before.folders[&folder].children,
+        "a rejected command leaves the workspace untouched"
+    );
+}
