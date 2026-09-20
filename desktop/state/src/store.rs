@@ -254,12 +254,46 @@ impl WorkspaceStore {
         let current = self.workspace.clone();
         let mut changes = WorkspaceCrdtChangeSet::default();
 
-        if self.crdt.workspace_document_is_unpopulated() {
-            if self.crdt.workspace_document_differs(&base, &current) {
-                self.workspace_population_base = Some(base.clone());
-                changes.workspace = true;
-            }
-        } else if self.crdt.workspace_document_differs(&base, &current) {
+        // Bring the visible half in line with the documents FIRST, then put the
+        // recovered plain content back on top of it. The order is the whole
+        // point: a write of *any* scheme document re-emits the workspace index
+        // whenever the document set has changed, and the index is written
+        // whole, so recovering from a plain workspace that is missing schemes
+        // — an interrupted save, a pull that never landed, a device
+        // mid-account-switch — publishes their deletion to the entire account
+        // (production fuzz chaos seeds 14, 26, 112). Starting from what the
+        // documents hold makes the recovery purely additive.
+        self.reconcile_workspace_from_documents();
+
+        // The workspace index is written WHOLE, from the workspace it is given
+        // — `sync_string_map` removes every key the new content does not
+        // mention. So writing it from a recovered plain workspace publishes,
+        // to the entire account, a deletion of every node that workspace does
+        // not happen to list. After a crash it does not happen to list a great
+        // deal: an interrupted save, a pull that never landed, a device
+        // mid-account-switch. That is how a scheme another device created
+        // disappeared for everyone (production fuzz chaos seed 112: the
+        // removing write is this one, during the relaunch).
+        //
+        // A populated index document is the durable record, and
+        // `reconcile_workspace_from_documents` below brings the visible half
+        // back in line with it, so there is nothing here worth the risk: the
+        // index is only written when the document has no population at all and
+        // this workspace is the only thing that can give it one (a device
+        // joining an account with local content — see `app/TODO.md` 2). The
+        // cost is that a folder rename or archive that reached the plain files
+        // and not the documents in the moment before a crash is re-read from
+        // the documents instead of being recovered. Losing that is a lost
+        // keystroke; the alternative is losing another device's scheme for the
+        // whole account.
+        if self.crdt.workspace_document_is_unpopulated()
+            && self.crdt.workspace_document_differs(&base, &current)
+        {
+            // Nothing to be additive to: the document holds no population, so
+            // this workspace is the only thing that can give it one (a device
+            // joining an account with local content — see `app/TODO.md` 2).
+            self.workspace_population_base = Some(base.clone());
+            self.workspace = current.clone();
             changes.workspace = true;
         }
 
@@ -273,14 +307,31 @@ impl WorkspaceStore {
                     self.population_bases.insert(*scheme_id, previous.clone());
                 }
             }
+            // The recovered plain content wins for a scheme the plain files
+            // actually changed — that is what this recovery is for. Every
+            // other scheme keeps what the documents hold.
+            self.workspace.schemes.insert(*scheme_id, scheme.clone());
             changes.schemes.insert(*scheme_id);
         }
 
         if !changes.is_empty() {
+            // A scheme put back from the plain files may have no binding in the
+            // doc-derived index yet; without one it would sit in the visible
+            // workspace with no document behind it.
+            self.workspace.ensure_sync_metadata();
+            self.index_stale = true;
+            self.dirty = WorkspaceDirtyState::all(&self.workspace);
+            self.crdt_save_scope.widen_to_all();
             self.defer_crdt(changes);
             self.flush_crdt();
         }
 
+        // And finish where every launch finishes: showing exactly what the
+        // documents hold. The writes above put the recovered plain content
+        // *into* the documents, so nothing is lost by reading it back out of
+        // them — while a scheme whose plain copy was merely behind (a document
+        // write cannot remove an item it was not told to delete) is corrected
+        // rather than left disagreeing.
         self.reconcile_workspace_from_documents();
     }
 

@@ -658,6 +658,32 @@ impl YrsJsonDocument {
                 }
             }
         }
+        // Removing a node entry here is the single most destructive thing this
+        // codebase does: the workspace index is the account's, so a removal is
+        // published to every device, and the node's document is left on the
+        // server as an orphan nothing can address. It is *sometimes* right —
+        // a permanent delete — so this reports rather than refuses, and the
+        // report is what turns "a scheme vanished for everyone" into a named
+        // step and device (see `app/TODO.md` 0i).
+        {
+            let desired: HashSet<&str> = node_entries.iter().map(|(id, _)| id.as_str()).collect();
+            let mut removed: Vec<&String> = stored_nodes
+                .keys()
+                .filter(|id| !desired.contains(id.as_str()))
+                .collect();
+            if !removed.is_empty() {
+                removed.sort();
+                eprintln!(
+                    "sync: workspace index write removes {} node entr(ies): {}",
+                    removed.len(),
+                    removed
+                        .iter()
+                        .map(|id| id.as_str())
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                );
+            }
+        }
         changed |= sync_string_map(&nodes, &mut txn, &node_entries);
         changed |= sync_string_map(&node_fields, &mut txn, &node_field_entries);
         changed |= sync_string_map(&scheme_sync, &mut txn, &scheme_sync_entries);

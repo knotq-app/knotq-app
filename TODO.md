@@ -2,8 +2,8 @@
 
 **Updated 2026-09-20.** These notes track confirmed data-loss/convergence
 bugs and deferred release work. Current deploy-blocking status: 0a, 0b, 0c, 0d,
-0e, 0f, 0g, 0h, 0j, 0k, 0l, 0m, 0n, 0o, 0p, 1, and 2 are fixed and verified;
-0i is open and is the projection law's one documented exclusion; 3 and 5 remain backend/ops gaps,
+0e, 0f, 0g, 0h, 0j, 0k, 0l, 0m, 0n, 0o, 0p, 0q, 1, and 2 are fixed and
+verified; 0i is open and is the projection law's one documented exclusion; 3 and 5 remain backend/ops gaps,
 not sync-convergence bugs. Item 4 remains explicitly deferred undo-history work.
 
 **Depth matters, and the gate at depth was already red.** The PR gate runs the
@@ -648,6 +648,53 @@ workspace right after the index write, so the narrow set is what
 `retained_scheme_ids` already keeps. A fix for 0i has to establish *why* the
 pushing device's index lost the entry, not stop it from writing what it
 believes.
+
+
+## 0q. [FIXED] Crash recovery could publish a deletion of another device's schemes to the whole account
+
+**The largest remaining loss, and the one the oracle kept reporting** (chaos
+seeds 12, 14, 26, 112, 113 — 112 fails on `4abec2a` too).
+
+**Mechanism.** The workspace index belongs to the *account*, and it is written
+whole: `sync_string_map` removes every key the content it is given does not
+mention. `recover_workspace_save` wrote it from the recovered **plain**
+workspace, and a scheme write re-emits the index whenever the document set
+changed, so a relaunch whose plain workspace was missing schemes — an
+interrupted save, a pull that never landed, a device mid-account-switch —
+published their deletion to every device. The scheme's document stayed on the
+server as an orphan nothing could address (`sync: ignored 1 orphan
+document(s)`; that message is the symptom, and its first appearance dates the
+loss).
+
+**Fix: recovery is additive.** It now starts from what the documents hold
+(`reconcile_workspace_from_documents`), lays the schemes the plain files
+actually changed since the recovery base back on top, writes *those* into the
+documents, and finishes by reconciling again — so it ends showing exactly what
+its documents hold, like every other launch. The index is written from the
+plain workspace only when the document has no population at all and this
+workspace is the only thing that can give it one (TODO 2's joining device).
+
+The cost is that a folder rename or archive that reached the plain files but
+not the documents in the moment before a crash is re-read from the documents
+instead of being recovered. That is a lost keystroke; the alternative was
+losing another device's scheme for the whole account.
+
+**New diagnostic:** `sync: workspace index write removes N node entr(ies): …`
+(`crdt/workspace_index.rs`). Removing a node entry is the most destructive
+thing this codebase does and it is *sometimes* right, so the writer reports
+rather than refuses — which is what turns "a scheme vanished for everyone" into
+a named step and device.
+
+**Still open at CI depth:** single-account seed 10105 — a Daily page whose
+colour differs between the two halves after a landing — and a second index
+write that removes a node entry during a sync run (visible in that seed's
+trace, `…-0101`). Neither is the recovery path.
+
+**Harness note:** the excused-device projection reading is taken whether or not
+`KNOTQ_FUZZ_TRACE` is set. It flushes the store, which consumes ids off the
+deterministic stream, so taking it only when tracing made a traced run a
+different scenario from the failure it was meant to explain — seeds 12 and 113
+passed when traced and failed when not.
 
 
 ## 1. [FIXED] An edit made during a device's first-ever sync can be silently lost

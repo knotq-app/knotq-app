@@ -214,11 +214,19 @@ impl World {
             // account-switch failures live (TODO 0i), and its divergence is
             // usually the first sign of one — so a traced run reports it,
             // marked, instead of staying silent.
+            //
+            // Taken whether or not anyone is looking: the reading flushes the
+            // store, which is a real mutation that consumes ids off the
+            // deterministic stream, so doing it only under `KNOTQ_FUZZ_TRACE`
+            // would make a traced run a different scenario from the failure it
+            // was meant to explain (seeds 12 and 113 passed when traced).
+            let Some(device) = self.devices[index].as_mut() else {
+                return;
+            };
+            let divergences = device.projection_divergences();
             if self.trace {
-                if let Some(device) = self.devices[index].as_mut() {
-                    for divergence in device.projection_divergences() {
-                        self.log(format!("PROJECTION (excused) {divergence}"));
-                    }
+                for divergence in divergences {
+                    self.log(format!("PROJECTION (excused) {divergence}"));
                 }
             }
             return;
