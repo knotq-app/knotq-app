@@ -247,9 +247,24 @@ fn compare_schemes(
             continue;
         }
         for (left, right) in scheme.items.iter().zip(&other.items) {
-            if left != right {
+            // Compare what the app would *show*, not the raw stored bytes. A
+            // document is the merge of whatever every replica ever wrote, so it
+            // can hold a combination the model does not allow — occurrence
+            // completions on a line that is no longer a checkbox, a marker
+            // family its marker cannot draw. Every path that writes the plain
+            // workspace runs `enforce_marker_constraints`, and materialization
+            // deliberately does not (a normalizing read makes every sync see
+            // the line as changed and rewrite it, which lost other devices'
+            // edits under compaction — see
+            // `a_line_reads_back_exactly_as_written_so_syncing_queues_nothing_more`).
+            // So normalize here, in the comparison, where it costs nothing and
+            // changes nothing: the law is about whether the two halves describe
+            // the same item, not about their storage forms.
+            let mut normalized = right.clone();
+            normalized.enforce_marker_constraints();
+            if *left != normalized {
                 lines.push(format!(
-                    "scheme {id:?} item {:?} differs: {left:?} != {right:?}",
+                    "scheme {id:?} item {:?} differs: {left:?} != {normalized:?}",
                     left.id
                 ));
             }
