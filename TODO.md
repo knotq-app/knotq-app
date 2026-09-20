@@ -3,7 +3,8 @@
 **Updated 2026-09-20.** These notes track confirmed data-loss/convergence
 bugs and deferred release work. Current deploy-blocking status: 0a, 0b, 0c, 0d,
 0e, 0f, 0g, 0h, 0j, 0k, 0l, 0m, 0n, 0o, 0p, 0q, 1, and 2 are fixed and
-verified; 0i is open and is the projection law's one documented exclusion; 3 and 5 remain backend/ops gaps,
+verified; 0i (the account-switch exclusion) and 0r (one scheme colour, the last
+CI-depth failure) are open; 3 and 5 remain backend/ops gaps,
 not sync-convergence bugs. Item 4 remains explicitly deferred undo-history work.
 
 **Depth matters, and the gate at depth was already red.** The PR gate runs the
@@ -685,10 +686,40 @@ thing this codebase does and it is *sometimes* right, so the writer reports
 rather than refuses — which is what turns "a scheme vanished for everyone" into
 a named step and device.
 
-**Still open at CI depth:** single-account seed 10105 — a Daily page whose
-colour differs between the two halves after a landing — and a second index
-write that removes a node entry during a sync run (visible in that seed's
-trace, `…-0101`). Neither is the recovery path.
+**Measured after this fix:** at `KNOTQ_FUZZ_SEEDS=128 KNOTQ_FUZZ_STEPS=200` the
+whole chaos sweep is green and the single-account sweep fails one seed, against
+**52 failing seeds on `4abec2a`**.
+
+
+## 0r. The last CI-depth failure: a Daily page's colour, single-account seed 10105
+
+**Open, and the only seed failing the 128×200 sweep.** Not content loss — one
+scheme metadata field.
+
+```sh
+KNOTQ_REPRO_PLAIN=1 KNOTQ_REPRO_SEED=10105 KNOTQ_FUZZ_STEPS=200 \
+  cargo test --release -p knotq-app replay_production_seed -- --ignored --nocapture
+```
+
+Device 3 recolours the Daily page `1ec12563…` to 1 at step 87. Device 1 first
+sees that page in the landing at step 192 (7 remote updates applied), and from
+then on its plain workspace says colour 0 — the value
+`DAILY_QUEUE_COLOR_INDEX` gave the copy it created locally — while its own
+index document says 1. The projection law reports it on every subsequent step;
+it does not heal.
+
+Colour comes from the workspace index entry in `materialize_workspace_inner`,
+so the CRDT side is unambiguous. The question is why the landing's replace
+(`replace_workspace_from_sync_result` → `store.replace_from_sync`) leaves the
+visible copy at 0 — whether the run's returned workspace already carried 0, or
+the store's replace keeps the local scheme's metadata. Start by printing the
+colour of that scheme at each boundary inside the step-192 landing.
+
+**Seen in the same trace, and probably worth more:** `sync: workspace index
+write removes 1 node entr(ies): 00000000-…-0101` during a *sync run* (not a
+relaunch — 0q fixed that path). A second write site is still handing the index
+writer a workspace that is missing a node. The diagnostic names the moment; the
+work is finding what that workspace is and why it is short.
 
 **Harness note:** the excused-device projection reading is taken whether or not
 `KNOTQ_FUZZ_TRACE` is set. It flushes the store, which consumes ids off the
