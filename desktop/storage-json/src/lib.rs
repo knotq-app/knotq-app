@@ -27,7 +27,8 @@ pub use diagnostics::append_diagnostic_line;
 pub use export_markdown::export_workspace_to_markdown;
 pub use files::{
     edit_timing_enabled, load_daily_queue_scheme, load_daily_queue_schemes_for_calendar_range,
-    load_workspace, load_workspace_with_options, save_workspace, save_workspace_incremental,
+    load_workspace, load_workspace_with_options, save_unloaded_scheme_files, save_workspace,
+    save_workspace_incremental,
 };
 pub use knotq_history::{
     list_workspace_snapshots, record_workspace_snapshot, restore_workspace_snapshot,

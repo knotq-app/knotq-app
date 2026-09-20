@@ -206,6 +206,46 @@ pub fn save_workspace_incremental(
     Ok(())
 }
 
+/// Write the plain files of schemes the saved workspace does not hold.
+///
+/// The data directory has two halves: the plain files the app reads, and the
+/// CRDT document states sync merges into. A save that writes one half without
+/// the other leaves the directory describing two different workspaces, and the
+/// next sync reads that difference as a local edit — which is how a Daily page
+/// outside the loaded window got its own merged content re-asserted back to the
+/// stale copy on disk.
+///
+/// `workspace` supplies the index (so a Daily page still resolves to its
+/// `daily_queue/YYYY/MM/DD.knotq` path even though its body is not loaded);
+/// `schemes` supplies the bodies, materialized from the documents being
+/// written. Only files are touched — nothing is pruned and the index is not
+/// rewritten, because the caller's own save owns both.
+pub fn save_unloaded_scheme_files(
+    path: &Path,
+    workspace: &Workspace,
+    schemes: &[Scheme],
+) -> Result<()> {
+    if schemes.is_empty() {
+        return Ok(());
+    }
+    let _guard = lock_workspace_save();
+    let (base_dir, workspace) = prepare_workspace_save(path, workspace)?;
+    for scheme in schemes {
+        if workspace.schemes.contains_key(&scheme.id) {
+            // The ordinary save already owns this one.
+            continue;
+        }
+        if scheme_path_for_workspace(&base_dir, &workspace, scheme.id)?.is_none() {
+            // Not addressable from this index (no folder placement and no daily
+            // binding): writing it would put a file where nothing looks.
+            continue;
+        }
+        write_scheme_file(&base_dir, &workspace, scheme)
+            .with_context(|| format!("write unloaded scheme {}", scheme.id))?;
+    }
+    Ok(())
+}
+
 fn prepare_workspace_save(path: &Path, workspace: &Workspace) -> Result<(PathBuf, Workspace)> {
     let mut workspace = workspace.clone();
     workspace.ensure_sync_metadata();

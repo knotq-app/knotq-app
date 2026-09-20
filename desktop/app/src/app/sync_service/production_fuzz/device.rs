@@ -153,6 +153,35 @@ impl DesktopDevice {
         self.state.daily_queue_today
     }
 
+    /// Where this device's visible workspace disagrees with its own CRDT
+    /// documents — the projection law (`knotq_sync::projection`).
+    ///
+    /// Checked after every local step and every landing because it is the
+    /// *local* precondition for convergence: once a device's plain workspace
+    /// holds a value its documents never did, the next landing materializes
+    /// the document's value instead, and that reads to the oracle (and the
+    /// user) as a remote change nobody made. Catching it here names the step
+    /// that broke it rather than the sync three steps later that surfaced it.
+    ///
+    /// Only the schemes this device has in memory are compared: a Daily page
+    /// that is merely outside the loaded window is absent from `workspace` by
+    /// design, and its document is deliberately left deferred.
+    pub(super) fn projection_divergences(&mut self) -> Vec<String> {
+        // Reading the law must not change the run: materializing mints ids of
+        // its own (`ensure_sync_metadata` for any scheme missing a binding),
+        // and in a seeded fuzz world those come off the same deterministic
+        // stream the scenario draws from. Take a reading and put it back.
+        //
+        // The reading is taken after the flush inside `projection_divergences`
+        // only in effect — that flush is a real mutation whose ids must stand —
+        // so flush first, explicitly, and guard only the read that follows.
+        let _ = self.state.crdt_document_states();
+        let id_stream = knotq_model::deterministic_id_seed();
+        let divergences = self.state.projection_divergences();
+        knotq_model::set_deterministic_id_seed(id_stream);
+        divergences
+    }
+
     pub(super) fn pending_commands(&self) -> Vec<Command> {
         self.state.pending_commands()
     }
@@ -190,6 +219,38 @@ impl DesktopDevice {
     // --- persistence --------------------------------------------------------------
 
     /// One run of the save task (`services::tasks::spawn_save_task`).
+    /// Whether the two halves of this device's data directory agree: the plain
+    /// workspace files and the persisted CRDT document states. Diagnostic only
+    /// (`KNOTQ_CHECK_DISK=1`), because an off-window Daily page is invisible to
+    /// the in-memory law — it is not in `state.workspace` at all — so a stale
+    /// plain file for one can only be seen from disk.
+    fn report_disk_divergences(
+        index: usize,
+        workspace_path: &std::path::Path,
+        replica_id: knotq_model::ReplicaId,
+        site: &str,
+    ) {
+        if std::env::var("KNOTQ_CHECK_DISK").is_err() {
+            return;
+        }
+        let id_stream = knotq_model::deterministic_id_seed();
+        if let Ok(Some(on_disk)) =
+            load_workspace_with_options(workspace_path, WorkspaceLoadOptions::all())
+        {
+            let states = crate::app::constructor::restored_crdt_states(workspace_path);
+            if let Ok(docs) =
+                knotq_sync::WorkspaceCrdtDocuments::from_states(&on_disk, replica_id, &states)
+            {
+                if let Ok(found) = knotq_sync::projection::divergences(&on_disk, &docs) {
+                    for line in found.lines {
+                        eprintln!("[DISK] device {index} after {site}: {line}");
+                    }
+                }
+            }
+        }
+        knotq_model::set_deterministic_id_seed(id_stream);
+    }
+
     pub(super) fn save(&mut self) -> anyhow::Result<()> {
         if !self.state.is_dirty() || self.run_in_flight {
             return Ok(());
@@ -199,6 +260,7 @@ impl DesktopDevice {
         let recent_item_edits = self.state.recent_item_edits();
         let recent_folder_edits = self.state.recent_folder_edits();
         let (scope, handles) = self.state.take_crdt_save_scope();
+        let unloaded_schemes = self.state.schemes_absent_from_plain_save(&handles);
         let dirty_ids = std::mem::take(&mut self.state.dirty_schemes);
         self.state.index_dirty = false;
         let workspace = self.state.workspace.clone();
@@ -217,12 +279,19 @@ impl DesktopDevice {
                 recent_folder_edits: &recent_folder_edits,
                 crdt_scope: scope,
                 crdt_states: &crdt_states,
+                unloaded_schemes: &unloaded_schemes,
             });
         if result.is_err() {
             self.state.dirty_schemes.extend(dirty_ids);
             self.state.index_dirty = true;
             self.state.mark_all_crdt_documents_changed();
         }
+        Self::report_disk_divergences(
+            self.index,
+            &self.workspace_path,
+            self.state.settings.replica_id,
+            "a save",
+        );
         result
     }
 
@@ -245,6 +314,12 @@ impl DesktopDevice {
         }
         crate::app::services::write_shutdown_workspace(&workspace_path, &mut state)
             .expect("shutdown flush");
+        Self::report_disk_divergences(
+            index,
+            &workspace_path,
+            state.settings.replica_id,
+            "shutdown",
+        );
         let settings = state.settings.clone();
         let today = state.daily_queue_today;
         drop(state);
@@ -400,6 +475,12 @@ impl DesktopDevice {
                     reassert_local_folder_edits(&mut self.state, local_folder_edits);
                 }
                 let _ = self.save();
+                Self::report_disk_divergences(
+                    self.index,
+                    &self.workspace_path,
+                    self.state.settings.replica_id,
+                    "a sync landing",
+                );
                 None
             }
             Err(err) => Some(err),
@@ -432,5 +513,56 @@ impl DesktopDevice {
             .map(|state| state.pending.len())
             .unwrap_or(0);
         self.state.pending_crdt_edits().len().max(on_disk)
+    }
+
+    /// What is still queued, and whether the workspace index still binds each
+    /// queued document. A wedge is only actionable with this: an edit for a
+    /// document nothing binds any more can never be pushed, while one for a
+    /// bound document means the push itself is not happening.
+    pub(super) fn pending_edit_summary(&mut self) -> String {
+        let workspace = self.state.workspace.clone();
+        let bound = |document| {
+            workspace.sync.id == document
+                || workspace
+                    .scheme_sync
+                    .values()
+                    .chain(workspace.folder_sync.values())
+                    .any(|meta| meta.id == document)
+        };
+        let commands: std::collections::HashMap<_, _> = self
+            .state
+            .pending_operation_commands()
+            .into_iter()
+            .collect();
+        // The durable cursor decides between the two ways a queue can stall:
+        // an edit the server never saw (nothing pushed past its sequence), or
+        // one it acknowledged that landing failed to clear (bookkeeping).
+        let cursors = knotq_storage_json::load_local_sync_state(&self.workspace_path)
+            .map(|state| {
+                state
+                    .document_cursors
+                    .iter()
+                    .map(|(document, cursor)| (*document, cursor.last_pushed_sequence))
+                    .collect::<std::collections::HashMap<_, _>>()
+            })
+            .unwrap_or_default();
+        self.state
+            .pending_crdt_edits()
+            .iter()
+            .map(|edit| {
+                format!(
+                    "{{document {} ({:?}), seq {}, pushed through {:?}, {} byte(s), \
+                     bound {}, from {:?}}}",
+                    edit.document,
+                    edit.kind,
+                    edit.local_sequence,
+                    cursors.get(&edit.document),
+                    edit.update_v1.len(),
+                    bound(edit.document),
+                    commands.get(&edit.operation_id),
+                )
+            })
+            .collect::<Vec<_>>()
+            .join(", ")
     }
 }

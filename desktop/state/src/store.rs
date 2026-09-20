@@ -419,6 +419,54 @@ impl WorkspaceStore {
         (scope, handles)
     }
 
+    /// Schemes whose CRDT document a save is about to write but whose plain
+    /// copy the save cannot write, because the workspace it is saving does not
+    /// hold it — in practice a Daily Queue page outside the loaded window.
+    ///
+    /// The data directory has two halves, and a save that advances only one of
+    /// them leaves them describing different workspaces. The plain side is
+    /// never the authority, so the pre-pull repair reads the difference as a
+    /// local edit and re-asserts the stale copy over the document's merged
+    /// content — a revert with no other device involved, and a repair re-queued
+    /// on every sync afterwards. Materializing those pages here lets the save
+    /// write both halves from the same instant.
+    ///
+    /// Empty in the ordinary case (every written document's scheme is loaded),
+    /// and it costs one materialization only when it is not.
+    pub fn schemes_absent_from_plain_save(
+        &mut self,
+        written: &HashMap<DocumentId, DocumentStateHandle>,
+    ) -> Vec<Scheme> {
+        let unloaded: HashSet<SchemeId> = self
+            .workspace
+            .scheme_sync
+            .iter()
+            .filter(|(scheme, meta)| {
+                meta.kind == SyncDocumentKind::Scheme
+                    && written.contains_key(&meta.id)
+                    && !self.workspace.schemes.contains_key(scheme)
+            })
+            .map(|(scheme, _)| *scheme)
+            .collect();
+        if unloaded.is_empty() {
+            return Vec::new();
+        }
+        let Ok(materialized) = self
+            .crdt
+            .materialized_workspace_repair(&self.workspace, &|_| false)
+        else {
+            return Vec::new();
+        };
+        let mut schemes: Vec<Scheme> = materialized
+            .schemes
+            .into_iter()
+            .filter(|(id, _)| unloaded.contains(id))
+            .map(|(_, scheme)| scheme)
+            .collect();
+        schemes.sort_by_key(|scheme| scheme.id);
+        schemes
+    }
+
     /// Widen the next save back to every document. For any route that changes
     /// the CRDT without being able to name what it touched, and for a save that
     /// failed after taking the scope.
@@ -516,6 +564,21 @@ impl WorkspaceStore {
         self.dirty.schemes.extend(changed_schemes);
         self.crdt_save_scope.widen_to_all();
         true
+    }
+
+    /// Where the visible workspace disagrees with the CRDT documents it is a
+    /// projection of — see [`knotq_sync::projection`] for why that equality is
+    /// the local precondition for two devices converging.
+    ///
+    /// Reads the live documents rather than rebuilding them from persisted
+    /// bytes, so it costs a materialization rather than a decode of the whole
+    /// workspace. Empty means the law holds.
+    pub fn projection_divergences(&mut self) -> Vec<String> {
+        self.flush_crdt();
+        match knotq_sync::projection::divergences(&self.workspace, &self.crdt) {
+            Ok(found) => found.lines,
+            Err(err) => vec![format!("could not materialize the CRDT documents: {err:#}")],
+        }
     }
 
     /// Normalize the workspace index (dangling archive entries, folder tree

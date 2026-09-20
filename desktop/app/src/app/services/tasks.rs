@@ -37,6 +37,11 @@ pub(crate) struct SaveSnapshot<'a> {
         &'a HashMap<knotq_model::FolderId, knotq_sync::RecentFolderEdit>,
     pub(crate) crdt_scope: CrdtSaveScope,
     pub(crate) crdt_states: &'a HashMap<knotq_model::DocumentId, std::sync::Arc<[u8]>>,
+    /// Plain bodies for schemes `workspace` does not hold but whose CRDT
+    /// documents this save writes — see
+    /// `WorkspaceStore::schemes_absent_from_plain_save`. Writing them keeps the
+    /// two halves of the data directory describing the same workspace.
+    pub(crate) unloaded_schemes: &'a [knotq_model::Scheme],
 }
 
 pub(crate) fn write_save_snapshot(snapshot: SaveSnapshot<'_>) -> anyhow::Result<()> {
@@ -50,6 +55,7 @@ pub(crate) fn write_save_snapshot(snapshot: SaveSnapshot<'_>) -> anyhow::Result<
         recent_folder_edits,
         crdt_scope,
         crdt_states,
+        unloaded_schemes,
     } = snapshot;
     // Leave a pre-save checkpoint before touching the plain workspace files.
     // If the process dies after those files are replaced but before the queue
@@ -61,7 +67,10 @@ pub(crate) fn write_save_snapshot(snapshot: SaveSnapshot<'_>) -> anyhow::Result<
         save_workspace(path, workspace)
     } else {
         save_workspace_incremental(path, workspace, dirty_ids)
-    };
+    }
+    .and_then(|_| {
+        knotq_storage_json::save_unloaded_scheme_files(path, workspace, unloaded_schemes)
+    });
     // Persist the CRDT documents' state in lockstep with the workspace so a
     // restart restores them consistently (and with their stable identity)
     // rather than rebuilding.
@@ -146,6 +155,13 @@ pub(crate) fn spawn_save_task(
                         // that (see `CrdtSaveScope`).
                         let t1 = std::time::Instant::now();
                         let (crdt_scope, crdt_state_handles) = app.state.take_crdt_save_scope();
+                        // Pages this save writes a document for but whose body
+                        // the workspace below does not carry (an off-window
+                        // Daily page). Materialized here, on the UI thread, for
+                        // the same reason the handles are collected here: the
+                        // store is the only owner of the documents.
+                        let unloaded_schemes =
+                            app.state.schemes_absent_from_plain_save(&crdt_state_handles);
                         let t_scope = t1.elapsed();
                         let dirty_ids = std::mem::take(&mut app.state.dirty_schemes);
                         app.state.index_dirty = false;
@@ -172,6 +188,7 @@ pub(crate) fn spawn_save_task(
                             recent_folder_edits,
                             crdt_scope,
                             crdt_state_handles,
+                            unloaded_schemes,
                         ))
                     })
                     .ok()
@@ -186,6 +203,7 @@ pub(crate) fn spawn_save_task(
                     recent_folder_edits,
                     crdt_scope,
                     crdt_state_handles,
+                    unloaded_schemes,
                 )) =
                     snapshot
                 {
@@ -211,6 +229,7 @@ pub(crate) fn spawn_save_task(
                                 recent_folder_edits: &recent_folder_edits,
                                 crdt_scope,
                                 crdt_states: &crdt_states,
+                                unloaded_schemes: &unloaded_schemes,
                             })
                         })
                         .await;

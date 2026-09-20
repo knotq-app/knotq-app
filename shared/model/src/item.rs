@@ -364,6 +364,19 @@ impl Item {
 
     pub fn enforce_marker_constraints(&mut self) -> bool {
         let mut changed = false;
+        // A family that does not apply to this marker is not merely unused: the
+        // plain scheme file writes the marker as one token
+        // (`bullet.rings`), and `marker_token` drops a family that
+        // `is_valid_for` rejects — so such a value cannot survive a save/load
+        // round trip, while the CRDT document stores `marker_family` as a field
+        // of its own and keeps it forever. The two halves of the data directory
+        // then describe different items for good, and the next pull reads that
+        // difference as a local edit and re-asserts one over the other. Keep the
+        // model to what both halves can represent.
+        if !self.marker_family.is_valid_for(self.marker) {
+            self.marker_family = MarkerFamily::Standard;
+            changed = true;
+        }
         if self.marker == ItemMarker::Checkbox {
             if self.state.is_empty() {
                 self.state.push(OccurrenceState::default());

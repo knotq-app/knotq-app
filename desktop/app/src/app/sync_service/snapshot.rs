@@ -246,7 +246,8 @@ pub(super) fn sync_snapshot_in(
     let (repaired_identity, repaired_identity_changed) =
         workspace.canonicalize_personal_sync_identity_with_change(server_workspace_id);
     let repaired_folders = workspace.normalize_one_level_folders();
-    let repaired_markers = workspace.normalize_item_markers();
+    let repaired_marker_schemes = workspace.normalize_item_markers();
+    let repaired_markers = !repaired_marker_schemes.is_empty();
     let repaired_workspace_changed = repaired_identity || repaired_folders || repaired_markers;
     let repaired_workspace_persist_changed =
         repaired_identity_changed || repaired_folders || repaired_markers;
@@ -256,6 +257,7 @@ pub(super) fn sync_snapshot_in(
             &workspace,
             snapshot.replica_id,
             &mut crdt_docs,
+            &repaired_marker_schemes,
         )?;
     }
     if account_switched && had_prior_sync_identity {
@@ -560,8 +562,20 @@ fn queue_repair_crdt_updates(
     workspace: &Workspace,
     replica_id: ReplicaId,
     crdt_docs: &mut WorkspaceCrdtDocuments,
+    repaired_scheme_content: &std::collections::HashSet<knotq_model::SchemeId>,
 ) -> Result<()> {
-    let outcome = crdt_docs.sync_changes(workspace, &WorkspaceCrdtChangeSet::default().workspace());
+    // The identity/folder repairs above rewrite the index, but a marker repair
+    // rewrites item content — and a repair that reaches only the plain
+    // workspace leaves the two halves of this device describing different
+    // things. The very next pull reads that difference as a local edit and
+    // re-asserts the stale plain value over the document's merged one, with no
+    // other device involved. So the schemes whose items were repaired go into
+    // the change set alongside the index.
+    let mut changes = WorkspaceCrdtChangeSet::default().workspace();
+    changes
+        .schemes
+        .extend(repaired_scheme_content.iter().copied());
+    let outcome = crdt_docs.sync_changes(workspace, &changes);
     for error in &outcome.errors {
         // A repair-encoding error for one document must not wedge the entire sync.
         // Log it and queue whatever updates did encode; the pull cursors still
@@ -651,7 +665,7 @@ fn overlay_current_workspace_for_sync(full: &mut Workspace, current: Workspace) 
         full.schemes.insert(scheme_id, scheme);
     }
     full.normalize_one_level_folders();
-    full.normalize_item_markers();
+    let _ = full.normalize_item_markers();
     full.ensure_sync_metadata();
 }
 

@@ -1,12 +1,47 @@
 # Known gaps
 
-**Updated 2026-09-18.** These notes track confirmed data-loss/convergence
-bugs and deferred release work. The mandatory sync-stress gate
-(`./.github/scripts/run-sync-stress.sh --fuzz`, the 800×400 property fuzz,
-`knotq-mobile-core`, and the mobile WS integration test) is green on the
-current tree. Current deploy-blocking status: 0a, 0b, 0c, 1, and 2 are fixed
-and verified; 3 and 5 remain backend/ops gaps, not sync-convergence bugs. Item
-4 remains explicitly deferred undo-history work.
+**Updated 2026-09-20.** These notes track confirmed data-loss/convergence
+bugs and deferred release work. Current deploy-blocking status: 0a, 0b, 0c, 0d,
+0e, 0f, 0g, 0h, 1, and 2 are fixed and verified; 3 and 5 remain backend/ops gaps, not
+sync-convergence bugs. Item 4 remains explicitly deferred undo-history work.
+
+## How this class of bug is found now: the projection law
+
+Most of the entries below were reported the same way — "a field changed during
+a sync and no other device wrote it" — and each took a long, seed-specific
+investigation to attribute. They share one underlying shape, and it is worth
+stating on its own because it needs no server and no second device:
+
+> **A device's plain `Workspace` is exactly what its own CRDT documents
+> materialize to.**
+
+Two devices converge because Yrs merges their documents deterministically. That
+guarantee only reaches the user if what the user sees *is* the document. Once a
+plain workspace holds a value its own documents never did, the next landing
+materializes the document's value instead — and to the user, and to the
+no-silent-loss oracle, that is indistinguishable from a remote change nobody
+made. Worse, the pre-pull repair (`queue_local_only_documents_before_pull`)
+reads the difference as a local edit and re-asserts the stale value *every
+sync*, which is where the "wedged: N unpushed edits after settling" failures
+came from.
+
+The law lives in `shared/sync/src/projection.rs` and is checked in three
+places:
+
+- `desktop/state/tests/projection_law.rs` — a randomized single-device harness.
+  Hundreds of seeds in seconds, no server, no threads; a violation names the
+  command that broke it.
+- The production-path fuzzer checks it after **every** local step, sync landing
+  and relaunch (`production_fuzz/device.rs`), so a violation names the step
+  rather than the sync three steps later that surfaced it.
+- `KNOTQ_CHECK_DISK=1` runs the same comparison against the *data directory*
+  after each save, landing and shutdown. That is the only way to see a Daily
+  page outside the loaded window: it is absent from `state.workspace`
+  altogether, so the in-memory law cannot look at it.
+
+When adding a repair, a normalization, or any path that writes one half of a
+device's state, the question to answer is "does the other half get the same
+write?" — 0d, 0e and 0f below were each a *no*.
 
 ## 0a. [FIXED] Workspace identity re-adoption never actually persisted, causing repeated re-keying that eventually dropped a scheme's binding
 
@@ -206,6 +241,115 @@ pending-edit scenario, and the full `cargo test -p knotq-app --bin knotq` run.
 The full run and the wider release-mode property sweep are green; none of the
 current failures involve first-join population divergence or scheme metadata
 reverting.
+
+## 0d. [FIXED] A marker family the line's marker cannot draw could never round-trip
+
+**Found 2026-09-20** by the projection law, on-disk variant
+(`KNOTQ_CHECK_DISK=1`, chaos fuzz seed 2): a Daily page's item held
+`marker: Checkbox` with `marker_family: Rings` in the CRDT document and
+`Standard` in the plain scheme file, permanently.
+
+**Root cause:** the plain scheme file writes a line's marker and family as one
+token (`Item::marker_token`, e.g. `bullet.rings`), and that token *drops* a
+family `MarkerFamily::is_valid_for` rejects — a ring is a bullet glyph, a
+checkbox cannot draw one. The CRDT document stores `marker_family` as a field
+of its own and keeps whatever it is given. So the combination is
+representable in one half of the data directory and not the other, and once an
+item reached it the two halves disagreed for good. `SetItemMarkerFamily`
+already validated the family, but `SetItemMarker` could change the *marker* out
+from under a valid family.
+
+**Fix:** `Item::enforce_marker_constraints` — already the central per-item
+invariant, already called by insert/replace/set-marker and by
+`Workspace::normalize_item_markers` — now resets a family its marker cannot
+draw. The model therefore only ever holds values both halves can represent.
+Regression: `changing_a_marker_drops_a_family_the_new_marker_cannot_draw`
+(`desktop/commands/tests/item_cmds.rs`).
+
+## 0e. [FIXED] A sync's marker repair reached the plain workspace but not the documents
+
+**Found alongside 0d.** `sync_snapshot_in` runs three repairs on the pulled
+workspace (identity, folder tree, item markers) and then queued CRDT updates
+for them with `sync_changes(workspace, &ChangeSet::default().workspace())` —
+**the workspace index only**. The identity and folder repairs are index-level,
+so that was right for them; `normalize_item_markers` rewrites *item content*,
+and its result never reached any scheme document.
+
+**Fix:** `Workspace::normalize_item_markers` now returns the set of schemes it
+repaired instead of a bool, and `queue_repair_crdt_updates` takes that set as
+part of its change set. The signature change is the point: a caller can no
+longer forget which documents a content repair has to be written to.
+
+## 0f. [FIXED] `EnsureDailyQueue` could resurrect a row that had moved to another page
+
+**Found by the projection law in the production fuzzer** (single-account seed
+10004): a scheme showed one item that the CRDT placed in a different scheme,
+from step 52 to the end of the run.
+
+**Root cause:** a Daily page's placeholder row has a date-derived id, so two
+devices creating the same day converge on one blank row instead of two. The
+same determinism makes it re-mintable after the row has *moved* — a carry-over,
+or an ordinary drag, takes the row (id and all) to another page and leaves the
+day empty. Re-opening the day then re-created the id, so one item id was live
+in two schemes at once. `dedupe_materialized_items` resolves that by keeping
+the lowest scheme id and hiding the other, so the resurrected row was invisible
+to every document-derived view while the plain workspace still showed it — and
+the day silently emptied again on the next sync.
+
+**Fix:** `ensure_daily_queue` leaves the day blank when its placeholder id is
+alive in another scheme. Regression:
+`a_day_whose_placeholder_moved_away_is_not_given_a_second_copy_of_it`
+(`desktop/commands/tests/daily_cmds.rs`).
+
+## 0g. [FIXED] Moving a folder across the archive boundary left its schemes half-trashed
+
+**Found by `desktop/state/tests/projection_law.rs`, seed 4, in about a second.**
+Moving a folder that sits *inside* an archived folder's subtree back into the
+sidebar left its schemes in `recently_deleted` while the folder itself was
+live. The CRDT workspace index enforces the opposite rule when it materializes
+(a trashed scheme is kept out of the tree unless it is inside an archived
+subtree), so the plain workspace no longer equalled its own document.
+
+**Fix:** the rule is now stated once, as
+`Workspace::archive_coherence_violations` / `reconcile_archive_membership`
+(`shared/model/src/workspace/archive.rs`), and `move_node` calls the
+reconciliation instead of every structural command reimplementing the rule.
+
+
+## 0h. [FIXED] The reassert journal was a second, non-causal conflict resolver
+
+**Symptom:** `still has 1 unpushed edit(s) after settling (wedged)` on the
+single-account fuzz (seeds 10004, 10005), with the stuck edit being a
+`ReplaceItem` the *landing itself* had authored, plus two devices diverging on
+that item.
+
+`desktop/state/src/moved_edits.rs` re-applies fields this device edited before
+a sync landed. Its legitimate job is the **cross-document** case: each scheme
+is its own CRDT document, so moving a line between schemes is a delete in the
+source plus a fresh copy in the target, and an edit made to the source copy
+lands on a line that no longer exists. Three scenarios prove that half is
+load-bearing (turning the journal off fails
+`a_line_retyped_while_another_device_moves_it_keeps_the_new_text` and two
+others), so it stays.
+
+Two things it was *also* doing had to go, because both make it a second
+resolver racing Yrs:
+
+1. Replaying the retained snapshot onto a line still in **its own** scheme.
+   That conflict is already resolved causally; replaying manufactures a new
+   local write on every landing. The `changed_after_bridge` escape hatch that
+   re-armed it is gone: same-scheme is now an unconditional skip.
+2. Keeping the journal entry alive **after** its cross-document bridge had
+   been applied. A bridge is a one-shot repair: once this device has written
+   its authored value into the destination document, that document owns it.
+   Retained, two devices each re-assert their snapshot on every landing and a
+   repair is authored per sync for ever — which is exactly the wedge. The
+   entry is now retired as soon as its repair actually lands (a refused
+   command keeps its entry so the repair is retried).
+
+**Verified:** the whole `production_fuzz` suite — both fuzz configurations and
+every pinned scenario — is green.
+
 
 ## 1. [FIXED] An edit made during a device's first-ever sync can be silently lost
 

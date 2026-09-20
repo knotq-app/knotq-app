@@ -274,11 +274,23 @@ impl Workspace {
         }
     }
 
-    pub fn normalize_item_markers(&mut self) -> bool {
-        let mut changed = false;
-        for scheme in self.schemes.values_mut() {
+    /// Enforce the per-item marker invariants, reporting **which schemes**
+    /// changed rather than merely whether any did.
+    ///
+    /// The caller needs the set, not a flag: this rewrites item content, and a
+    /// repair that reaches only the plain workspace leaves it describing
+    /// something its own CRDT documents do not hold. The sync path turns that
+    /// difference into a local edit on the next pull and re-asserts the stale
+    /// value over the merged one — a revert with no other device involved. See
+    /// `queue_repair_crdt_updates` in the desktop sync service, which takes
+    /// this set as its change set.
+    pub fn normalize_item_markers(&mut self) -> HashSet<SchemeId> {
+        let mut changed = HashSet::new();
+        for (id, scheme) in self.schemes.iter_mut() {
             for item in &mut scheme.items {
-                changed |= item.enforce_marker_constraints();
+                if item.enforce_marker_constraints() {
+                    changed.insert(*id);
+                }
             }
         }
         changed

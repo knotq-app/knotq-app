@@ -240,3 +240,102 @@ fn removing_checkbox_marker_clears_date_annotations_and_undo_restores() {
     assert_eq!(item.marker, ItemMarker::Checkbox);
     assert!(item.start.is_some());
 }
+
+/// An item's marker family has to be one the line's marker can actually draw.
+///
+/// Not a cosmetic rule: the plain scheme file stores the marker and its family
+/// as one token and drops a family the marker cannot use, while the CRDT
+/// document stores `marker_family` as a field of its own and keeps whatever it
+/// is given. A line carrying a family its marker rejects therefore cannot
+/// round-trip through disk, and the two halves of the data directory disagree
+/// about it for good — which the next sync reads as a local edit and re-asserts
+/// one over the other, with no other device involved.
+#[test]
+fn changing_a_marker_drops_a_family_the_new_marker_cannot_draw() {
+    use knotq_model::MarkerFamily;
+
+    let mut workspace = Workspace::new();
+    let scheme_id = create_root_scheme(&mut workspace);
+    let item = Item::new("a line");
+    let item_id = item.id;
+    workspace
+        .apply(Command::InsertItem {
+            scheme: scheme_id,
+            position: 0,
+            item,
+        })
+        .unwrap();
+    workspace
+        .apply(Command::SetItemMarker {
+            scheme: scheme_id,
+            item: item_id,
+            marker: ItemMarker::Bullet,
+        })
+        .unwrap();
+    workspace
+        .apply(Command::SetItemMarkerFamily {
+            scheme: scheme_id,
+            item: item_id,
+            family: MarkerFamily::Rings,
+        })
+        .unwrap();
+    let line = |workspace: &Workspace| workspace.schemes[&scheme_id].items[0].clone();
+    assert_eq!(line(&workspace).marker_family, MarkerFamily::Rings);
+
+    // A ring is a bullet glyph; a checkbox cannot draw one.
+    workspace
+        .apply(Command::SetItemMarker {
+            scheme: scheme_id,
+            item: item_id,
+            marker: ItemMarker::Checkbox,
+        })
+        .unwrap();
+
+    let line = line(&workspace);
+    assert_eq!(line.marker, ItemMarker::Checkbox);
+    assert_eq!(
+        line.marker_family,
+        MarkerFamily::Standard,
+        "a family the marker cannot draw must not survive the marker change: it \
+         is unrepresentable in the scheme file and would diverge from the CRDT"
+    );
+    assert_eq!(
+        line.marker_token(),
+        "checkbox",
+        "the written token must round-trip to the value the model holds"
+    );
+}
+
+/// The same rule stated over the whole workspace, for content that arrives from
+/// somewhere other than a command (a pull, an import, an older build).
+#[test]
+fn normalizing_markers_reports_the_schemes_it_repaired() {
+    use knotq_model::MarkerFamily;
+
+    let mut workspace = Workspace::new();
+    let scheme_id = create_root_scheme(&mut workspace);
+    let mut item = Item::new("a line");
+    item.marker = ItemMarker::Checkbox;
+    item.marker_family = MarkerFamily::Rings;
+    workspace
+        .schemes
+        .get_mut(&scheme_id)
+        .unwrap()
+        .items
+        .push(item);
+
+    let repaired = workspace.normalize_item_markers();
+
+    assert!(
+        repaired.contains(&scheme_id),
+        "the caller has to know which schemes to write, not merely that something changed"
+    );
+    assert_eq!(
+        workspace.schemes[&scheme_id].items[0].marker_family,
+        MarkerFamily::Standard
+    );
+    assert!(
+        workspace.normalize_item_markers().is_empty(),
+        "normalization is idempotent"
+    );
+}

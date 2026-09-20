@@ -1570,6 +1570,17 @@ impl AppState {
         let mut commands = Vec::new();
         let mut observed_destinations = Vec::new();
         let mut consumed_restart_bridges = HashSet::new();
+        // Items whose cross-document bridge is authored below. A bridge is a
+        // ONE-SHOT repair, not a standing claim: once this device has written
+        // its authored value into the destination document, that document owns
+        // it and Yrs resolves every later conflict there causally. Keeping the
+        // journal entry alive turns the journal into a second, non-causal
+        // resolver — two devices each re-assert their retained snapshot on
+        // every landing, so one repair is authored per sync for ever and the
+        // pending queue never drains (production fuzz seeds 10004/10005,
+        // reported as "wedged: 1 unpushed edit after settling"). So the entry
+        // is retired once its repair has actually been applied.
+        let mut spent_bridges: HashSet<ItemId> = HashSet::new();
         {
             let workspace = self.store.workspace();
             let mut items: Vec<_> = captured.edits.into_iter().collect();
@@ -1641,13 +1652,18 @@ impl AppState {
                     // journal replay there would be a second, non-causal
                     // conflict resolver and can make two valid edits ping-pong
                     // forever.
-                    let changed_after_bridge = self
-                        .recent_moved_item_landed_values
-                        .get(&item)
-                        .is_some_and(|previous| {
-                            previous != landed && (edited.whole || edited.content || edited.indent)
-                        });
-                    if landed_scheme == local_scheme && !changed_after_bridge {
+                    // A same-document conflict is already resolved by Yrs,
+                    // even when the destination value has changed since this
+                    // journal last observed it. Replaying the retained source
+                    // snapshot there manufactures a fresh local write on every
+                    // landing — a second, non-causal conflict resolver racing
+                    // the first — and the queue never drains (production fuzz
+                    // seeds 10004/10005: one `ReplaceItem` re-authored per
+                    // settle round, for ever). The journal's job is the
+                    // cross-document case only: a move copies the line into
+                    // another scheme's document, where this device's edit to
+                    // the source copy landed on a line that no longer exists.
+                    if landed_scheme == local_scheme {
                         observed_destinations.push((item, landed_scheme, landed.clone()));
                         continue;
                     } else if self
@@ -1704,6 +1720,9 @@ impl AppState {
                         });
                 if merged != *landed || first_destination_bridge || changed_after_destination_bridge
                 {
+                    if moved_only && landed_scheme != local_scheme {
+                        spent_bridges.insert(item);
+                    }
                     commands.push(Command::ReplaceItem {
                         scheme: landed_scheme,
                         item: merged,
@@ -1727,6 +1746,7 @@ impl AppState {
         // One command per line: a line whose re-apply is refused must not take
         // the others down with it.
         let mut applied = 0;
+        let mut applied_items: HashSet<ItemId> = HashSet::new();
         let previous_suppression = self.suppress_local_item_journal;
         self.suppress_local_item_journal = true;
         for command in commands {
@@ -1737,6 +1757,7 @@ impl AppState {
             match self.apply_prechecked_local_command(command.clone(), CommandOrigin::User) {
                 Ok(_) => {
                     applied += 1;
+                    applied_items.insert(item);
                     if moved_only {
                         if let Command::ReplaceItem { scheme, item } = &command {
                             if let Some(current) = self
@@ -1763,6 +1784,17 @@ impl AppState {
             }
         }
         self.suppress_local_item_journal = previous_suppression;
+        // Retire the journal entries whose bridge actually landed. A command
+        // that was refused keeps its entry so the repair is retried.
+        spent_bridges.retain(|item| applied_items.contains(item));
+        if !spent_bridges.is_empty() {
+            self.index_dirty = true;
+            for item in &spent_bridges {
+                self.recent_local_item_edits.edits.remove(item);
+                self.recent_moved_item_landed_schemes.remove(item);
+                self.recent_moved_item_landed_values.remove(item);
+            }
+        }
         applied
     }
 }

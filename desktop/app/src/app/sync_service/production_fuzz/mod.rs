@@ -181,7 +181,32 @@ impl World {
         self.attribution
             .record_creation_intent(new_folders, new_schemes, pending.iter().copied());
         self.attribution.record_command_intent(index, pending);
+        self.check_projection(index, "local step");
         result
+    }
+
+    /// Assert the projection law on device `index`: what it shows equals what
+    /// its own CRDT documents hold.
+    ///
+    /// This is a *local* precondition for convergence, so it is checked
+    /// wherever the device's state can move — after every local step, every
+    /// landing and every relaunch. A divergence recorded here names the step
+    /// that introduced it; left unchecked it surfaces several steps later as a
+    /// field "changing" during a sync with no other device involved, which is
+    /// the signature almost every hard bug in `app/TODO.md` was reported as.
+    fn check_projection(&mut self, index: usize, label: &str) {
+        let Some(device) = self.devices[index].as_mut() else {
+            return;
+        };
+        let found = device.projection_divergences();
+        for divergence in found {
+            self.log(format!("PROJECTION {divergence}"));
+            self.violations.push(format!(
+                "step {}: device {index} after {label}: the workspace diverged from its own \
+                 CRDT documents: {divergence}",
+                self.step
+            ));
+        }
     }
 
     fn check(&mut self, index: usize, label: &str, before: &View, after: &View) {
@@ -262,6 +287,7 @@ impl World {
         let account_changed = self.passive_accounts[index] != Some(account);
         if !account_changed {
             self.check(index, "sync", &before, &after);
+            self.check_projection(index, "a sync landing");
         }
         self.passive_accounts[index] = Some(account);
         self.audit_server(account, index);
@@ -326,6 +352,7 @@ impl World {
         let after = self.view(index);
         self.log(format!("device {index} quit and relaunched"));
         self.check(index, "relaunch", &before, &after);
+        self.check_projection(index, "a relaunch");
     }
 
     fn crash(&mut self, index: usize) {
@@ -490,8 +517,12 @@ impl World {
             for index in &indexes {
                 let pending = self.devices[*index].as_mut().unwrap().pending_edit_count();
                 if pending > 0 {
+                    let summary = self.devices[*index]
+                        .as_mut()
+                        .unwrap()
+                        .pending_edit_summary();
                     failures.push(format!(
-                        "account {account}: device {index} still has {pending} unpushed edit(s) after settling (wedged)"
+                        "account {account}: device {index} still has {pending} unpushed edit(s) after settling (wedged): {summary}"
                     ));
                 }
             }
