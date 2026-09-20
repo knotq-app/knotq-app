@@ -305,12 +305,21 @@ impl WorkspaceStore {
     ///
     /// Returns whether anything moved.
     pub fn reconcile_workspace_from_documents(&mut self) -> bool {
-        let Ok(recovered) = self
+        let Ok(mut recovered) = self
             .crdt
             .materialized_workspace_repair(&self.workspace, &|_| false)
         else {
             return false;
         };
+        // The plain half is the canonical one: every path that writes it ends
+        // in `enforce_marker_constraints`, while a document is the merge of
+        // whatever every replica ever wrote and may hold a combination the
+        // model does not allow. Materialization deliberately does not
+        // normalize on read (see `app/TODO.md` 0j — a normalizing read makes
+        // every sync rewrite the line), so normalize here, on the way in. The
+        // law still holds afterwards: its comparison normalizes the document
+        // side the same way.
+        let _ = recovered.normalize_item_markers();
         if recovered == self.workspace {
             return false;
         }

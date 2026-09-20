@@ -7,16 +7,33 @@ use knotq_storage_json::{
 
 use super::{save_workspace, workspace_path, KnotQApp};
 
-/// The disk half of the shutdown flush: the workspace, then the pending CRDT
-/// queue and CRDT document states in lockstep. Only a workspace write failure is
+/// The disk half of the shutdown flush: the CRDT document states and the
+/// pending queue, then the plain workspace. Only a workspace write failure is
 /// returned; the CRDT writes are logged. Shared with the production-path fuzzer.
+///
+/// **The CRDT half goes first on purpose.** Unlike the save task, this flush
+/// leaves no recovery marker to tell the next launch that a save was
+/// interrupted — a quit is not supposed to be interruptible — so the order is
+/// what makes an interruption safe. Writing the documents first means a death
+/// anywhere in here can only leave the plain files *behind* the documents, and
+/// `WorkspaceStore::reconcile_workspace_from_documents` puts that right on the
+/// next launch. The other order would leave the plain files ahead with nothing
+/// recording it, and the reconcile would then read the stale documents as the
+/// truth and undo the session's last edits.
 pub(crate) fn write_shutdown_workspace(
     path: &std::path::Path,
     state: &mut AppState,
 ) -> anyhow::Result<()> {
-    save_workspace(path, &state.workspace)?;
-    state.dirty_schemes.clear();
-    state.index_dirty = false;
+    if let Err(err) = save_crdt_state(path, &state.crdt_document_states()) {
+        eprintln!("shutdown CRDT state flush failed: {err:#}");
+    }
+    if let Err(err) = replace_pending_crdt_edits_with_item_fields(
+        path,
+        &state.pending_crdt_edits(),
+        &state.queued_item_fields(),
+    ) {
+        eprintln!("shutdown CRDT pending queue flush failed: {err:#}");
+    }
     let recent_item_edits = state.recent_item_edits();
     if let Err(err) = replace_recent_item_edits(path, &recent_item_edits) {
         eprintln!("shutdown item edit journal flush failed: {err:#}");
@@ -25,17 +42,9 @@ pub(crate) fn write_shutdown_workspace(
     if let Err(err) = replace_recent_folder_edits(path, &recent_folder_edits) {
         eprintln!("shutdown folder edit journal flush failed: {err:#}");
     }
-    // Keep the persisted CRDT state in lockstep with the workspace.
-    if let Err(err) = replace_pending_crdt_edits_with_item_fields(
-        path,
-        &state.pending_crdt_edits(),
-        &state.queued_item_fields(),
-    ) {
-        eprintln!("shutdown CRDT pending queue flush failed: {err:#}");
-    }
-    if let Err(err) = save_crdt_state(path, &state.crdt_document_states()) {
-        eprintln!("shutdown CRDT state flush failed: {err:#}");
-    }
+    save_workspace(path, &state.workspace)?;
+    state.dirty_schemes.clear();
+    state.index_dirty = false;
     Ok(())
 }
 

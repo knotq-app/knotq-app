@@ -665,3 +665,70 @@ fn a_reloaded_workspace_still_equals_its_own_crdt_documents() {
         lines.join("\n  ")
     );
 }
+
+/// A launch whose plain files are *behind* its CRDT states must adopt the
+/// states, not publish the stale plain view.
+///
+/// That is not a hypothetical split. A sync run persists the post-push document
+/// states on their own — the push's self-heal may have repopulated a
+/// schema-less document and that identity has to survive a restart — after the
+/// run has cleared the save-recovery marker, so a push that then fails leaves
+/// the documents ahead with nothing recording it (production fuzz chaos seed
+/// 89). `reconcile_workspace_from_documents` is what every launch runs to put
+/// that right.
+#[test]
+fn a_launch_whose_plain_files_are_stale_adopts_its_documents() {
+    knotq_model::set_deterministic_id_seed(Some(9_101));
+    let mut store = WorkspaceStore::new::<Vec<u8>>(
+        seed_workspace(),
+        knotq_model::ReplicaId::new(),
+        false,
+        HashMap::new(),
+        1,
+    );
+    store.flush_crdt();
+    let mut rng = Rng::new(9_101);
+    for _ in 0..40 {
+        random_command(&mut store, &mut rng);
+    }
+    // The plain half as it reached disk, before the edits that only the
+    // documents went on to record.
+    let stale_plain = store.workspace().clone();
+    for _ in 0..20 {
+        random_command(&mut store, &mut rng);
+    }
+    let current = store.workspace().clone();
+    assert_ne!(
+        stale_plain, current,
+        "the fixture must actually move the workspace on, or it proves nothing"
+    );
+    let states: HashMap<_, _> = store
+        .crdt_document_states()
+        .into_iter()
+        .map(|(id, bytes)| (id, bytes.to_vec()))
+        .collect();
+
+    // The launch: the stale plain workspace beside the newer document states.
+    let mut relaunched =
+        WorkspaceStore::new(stale_plain, knotq_model::ReplicaId::new(), false, states, 1);
+    assert!(
+        relaunched.reconcile_workspace_from_documents(),
+        "the reconcile has to report that it moved the workspace"
+    );
+
+    assert!(
+        projection(&mut relaunched).is_empty(),
+        "the law must hold once the launch has reconciled"
+    );
+    for (id, scheme) in &current.schemes {
+        assert_eq!(
+            relaunched.workspace().schemes.get(id).map(|s| &s.items),
+            Some(&scheme.items),
+            "scheme {id:?} must come back with the items its document holds"
+        );
+    }
+    assert!(
+        !relaunched.reconcile_workspace_from_documents(),
+        "reconciling is idempotent"
+    );
+}
