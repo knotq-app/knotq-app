@@ -540,6 +540,29 @@ impl World {
             }
         }
 
+        // The settle loop above stops the moment every device is converged and
+        // every queue is empty — which is precisely the state a squash
+        // proposal needs, so whether one ever ran was left to timing, and any
+        // change that shortens the settle silently dropped the coverage the
+        // assertion below demands. Give it its chance explicitly instead.
+        if self.config.maintenance_coverage {
+            for round in 0..4 {
+                if self
+                    .accounts
+                    .iter()
+                    .any(|account| account.server.squash_calls() > 0)
+                {
+                    break;
+                }
+                let _ = round;
+                for account in 0..self.accounts.len() {
+                    for index in self.devices_on(account) {
+                        self.sync(index, 0);
+                    }
+                }
+            }
+        }
+
         let seed = self.seed;
         for (index, before) in &before_settle {
             let after = self.view(*index);

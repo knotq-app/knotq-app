@@ -2,8 +2,8 @@
 
 **Updated 2026-09-20.** These notes track confirmed data-loss/convergence
 bugs and deferred release work. Current deploy-blocking status: 0a, 0b, 0c, 0d,
-0e, 0f, 0g, 0h, 0j, 0k, 0l, 0m, 0n, 0o, 1, and 2 are fixed and verified; 0i is
-open and is the projection law's one documented exclusion; 3 and 5 remain backend/ops gaps,
+0e, 0f, 0g, 0h, 0j, 0k, 0l, 0m, 0n, 0o, 0p, 1, and 2 are fixed and verified;
+0i is open and is the projection law's one documented exclusion; 3 and 5 remain backend/ops gaps,
 not sync-convergence bugs. Item 4 remains explicitly deferred undo-history work.
 
 **Depth matters, and the gate at depth was already red.** The PR gate runs the
@@ -608,6 +608,47 @@ document" becomes an enforced invariant instead of a display-time tie-break.
 replica can see, so the copy in the globally lowest scheme id is never a loser
 anywhere; whatever subset of schemes each replica has loaded, at least one copy
 always survives.
+
+## 0p. [FIXED] Normalization could destroy a scheme, and a permanent delete could leave no evidence
+
+Two halves of one rule: **normalization repairs structure; only a real deletion
+destroys content, and a real deletion leaves evidence.**
+
+`normalize_one_level_folders` deleted any scheme the folder tree did not
+mention. That is destructive twice over — the scheme goes, and because the
+workspace index is written from this workspace, the drop is *published* to the
+account as an authoritative deletion, so every other device loses it and its
+document is left on the server as an orphan with no index entry. An
+unreferenced scheme is now re-homed under the root instead, the same choice the
+folder walk already makes for a stranded folder. Regression:
+`normalize_rehomes_an_unreferenced_scheme_rather_than_deleting_it`.
+
+`permanently_delete_scheme` wrote its tombstone only when the scheme had a
+recorded restore origin, so a scheme archived without one (archived with its
+folder, or an origin pruned by an earlier normalization) was destroyed with
+nothing to say so. The tombstone is not trash bookkeeping — it is the evidence
+that an id was destroyed, and a stale replica merges the node back to life
+without it. It is now always written, falling back to the root as the origin
+folder.
+
+Neither is enough on its own to close the remaining account-switch scheme loss
+(0i) — both were verified against chaos seeds 12, 14, 26, 112 and 113, which
+still fail — but both are real holes in the rule those failures violate, and
+the rule is what any fix for 0i has to rest on.
+
+**Rejected on the way, deliberately:** "a local index write never removes a node
+entry". It does fix seeds 12, 14 and 112, but it retains entries for schemes
+whose documents this replica does not hold — phantoms that
+`queue_local_only_documents_before_pull` then snapshots from an empty
+materialized scheme on every sync, so the account never goes quiet (seed 10000
+stopped reaching a squash window at all) and an empty snapshot could overwrite
+the real content server-side. Narrowing it to "nodes whose document this
+replica holds" makes it correct and useless: `self.schemes` is pruned to the
+workspace right after the index write, so the narrow set is what
+`retained_scheme_ids` already keeps. A fix for 0i has to establish *why* the
+pushing device's index lost the entry, not stop it from writing what it
+believes.
+
 
 ## 1. [FIXED] An edit made during a device's first-ever sync can be silently lost
 

@@ -191,8 +191,54 @@ impl Workspace {
             .chain(daily_queue_ids.iter().copied())
             .chain(archived_subtree_schemes.iter().copied())
             .collect();
+
+        // A scheme the folder tree does not mention is a structural anomaly,
+        // not a deletion. Dropping it here is destructive twice over: the
+        // scheme goes, and because the workspace index is then written from
+        // this workspace, the drop is PUBLISHED to the account as an
+        // authoritative deletion — every other device loses the scheme, and
+        // its document lingers on the server as an orphan with no index entry
+        // (production fuzz chaos seed 112: a scheme another device created
+        // disappeared for the whole account after a third device normalized
+        // its own view of the tree).
+        //
+        // A real deletion has evidence: the archive list, or a permanent-delete
+        // tombstone in `deleted_scheme_origins`. Without either, re-home the
+        // scheme under the root — the same choice the folder walk above makes
+        // for a stranded folder — so normalization repairs structure and never
+        // destroys content.
+        let mut rescued: Vec<SchemeId> =
+            self.schemes
+                .keys()
+                .copied()
+                .filter(|id| !retained_schemes.contains(id))
+                .filter(|id| {
+                    !self.deleted_scheme_origins.get(id).is_some_and(|origin| {
+                        origin.position == PERMANENT_DELETE_TOMBSTONE_POSITION
+                    })
+                })
+                .collect();
+        // Deterministic order: two replicas normalizing the same anomaly must
+        // rescue in the same order or the root's child list will not converge.
+        rescued.sort();
+        if !rescued.is_empty() {
+            let root = self.root;
+            if let Some(root_folder) = self.folders.get_mut(&root) {
+                for id in &rescued {
+                    if !root_folder.children.contains(&NodeRef::Scheme(*id)) {
+                        root_folder.children.push(NodeRef::Scheme(*id));
+                    }
+                }
+            }
+            changed = true;
+        }
+        let kept_schemes: HashSet<SchemeId> = retained_schemes
+            .iter()
+            .copied()
+            .chain(rescued.iter().copied())
+            .collect();
         let before = self.schemes.len();
-        self.schemes.retain(|id, _| retained_schemes.contains(id));
+        self.schemes.retain(|id, _| kept_schemes.contains(id));
         if self.schemes.len() != before {
             changed = true;
         }

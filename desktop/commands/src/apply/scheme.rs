@@ -286,15 +286,23 @@ fn permanently_delete_scheme(
     // `remove_scheme_completely` removes ordinary archive membership, but the
     // restore origin is retained as a CRDT tombstone for this permanently
     // destroyed id.
-    if let Some(origin) = origin {
-        workspace.deleted_scheme_origins.insert(
-            id,
-            knotq_model::DeletedSchemeOrigin {
-                position: PERMANENT_DELETE_TOMBSTONE_POSITION,
-                ..origin
-            },
-        );
-    }
+    //
+    // Always, even when no restore origin was recorded. The tombstone is not
+    // bookkeeping for the trash — it is the *evidence that this id was
+    // destroyed*, and everything downstream reads it that way: a stale replica
+    // merges the node back to life without it, and the workspace-index writer
+    // uses it to tell a real deletion apart from a scheme this device merely
+    // cannot see. A scheme archived without an origin (archived with its
+    // folder, or an origin pruned by an earlier normalization) used to be
+    // destroyed silently, leaving nothing to say so.
+    let root = workspace.root;
+    workspace.deleted_scheme_origins.insert(
+        id,
+        knotq_model::DeletedSchemeOrigin {
+            position: PERMANENT_DELETE_TOMBSTONE_POSITION,
+            folder: origin.map(|origin| origin.folder).unwrap_or(root),
+        },
+    );
     Ok(CommandReceipt {
         inverse: Command::RestoreDeletedScheme {
             position: trash_position,
