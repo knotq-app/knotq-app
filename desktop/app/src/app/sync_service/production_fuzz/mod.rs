@@ -939,6 +939,36 @@ fn a_scheme_created_in_flight_survives_an_unrelated_replace_fallback() {
     );
 }
 
+/// A Daily page read back from disk must not contradict the documents.
+///
+/// A Daily page's name and colour live in `workspace.json`, not in its own
+/// file, and the index write has nothing to write them from for a day outside
+/// the loaded window (`WorkspaceIndex::from_workspace_preserving` keeps the
+/// stored entry). So another device's recolour of such a day reached this
+/// device's CRDT and stopped there; when the day later entered the window,
+/// `adopt_loaded_schemes` put the file's stale colour into the visible
+/// workspace and the two halves disagreed from then on. Fixed in
+/// `WorkspaceStore::adopt_loaded_schemes`, which now lets a populated document
+/// win over the file it just read, and in `save_unloaded_scheme_files`, which
+/// refreshes those index entries so the file stops being stale in the first
+/// place.
+///
+/// Needs the deeper run: the day has to leave the window and come back.
+#[test]
+fn a_daily_page_reloaded_from_disk_keeps_what_the_documents_hold() {
+    run_seed(
+        10_105,
+        Config {
+            accounts: 1,
+            initial_devices: 3,
+            max_devices: 4,
+            steps: env_usize("KNOTQ_FUZZ_STEPS", 200),
+            chaos: false,
+            maintenance_coverage: false,
+        },
+    );
+}
+
 /// Acknowledged item fields must remain journaled across later edits to the
 /// same item. Seed 10307 moves a stale copy into another scheme after a date
 /// edit followed by typing; the destination must retain both local changes.

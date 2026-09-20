@@ -561,7 +561,7 @@ impl WorkspaceStore {
     /// overwrite live content. Returns how many were adopted.
     pub fn adopt_loaded_schemes(&mut self, schemes: Vec<Scheme>) -> usize {
         self.flush_crdt();
-        let mut adopted = 0;
+        let mut adopted = Vec::new();
         for scheme in schemes {
             let bound = self
                 .workspace
@@ -571,13 +571,37 @@ impl WorkspaceStore {
             if !bound || self.workspace.schemes.contains_key(&scheme.id) {
                 continue;
             }
+            adopted.push(scheme.id);
             self.workspace.schemes.insert(scheme.id, scheme);
-            adopted += 1;
         }
-        if adopted > 0 {
-            self.index_stale = true;
+        if adopted.is_empty() {
+            return 0;
         }
-        adopted
+        self.index_stale = true;
+
+        // The page came off disk, but this device's own documents may already
+        // hold a newer version of it — a Daily page's name and colour live in
+        // `workspace.json`, and a remote rename or recolour of a day that was
+        // outside the loaded window reaches the documents with nothing on the
+        // plain side to write it to. Reading the file back then contradicts
+        // the documents, and the device's two halves disagree from then on
+        // (production fuzz single-account seed 10105). The documents win, for
+        // every scheme that has one; an unpopulated document keeps the file's
+        // content, which is the whole reason the file is being read.
+        if let Ok(materialized) = self
+            .crdt
+            .materialized_workspace_repair(&self.workspace, &|_| false)
+        {
+            for id in &adopted {
+                if self.crdt.scheme_document_is_unpopulated(*id) {
+                    continue;
+                }
+                if let Some(from_documents) = materialized.schemes.get(id) {
+                    self.workspace.schemes.insert(*id, from_documents.clone());
+                }
+            }
+        }
+        adopted.len()
     }
 
     /// Rebuild a bound scheme that is missing from the workspace from its CRDT

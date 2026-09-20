@@ -243,6 +243,51 @@ pub fn save_unloaded_scheme_files(
         write_scheme_file(&base_dir, &workspace, scheme)
             .with_context(|| format!("write unloaded scheme {}", scheme.id))?;
     }
+    refresh_unloaded_daily_index_entries(path, schemes)
+}
+
+/// Bring the workspace-index entries of unloaded Daily pages up to date.
+///
+/// A Daily page's name and colour live in `workspace.json`, not in its own
+/// file, and the index write preserves the stored entry for any page whose body
+/// is not loaded (`WorkspaceIndex::from_workspace_preserving`) — it has nothing
+/// better to write it from. So a remote rename or recolour of an off-window day
+/// reached the CRDT and stopped there: the next time the page entered the
+/// window it was read back from disk with its old colour, and the device's two
+/// halves disagreed from then on (production fuzz single-account seed 10105).
+///
+/// These schemes are materialized from this device's own documents, so they are
+/// exactly what the index should say. The `calendar_index` is left alone: it is
+/// derived from the items, which the body write above owns.
+fn refresh_unloaded_daily_index_entries(path: &Path, schemes: &[Scheme]) -> Result<()> {
+    let by_id: std::collections::HashMap<SchemeId, &Scheme> =
+        schemes.iter().map(|s| (s.id, s)).collect();
+    let Some(mut env) = read_workspace_envelope(path)? else {
+        return Ok(());
+    };
+    let mut changed = false;
+    for entry in &mut env.workspace.daily_queue {
+        let Some(scheme) = by_id.get(&entry.scheme.id) else {
+            continue;
+        };
+        if entry.scheme.name == scheme.name
+            && entry.scheme.color_index == scheme.color_index
+            && entry.scheme.gsync == scheme.gsync
+            && entry.scheme.source == scheme.source
+        {
+            continue;
+        }
+        entry.scheme.name = scheme.name.clone();
+        entry.scheme.color_index = scheme.color_index;
+        entry.scheme.gsync = scheme.gsync;
+        entry.scheme.source = scheme.source.clone();
+        changed = true;
+    }
+    if !changed {
+        return Ok(());
+    }
+    let json = serde_json::to_string_pretty(&env)?;
+    write_atomic_if_changed(path, json.as_bytes())?;
     Ok(())
 }
 
