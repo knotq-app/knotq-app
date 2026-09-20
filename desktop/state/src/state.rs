@@ -246,6 +246,20 @@ impl AppState {
         self.sync_workspace_from_store();
     }
 
+    /// Adopt whatever this device's own CRDT documents hold, for a launch with
+    /// no save-recovery marker to act on. See
+    /// [`WorkspaceStore::reconcile_workspace_from_documents`]: the halves of a
+    /// data directory can part company without a save being interrupted, so
+    /// the law is restored on every launch rather than only on the ones a
+    /// marker flags.
+    pub fn reconcile_workspace_from_documents(&mut self) -> bool {
+        let moved = self.store.reconcile_workspace_from_documents();
+        if moved {
+            self.sync_workspace_from_store();
+        }
+        moved
+    }
+
     /// Revision of everything the workspace-derived views read. Bumped by every
     /// mutation route, so a view can cache a projection of the workspace and
     /// reuse it while this is unchanged.

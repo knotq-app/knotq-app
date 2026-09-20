@@ -354,12 +354,25 @@ impl Item {
         self.state_for_occurrence(&OccurrenceId::Single)
     }
 
-    pub fn normalize_state(&mut self) {
+    /// Drop occurrence entries that say nothing, reporting whether any went.
+    ///
+    /// An entry whose state is the default is indistinguishable from no entry
+    /// at all — `state_for_occurrence` returns the default for a missing one —
+    /// so a line that was completed and then un-completed must not keep a
+    /// husk of that round trip. It is not merely tidiness: the sync path
+    /// normalizes the copy it writes into the CRDT documents, so a husk left
+    /// in the plain workspace is a value the device's own documents do not
+    /// hold, which the next pull reads as a remote change nobody made. Every
+    /// writer of `state` is expected to end here (see
+    /// `shared/sync/src/projection.rs`).
+    pub fn normalize_state(&mut self) -> bool {
+        let before = self.state.len();
         self.state
             .retain(|state| state.occurrence == OccurrenceId::Single || !state.state.is_default());
         if self.state.is_empty() {
             self.state.push(OccurrenceState::default());
         }
+        self.state.len() != before
     }
 
     pub fn enforce_marker_constraints(&mut self) -> bool {
@@ -382,7 +395,7 @@ impl Item {
                 self.state.push(OccurrenceState::default());
                 changed = true;
             }
-            self.normalize_state();
+            changed |= self.normalize_state();
             return changed;
         }
 

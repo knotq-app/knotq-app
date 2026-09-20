@@ -339,3 +339,49 @@ fn normalizing_markers_reports_the_schemes_it_repaired() {
         "normalization is idempotent"
     );
 }
+
+/// Completing a recurring occurrence and then un-completing it must leave the
+/// item exactly as it was. A default entry for a recurring occurrence says
+/// nothing that its absence does not, and the sync path prunes it from the copy
+/// it writes into the CRDT documents — so keeping one here would leave the
+/// plain workspace holding a value its own documents never did (production fuzz
+/// seed 10005).
+#[test]
+fn un_completing_a_recurring_occurrence_leaves_no_husk_behind() {
+    use chrono::TimeZone;
+
+    let mut workspace = Workspace::new();
+    let scheme_id = create_root_scheme(&mut workspace);
+    let mut item = Item::new("a repeating line");
+    item.marker = ItemMarker::Checkbox;
+    let item_id = item.id;
+    workspace
+        .apply(Command::InsertItem {
+            scheme: scheme_id,
+            position: 0,
+            item,
+        })
+        .unwrap();
+
+    let before = workspace.schemes[&scheme_id].items[0].state.clone();
+    let occurrence = OccurrenceId::Recurring {
+        original_start: knotq_model::CalendarDateTime::utc(
+            Utc.with_ymd_and_hms(2026, 9, 15, 7, 0, 0).unwrap(),
+        ),
+    };
+
+    for _ in 0..2 {
+        workspace
+            .apply(Command::ToggleOccurrence {
+                scheme: scheme_id,
+                item: item_id,
+                occurrence: occurrence.clone(),
+            })
+            .unwrap();
+    }
+
+    assert_eq!(
+        workspace.schemes[&scheme_id].items[0].state, before,
+        "a round trip through done and back must not be observable"
+    );
+}

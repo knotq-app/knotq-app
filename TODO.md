@@ -2,9 +2,22 @@
 
 **Updated 2026-09-20.** These notes track confirmed data-loss/convergence
 bugs and deferred release work. Current deploy-blocking status: 0a, 0b, 0c, 0d,
-0e, 0f, 0g, 0h, 0j, 1, and 2 are fixed and verified; 0i is open and is the
-projection law's one documented exclusion; 3 and 5 remain backend/ops gaps, not
-sync-convergence bugs. Item 4 remains explicitly deferred undo-history work.
+0e, 0f, 0g, 0h, 0j, 0k, 0l, 1, and 2 are fixed and verified; 0i is open and is
+the projection law's one documented exclusion; 3 and 5 remain backend/ops gaps,
+not sync-convergence bugs. Item 4 remains explicitly deferred undo-history work.
+
+**Depth matters, and the gate at depth was already red.** The PR gate runs the
+production fuzzer at its default depth; at CI depth
+(`KNOTQ_FUZZ_SEEDS=128 KNOTQ_FUZZ_STEPS=200`) commit `4abec2a` — before any of
+0d–0l — fails **3 of 30** tests, on 50 of the 128 single-account seeds (10001,
+10003, 10005, 10006, 10013, 10019, 10022, 10025, 10028–10032, 10034, 10036,
+10038, 10039, 10043, 10045–10047, 10050, 10059, 10063, 10069, 10081, 10082,
+10084–10088, 10091–10097, 10102, 10109, 10110, 10112, 10113, 10116, 10117,
+10119, 10120, 10123, 10127), on chaos seeds 12 and 112, and on the *pinned*
+regression seed 10404 once it is run at 200 steps instead of its usual 120. So
+a failure at that depth is not a regression from this work; it is the backlog
+this work is draining. Raising the gate's depth is worth doing only once the
+sweep is green.
 
 ## How this class of bug is found now: the projection law
 
@@ -440,6 +453,68 @@ the server. That is pinned by
 114 and 246) — normalizing on read was tried here and that test caught it
 immediately. The storage forms may differ; what the two halves *describe* may
 not.
+
+## 0k. [FIXED] Un-completing a recurring occurrence left a husk the sync path pruned
+
+**Found by the projection law** in the 128-seed production fuzz (single-account
+seed 10005, step 163): a checkbox's plain copy held an `OccurrenceState` for
+`2026-09-15` with `progress: 0` that its own scheme document did not.
+
+**Root cause:** `Item::state_for_occurrence_mut` creates an entry on demand, and
+`ToggleOccurrence` toggled `progress` without normalizing afterwards. Completing
+an occurrence and un-completing it therefore left a default entry behind — which
+says exactly what *no* entry says, since `state_for_occurrence` returns the
+default for a missing one. It would have been harmless bookkeeping except that
+the sync path normalizes the copy it writes into the CRDT documents
+(`workspace_for_background_sync` runs `normalize_item_markers`, which for a
+checkbox ends in `normalize_state`), so the husk existed in the plain half only.
+
+**Fix:** `toggle_occurrence` normalizes after the toggle
+(`desktop/commands/src/apply/item.rs`), and `Item::normalize_state` now
+*reports* whether it dropped anything so `enforce_marker_constraints` no longer
+returns "unchanged" for a repair it just made — that return value is what tells
+the sync service which scheme documents to rewrite (see 0e).
+
+**Regression:** `un_completing_a_recurring_occurrence_leaves_no_husk_behind`
+(`desktop/commands/tests/item_cmds.rs`).
+
+
+## 0l. [FIXED] The two halves of the data directory could part company with no save in progress
+
+**Found by the projection law** in the 128-seed production fuzz (chaos seed 89,
+step 149) after teaching `World::crash` to check the law once the relaunch is
+done — a crash is precisely where the halves are most likely to split, so it
+was the obvious place for the law to be checked and it was the one state move
+that did not check it.
+
+**What happened:** device 0 edited a line (step 140) and moved a scheme (step
+145) without saving, then synced at 149 and the push failed with a dropped
+connection. On relaunch its documents held both edits and its plain files held
+neither — `KNOTQ_CHECK_DISK=1` shows the split is already on disk before the
+process starts.
+
+**Root cause:** a sync run persists the *post-push* document states on their own
+(`sync_service/snapshot.rs`, just before `push_result?`) because the push's own
+self-heal may have repopulated a schema-less document and that identity has to
+survive a restart. That write is not paired with a workspace save, and it
+happens *after* the run clears `workspace_save_recovery` — so when the push then
+fails, the documents on disk are ahead of the plain files with no save in
+progress and no marker to notice it. Item 2's recovery only runs when a marker
+is present, so nothing repaired it; the device then re-materialized the
+documents' values during a later landing, which is indistinguishable from a
+remote change nobody made.
+
+**Fix:** the marker-independent half of recovery became
+`WorkspaceStore::reconcile_workspace_from_documents`, and **every** launch runs
+it — with a marker through `recover_workspace_save` (which still turns the
+plain-file delta into CRDT operations first), without one on its own. It only
+ever adopts what the documents hold: a scheme with no document, an unseeded
+workspace document and an empty document all keep the plain content, so a device
+that has never synced passes through untouched.
+
+**Verified:** chaos seed 89 at `KNOTQ_FUZZ_STEPS=200`, and the law is now
+checked after every crash-and-relaunch in both fuzz configurations.
+
 
 ## 1. [FIXED] An edit made during a device's first-ever sync can be silently lost
 

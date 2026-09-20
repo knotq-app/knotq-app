@@ -115,6 +115,12 @@ impl DesktopDevice {
             "device {index}: workspace load failed: {:?}",
             bootstrap.save_blocked_reason
         );
+        Self::report_disk_divergences(
+            index,
+            &workspace_path,
+            settings.replica_id,
+            "the load that starts a launch",
+        );
         let crdt_states = crate::app::constructor::restored_crdt_states(&workspace_path);
         let sync_state = load_local_sync_state(&workspace_path).unwrap_or_default();
         let pending_crdt_edits = sync_state.pending;
@@ -132,8 +138,11 @@ impl DesktopDevice {
             crdt_states,
             initial_sequence,
         );
-        if let Some(base) = workspace_save_recovery {
-            state.recover_workspace_save(base);
+        match workspace_save_recovery {
+            Some(base) => state.recover_workspace_save(base),
+            None => {
+                state.reconcile_workspace_from_documents();
+            }
         }
         state.restore_pending_crdt_edits(pending_crdt_edits);
         state.restore_recent_item_edits(recent_item_edits);

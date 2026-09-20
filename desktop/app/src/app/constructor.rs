@@ -279,8 +279,15 @@ impl KnotQApp {
             onboarding_phase,
             onboarding_page: 0,
         };
-        if let Some(base) = workspace_save_recovery {
-            app.state.recover_workspace_save(base);
+        match workspace_save_recovery {
+            Some(base) => app.state.recover_workspace_save(base),
+            // No interrupted save to repair, but the halves can still have
+            // parted company (a sync run persists post-push document states on
+            // their own, and a failed push leaves them ahead). Restore the
+            // projection law before anything reads the workspace.
+            None => {
+                app.state.reconcile_workspace_from_documents();
+            }
         }
         app.state.restore_pending_crdt_edits(pending_crdt_edits);
         app.state.restore_recent_item_edits(recent_item_edits);

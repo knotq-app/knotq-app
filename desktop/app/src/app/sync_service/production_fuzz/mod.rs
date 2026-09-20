@@ -389,6 +389,13 @@ impl World {
         // crash-persistence gap remains covered by its dedicated ignored test.
         self.attribution.record_local(index, &before, &after);
         self.log(format!("device {index} crashed at {point:?}"));
+        // A crash is where the two halves of the data directory are most
+        // likely to part company — the workspace files and the CRDT states are
+        // written one after the other, and the process dies between them. That
+        // is exactly what `recover_workspace_save` exists to repair, so the
+        // law has to hold once the relaunch is done, whichever half was
+        // written.
+        self.check_projection(index, "a crash and relaunch");
     }
 
     fn step(&mut self) {
@@ -912,6 +919,12 @@ fn successive_acknowledged_item_edits_survive_a_later_move() {
 #[ignore = "triage helper; replays KNOTQ_REPRO_SEED with the chaos configuration"]
 fn replay_production_seed() {
     let seed = env_usize("KNOTQ_REPRO_SEED", 1) as u64;
+    // A seed only means something together with the configuration that drew
+    // it, so mirror the two sweeps exactly: `KNOTQ_REPRO_SEED=<n>` replays
+    // `desktop_production_sync_fuzz`'s seed n, and `KNOTQ_REPRO_PLAIN=1`
+    // replays `desktop_production_single_account_fuzz`'s (whose seeds start at
+    // 10_000). `KNOTQ_REPRO_MAINTENANCE=0` drops the maintenance steps, which
+    // is how a few pinned regressions were originally found.
     let chaos = std::env::var("KNOTQ_REPRO_PLAIN").is_err();
     run_seed(
         seed,
@@ -921,7 +934,7 @@ fn replay_production_seed() {
             max_devices: if chaos { 5 } else { 4 },
             steps: env_usize("KNOTQ_FUZZ_STEPS", 120),
             chaos,
-            maintenance_coverage: false,
+            maintenance_coverage: env_usize("KNOTQ_REPRO_MAINTENANCE", 1) != 0,
         },
     );
 }

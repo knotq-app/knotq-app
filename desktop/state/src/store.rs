@@ -281,25 +281,44 @@ impl WorkspaceStore {
             self.flush_crdt();
         }
 
-        // The recovery marker pairs the plain workspace save with the CRDT
-        // save, but a process can die after either half.  In that window the
-        // persisted CRDT may already contain the newer projection while the
-        // plain workspace still contains the older one.  Re-express the
-        // visible store from the recovered documents before the first sync
-        // snapshot; otherwise the first sync after relaunch reports an
-        // apparent local edit that is only recovery catching up the UI.
+        self.reconcile_workspace_from_documents();
+    }
+
+    /// Make the visible workspace equal what this device's own CRDT documents
+    /// hold — the projection law (`knotq_sync::projection`), restored.
+    ///
+    /// **Every launch runs this, marker or no marker.** The two halves of the
+    /// data directory are written one after the other and a process can die
+    /// between them, but that is not the only way they part: a sync run
+    /// persists the post-push document states on their own (the push's
+    /// self-heal has to survive a restart), and when the push then fails, the
+    /// documents on disk are ahead of the plain files with no save in progress
+    /// and so no recovery marker to notice it. Whatever the cause, the
+    /// documents are the durable record — they are what sync pushes — so the
+    /// visible half adopts them.
+    ///
+    /// Safe in the other direction because it only ever *adds* what the
+    /// documents hold: a scheme with no document, an unseeded workspace
+    /// document and an empty document (`trust_empty_crdt` is false for every
+    /// scheme) all keep the plain content. A device that has never synced
+    /// therefore passes through untouched rather than being emptied.
+    ///
+    /// Returns whether anything moved.
+    pub fn reconcile_workspace_from_documents(&mut self) -> bool {
         let Ok(recovered) = self
             .crdt
             .materialized_workspace_repair(&self.workspace, &|_| false)
         else {
-            return;
+            return false;
         };
-        if recovered != self.workspace {
-            self.workspace = recovered;
-            self.index_stale = true;
-            self.dirty = WorkspaceDirtyState::all(&self.workspace);
-            self.crdt_save_scope.widen_to_all();
+        if recovered == self.workspace {
+            return false;
         }
+        self.workspace = recovered;
+        self.index_stale = true;
+        self.dirty = WorkspaceDirtyState::all(&self.workspace);
+        self.crdt_save_scope.widen_to_all();
+        true
     }
 
     /// Reconcile any deferred CRDT changes (see `deferred_crdt`) into the CRDT
