@@ -121,6 +121,16 @@ pub fn daily_queue_carryover_command(
             scheme: previous_id,
             item: item.id,
         });
+        // The archive id is deterministic, so the source day can already hold
+        // it — another device's carryover of the same row merged in while this
+        // one still saw the live row. Inserting a second copy of that id puts
+        // two rows with one id in the page, which no document can represent,
+        // so the plain workspace and the CRDT disagree from then on
+        // (single-account fuzz seed 10095). The live row still leaves, which
+        // is the part that matters.
+        if previous_ids.contains(&displaced.id) {
+            continue;
+        }
         commands.push(Command::InsertItem {
             scheme: previous_id,
             position: source_position,

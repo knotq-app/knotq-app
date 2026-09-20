@@ -137,6 +137,7 @@ impl EditedFields {
             // slots that arrived remotely while still letting the acknowledged
             // local value win for slots both copies already share.
             merged.state = merge_occurrence_states(&landed.state, &local.state);
+            merged.enforce_marker_constraints();
             return merged;
         }
         let mut merged = landed.clone();
@@ -236,6 +237,13 @@ impl EditedFields {
                 merged.state = local.state.clone();
             }
         }
+        // A field mask carries fields one at a time, so it can assemble a
+        // combination the model does not allow — a date from a snapshot taken
+        // while the line was a checkbox, laid over a line that is now numbered
+        // (single-account fuzz seed 10024). Every other writer of an item ends
+        // here; this one must too, or the plain workspace holds a value no
+        // document can store and the two halves disagree for good.
+        merged.enforce_marker_constraints();
         merged
     }
 

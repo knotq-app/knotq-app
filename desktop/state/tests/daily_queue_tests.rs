@@ -563,3 +563,59 @@ fn carryover_moves_event_notification_to_today_target() {
         "event notification key is identical across the rollover"
     );
 }
+
+/// A source day that already holds the archive copy of a row must not be given
+/// a second one.
+///
+/// The archive id is deterministic (`daily_queue_displaced_item_id`), so
+/// another device's carryover of the same row can merge into the source day
+/// while this device still sees the live row. Emitting the usual delete +
+/// insert pair would then put two rows with the same id in one page — which no
+/// CRDT document can represent, so the plain workspace and the documents
+/// disagree from then on (single-account fuzz seed 10095). The live row still
+/// leaves, which is the part that matters.
+#[test]
+fn carryover_does_not_add_a_second_archive_copy_of_a_row() {
+    let previous_date = date(2026, 6, 15);
+    let mut previous = Scheme::new("Yesterday", 0);
+    previous.items.push(Item::new("Finish draft"));
+    let live_id = previous.items[0].id;
+    // The archive copy another device's carryover already merged in.
+    let mut already_archived = Item::new("Finish draft");
+    already_archived.id = daily_queue_displaced_item_id(live_id, previous_date);
+    previous.items.push(already_archived);
+    let today = Scheme::new("Today", 0);
+
+    let Some(Command::Batch(commands)) =
+        daily_queue_carryover_command(previous.id, previous_date, &previous, today.id, &today)
+    else {
+        panic!("expected carryover batch");
+    };
+
+    let inserted_into_previous: Vec<_> = commands
+        .iter()
+        .filter_map(|command| match command {
+            Command::InsertItem { scheme, item, .. } if *scheme == previous.id => Some(item.id),
+            _ => None,
+        })
+        .collect();
+    assert!(
+        inserted_into_previous.is_empty(),
+        "the archive copy is already there; inserting it again duplicates an id: \
+         {inserted_into_previous:?}"
+    );
+    assert!(
+        commands.iter().any(|command| matches!(
+            command,
+            Command::DeleteItem { scheme, item } if *scheme == previous.id && *item == live_id
+        )),
+        "the live row still has to leave the source day"
+    );
+    assert!(
+        commands.iter().any(|command| matches!(
+            command,
+            Command::InsertItem { scheme, item, .. } if *scheme == today.id && item.id == live_id
+        )),
+        "and still has to arrive in today, keeping its id"
+    );
+}

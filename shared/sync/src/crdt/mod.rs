@@ -1939,6 +1939,27 @@ impl WorkspaceCrdtDocuments {
         current: &Workspace,
         trust_empty_crdt: &dyn Fn(&SchemeId) -> bool,
     ) -> anyhow::Result<Workspace> {
+        Ok(self
+            .materialize_workspace_inner(current, false, trust_empty_crdt)?
+            .0)
+    }
+
+    /// [`materialized_workspace_repair`](Self::materialized_workspace_repair),
+    /// also naming the schemes whose document still holds a live copy of a line
+    /// the result places in another scheme.
+    ///
+    /// Those copies are invisible, which is the problem: deleting the visible
+    /// one later reveals the hidden one, and a line the user deleted comes back
+    /// somewhere else. A caller that can write to the documents should delete
+    /// them, passing the map straight back as a change set's `deleted_items`
+    /// (an ordinary scheme write preserves raw-only copies on purpose; only an
+    /// explicit deletion tombstones one). See `dedupe_materialized_items` for
+    /// why this cannot lose the line.
+    pub fn materialized_workspace_with_hidden_copies(
+        &self,
+        current: &Workspace,
+        trust_empty_crdt: &dyn Fn(&SchemeId) -> bool,
+    ) -> anyhow::Result<(Workspace, HashMap<SchemeId, HashSet<String>>)> {
         self.materialize_workspace_inner(current, false, trust_empty_crdt)
     }
 
@@ -1966,7 +1987,9 @@ impl WorkspaceCrdtDocuments {
         &self,
         current: &Workspace,
     ) -> anyhow::Result<Workspace> {
-        self.materialize_workspace_inner(current, true, &|_| true)
+        Ok(self
+            .materialize_workspace_inner(current, true, &|_| true)?
+            .0)
     }
 
     /// Rebuild the workspace from the CRDT documents, using `current` only for
@@ -1980,14 +2003,14 @@ impl WorkspaceCrdtDocuments {
         current: &Workspace,
         hydrate_all_deferred: bool,
         trust_empty_crdt: &dyn Fn(&SchemeId) -> bool,
-    ) -> anyhow::Result<Workspace> {
+    ) -> anyhow::Result<(Workspace, HashMap<SchemeId, HashSet<String>>)> {
         // A workspace document that was never seeded (a fresh device before its
         // first pull, or one whose local CRDT state is empty) describes nothing.
         // `snapshot()` would fail with "workspace id missing"; there is simply
         // nothing to materialize, so hand `current` back unchanged. The caller's
         // `materialized == workspace` check then correctly reports no repair.
         if !self.workspace.is_seeded() {
-            return Ok(current.clone());
+            return Ok((current.clone(), HashMap::new()));
         }
         let snapshot: WorkspaceDocumentSnapshot = self.workspace.snapshot()?;
         let scheme_sync = snapshot
@@ -2182,10 +2205,10 @@ impl WorkspaceCrdtDocuments {
         // winner on every replica. Only schemes materialized above participate:
         // a lazy/off-window Daily page is intentionally absent and must not be
         // interpreted as a deletion or placement decision.
-        dedupe_materialized_items(&mut workspace);
+        let hidden_copies = dedupe_materialized_items(&mut workspace);
 
         workspace.ensure_sync_metadata();
-        Ok(workspace)
+        Ok((workspace, hidden_copies))
     }
 }
 
@@ -2226,16 +2249,35 @@ pub(crate) fn merge_raw_only_items(
     merged
 }
 
-fn dedupe_materialized_items(workspace: &mut Workspace) {
+/// Resolve cross-document duplicate placements, reporting the schemes a copy
+/// was hidden in.
+///
+/// The winner is the lowest scheme id, which is arbitrary but identical on
+/// every replica — and, because it is a minimum, the copy in the globally
+/// lowest scheme is never a loser anywhere. A caller may therefore delete the
+/// losing copies from their documents without any risk of every replica
+/// deleting a different one and losing the line altogether.
+fn dedupe_materialized_items(workspace: &mut Workspace) -> HashMap<SchemeId, HashSet<String>> {
     let mut scheme_ids: Vec<SchemeId> = workspace.schemes.keys().copied().collect();
     scheme_ids.sort();
     let mut seen = HashSet::new();
+    let mut hidden: HashMap<SchemeId, HashSet<String>> = HashMap::new();
     for scheme_id in scheme_ids {
         let Some(scheme) = workspace.schemes.get_mut(&scheme_id) else {
             continue;
         };
-        scheme.items.retain(|item| seen.insert(item.id));
+        scheme.items.retain(|item| {
+            if seen.insert(item.id) {
+                return true;
+            }
+            hidden
+                .entry(scheme_id)
+                .or_default()
+                .insert(item.id.to_string());
+            false
+        });
     }
+    hidden
 }
 
 impl WorkspaceCrdtDocuments {}

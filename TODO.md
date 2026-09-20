@@ -2,8 +2,8 @@
 
 **Updated 2026-09-20.** These notes track confirmed data-loss/convergence
 bugs and deferred release work. Current deploy-blocking status: 0a, 0b, 0c, 0d,
-0e, 0f, 0g, 0h, 0j, 0k, 0l, 1, and 2 are fixed and verified; 0i is open and is
-the projection law's one documented exclusion; 3 and 5 remain backend/ops gaps,
+0e, 0f, 0g, 0h, 0j, 0k, 0l, 0m, 0n, 0o, 1, and 2 are fixed and verified; 0i is
+open and is the projection law's one documented exclusion; 3 and 5 remain backend/ops gaps,
 not sync-convergence bugs. Item 4 remains explicitly deferred undo-history work.
 
 **Depth matters, and the gate at depth was already red.** The PR gate runs the
@@ -515,6 +515,75 @@ that has never synced passes through untouched.
 **Verified:** chaos seed 89 at `KNOTQ_FUZZ_STEPS=200`, and the law is now
 checked after every crash-and-relaunch in both fuzz configurations.
 
+
+## 0m. [FIXED] A second carryover could put two rows with one id on a day
+
+**Found by the projection law** (single-account fuzz seed 10095, chaos seed
+76): a daily page held the same `ItemId` twice, which no CRDT document can
+represent, so the plain workspace and the documents disagreed from then on.
+
+**Root cause:** a carryover leaves a deterministic, date-scoped archive copy of
+each carried row on the source day (`daily_queue_displaced_item_id`). Because
+the id is deterministic, another device's carryover of the same row can merge
+into the source day while this device still sees the live row — and the usual
+delete + insert pair then inserts a *second* copy of an id the page already
+holds.
+
+**Fix:** `daily_queue_carryover_command` skips the archive insert when the
+source day already holds that id. The live row still leaves, which is the part
+that matters. Regression:
+`carryover_does_not_add_a_second_archive_copy_of_a_row`.
+
+
+## 0n. [FIXED] A workspace read back out of the documents was not put in normal form
+
+**Found by the projection law** (single-account fuzz seed 10024): a line showed
+a start date while its marker was `Numbered` — a combination
+`enforce_marker_constraints` exists to prevent. Its document held no date, so
+the two halves disagreed, permanently.
+
+**Root cause, the general form of 0d/0e/0j/0k:** the plain workspace is the
+canonical copy and every path that writes it normalizes; materialization
+deliberately does not (0j). So every point where the plain half is *re-derived
+from the documents* has to normalize on the way in, and three did not — the
+post-push re-materialization and the post-squash adoption in
+`sync_service/snapshot.rs`, and `WorkspaceStore::reconcile_item_placements`.
+The next sync snapshot then normalized the copy it wrote into the documents
+(`overlay_current_workspace_for_sync`) while the visible workspace kept the
+value the model forbids.
+
+**Fix:** all three normalize what they adopt, as `recover_workspace_save` and
+`reconcile_workspace_from_documents` already do. `ItemFields::apply` — the
+reassert journal's field-mask merge — also ends in `enforce_marker_constraints`
+now: carrying fields one at a time can assemble a combination no single writer
+would have produced.
+
+
+## 0o. [FIXED] Deleting a line could bring back a hidden copy of it in another scheme
+
+**Found by the projection law** (chaos seeds 39, 42, 52), and a genuine
+user-visible data bug rather than only a divergence.
+
+Each scheme is its own CRDT document, so a line moved between schemes is a
+tombstone in one and a fresh copy in the other. When two devices move the same
+line to different schemes, both documents end up holding a live copy.
+`dedupe_materialized_items` hides all but one — deterministically, by lowest
+scheme id — so the user sees a single line. But the losing copy is still live
+CRDT history, and `merge_raw_only_items` deliberately keeps it: delete the
+visible line and the hidden one becomes the winner, so a line the user deleted
+reappears in another scheme days later.
+
+**Fix:** stop hiding and start resolving. `dedupe_materialized_items` now
+reports the copies it hid, and `reconcile_item_placements` — which every
+landing that adopted anything runs — deletes them from their documents,
+tombstoning them explicitly (an ordinary scheme write preserves raw-only copies
+on purpose; only a named deletion retires one). "A line is live in at most one
+document" becomes an enforced invariant instead of a display-time tie-break.
+
+**This cannot lose the line.** The winner is a *minimum* over the schemes a
+replica can see, so the copy in the globally lowest scheme id is never a loser
+anywhere; whatever subset of schemes each replica has loaded, at least one copy
+always survives.
 
 ## 1. [FIXED] An edit made during a device's first-ever sync can be silently lost
 

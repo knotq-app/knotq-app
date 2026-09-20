@@ -569,23 +569,52 @@ impl WorkspaceStore {
     /// one-placement rule, so this is the single reconciliation boundary.
     pub fn reconcile_item_placements(&mut self) -> bool {
         self.flush_crdt();
-        let Ok(workspace) = self
+        let Ok((workspace, hidden_copies)) = self
             .crdt
-            .materialized_workspace_repair(&self.workspace, &|_| false)
+            .materialized_workspace_with_hidden_copies(&self.workspace, &|_| false)
         else {
             return false;
         };
         let mut changed_schemes = HashSet::new();
-        for (scheme_id, projected) in workspace.schemes {
+        for (scheme_id, mut projected) in workspace.schemes {
             let Some(current) = self.workspace.schemes.get_mut(&scheme_id) else {
                 continue;
             };
+            // What comes out of the documents is normalized before it becomes
+            // the visible half — materialization deliberately does not do it
+            // (TODO 0j) and the plain workspace is the canonical copy.
+            for item in &mut projected.items {
+                item.enforce_marker_constraints();
+            }
             if current.items != projected.items {
                 current.items = projected.items;
                 changed_schemes.insert(scheme_id);
             }
         }
-        if changed_schemes.is_empty() {
+        // A scheme whose document still holds a live copy of a line that now
+        // lives elsewhere has to be rewritten from the visible placement, which
+        // deletes that copy. Leaving it costs a line: deleting the visible copy
+        // later reveals the hidden one, and a line the user deleted reappears in
+        // another scheme (production fuzz chaos seeds 39, 42, 52). The winner is
+        // the lowest scheme id, identical on every replica and a minimum, so the
+        // copy in the globally lowest scheme is never deleted anywhere.
+        let hidden_copies: std::collections::HashMap<SchemeId, HashSet<String>> = hidden_copies
+            .into_iter()
+            .filter(|(scheme, _)| self.workspace.schemes.contains_key(scheme))
+            .collect();
+        let resolved_duplicates = !hidden_copies.is_empty();
+        if resolved_duplicates {
+            let mut changes = WorkspaceCrdtChangeSet::default();
+            changes.schemes.extend(hidden_copies.keys().copied());
+            // An ordinary scheme write preserves raw-only copies on purpose;
+            // naming them as deletions is the only evidence that tombstones
+            // one.
+            changes.deleted_items = hidden_copies.clone();
+            self.defer_crdt(changes);
+            self.flush_crdt();
+            self.dirty.schemes.extend(hidden_copies.into_keys());
+        }
+        if changed_schemes.is_empty() && !resolved_duplicates {
             return false;
         }
         self.index_stale = true;

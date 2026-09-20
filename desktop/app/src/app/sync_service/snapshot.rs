@@ -392,9 +392,18 @@ pub(super) fn sync_snapshot_in(
         .iter()
         .filter_map(|(scheme, metadata)| pushed_documents.contains(&metadata.id).then_some(*scheme))
         .collect();
-    let post_push_workspace = crdt_docs.materialized_workspace_repair(&workspace, &|scheme| {
-        pushed_scheme_documents.contains(scheme)
-    })?;
+    let mut post_push_workspace = crdt_docs
+        .materialized_workspace_repair(&workspace, &|scheme| {
+            pushed_scheme_documents.contains(scheme)
+        })?;
+    // Materialization does not normalize (TODO 0j: a normalizing read makes
+    // every sync rewrite the line), so a workspace that comes back out of the
+    // documents has to be put into the model's normal form before it becomes
+    // the visible one — otherwise the device shows a combination the model
+    // forbids, the next snapshot quietly normalizes the copy it writes into
+    // the documents, and the two halves disagree for good (single-account
+    // fuzz seed 10024: a date left on a line that is no longer a checkbox).
+    let _ = post_push_workspace.normalize_item_markers();
     if post_push_workspace != workspace {
         workspace = post_push_workspace;
         save_workspace(path, &workspace)?;
@@ -473,6 +482,10 @@ pub(super) fn sync_snapshot_in(
                         Ok(adoption) => {
                             squash_applied = true;
                             workspace = adoption.workspace;
+                            // Same rule as the post-push materialization
+                            // above: what comes out of the documents is
+                            // normalized before it becomes the visible half.
+                            let _ = workspace.normalize_item_markers();
                             remote_updates_applied += adoption.remote_updates_applied;
                             merged_crdt_states = crdt_docs.document_states();
                             save_workspace(path, &workspace)?;
