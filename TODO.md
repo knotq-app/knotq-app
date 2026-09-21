@@ -366,7 +366,72 @@ resolver racing Yrs:
 every pinned scenario — is green.
 
 
-## 0i. A device that has switched accounts still breaks the projection law
+## 0i. [ROOT CAUSE FOUND] Switching accounts can delete the *other* account's data
+
+**Verified 2026-09-21, and it is worse than this entry previously described.**
+The earlier text assumed the loss was a projection-law problem on the switching
+device and stated that "a plain Yjs merge cannot remove an entry the pusher
+never saw". That premise is wrong, and so was the search it directed.
+
+### The mechanism, verified in the code
+
+Three facts compose into data loss:
+
+1. **The same document id exists in every account.** A Daily page's document id
+   is a hash of its *date* alone — `daily_queue_ids` in
+   `shared/model/src/daily_queue.rs` takes only `date.to_string()` — and a
+   scheme's is derived from its scheme id. No account is in the hash. Starter
+   schemes have fixed ids, so every account holds `…101/102/103` too.
+
+2. **The contents alias, not just the ids.**
+   `stable_scheme_population_client_id` (`shared/sync/src/crdt/encoding.rs`)
+   hashes `(document id, content)` — again no account. Two accounts that each
+   hold "Daily 2026-09-14" with the same starter rows therefore hold
+   *byte-identical Yjs structs*: same clientIDs, same clocks.
+
+3. **A re-seed pushes the entire delete set.** `full_snapshot_updates` emits
+   `encode_state_v1`, and `shared/sync/src/crdt/update_capture.rs` says so in
+   its own words: "`encode_diff_v1` attaches the document's **entire** delete
+   set to every delta … full state is emitted deliberately, via `force`/reseed
+   paths".
+
+So when a device switches accounts, it loads the source account's bytes under
+ids the destination also uses, merges the destination's history into them, and
+`queue_account_switch_reseed` pushes the union — **including tombstones the
+device authored on the account it just left**. Those tombstones land on the
+destination's identical structs and delete rows that account's other devices
+still have.
+
+Caught by chaos seeds 281 and 287 as "server state lost item … that no device
+deleted". The fuzz *under-reports* it: the oracle's `destroyed_items` is global
+across accounts, so a plain delete on the source excuses the loss on the
+destination, and only carried-over daily rows are flagged. The real blast radius
+is every fixed-id starter line and every daily row shared by date, both
+directions. Mobile takes the same path.
+
+Two corollaries: `adopt_sync_workspace_identity`'s disjointness guard can never
+fire (every account knows the fixed-id schemes), and the store persists the
+merged two-account history afterwards, so a later diff-fallback push re-sends
+the foreign delete set even if the re-seed is fixed.
+
+### A fix attempt that failed — do not repeat it as-is
+
+Dropping the source account's scheme states before `from_states` and removing
+`queue_account_switch_reseed` took the gate from **7 failing seeds to over
+150**. Content has to follow the user across a switch; the heal path only
+populates schema-less documents, so starting empty loses everything local that
+the destination does not already have. Any fix must keep the *content* and drop
+only the *history*.
+
+The shape that should work: re-seed with a history-free population (the
+`populate` path, which writes content with no tombstones) rather than
+`encode_state_v1`. The principled alternative is to put the account's workspace
+id into the document-id hash so the two accounts can never address the same
+document — a format change needing `storage-json/src/upgrade/`, a captured
+fixture, and desktop+mobile shipped together.
+
+
+## 0i-b. A device that has switched accounts still breaks the projection law
 
 **Open, and the projection law's one documented exclusion.** The law
 ([the section at the top](#how-this-class-of-bug-is-found-now-the-projection-law))
