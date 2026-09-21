@@ -39,8 +39,11 @@ SUITES_FAILED=0
 echo "run-sync-coverage: shared sync engine (unit, regression, property fuzz)…"
 cargo llvm-cov --no-report -p knotq-sync --lib --tests || SUITES_FAILED=1
 
-echo "run-sync-coverage: commands, state, storage…"
-cargo llvm-cov --no-report -p knotq-commands -p knotq-state -p knotq-storage-json || SUITES_FAILED=1
+echo "run-sync-coverage: model, commands, state, storage…"
+# knotq-model is measured because `shared/model/src/workspace/` is on the
+# INCLUDE list below; without running its own tests the report scores those
+# files using only whatever the other crates happen to exercise.
+cargo llvm-cov --no-report -p knotq-model -p knotq-commands -p knotq-state -p knotq-storage-json || SUITES_FAILED=1
 
 echo "run-sync-coverage: desktop sync service + production-path fuzzer…"
 cargo llvm-cov --no-report -p knotq-app -- sync_service || SUITES_FAILED=1
