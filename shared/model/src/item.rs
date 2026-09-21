@@ -354,22 +354,48 @@ impl Item {
         self.state_for_occurrence(&OccurrenceId::Single)
     }
 
-    pub fn normalize_state(&mut self) {
+    /// Drop occurrence entries that say nothing, reporting whether any went.
+    ///
+    /// An entry whose state is the default is indistinguishable from no entry
+    /// at all — `state_for_occurrence` returns the default for a missing one —
+    /// so a line that was completed and then un-completed must not keep a
+    /// husk of that round trip. It is not merely tidiness: the sync path
+    /// normalizes the copy it writes into the CRDT documents, so a husk left
+    /// in the plain workspace is a value the device's own documents do not
+    /// hold, which the next pull reads as a remote change nobody made. Every
+    /// writer of `state` is expected to end here (see
+    /// `shared/sync/src/projection.rs`).
+    pub fn normalize_state(&mut self) -> bool {
+        let before = self.state.len();
         self.state
             .retain(|state| state.occurrence == OccurrenceId::Single || !state.state.is_default());
         if self.state.is_empty() {
             self.state.push(OccurrenceState::default());
         }
+        self.state.len() != before
     }
 
     pub fn enforce_marker_constraints(&mut self) -> bool {
         let mut changed = false;
+        // A family that does not apply to this marker is not merely unused: the
+        // plain scheme file writes the marker as one token
+        // (`bullet.rings`), and `marker_token` drops a family that
+        // `is_valid_for` rejects — so such a value cannot survive a save/load
+        // round trip, while the CRDT document stores `marker_family` as a field
+        // of its own and keeps it forever. The two halves of the data directory
+        // then describe different items for good, and the next pull reads that
+        // difference as a local edit and re-asserts one over the other. Keep the
+        // model to what both halves can represent.
+        if !self.marker_family.is_valid_for(self.marker) {
+            self.marker_family = MarkerFamily::Standard;
+            changed = true;
+        }
         if self.marker == ItemMarker::Checkbox {
             if self.state.is_empty() {
                 self.state.push(OccurrenceState::default());
                 changed = true;
             }
-            self.normalize_state();
+            changed |= self.normalize_state();
             return changed;
         }
 

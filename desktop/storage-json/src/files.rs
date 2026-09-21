@@ -206,6 +206,99 @@ pub fn save_workspace_incremental(
     Ok(())
 }
 
+/// Write the plain files of schemes the saved workspace does not hold.
+///
+/// The data directory has two halves: the plain files the app reads, and the
+/// CRDT document states sync merges into. A save that writes one half without
+/// the other leaves the directory describing two different workspaces, and the
+/// next sync reads that difference as a local edit — which is how a Daily page
+/// outside the loaded window got its own merged content re-asserted back to the
+/// stale copy on disk.
+///
+/// `workspace` supplies the index (so a Daily page still resolves to its
+/// `daily_queue/YYYY/MM/DD.knotq` path even though its body is not loaded);
+/// `schemes` supplies the bodies, materialized from the documents being
+/// written. Only files are touched — nothing is pruned and the index is not
+/// rewritten, because the caller's own save owns both.
+pub fn save_unloaded_scheme_files(
+    path: &Path,
+    workspace: &Workspace,
+    schemes: &[Scheme],
+) -> Result<()> {
+    if schemes.is_empty() {
+        return Ok(());
+    }
+    let _guard = lock_workspace_save();
+    let (base_dir, workspace) = prepare_workspace_save(path, workspace)?;
+    for scheme in schemes {
+        if workspace.schemes.contains_key(&scheme.id) {
+            // The ordinary save already owns this one.
+            continue;
+        }
+        // Addressable from this index? A scheme with neither a sync binding nor
+        // a daily binding is not reachable from anything, and writing it would
+        // put a file where nothing looks.
+        //
+        // Asked of the *index*, not of `workspace.schemes`: the whole point of
+        // this function is the schemes the in-memory workspace does not hold,
+        // and `scheme_path_for_workspace` answers `None` for every one of them.
+        // Using it here meant this function had never written a single file.
+        let addressable = workspace.scheme_sync.contains_key(&scheme.id)
+            || workspace.daily_queue.values().any(|id| *id == scheme.id);
+        if !addressable {
+            continue;
+        }
+        crate::scheme_file::write_unloaded_scheme_file(&base_dir, scheme)
+            .with_context(|| format!("write unloaded scheme {}", scheme.id))?;
+    }
+    refresh_unloaded_daily_index_entries(path, schemes)
+}
+
+/// Bring the workspace-index entries of unloaded Daily pages up to date.
+///
+/// A Daily page's name and colour live in `workspace.json`, not in its own
+/// file, and the index write preserves the stored entry for any page whose body
+/// is not loaded (`WorkspaceIndex::from_workspace_preserving`) — it has nothing
+/// better to write it from. So a remote rename or recolour of an off-window day
+/// reached the CRDT and stopped there: the next time the page entered the
+/// window it was read back from disk with its old colour, and the device's two
+/// halves disagreed from then on (production fuzz single-account seed 10105).
+///
+/// These schemes are materialized from this device's own documents, so they are
+/// exactly what the index should say. The `calendar_index` is left alone: it is
+/// derived from the items, which the body write above owns.
+fn refresh_unloaded_daily_index_entries(path: &Path, schemes: &[Scheme]) -> Result<()> {
+    let by_id: std::collections::HashMap<SchemeId, &Scheme> =
+        schemes.iter().map(|s| (s.id, s)).collect();
+    let Some(mut env) = read_workspace_envelope(path)? else {
+        return Ok(());
+    };
+    let mut changed = false;
+    for entry in &mut env.workspace.daily_queue {
+        let Some(scheme) = by_id.get(&entry.scheme.id) else {
+            continue;
+        };
+        if entry.scheme.name == scheme.name
+            && entry.scheme.color_index == scheme.color_index
+            && entry.scheme.gsync == scheme.gsync
+            && entry.scheme.source == scheme.source
+        {
+            continue;
+        }
+        entry.scheme.name = scheme.name.clone();
+        entry.scheme.color_index = scheme.color_index;
+        entry.scheme.gsync = scheme.gsync;
+        entry.scheme.source = scheme.source.clone();
+        changed = true;
+    }
+    if !changed {
+        return Ok(());
+    }
+    let json = serde_json::to_string_pretty(&env)?;
+    write_atomic_if_changed(path, json.as_bytes())?;
+    Ok(())
+}
+
 fn prepare_workspace_save(path: &Path, workspace: &Workspace) -> Result<(PathBuf, Workspace)> {
     let mut workspace = workspace.clone();
     workspace.ensure_sync_metadata();

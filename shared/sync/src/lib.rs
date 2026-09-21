@@ -7,6 +7,7 @@ mod engine;
 mod fractional;
 mod local_state;
 mod persisted_state;
+pub mod projection;
 #[doc(hidden)]
 pub mod testing;
 mod user_id;

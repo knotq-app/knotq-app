@@ -4,7 +4,9 @@ mod folder;
 mod item;
 mod scheme;
 
-use knotq_model::{FolderId, NodeRef, Workspace};
+use std::collections::HashSet;
+
+use knotq_model::{FolderId, NodeRef, SchemeId, Workspace};
 
 use crate::invariants::{
     ensure_command_allowed_for_user, is_descendant, validate_depth_for_node, CommandError,
@@ -120,7 +122,27 @@ pub fn move_node(
         }
     }
 
+    // Moving a subtree can carry it across the archive boundary in either
+    // direction — a folder nested inside an archived folder dragged back into
+    // the sidebar, or a live folder dropped into one. Its schemes' trashed
+    // state is derived from where they sit, so re-derive it here rather than
+    // leaving a folder that is visible in the sidebar full of schemes the trash
+    // also claims. The CRDT workspace index applies exactly this rule when it
+    // materializes, so skipping it leaves the workspace unequal to its own
+    // documents and the next sync "reverts" the folder with no other device
+    // involved. See `Workspace::archive_coherence_violations`.
     let mut touched = ChangeSet::default();
+    if matches!(node, NodeRef::Folder(_)) {
+        let before: HashSet<SchemeId> = workspace.recently_deleted.iter().copied().collect();
+        workspace.reconcile_archive_membership();
+        let after: HashSet<SchemeId> = workspace.recently_deleted.iter().copied().collect();
+        // A scheme that entered or left the trash materializes differently now,
+        // so the sync layer has to see it as touched.
+        touched
+            .schemes
+            .extend(before.symmetric_difference(&after).copied());
+        touched.schemes.sort();
+    }
     touched.folders.push(old_parent);
     touched.folders.push(new_parent);
     Ok(CommandReceipt {

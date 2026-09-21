@@ -254,12 +254,46 @@ impl WorkspaceStore {
         let current = self.workspace.clone();
         let mut changes = WorkspaceCrdtChangeSet::default();
 
-        if self.crdt.workspace_document_is_unpopulated() {
-            if self.crdt.workspace_document_differs(&base, &current) {
-                self.workspace_population_base = Some(base.clone());
-                changes.workspace = true;
-            }
-        } else if self.crdt.workspace_document_differs(&base, &current) {
+        // Bring the visible half in line with the documents FIRST, then put the
+        // recovered plain content back on top of it. The order is the whole
+        // point: a write of *any* scheme document re-emits the workspace index
+        // whenever the document set has changed, and the index is written
+        // whole, so recovering from a plain workspace that is missing schemes
+        // — an interrupted save, a pull that never landed, a device
+        // mid-account-switch — publishes their deletion to the entire account
+        // (production fuzz chaos seeds 14, 26, 112). Starting from what the
+        // documents hold makes the recovery purely additive.
+        self.reconcile_workspace_from_documents();
+
+        // The workspace index is written WHOLE, from the workspace it is given
+        // — `sync_string_map` removes every key the new content does not
+        // mention. So writing it from a recovered plain workspace publishes,
+        // to the entire account, a deletion of every node that workspace does
+        // not happen to list. After a crash it does not happen to list a great
+        // deal: an interrupted save, a pull that never landed, a device
+        // mid-account-switch. That is how a scheme another device created
+        // disappeared for everyone (production fuzz chaos seed 112: the
+        // removing write is this one, during the relaunch).
+        //
+        // A populated index document is the durable record, and
+        // `reconcile_workspace_from_documents` below brings the visible half
+        // back in line with it, so there is nothing here worth the risk: the
+        // index is only written when the document has no population at all and
+        // this workspace is the only thing that can give it one (a device
+        // joining an account with local content — see `app/TODO.md` 2). The
+        // cost is that a folder rename or archive that reached the plain files
+        // and not the documents in the moment before a crash is re-read from
+        // the documents instead of being recovered. Losing that is a lost
+        // keystroke; the alternative is losing another device's scheme for the
+        // whole account.
+        if self.crdt.workspace_document_is_unpopulated()
+            && self.crdt.workspace_document_differs(&base, &current)
+        {
+            // Nothing to be additive to: the document holds no population, so
+            // this workspace is the only thing that can give it one (a device
+            // joining an account with local content — see `app/TODO.md` 2).
+            self.workspace_population_base = Some(base.clone());
+            self.workspace = current.clone();
             changes.workspace = true;
         }
 
@@ -273,33 +307,78 @@ impl WorkspaceStore {
                     self.population_bases.insert(*scheme_id, previous.clone());
                 }
             }
+            // The recovered plain content wins for a scheme the plain files
+            // actually changed — that is what this recovery is for. Every
+            // other scheme keeps what the documents hold.
+            self.workspace.schemes.insert(*scheme_id, scheme.clone());
             changes.schemes.insert(*scheme_id);
         }
 
         if !changes.is_empty() {
+            // A scheme put back from the plain files may have no binding in the
+            // doc-derived index yet; without one it would sit in the visible
+            // workspace with no document behind it.
+            self.workspace.ensure_sync_metadata();
+            self.index_stale = true;
+            self.dirty = WorkspaceDirtyState::all(&self.workspace);
+            self.crdt_save_scope.widen_to_all();
             self.defer_crdt(changes);
             self.flush_crdt();
         }
 
-        // The recovery marker pairs the plain workspace save with the CRDT
-        // save, but a process can die after either half.  In that window the
-        // persisted CRDT may already contain the newer projection while the
-        // plain workspace still contains the older one.  Re-express the
-        // visible store from the recovered documents before the first sync
-        // snapshot; otherwise the first sync after relaunch reports an
-        // apparent local edit that is only recovery catching up the UI.
-        let Ok(recovered) = self
+        // And finish where every launch finishes: showing exactly what the
+        // documents hold. The writes above put the recovered plain content
+        // *into* the documents, so nothing is lost by reading it back out of
+        // them — while a scheme whose plain copy was merely behind (a document
+        // write cannot remove an item it was not told to delete) is corrected
+        // rather than left disagreeing.
+        self.reconcile_workspace_from_documents();
+    }
+
+    /// Make the visible workspace equal what this device's own CRDT documents
+    /// hold — the projection law (`knotq_sync::projection`), restored.
+    ///
+    /// **Every launch runs this, marker or no marker.** The two halves of the
+    /// data directory are written one after the other and a process can die
+    /// between them, but that is not the only way they part: a sync run
+    /// persists the post-push document states on their own (the push's
+    /// self-heal has to survive a restart), and when the push then fails, the
+    /// documents on disk are ahead of the plain files with no save in progress
+    /// and so no recovery marker to notice it. Whatever the cause, the
+    /// documents are the durable record — they are what sync pushes — so the
+    /// visible half adopts them.
+    ///
+    /// Safe in the other direction because it only ever *adds* what the
+    /// documents hold: a scheme with no document, an unseeded workspace
+    /// document and an empty document (`trust_empty_crdt` is false for every
+    /// scheme) all keep the plain content. A device that has never synced
+    /// therefore passes through untouched rather than being emptied.
+    ///
+    /// Returns whether anything moved.
+    pub fn reconcile_workspace_from_documents(&mut self) -> bool {
+        let Ok(mut recovered) = self
             .crdt
             .materialized_workspace_repair(&self.workspace, &|_| false)
         else {
-            return;
+            return false;
         };
-        if recovered != self.workspace {
-            self.workspace = recovered;
-            self.index_stale = true;
-            self.dirty = WorkspaceDirtyState::all(&self.workspace);
-            self.crdt_save_scope.widen_to_all();
+        // The plain half is the canonical one: every path that writes it ends
+        // in `enforce_marker_constraints`, while a document is the merge of
+        // whatever every replica ever wrote and may hold a combination the
+        // model does not allow. Materialization deliberately does not
+        // normalize on read (see `app/TODO.md` 0j — a normalizing read makes
+        // every sync rewrite the line), so normalize here, on the way in. The
+        // law still holds afterwards: its comparison normalizes the document
+        // side the same way.
+        let _ = recovered.normalize_item_markers();
+        if recovered == self.workspace {
+            return false;
         }
+        self.workspace = recovered;
+        self.index_stale = true;
+        self.dirty = WorkspaceDirtyState::all(&self.workspace);
+        self.crdt_save_scope.widen_to_all();
+        true
     }
 
     /// Reconcile any deferred CRDT changes (see `deferred_crdt`) into the CRDT
@@ -419,6 +498,54 @@ impl WorkspaceStore {
         (scope, handles)
     }
 
+    /// Schemes whose CRDT document a save is about to write but whose plain
+    /// copy the save cannot write, because the workspace it is saving does not
+    /// hold it — in practice a Daily Queue page outside the loaded window.
+    ///
+    /// The data directory has two halves, and a save that advances only one of
+    /// them leaves them describing different workspaces. The plain side is
+    /// never the authority, so the pre-pull repair reads the difference as a
+    /// local edit and re-asserts the stale copy over the document's merged
+    /// content — a revert with no other device involved, and a repair re-queued
+    /// on every sync afterwards. Materializing those pages here lets the save
+    /// write both halves from the same instant.
+    ///
+    /// Empty in the ordinary case (every written document's scheme is loaded),
+    /// and it costs one materialization only when it is not.
+    pub fn schemes_absent_from_plain_save(
+        &mut self,
+        written: &HashMap<DocumentId, DocumentStateHandle>,
+    ) -> Vec<Scheme> {
+        let unloaded: HashSet<SchemeId> = self
+            .workspace
+            .scheme_sync
+            .iter()
+            .filter(|(scheme, meta)| {
+                meta.kind == SyncDocumentKind::Scheme
+                    && written.contains_key(&meta.id)
+                    && !self.workspace.schemes.contains_key(scheme)
+            })
+            .map(|(scheme, _)| *scheme)
+            .collect();
+        if unloaded.is_empty() {
+            return Vec::new();
+        }
+        let Ok(materialized) = self
+            .crdt
+            .materialized_workspace_repair(&self.workspace, &|_| false)
+        else {
+            return Vec::new();
+        };
+        let mut schemes: Vec<Scheme> = materialized
+            .schemes
+            .into_iter()
+            .filter(|(id, _)| unloaded.contains(id))
+            .map(|(_, scheme)| scheme)
+            .collect();
+        schemes.sort_by_key(|scheme| scheme.id);
+        schemes
+    }
+
     /// Widen the next save back to every document. For any route that changes
     /// the CRDT without being able to name what it touched, and for a save that
     /// failed after taking the scope.
@@ -434,7 +561,7 @@ impl WorkspaceStore {
     /// overwrite live content. Returns how many were adopted.
     pub fn adopt_loaded_schemes(&mut self, schemes: Vec<Scheme>) -> usize {
         self.flush_crdt();
-        let mut adopted = 0;
+        let mut adopted = Vec::new();
         for scheme in schemes {
             let bound = self
                 .workspace
@@ -444,13 +571,37 @@ impl WorkspaceStore {
             if !bound || self.workspace.schemes.contains_key(&scheme.id) {
                 continue;
             }
+            adopted.push(scheme.id);
             self.workspace.schemes.insert(scheme.id, scheme);
-            adopted += 1;
         }
-        if adopted > 0 {
-            self.index_stale = true;
+        if adopted.is_empty() {
+            return 0;
         }
-        adopted
+        self.index_stale = true;
+
+        // The page came off disk, but this device's own documents may already
+        // hold a newer version of it — a Daily page's name and colour live in
+        // `workspace.json`, and a remote rename or recolour of a day that was
+        // outside the loaded window reaches the documents with nothing on the
+        // plain side to write it to. Reading the file back then contradicts
+        // the documents, and the device's two halves disagree from then on
+        // (production fuzz single-account seed 10105). The documents win, for
+        // every scheme that has one; an unpopulated document keeps the file's
+        // content, which is the whole reason the file is being read.
+        if let Ok(materialized) = self
+            .crdt
+            .materialized_workspace_repair(&self.workspace, &|_| false)
+        {
+            for id in &adopted {
+                if self.crdt.scheme_document_is_unpopulated(*id) {
+                    continue;
+                }
+                if let Some(from_documents) = materialized.schemes.get(id) {
+                    self.workspace.schemes.insert(*id, from_documents.clone());
+                }
+            }
+        }
+        adopted.len()
     }
 
     /// Rebuild a bound scheme that is missing from the workspace from its CRDT
@@ -493,29 +644,73 @@ impl WorkspaceStore {
     /// one-placement rule, so this is the single reconciliation boundary.
     pub fn reconcile_item_placements(&mut self) -> bool {
         self.flush_crdt();
-        let Ok(workspace) = self
+        let Ok((workspace, hidden_copies)) = self
             .crdt
-            .materialized_workspace_repair(&self.workspace, &|_| false)
+            .materialized_workspace_with_hidden_copies(&self.workspace, &|_| false)
         else {
             return false;
         };
         let mut changed_schemes = HashSet::new();
-        for (scheme_id, projected) in workspace.schemes {
+        for (scheme_id, mut projected) in workspace.schemes {
             let Some(current) = self.workspace.schemes.get_mut(&scheme_id) else {
                 continue;
             };
+            // What comes out of the documents is normalized before it becomes
+            // the visible half — materialization deliberately does not do it
+            // (TODO 0j) and the plain workspace is the canonical copy.
+            for item in &mut projected.items {
+                item.enforce_marker_constraints();
+            }
             if current.items != projected.items {
                 current.items = projected.items;
                 changed_schemes.insert(scheme_id);
             }
         }
-        if changed_schemes.is_empty() {
+        // A scheme whose document still holds a live copy of a line that now
+        // lives elsewhere has to be rewritten from the visible placement, which
+        // deletes that copy. Leaving it costs a line: deleting the visible copy
+        // later reveals the hidden one, and a line the user deleted reappears in
+        // another scheme (production fuzz chaos seeds 39, 42, 52). The winner is
+        // the lowest scheme id, identical on every replica and a minimum, so the
+        // copy in the globally lowest scheme is never deleted anywhere.
+        let hidden_copies: std::collections::HashMap<SchemeId, HashSet<String>> = hidden_copies
+            .into_iter()
+            .filter(|(scheme, _)| self.workspace.schemes.contains_key(scheme))
+            .collect();
+        let resolved_duplicates = !hidden_copies.is_empty();
+        if resolved_duplicates {
+            let mut changes = WorkspaceCrdtChangeSet::default();
+            changes.schemes.extend(hidden_copies.keys().copied());
+            // An ordinary scheme write preserves raw-only copies on purpose;
+            // naming them as deletions is the only evidence that tombstones
+            // one.
+            changes.deleted_items = hidden_copies.clone();
+            self.defer_crdt(changes);
+            self.flush_crdt();
+            self.dirty.schemes.extend(hidden_copies.into_keys());
+        }
+        if changed_schemes.is_empty() && !resolved_duplicates {
             return false;
         }
         self.index_stale = true;
         self.dirty.schemes.extend(changed_schemes);
         self.crdt_save_scope.widen_to_all();
         true
+    }
+
+    /// Where the visible workspace disagrees with the CRDT documents it is a
+    /// projection of — see [`knotq_sync::projection`] for why that equality is
+    /// the local precondition for two devices converging.
+    ///
+    /// Reads the live documents rather than rebuilding them from persisted
+    /// bytes, so it costs a materialization rather than a decode of the whole
+    /// workspace. Empty means the law holds.
+    pub fn projection_divergences(&mut self) -> Vec<String> {
+        self.flush_crdt();
+        match knotq_sync::projection::divergences(&self.workspace, &self.crdt) {
+            Ok(found) => found.lines,
+            Err(err) => vec![format!("could not materialize the CRDT documents: {err:#}")],
+        }
     }
 
     /// Normalize the workspace index (dangling archive entries, folder tree

@@ -1,3 +1,5 @@
+use std::collections::HashSet;
+
 use crate::{FolderId, Scheme, SchemeId};
 
 use super::{DeletedFolderOrigin, DeletedSchemeOrigin, Folder, NodeRef, Workspace};
@@ -155,5 +157,104 @@ impl Workspace {
         for scheme in self.subtree_scheme_ids(id) {
             self.unmark_scheme_deleted(scheme);
         }
+    }
+
+    /// Archive coherence — the one rule that relates the folder tree to the
+    /// trash:
+    ///
+    /// > A scheme that is a child of some folder is in [`recently_deleted`] if
+    /// > and only if that folder lies inside an archived folder's subtree.
+    ///
+    /// A scheme deleted on its own is not a child of any folder
+    /// (`delete_scheme` detaches it), so this says nothing about it. A scheme
+    /// archived *with* its folder stays in the tree so the archive can show the
+    /// folder's contents — and only then is it both a child and trashed.
+    ///
+    /// This matters beyond tidiness because the CRDT workspace index enforces
+    /// exactly this rule when it materializes (`workspace_index.rs` keeps a
+    /// trashed scheme out of the tree unless it sits in an archived subtree). A
+    /// plain workspace that breaks the rule therefore does not equal what its
+    /// own documents hold, and the next sync landing "changes" the folder with
+    /// no other device involved.
+    ///
+    /// Returns one line per violating scheme; empty means the rule holds.
+    pub fn archive_coherence_violations(&self) -> Vec<String> {
+        let archived = self.archived_subtree_folders();
+        let mut violations = Vec::new();
+        for (folder_id, folder) in &self.folders {
+            let inside_archive = archived.contains(folder_id);
+            for child in &folder.children {
+                let NodeRef::Scheme(scheme) = child else {
+                    continue;
+                };
+                let trashed = self.recently_deleted.contains(scheme);
+                if trashed != inside_archive {
+                    violations.push(format!(
+                        "scheme {scheme:?} is a child of folder {folder_id:?} \
+                         (inside an archive: {inside_archive}) but is \
+                         {}in the trash",
+                        if trashed { "" } else { "not " }
+                    ));
+                }
+            }
+        }
+        violations.sort();
+        violations
+    }
+
+    /// Restore [archive coherence](Self::archive_coherence_violations) by
+    /// re-deriving each in-tree scheme's trashed state from where it actually
+    /// sits.
+    ///
+    /// Total and idempotent: it reads the folder tree, decides membership per
+    /// scheme, and writes only that. Structural commands that can move a node
+    /// across the archive boundary call it instead of each reimplementing the
+    /// rule — that is what keeps the rule checkable in one place.
+    pub fn reconcile_archive_membership(&mut self) {
+        let archived = self.archived_subtree_folders();
+        let mut should_be_trashed: Vec<SchemeId> = Vec::new();
+        let mut should_be_live: Vec<SchemeId> = Vec::new();
+        for (folder_id, folder) in &self.folders {
+            let inside_archive = archived.contains(folder_id);
+            for child in &folder.children {
+                if let NodeRef::Scheme(scheme) = child {
+                    if inside_archive {
+                        should_be_trashed.push(*scheme);
+                    } else {
+                        should_be_live.push(*scheme);
+                    }
+                }
+            }
+        }
+        // Trash first, then restore: a scheme cannot be both, and a workspace
+        // where the same id appears under two parents (a transient state the
+        // CRDT can materialize) must settle on "visible" rather than "gone".
+        for scheme in should_be_trashed {
+            self.mark_scheme_deleted(scheme);
+        }
+        for scheme in should_be_live {
+            self.unmark_scheme_deleted(scheme);
+        }
+    }
+
+    /// Every folder inside an archived top folder's subtree, including the
+    /// archived top folders themselves.
+    fn archived_subtree_folders(&self) -> HashSet<FolderId> {
+        let mut archived = HashSet::new();
+        let mut stack: Vec<FolderId> = self.recently_deleted_folders.clone();
+        while let Some(current) = stack.pop() {
+            if !archived.insert(current) {
+                continue;
+            }
+            let Some(folder) = self.folders.get(&current) else {
+                continue;
+            };
+            for child in &folder.children {
+                if let NodeRef::Folder(id) = child {
+                    stack.push(*id);
+                }
+            }
+        }
+        archived
     }
 }

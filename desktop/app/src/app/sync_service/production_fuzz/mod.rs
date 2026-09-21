@@ -67,6 +67,10 @@ struct World {
     /// What each account's server materializes, as of the last sync against it.
     server_views: Vec<View>,
     devices: Vec<Option<DesktopDevice>>,
+    /// Devices whose data directory has crossed an account boundary, and whose
+    /// projection law is therefore no longer checked — see
+    /// [`World::check_projection`].
+    projection_excused: Vec<bool>,
     /// Account identity represented by the last passive check for each device.
     /// A sync after sign-in/account switch intentionally changes the visible
     /// workspace from the old account to the new one; that boundary must not be
@@ -100,6 +104,7 @@ impl World {
             accounts: (0..config.accounts).map(Account::new).collect(),
             server_views: (0..config.accounts).map(|_| View::default()).collect(),
             devices: Vec::new(),
+            projection_excused: Vec::new(),
             passive_accounts: Vec::new(),
             rng: Rng::new(seed),
             attribution: Attribution::default(),
@@ -144,6 +149,7 @@ impl World {
             device.sign_in(&self.accounts[account]);
         }
         self.devices.push(Some(device));
+        self.projection_excused.push(false);
         self.passive_accounts.push(None);
         self.log(format!("device {index} installed, account {account:?}"));
         index
@@ -181,7 +187,62 @@ impl World {
         self.attribution
             .record_creation_intent(new_folders, new_schemes, pending.iter().copied());
         self.attribution.record_command_intent(index, pending);
+        self.check_projection(index, "local step");
         result
+    }
+
+    /// Assert the projection law on device `index`: what it shows equals what
+    /// its own CRDT documents hold.
+    ///
+    /// This is a *local* precondition for convergence, so it is checked
+    /// wherever the device's state can move — after every local step, every
+    /// landing and every relaunch. A divergence recorded here names the step
+    /// that introduced it; left unchecked it surfaces several steps later as a
+    /// field "changing" during a sync with no other device involved, which is
+    /// the signature almost every hard bug in `app/TODO.md` was reported as.
+    fn check_projection(&mut self, index: usize, label: &str) {
+        // An account switch is a data-lineage boundary, not an edit: the
+        // device's plain workspace becomes the destination account's while its
+        // documents still carry the source account's history until the switch
+        // settles. The attribution oracle skips its own check across that same
+        // boundary (`account_changed` in `sync`). This law is still violated
+        // for the rest of the run on such a device — see `app/TODO.md` 0i,
+        // which has a reproducer — so it is excused per device rather than
+        // silently weakened for everyone.
+        if self.projection_excused[index] {
+            // Still worth seeing. An excused device is where the remaining
+            // account-switch failures live (TODO 0i), and its divergence is
+            // usually the first sign of one — so a traced run reports it,
+            // marked, instead of staying silent.
+            //
+            // Taken whether or not anyone is looking: the reading flushes the
+            // store, which is a real mutation that consumes ids off the
+            // deterministic stream, so doing it only under `KNOTQ_FUZZ_TRACE`
+            // would make a traced run a different scenario from the failure it
+            // was meant to explain (seeds 12 and 113 passed when traced).
+            let Some(device) = self.devices[index].as_mut() else {
+                return;
+            };
+            let divergences = device.projection_divergences();
+            if self.trace {
+                for divergence in divergences {
+                    self.log(format!("PROJECTION (excused) {divergence}"));
+                }
+            }
+            return;
+        }
+        let Some(device) = self.devices[index].as_mut() else {
+            return;
+        };
+        let found = device.projection_divergences();
+        for divergence in found {
+            self.log(format!("PROJECTION {divergence}"));
+            self.violations.push(format!(
+                "step {}: device {index} after {label}: the workspace diverged from its own \
+                 CRDT documents: {divergence}",
+                self.step
+            ));
+        }
     }
 
     fn check(&mut self, index: usize, label: &str, before: &View, after: &View) {
@@ -262,6 +323,7 @@ impl World {
         let account_changed = self.passive_accounts[index] != Some(account);
         if !account_changed {
             self.check(index, "sync", &before, &after);
+            self.check_projection(index, "a sync landing");
         }
         self.passive_accounts[index] = Some(account);
         self.audit_server(account, index);
@@ -326,6 +388,7 @@ impl World {
         let after = self.view(index);
         self.log(format!("device {index} quit and relaunched"));
         self.check(index, "relaunch", &before, &after);
+        self.check_projection(index, "a relaunch");
     }
 
     fn crash(&mut self, index: usize) {
@@ -345,6 +408,13 @@ impl World {
         // crash-persistence gap remains covered by its dedicated ignored test.
         self.attribution.record_local(index, &before, &after);
         self.log(format!("device {index} crashed at {point:?}"));
+        // A crash is where the two halves of the data directory are most
+        // likely to part company — the workspace files and the CRDT states are
+        // written one after the other, and the process dies between them. That
+        // is exactly what `recover_workspace_save` exists to repair, so the
+        // law has to hold once the relaunch is done, whichever half was
+        // written.
+        self.check_projection(index, "a crash and relaunch");
     }
 
     fn step(&mut self) {
@@ -382,8 +452,16 @@ impl World {
             75..=77 if chaos => self.crash(index),
             78..=81 if chaos && self.accounts.len() > 1 => {
                 let target = self.rng.below(self.accounts.len() as u64) as usize;
+                let signed_in_elsewhere = self.devices[index]
+                    .as_ref()
+                    .unwrap()
+                    .account
+                    .is_some_and(|account| account != target);
                 let device = self.devices[index].as_mut().unwrap();
                 device.sign_in(&self.accounts[target]);
+                if signed_in_elsewhere {
+                    self.projection_excused[index] = true;
+                }
                 self.log(format!("device {index} signed into account {target}"));
             }
             82 if chaos => {
@@ -470,6 +548,29 @@ impl World {
             }
         }
 
+        // The settle loop above stops the moment every device is converged and
+        // every queue is empty — which is precisely the state a squash
+        // proposal needs, so whether one ever ran was left to timing, and any
+        // change that shortens the settle silently dropped the coverage the
+        // assertion below demands. Give it its chance explicitly instead.
+        if self.config.maintenance_coverage {
+            for round in 0..4 {
+                if self
+                    .accounts
+                    .iter()
+                    .any(|account| account.server.squash_calls() > 0)
+                {
+                    break;
+                }
+                let _ = round;
+                for account in 0..self.accounts.len() {
+                    for index in self.devices_on(account) {
+                        self.sync(index, 0);
+                    }
+                }
+            }
+        }
+
         let seed = self.seed;
         for (index, before) in &before_settle {
             let after = self.view(*index);
@@ -490,8 +591,12 @@ impl World {
             for index in &indexes {
                 let pending = self.devices[*index].as_mut().unwrap().pending_edit_count();
                 if pending > 0 {
+                    let summary = self.devices[*index]
+                        .as_mut()
+                        .unwrap()
+                        .pending_edit_summary();
                     failures.push(format!(
-                        "account {account}: device {index} still has {pending} unpushed edit(s) after settling (wedged)"
+                        "account {account}: device {index} still has {pending} unpushed edit(s) after settling (wedged): {summary}"
                     ));
                 }
             }
@@ -834,6 +939,36 @@ fn a_scheme_created_in_flight_survives_an_unrelated_replace_fallback() {
     );
 }
 
+/// A Daily page read back from disk must not contradict the documents.
+///
+/// A Daily page's name and colour live in `workspace.json`, not in its own
+/// file, and the index write has nothing to write them from for a day outside
+/// the loaded window (`WorkspaceIndex::from_workspace_preserving` keeps the
+/// stored entry). So another device's recolour of such a day reached this
+/// device's CRDT and stopped there; when the day later entered the window,
+/// `adopt_loaded_schemes` put the file's stale colour into the visible
+/// workspace and the two halves disagreed from then on. Fixed in
+/// `WorkspaceStore::adopt_loaded_schemes`, which now lets a populated document
+/// win over the file it just read, and in `save_unloaded_scheme_files`, which
+/// refreshes those index entries so the file stops being stale in the first
+/// place.
+///
+/// Needs the deeper run: the day has to leave the window and come back.
+#[test]
+fn a_daily_page_reloaded_from_disk_keeps_what_the_documents_hold() {
+    run_seed(
+        10_105,
+        Config {
+            accounts: 1,
+            initial_devices: 3,
+            max_devices: 4,
+            steps: env_usize("KNOTQ_FUZZ_STEPS", 200),
+            chaos: false,
+            maintenance_coverage: false,
+        },
+    );
+}
+
 /// Acknowledged item fields must remain journaled across later edits to the
 /// same item. Seed 10307 moves a stale copy into another scheme after a date
 /// edit followed by typing; the destination must retain both local changes.
@@ -856,7 +991,21 @@ fn successive_acknowledged_item_edits_survive_a_later_move() {
 #[ignore = "triage helper; replays KNOTQ_REPRO_SEED with the chaos configuration"]
 fn replay_production_seed() {
     let seed = env_usize("KNOTQ_REPRO_SEED", 1) as u64;
+    // A seed only means something together with the configuration that drew
+    // it, so mirror the two sweeps exactly: `KNOTQ_REPRO_SEED=<n>` replays
+    // `desktop_production_sync_fuzz`'s seed n, and `KNOTQ_REPRO_PLAIN=1`
+    // replays `desktop_production_single_account_fuzz`'s (whose seeds start at
+    // 10_000).
+    //
+    // Including the maintenance steps, which `run_seeds_inner` gives to the
+    // *first* seed of a sweep and no other — squashing on every seed would
+    // make the census measure the maintenance schedule rather than ordinary
+    // sync. Getting this wrong is not a detail: a seed replayed with the wrong
+    // answer here is a different scenario, and several sweep failures replay
+    // green. `KNOTQ_REPRO_MAINTENANCE=0`/`=1` overrides it.
     let chaos = std::env::var("KNOTQ_REPRO_PLAIN").is_err();
+    let first_seed_of_sweep = if chaos { 1 } else { 10_000 };
+    let maintenance_by_default = usize::from(seed == first_seed_of_sweep);
     run_seed(
         seed,
         Config {
@@ -865,7 +1014,7 @@ fn replay_production_seed() {
             max_devices: if chaos { 5 } else { 4 },
             steps: env_usize("KNOTQ_FUZZ_STEPS", 120),
             chaos,
-            maintenance_coverage: false,
+            maintenance_coverage: env_usize("KNOTQ_REPRO_MAINTENANCE", maintenance_by_default) != 0,
         },
     );
 }

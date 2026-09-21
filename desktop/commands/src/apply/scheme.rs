@@ -104,12 +104,17 @@ fn restore_scheme(
             .children
             .retain(|child| *child != NodeRef::Scheme(id));
     }
-    workspace
-        .folders
-        .get_mut(&folder)
-        .unwrap()
-        .children
-        .insert(position, NodeRef::Scheme(id));
+    // `position` indexes the list the caller saw, which still contained this
+    // scheme; the detach above just removed it, so the list can be one shorter
+    // here than it was at the check. Restoring a scheme that was the folder's
+    // only child at position 1 would then insert into an empty list and panic —
+    // in the app, a crash (production fuzz single-account seeds 10041, 10117).
+    // Clamp rather than reject: the position was valid for what the caller was
+    // looking at, and an undo must not be refused because the same scheme is
+    // still attached somewhere.
+    let children = &mut workspace.folders.get_mut(&folder).unwrap().children;
+    let at = position.min(children.len());
+    children.insert(at, NodeRef::Scheme(id));
     workspace.schemes.insert(id, scheme);
     Ok(CommandReceipt {
         inverse: Command::DeleteScheme { id },
@@ -286,15 +291,23 @@ fn permanently_delete_scheme(
     // `remove_scheme_completely` removes ordinary archive membership, but the
     // restore origin is retained as a CRDT tombstone for this permanently
     // destroyed id.
-    if let Some(origin) = origin {
-        workspace.deleted_scheme_origins.insert(
-            id,
-            knotq_model::DeletedSchemeOrigin {
-                position: PERMANENT_DELETE_TOMBSTONE_POSITION,
-                ..origin
-            },
-        );
-    }
+    //
+    // Always, even when no restore origin was recorded. The tombstone is not
+    // bookkeeping for the trash — it is the *evidence that this id was
+    // destroyed*, and everything downstream reads it that way: a stale replica
+    // merges the node back to life without it, and the workspace-index writer
+    // uses it to tell a real deletion apart from a scheme this device merely
+    // cannot see. A scheme archived without an origin (archived with its
+    // folder, or an origin pruned by an earlier normalization) used to be
+    // destroyed silently, leaving nothing to say so.
+    let root = workspace.root;
+    workspace.deleted_scheme_origins.insert(
+        id,
+        knotq_model::DeletedSchemeOrigin {
+            position: PERMANENT_DELETE_TOMBSTONE_POSITION,
+            folder: origin.map(|origin| origin.folder).unwrap_or(root),
+        },
+    );
     Ok(CommandReceipt {
         inverse: Command::RestoreDeletedScheme {
             position: trash_position,

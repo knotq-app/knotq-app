@@ -1,12 +1,62 @@
 # Known gaps
 
-**Updated 2026-09-18.** These notes track confirmed data-loss/convergence
-bugs and deferred release work. The mandatory sync-stress gate
-(`./.github/scripts/run-sync-stress.sh --fuzz`, the 800×400 property fuzz,
-`knotq-mobile-core`, and the mobile WS integration test) is green on the
-current tree. Current deploy-blocking status: 0a, 0b, 0c, 1, and 2 are fixed
-and verified; 3 and 5 remain backend/ops gaps, not sync-convergence bugs. Item
-4 remains explicitly deferred undo-history work.
+**Updated 2026-09-20.** These notes track confirmed data-loss/convergence
+bugs and deferred release work. Current deploy-blocking status: 0a, 0b, 0c, 0d,
+0e, 0f, 0g, 0h, 0j, 0k, 0l, 0m, 0n, 0o, 0p, 0q, 1, and 2 are fixed and
+verified; 0i (the account-switch exclusion) and 0r (one scheme colour, the last
+CI-depth failure) are open; 3 and 5 remain backend/ops gaps,
+not sync-convergence bugs. Item 4 remains explicitly deferred undo-history work.
+
+**Depth matters, and the gate at depth was already red.** The PR gate runs the
+production fuzzer at its default depth; at CI depth
+(`KNOTQ_FUZZ_SEEDS=128 KNOTQ_FUZZ_STEPS=200`) commit `4abec2a` — before any of
+0d–0l — fails **3 of 30** tests, on 50 of the 128 single-account seeds (10001,
+10003, 10005, 10006, 10013, 10019, 10022, 10025, 10028–10032, 10034, 10036,
+10038, 10039, 10043, 10045–10047, 10050, 10059, 10063, 10069, 10081, 10082,
+10084–10088, 10091–10097, 10102, 10109, 10110, 10112, 10113, 10116, 10117,
+10119, 10120, 10123, 10127), on chaos seeds 12 and 112, and on the *pinned*
+regression seed 10404 once it is run at 200 steps instead of its usual 120. So
+a failure at that depth is not a regression from this work; it is the backlog
+this work is draining. Raising the gate's depth is worth doing only once the
+sweep is green.
+
+## How this class of bug is found now: the projection law
+
+Most of the entries below were reported the same way — "a field changed during
+a sync and no other device wrote it" — and each took a long, seed-specific
+investigation to attribute. They share one underlying shape, and it is worth
+stating on its own because it needs no server and no second device:
+
+> **A device's plain `Workspace` is exactly what its own CRDT documents
+> materialize to.**
+
+Two devices converge because Yrs merges their documents deterministically. That
+guarantee only reaches the user if what the user sees *is* the document. Once a
+plain workspace holds a value its own documents never did, the next landing
+materializes the document's value instead — and to the user, and to the
+no-silent-loss oracle, that is indistinguishable from a remote change nobody
+made. Worse, the pre-pull repair (`queue_local_only_documents_before_pull`)
+reads the difference as a local edit and re-asserts the stale value *every
+sync*, which is where the "wedged: N unpushed edits after settling" failures
+came from.
+
+The law lives in `shared/sync/src/projection.rs` and is checked in three
+places:
+
+- `desktop/state/tests/projection_law.rs` — a randomized single-device harness.
+  Hundreds of seeds in seconds, no server, no threads; a violation names the
+  command that broke it.
+- The production-path fuzzer checks it after **every** local step, sync landing
+  and relaunch (`production_fuzz/device.rs`), so a violation names the step
+  rather than the sync three steps later that surfaced it.
+- `KNOTQ_CHECK_DISK=1` runs the same comparison against the *data directory*
+  after each save, landing and shutdown. That is the only way to see a Daily
+  page outside the loaded window: it is absent from `state.workspace`
+  altogether, so the in-memory law cannot look at it.
+
+When adding a repair, a normalization, or any path that writes one half of a
+device's state, the question to answer is "does the other half get the same
+write?" — 0d, 0e and 0f below were each a *no*.
 
 ## 0a. [FIXED] Workspace identity re-adoption never actually persisted, causing repeated re-keying that eventually dropped a scheme's binding
 
@@ -206,6 +256,477 @@ pending-edit scenario, and the full `cargo test -p knotq-app --bin knotq` run.
 The full run and the wider release-mode property sweep are green; none of the
 current failures involve first-join population divergence or scheme metadata
 reverting.
+
+## 0d. [FIXED] A marker family the line's marker cannot draw could never round-trip
+
+**Found 2026-09-20** by the projection law, on-disk variant
+(`KNOTQ_CHECK_DISK=1`, chaos fuzz seed 2): a Daily page's item held
+`marker: Checkbox` with `marker_family: Rings` in the CRDT document and
+`Standard` in the plain scheme file, permanently.
+
+**Root cause:** the plain scheme file writes a line's marker and family as one
+token (`Item::marker_token`, e.g. `bullet.rings`), and that token *drops* a
+family `MarkerFamily::is_valid_for` rejects — a ring is a bullet glyph, a
+checkbox cannot draw one. The CRDT document stores `marker_family` as a field
+of its own and keeps whatever it is given. So the combination is
+representable in one half of the data directory and not the other, and once an
+item reached it the two halves disagreed for good. `SetItemMarkerFamily`
+already validated the family, but `SetItemMarker` could change the *marker* out
+from under a valid family.
+
+**Fix:** `Item::enforce_marker_constraints` — already the central per-item
+invariant, already called by insert/replace/set-marker and by
+`Workspace::normalize_item_markers` — now resets a family its marker cannot
+draw. The model therefore only ever holds values both halves can represent.
+Regression: `changing_a_marker_drops_a_family_the_new_marker_cannot_draw`
+(`desktop/commands/tests/item_cmds.rs`).
+
+## 0e. [FIXED] A sync's marker repair reached the plain workspace but not the documents
+
+**Found alongside 0d.** `sync_snapshot_in` runs three repairs on the pulled
+workspace (identity, folder tree, item markers) and then queued CRDT updates
+for them with `sync_changes(workspace, &ChangeSet::default().workspace())` —
+**the workspace index only**. The identity and folder repairs are index-level,
+so that was right for them; `normalize_item_markers` rewrites *item content*,
+and its result never reached any scheme document.
+
+**Fix:** `Workspace::normalize_item_markers` now returns the set of schemes it
+repaired instead of a bool, and `queue_repair_crdt_updates` takes that set as
+part of its change set. The signature change is the point: a caller can no
+longer forget which documents a content repair has to be written to.
+
+## 0f. [FIXED] `EnsureDailyQueue` could resurrect a row that had moved to another page
+
+**Found by the projection law in the production fuzzer** (single-account seed
+10004): a scheme showed one item that the CRDT placed in a different scheme,
+from step 52 to the end of the run.
+
+**Root cause:** a Daily page's placeholder row has a date-derived id, so two
+devices creating the same day converge on one blank row instead of two. The
+same determinism makes it re-mintable after the row has *moved* — a carry-over,
+or an ordinary drag, takes the row (id and all) to another page and leaves the
+day empty. Re-opening the day then re-created the id, so one item id was live
+in two schemes at once. `dedupe_materialized_items` resolves that by keeping
+the lowest scheme id and hiding the other, so the resurrected row was invisible
+to every document-derived view while the plain workspace still showed it — and
+the day silently emptied again on the next sync.
+
+**Fix:** `ensure_daily_queue` leaves the day blank when its placeholder id is
+alive in another scheme. Regression:
+`a_day_whose_placeholder_moved_away_is_not_given_a_second_copy_of_it`
+(`desktop/commands/tests/daily_cmds.rs`).
+
+## 0g. [FIXED] Moving a folder across the archive boundary left its schemes half-trashed
+
+**Found by `desktop/state/tests/projection_law.rs`, seed 4, in about a second.**
+Moving a folder that sits *inside* an archived folder's subtree back into the
+sidebar left its schemes in `recently_deleted` while the folder itself was
+live. The CRDT workspace index enforces the opposite rule when it materializes
+(a trashed scheme is kept out of the tree unless it is inside an archived
+subtree), so the plain workspace no longer equalled its own document.
+
+**Fix:** the rule is now stated once, as
+`Workspace::archive_coherence_violations` / `reconcile_archive_membership`
+(`shared/model/src/workspace/archive.rs`), and `move_node` calls the
+reconciliation instead of every structural command reimplementing the rule.
+
+
+## 0h. [FIXED] The reassert journal was a second, non-causal conflict resolver
+
+**Symptom:** `still has 1 unpushed edit(s) after settling (wedged)` on the
+single-account fuzz (seeds 10004, 10005), with the stuck edit being a
+`ReplaceItem` the *landing itself* had authored, plus two devices diverging on
+that item.
+
+`desktop/state/src/moved_edits.rs` re-applies fields this device edited before
+a sync landed. Its legitimate job is the **cross-document** case: each scheme
+is its own CRDT document, so moving a line between schemes is a delete in the
+source plus a fresh copy in the target, and an edit made to the source copy
+lands on a line that no longer exists. Three scenarios prove that half is
+load-bearing (turning the journal off fails
+`a_line_retyped_while_another_device_moves_it_keeps_the_new_text` and two
+others), so it stays.
+
+Two things it was *also* doing had to go, because both make it a second
+resolver racing Yrs:
+
+1. Replaying the retained snapshot onto a line still in **its own** scheme.
+   That conflict is already resolved causally; replaying manufactures a new
+   local write on every landing. The `changed_after_bridge` escape hatch that
+   re-armed it is gone: same-scheme is now an unconditional skip.
+2. Keeping the journal entry alive **after** its cross-document bridge had
+   been applied. A bridge is a one-shot repair: once this device has written
+   its authored value into the destination document, that document owns it.
+   Retained, two devices each re-assert their snapshot on every landing and a
+   repair is authored per sync for ever — which is exactly the wedge. The
+   entry is now retired as soon as its repair actually lands (a refused
+   command keeps its entry so the repair is retried).
+
+**Verified:** the whole `production_fuzz` suite — both fuzz configurations and
+every pinned scenario — is green.
+
+
+## 0i. A device that has switched accounts still breaks the projection law
+
+**Open, and the projection law's one documented exclusion.** The law
+([the section at the top](#how-this-class-of-bug-is-found-now-the-projection-law))
+holds for every device in the ordinary multi-device case, and through crashes,
+relaunches, dropped connections, server faults and compaction sweeps. It does
+**not** hold for a device whose data directory has crossed an account
+boundary: at the PR gate's depth (`KNOTQ_FUZZ_SEEDS=128 KNOTQ_FUZZ_STEPS=200`)
+the chaos configuration reported it on 10 of its first ~60 seeds (16, 26, 29,
+39, 42, 47, 49, 51, 52, 53), every one of them on a device that had signed into
+a second account earlier in the run.
+
+**What it looks like** (seed 16, device 0, which signs into account 1 at step
+110 and crashes before its next save at 117): from step 119 onward the plain
+workspace and the documents disagree in *both* directions at once — schemes
+where the documents hold items the workspace does not
+(`00000000-…-0102`: 10 plain vs 13 in the CRDT), schemes where the workspace
+holds one the documents do not (`…-0103`: 10 vs 9), and item fields that
+differ outright. The shape says the documents still carry the source account's
+history while the plain files describe the destination account's view.
+
+**Reproduce:**
+
+```sh
+KNOTQ_REPRO_SEED=16 KNOTQ_FUZZ_STEPS=200 \
+  cargo test --release -p knotq-app --bin knotq replay_production_seed \
+  -- --ignored --nocapture
+```
+
+then re-run with the exclusion lifted (delete the `projection_excused` guard in
+`World::check_projection`). `KNOTQ_CHECK_DISK=1` shows the same divergence in
+the data directory.
+
+**Why it is excused rather than fixed here:** a switch is a data-lineage
+boundary — the attribution oracle skips its own check across it for the same
+reason (`account_changed` in `World::sync`) — and the switch path
+(`queue_account_switch_reseed`, `reset_for_account_change`,
+`adopt_sync_workspace_identity`'s disjointness guard) is the most intricate
+corner of the sync service. The exclusion is **per device and permanent for the
+rest of the run**, so nothing else is weakened: a device that never switches
+accounts is still held to the law on every local step, landing and relaunch,
+in both fuzz configurations.
+
+**Not the same thing as the account-switch data loss the oracle finds.** With
+the exclusion in place, chaos seeds 26 and 112 still fail at that depth — but
+on the *existing* no-silent-loss oracle, not on this law: "sync lost scheme …
+that no device deleted". That is a separate, pre-existing account-switch
+data-loss bug (commit `4abec2a` fails seed 112 too, without any of this
+session's changes), at a depth the default corpus never samples.
+
+**What seed 112 shows, as of 2026-09-20 — start here.** Device 4 creates
+"scheme 7563" on account 0 at step 71. Device 2 lives on account 1, signs into
+account 0 at step 125 and syncs at 126 (so it should hold 7563), has a sync
+fail at 165, crashes at 166, relaunches at 189, and at 191 pushes 6 documents —
+after which the *server* no longer has 7563, and device 4 loses it at 194.
+
+Device 2 does **not** break the projection law at any point (a traced run now
+prints `PROJECTION (excused)` lines for a switched device, and seed 112 emits
+none), so its plain workspace and its own documents agree: its index genuinely
+does not hold 7563 by then. The question is therefore not "how did device 2's
+two halves diverge" but **"how did device 2's push delete an entry its document
+never carried a tombstone for"** — which points at the account-switch re-seed
+(`queue_account_switch_reseed`) and workspace-document re-identification
+(`adopt_sync_workspace_identity` / `reidentify_workspace_document`) publishing
+this device's index as the account's, rather than merging into it. A plain Yjs
+merge cannot remove an entry the pusher never saw; a re-key or a full re-seed
+can.
+
+Chaos seed 26 is the same oracle violation on a device that also switched
+accounts, and is worth replaying alongside it:
+
+```sh
+KNOTQ_REPRO_SEED=112 KNOTQ_FUZZ_STEPS=200 KNOTQ_FUZZ_TRACE=1 \
+  cargo test --release -p knotq-app replay_production_seed -- --ignored --nocapture
+```
+
+**Where to start:** the divergence is already on disk, so check the halves
+after each write in `sync_snapshot_in` during the switch — the run's
+`save_workspace` / `save_crdt_state` pair, the post-push re-materialization,
+and `queue_account_switch_reseed`'s queued snapshots — rather than tracing the
+in-memory store. The most likely shape, given the two-directional difference,
+is that the re-seed publishes the pre-switch document set while the pulled
+index describes the destination's.
+
+
+## 0j. [FIXED] Occurrence completions survived in a document after the line stopped being a checkbox
+
+**Found by the projection law** in the 128-seed production fuzz (single-account
+seed 10002): a `Numbered` line's plain copy held one default `OccurrenceState`
+while its document held six, five of them completions of recurring
+occurrences.
+
+**Root cause, the same shape as 0d:** dates, recurrence and occurrence state
+are only valid on a checkbox, and `Item::enforce_marker_constraints` strips
+them everywhere the plain workspace is written. A *document* is not written
+that way — it is the merge of whatever every replica ever wrote — so it can
+hold a combination the model does not allow, and the plain side keeps dropping
+what the document keeps holding.
+
+**Fix:** the law compares what the app would *show*, normalizing the
+materialized item with `enforce_marker_constraints` inside
+`projection::divergences` before the comparison.
+
+Materialization itself deliberately does **not** normalize, and must not: a
+normalizing read makes every sync see such a line as changed and rewrite it,
+and under compaction that churn lost other devices' folder and archive edits on
+the server. That is pinned by
+`a_line_reads_back_exactly_as_written_so_syncing_queues_nothing_more`
+(`shared/sync/tests/concurrent_item_field_edits.rs`, from compaction fuzz seeds
+114 and 246) — normalizing on read was tried here and that test caught it
+immediately. The storage forms may differ; what the two halves *describe* may
+not.
+
+## 0k. [FIXED] Un-completing a recurring occurrence left a husk the sync path pruned
+
+**Found by the projection law** in the 128-seed production fuzz (single-account
+seed 10005, step 163): a checkbox's plain copy held an `OccurrenceState` for
+`2026-09-15` with `progress: 0` that its own scheme document did not.
+
+**Root cause:** `Item::state_for_occurrence_mut` creates an entry on demand, and
+`ToggleOccurrence` toggled `progress` without normalizing afterwards. Completing
+an occurrence and un-completing it therefore left a default entry behind — which
+says exactly what *no* entry says, since `state_for_occurrence` returns the
+default for a missing one. It would have been harmless bookkeeping except that
+the sync path normalizes the copy it writes into the CRDT documents
+(`workspace_for_background_sync` runs `normalize_item_markers`, which for a
+checkbox ends in `normalize_state`), so the husk existed in the plain half only.
+
+**Fix:** `toggle_occurrence` normalizes after the toggle
+(`desktop/commands/src/apply/item.rs`), and `Item::normalize_state` now
+*reports* whether it dropped anything so `enforce_marker_constraints` no longer
+returns "unchanged" for a repair it just made — that return value is what tells
+the sync service which scheme documents to rewrite (see 0e).
+
+**Regression:** `un_completing_a_recurring_occurrence_leaves_no_husk_behind`
+(`desktop/commands/tests/item_cmds.rs`).
+
+
+## 0l. [FIXED] The two halves of the data directory could part company with no save in progress
+
+**Found by the projection law** in the 128-seed production fuzz (chaos seed 89,
+step 149) after teaching `World::crash` to check the law once the relaunch is
+done — a crash is precisely where the halves are most likely to split, so it
+was the obvious place for the law to be checked and it was the one state move
+that did not check it.
+
+**What happened:** device 0 edited a line (step 140) and moved a scheme (step
+145) without saving, then synced at 149 and the push failed with a dropped
+connection. On relaunch its documents held both edits and its plain files held
+neither — `KNOTQ_CHECK_DISK=1` shows the split is already on disk before the
+process starts.
+
+**Root cause:** a sync run persists the *post-push* document states on their own
+(`sync_service/snapshot.rs`, just before `push_result?`) because the push's own
+self-heal may have repopulated a schema-less document and that identity has to
+survive a restart. That write is not paired with a workspace save, and it
+happens *after* the run clears `workspace_save_recovery` — so when the push then
+fails, the documents on disk are ahead of the plain files with no save in
+progress and no marker to notice it. Item 2's recovery only runs when a marker
+is present, so nothing repaired it; the device then re-materialized the
+documents' values during a later landing, which is indistinguishable from a
+remote change nobody made.
+
+**Fix:** the marker-independent half of recovery became
+`WorkspaceStore::reconcile_workspace_from_documents`, and **every** launch runs
+it — with a marker through `recover_workspace_save` (which still turns the
+plain-file delta into CRDT operations first), without one on its own. It only
+ever adopts what the documents hold: a scheme with no document, an unseeded
+workspace document and an empty document all keep the plain content, so a device
+that has never synced passes through untouched.
+
+**Verified:** chaos seed 89 at `KNOTQ_FUZZ_STEPS=200`, and the law is now
+checked after every crash-and-relaunch in both fuzz configurations.
+
+
+## 0m. [FIXED] A second carryover could put two rows with one id on a day
+
+**Found by the projection law** (single-account fuzz seed 10095, chaos seed
+76): a daily page held the same `ItemId` twice, which no CRDT document can
+represent, so the plain workspace and the documents disagreed from then on.
+
+**Root cause:** a carryover leaves a deterministic, date-scoped archive copy of
+each carried row on the source day (`daily_queue_displaced_item_id`). Because
+the id is deterministic, another device's carryover of the same row can merge
+into the source day while this device still sees the live row — and the usual
+delete + insert pair then inserts a *second* copy of an id the page already
+holds.
+
+**Fix:** `daily_queue_carryover_command` skips the archive insert when the
+source day already holds that id. The live row still leaves, which is the part
+that matters. Regression:
+`carryover_does_not_add_a_second_archive_copy_of_a_row`.
+
+
+## 0n. [FIXED] A workspace read back out of the documents was not put in normal form
+
+**Found by the projection law** (single-account fuzz seed 10024): a line showed
+a start date while its marker was `Numbered` — a combination
+`enforce_marker_constraints` exists to prevent. Its document held no date, so
+the two halves disagreed, permanently.
+
+**Root cause, the general form of 0d/0e/0j/0k:** the plain workspace is the
+canonical copy and every path that writes it normalizes; materialization
+deliberately does not (0j). So every point where the plain half is *re-derived
+from the documents* has to normalize on the way in, and three did not — the
+post-push re-materialization and the post-squash adoption in
+`sync_service/snapshot.rs`, and `WorkspaceStore::reconcile_item_placements`.
+The next sync snapshot then normalized the copy it wrote into the documents
+(`overlay_current_workspace_for_sync`) while the visible workspace kept the
+value the model forbids.
+
+**Fix:** all three normalize what they adopt, as `recover_workspace_save` and
+`reconcile_workspace_from_documents` already do. `ItemFields::apply` — the
+reassert journal's field-mask merge — also ends in `enforce_marker_constraints`
+now: carrying fields one at a time can assemble a combination no single writer
+would have produced.
+
+
+## 0o. [FIXED] Deleting a line could bring back a hidden copy of it in another scheme
+
+**Found by the projection law** (chaos seeds 39, 42, 52), and a genuine
+user-visible data bug rather than only a divergence.
+
+Each scheme is its own CRDT document, so a line moved between schemes is a
+tombstone in one and a fresh copy in the other. When two devices move the same
+line to different schemes, both documents end up holding a live copy.
+`dedupe_materialized_items` hides all but one — deterministically, by lowest
+scheme id — so the user sees a single line. But the losing copy is still live
+CRDT history, and `merge_raw_only_items` deliberately keeps it: delete the
+visible line and the hidden one becomes the winner, so a line the user deleted
+reappears in another scheme days later.
+
+**Fix:** stop hiding and start resolving. `dedupe_materialized_items` now
+reports the copies it hid, and `reconcile_item_placements` — which every
+landing that adopted anything runs — deletes them from their documents,
+tombstoning them explicitly (an ordinary scheme write preserves raw-only copies
+on purpose; only a named deletion retires one). "A line is live in at most one
+document" becomes an enforced invariant instead of a display-time tie-break.
+
+**This cannot lose the line.** The winner is a *minimum* over the schemes a
+replica can see, so the copy in the globally lowest scheme id is never a loser
+anywhere; whatever subset of schemes each replica has loaded, at least one copy
+always survives.
+
+## 0p. [FIXED] Normalization could destroy a scheme, and a permanent delete could leave no evidence
+
+Two halves of one rule: **normalization repairs structure; only a real deletion
+destroys content, and a real deletion leaves evidence.**
+
+`normalize_one_level_folders` deleted any scheme the folder tree did not
+mention. That is destructive twice over — the scheme goes, and because the
+workspace index is written from this workspace, the drop is *published* to the
+account as an authoritative deletion, so every other device loses it and its
+document is left on the server as an orphan with no index entry. An
+unreferenced scheme is now re-homed under the root instead, the same choice the
+folder walk already makes for a stranded folder. Regression:
+`normalize_rehomes_an_unreferenced_scheme_rather_than_deleting_it`.
+
+`permanently_delete_scheme` wrote its tombstone only when the scheme had a
+recorded restore origin, so a scheme archived without one (archived with its
+folder, or an origin pruned by an earlier normalization) was destroyed with
+nothing to say so. The tombstone is not trash bookkeeping — it is the evidence
+that an id was destroyed, and a stale replica merges the node back to life
+without it. It is now always written, falling back to the root as the origin
+folder.
+
+Neither is enough on its own to close the remaining account-switch scheme loss
+(0i) — both were verified against chaos seeds 12, 14, 26, 112 and 113, which
+still fail — but both are real holes in the rule those failures violate, and
+the rule is what any fix for 0i has to rest on.
+
+**Rejected on the way, deliberately:** "a local index write never removes a node
+entry". It does fix seeds 12, 14 and 112, but it retains entries for schemes
+whose documents this replica does not hold — phantoms that
+`queue_local_only_documents_before_pull` then snapshots from an empty
+materialized scheme on every sync, so the account never goes quiet (seed 10000
+stopped reaching a squash window at all) and an empty snapshot could overwrite
+the real content server-side. Narrowing it to "nodes whose document this
+replica holds" makes it correct and useless: `self.schemes` is pruned to the
+workspace right after the index write, so the narrow set is what
+`retained_scheme_ids` already keeps. A fix for 0i has to establish *why* the
+pushing device's index lost the entry, not stop it from writing what it
+believes.
+
+
+## 0q. [FIXED] Crash recovery could publish a deletion of another device's schemes to the whole account
+
+**The largest remaining loss, and the one the oracle kept reporting** (chaos
+seeds 12, 14, 26, 112, 113 — 112 fails on `4abec2a` too).
+
+**Mechanism.** The workspace index belongs to the *account*, and it is written
+whole: `sync_string_map` removes every key the content it is given does not
+mention. `recover_workspace_save` wrote it from the recovered **plain**
+workspace, and a scheme write re-emits the index whenever the document set
+changed, so a relaunch whose plain workspace was missing schemes — an
+interrupted save, a pull that never landed, a device mid-account-switch —
+published their deletion to every device. The scheme's document stayed on the
+server as an orphan nothing could address (`sync: ignored 1 orphan
+document(s)`; that message is the symptom, and its first appearance dates the
+loss).
+
+**Fix: recovery is additive.** It now starts from what the documents hold
+(`reconcile_workspace_from_documents`), lays the schemes the plain files
+actually changed since the recovery base back on top, writes *those* into the
+documents, and finishes by reconciling again — so it ends showing exactly what
+its documents hold, like every other launch. The index is written from the
+plain workspace only when the document has no population at all and this
+workspace is the only thing that can give it one (TODO 2's joining device).
+
+The cost is that a folder rename or archive that reached the plain files but
+not the documents in the moment before a crash is re-read from the documents
+instead of being recovered. That is a lost keystroke; the alternative was
+losing another device's scheme for the whole account.
+
+**New diagnostic:** `sync: workspace index write removes N node entr(ies): …`
+(`crdt/workspace_index.rs`). Removing a node entry is the most destructive
+thing this codebase does and it is *sometimes* right, so the writer reports
+rather than refuses — which is what turns "a scheme vanished for everyone" into
+a named step and device.
+
+**Measured after this fix:** at `KNOTQ_FUZZ_SEEDS=128 KNOTQ_FUZZ_STEPS=200` the
+whole chaos sweep is green and the single-account sweep fails one seed, against
+**52 failing seeds on `4abec2a`**.
+
+
+## 0r. The last CI-depth failure: a Daily page's colour, single-account seed 10105
+
+**Open, and the only seed failing the 128×200 sweep.** Not content loss — one
+scheme metadata field.
+
+```sh
+KNOTQ_REPRO_PLAIN=1 KNOTQ_REPRO_SEED=10105 KNOTQ_FUZZ_STEPS=200 \
+  cargo test --release -p knotq-app replay_production_seed -- --ignored --nocapture
+```
+
+Device 3 recolours the Daily page `1ec12563…` to 1 at step 87. Device 1 first
+sees that page in the landing at step 192 (7 remote updates applied), and from
+then on its plain workspace says colour 0 — the value
+`DAILY_QUEUE_COLOR_INDEX` gave the copy it created locally — while its own
+index document says 1. The projection law reports it on every subsequent step;
+it does not heal.
+
+Colour comes from the workspace index entry in `materialize_workspace_inner`,
+so the CRDT side is unambiguous. The question is why the landing's replace
+(`replace_workspace_from_sync_result` → `store.replace_from_sync`) leaves the
+visible copy at 0 — whether the run's returned workspace already carried 0, or
+the store's replace keeps the local scheme's metadata. Start by printing the
+colour of that scheme at each boundary inside the step-192 landing.
+
+**Seen in the same trace, and probably worth more:** `sync: workspace index
+write removes 1 node entr(ies): 00000000-…-0101` during a *sync run* (not a
+relaunch — 0q fixed that path). A second write site is still handing the index
+writer a workspace that is missing a node. The diagnostic names the moment; the
+work is finding what that workspace is and why it is short.
+
+**Harness note:** the excused-device projection reading is taken whether or not
+`KNOTQ_FUZZ_TRACE` is set. It flushes the store, which consumes ids off the
+deterministic stream, so taking it only when tracing made a traced run a
+different scenario from the failure it was meant to explain — seeds 12 and 113
+passed when traced and failed when not.
+
 
 ## 1. [FIXED] An edit made during a device's first-ever sync can be silently lost
 

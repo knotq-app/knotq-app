@@ -52,12 +52,22 @@ fn an_unloaded_daily_page_keeps_its_binding() {
     );
 }
 
+/// Normalization repairs structure; it never destroys content.
+///
+/// A scheme the folder tree does not mention is an anomaly, not a deletion, and
+/// dropping it here is destructive twice over: the scheme goes, and the
+/// workspace index written from this workspace publishes the drop to the whole
+/// account as an authoritative deletion (production fuzz chaos seed 112 — a
+/// scheme another device created vanished for everyone after a third device
+/// normalized its own view of the tree, leaving the scheme's document on the
+/// server as an orphan with no index entry). A real deletion has evidence: the
+/// archive list, or a permanent-delete tombstone.
 #[test]
-fn normalize_removes_unreferenced_schemes_unless_recently_deleted() {
+fn normalize_rehomes_an_unreferenced_scheme_rather_than_deleting_it() {
     let mut workspace = Workspace::new();
     let referenced = Scheme::new("Shown", 0);
     let referenced_id = referenced.id;
-    let orphan = Scheme::new("Deleted", 1);
+    let orphan = Scheme::new("Stranded", 1);
     let orphan_id = orphan.id;
     workspace.schemes.insert(referenced_id, referenced);
     workspace.schemes.insert(orphan_id, orphan);
@@ -70,7 +80,20 @@ fn normalize_removes_unreferenced_schemes_unless_recently_deleted() {
 
     assert!(workspace.normalize_one_level_folders());
     assert!(workspace.schemes.contains_key(&referenced_id));
-    assert!(!workspace.schemes.contains_key(&orphan_id));
+    assert!(
+        workspace.schemes.contains_key(&orphan_id),
+        "an unreferenced scheme is kept, not deleted"
+    );
+    assert!(
+        workspace.folders[&workspace.root]
+            .children
+            .contains(&NodeRef::Scheme(orphan_id)),
+        "and is re-homed under the root so it is reachable again"
+    );
+    assert!(
+        !workspace.normalize_one_level_folders(),
+        "and the repair is idempotent"
+    );
 
     let mut workspace = Workspace::new();
     let deleted = Scheme::new("Deleted", 1);

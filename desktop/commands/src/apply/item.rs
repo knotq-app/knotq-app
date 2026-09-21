@@ -297,6 +297,12 @@ fn toggle_occurrence(
     let prev = ensure_checkbox(item_ref);
     let state = item_ref.state_for_occurrence_mut(occurrence.clone());
     state.progress = if state.progress < 0 { 0 } else { -1 };
+    // Un-completing an occurrence must leave nothing behind: the entry is now
+    // the default, and a default entry for a recurring occurrence is a husk the
+    // sync path prunes from the copy it writes into the CRDT documents. Leaving
+    // it here makes the plain workspace hold a value its own documents never
+    // did (production fuzz seed 10005).
+    item_ref.normalize_state();
     Ok(CommandReceipt {
         inverse: if let Some(item) = prev {
             Command::ReplaceItem { scheme, item }

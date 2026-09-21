@@ -191,8 +191,54 @@ impl Workspace {
             .chain(daily_queue_ids.iter().copied())
             .chain(archived_subtree_schemes.iter().copied())
             .collect();
+
+        // A scheme the folder tree does not mention is a structural anomaly,
+        // not a deletion. Dropping it here is destructive twice over: the
+        // scheme goes, and because the workspace index is then written from
+        // this workspace, the drop is PUBLISHED to the account as an
+        // authoritative deletion — every other device loses the scheme, and
+        // its document lingers on the server as an orphan with no index entry
+        // (production fuzz chaos seed 112: a scheme another device created
+        // disappeared for the whole account after a third device normalized
+        // its own view of the tree).
+        //
+        // A real deletion has evidence: the archive list, or a permanent-delete
+        // tombstone in `deleted_scheme_origins`. Without either, re-home the
+        // scheme under the root — the same choice the folder walk above makes
+        // for a stranded folder — so normalization repairs structure and never
+        // destroys content.
+        let mut rescued: Vec<SchemeId> =
+            self.schemes
+                .keys()
+                .copied()
+                .filter(|id| !retained_schemes.contains(id))
+                .filter(|id| {
+                    !self.deleted_scheme_origins.get(id).is_some_and(|origin| {
+                        origin.position == PERMANENT_DELETE_TOMBSTONE_POSITION
+                    })
+                })
+                .collect();
+        // Deterministic order: two replicas normalizing the same anomaly must
+        // rescue in the same order or the root's child list will not converge.
+        rescued.sort();
+        if !rescued.is_empty() {
+            let root = self.root;
+            if let Some(root_folder) = self.folders.get_mut(&root) {
+                for id in &rescued {
+                    if !root_folder.children.contains(&NodeRef::Scheme(*id)) {
+                        root_folder.children.push(NodeRef::Scheme(*id));
+                    }
+                }
+            }
+            changed = true;
+        }
+        let kept_schemes: HashSet<SchemeId> = retained_schemes
+            .iter()
+            .copied()
+            .chain(rescued.iter().copied())
+            .collect();
         let before = self.schemes.len();
-        self.schemes.retain(|id, _| retained_schemes.contains(id));
+        self.schemes.retain(|id, _| kept_schemes.contains(id));
         if self.schemes.len() != before {
             changed = true;
         }
@@ -274,11 +320,40 @@ impl Workspace {
         }
     }
 
+    /// Enforce the per-item marker invariants, reporting **which schemes**
+    /// changed rather than merely whether any did.
+    ///
+    /// The caller needs the set, not a flag: this rewrites item content, and a
+    /// repair that reaches only the plain workspace leaves it describing
+    /// something its own CRDT documents do not hold. The sync path turns that
+    /// difference into a local edit on the next pull and re-asserts the stale
+    /// value over the merged one — a revert with no other device involved. See
+    /// `queue_repair_crdt_updates` in the desktop sync service, which takes
+    /// this set as its change set.
+    /// [`repair_item_markers`](Self::repair_item_markers), reporting only
+    /// whether anything changed.
+    ///
+    /// This signature is deliberately unchanged. The mobile core builds against
+    /// this crate *by path* from a separate repository, and its CI checks out
+    /// this repo's `main` — so changing the return type in place leaves the two
+    /// repositories mutually un-buildable until both land, a circular
+    /// dependency that no merge ordering resolves. A caller that writes the
+    /// repair into the CRDT documents needs the set and should call
+    /// `repair_item_markers`; one that only asks "did anything move" keeps
+    /// this.
     pub fn normalize_item_markers(&mut self) -> bool {
-        let mut changed = false;
-        for scheme in self.schemes.values_mut() {
+        !self.repair_item_markers().is_empty()
+    }
+
+    /// Enforce the per-item marker invariants, reporting **which schemes**
+    /// changed rather than merely whether any did.
+    pub fn repair_item_markers(&mut self) -> HashSet<SchemeId> {
+        let mut changed = HashSet::new();
+        for (id, scheme) in self.schemes.iter_mut() {
             for item in &mut scheme.items {
-                changed |= item.enforce_marker_constraints();
+                if item.enforce_marker_constraints() {
+                    changed.insert(*id);
+                }
             }
         }
         changed

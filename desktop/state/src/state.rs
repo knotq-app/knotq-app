@@ -181,6 +181,51 @@ impl AppState {
         self.store.workspace()
     }
 
+    /// Where this device's state disagrees with itself: first the UI copy of
+    /// the workspace against the store's, then the store's against the CRDT
+    /// documents it projects (see [`WorkspaceStore::projection_divergences`]).
+    ///
+    /// Both halves are the same law — what the user sees is what will sync —
+    /// and a violation of either is a local corruption that the next sync
+    /// landing turns into an apparent remote change nobody made.
+    pub fn projection_divergences(&mut self) -> Vec<String> {
+        let drifted: Vec<String> = {
+            let ui = &self.workspace;
+            let store = self.store.workspace();
+            let mut drifted = Vec::new();
+            if ui.schemes != store.schemes {
+                for (id, scheme) in &ui.schemes {
+                    match store.schemes.get(id) {
+                        Some(other) if other == scheme => {}
+                        Some(other) => drifted.push(format!(
+                            "the UI workspace drifted from the store's: scheme {id:?} shows \
+                             {} item(s), the store holds {}",
+                            scheme.items.len(),
+                            other.items.len()
+                        )),
+                        None => drifted.push(format!(
+                            "the UI workspace drifted from the store's: scheme {id:?} is \
+                             missing from the store"
+                        )),
+                    }
+                }
+                for id in store.schemes.keys() {
+                    if !ui.schemes.contains_key(id) {
+                        drifted.push(format!(
+                            "the UI workspace drifted from the store's: scheme {id:?} is only \
+                             in the store"
+                        ));
+                    }
+                }
+            }
+            drifted
+        };
+        if !drifted.is_empty() {
+            return drifted;
+        }
+        self.store.projection_divergences()
+    }
+
     /// Restore CRDT edits that survived the previous process into the live
     /// store. They remain queued, but their already-materialized workspace
     /// content is not replayed as commands.
@@ -199,6 +244,20 @@ impl AppState {
         // during recovery. Keep the UI-facing copy and its dirty bookkeeping
         // in lockstep before the first post-launch sync snapshot.
         self.sync_workspace_from_store();
+    }
+
+    /// Adopt whatever this device's own CRDT documents hold, for a launch with
+    /// no save-recovery marker to act on. See
+    /// [`WorkspaceStore::reconcile_workspace_from_documents`]: the halves of a
+    /// data directory can part company without a save being interrupted, so
+    /// the law is restored on every launch rather than only on the ones a
+    /// marker flags.
+    pub fn reconcile_workspace_from_documents(&mut self) -> bool {
+        let moved = self.store.reconcile_workspace_from_documents();
+        if moved {
+            self.sync_workspace_from_store();
+        }
+        moved
     }
 
     /// Revision of everything the workspace-derived views read. Bumped by every
@@ -443,6 +502,14 @@ impl AppState {
         self.store.crdt_document_state_handles()
     }
 
+    /// See [`WorkspaceStore::schemes_absent_from_plain_save`].
+    pub fn schemes_absent_from_plain_save(
+        &mut self,
+        written: &HashMap<DocumentId, knotq_sync::DocumentStateHandle>,
+    ) -> Vec<Scheme> {
+        self.store.schemes_absent_from_plain_save(written)
+    }
+
     /// Handles for only the documents the next save has to write, with the scope
     /// that says whether the save may also sweep. See [`CrdtSaveScope`].
     pub fn take_crdt_save_scope(
@@ -566,6 +633,17 @@ impl AppState {
     /// whose visible before/after value is the same (for example, expanding a
     /// folder that was already expanded on a stale replica). Keeping the
     /// accessor here avoids exposing the store's queue representation.
+    /// The command each still-queued operation came from, for diagnosing a
+    /// queue that will not drain: "which edit is stuck" is only actionable
+    /// together with what authored it.
+    pub fn pending_operation_commands(&self) -> Vec<(knotq_model::OperationId, Command)> {
+        self.store
+            .pending_operations()
+            .iter()
+            .map(|operation| (operation.id, operation.command.clone()))
+            .collect()
+    }
+
     pub fn pending_commands(&self) -> Vec<Command> {
         self.store
             .pending_operations()
