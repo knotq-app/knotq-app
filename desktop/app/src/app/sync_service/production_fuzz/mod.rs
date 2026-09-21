@@ -745,6 +745,23 @@ fn run_seeds(first_seed: u64, config: impl Fn() -> Config + Sync) {
 /// Keep the production API untouched while making each test's environment a
 /// properly scoped resource.
 fn with_fuzz_test_environment<R>(maintenance_coverage: bool, f: impl FnOnce() -> R) -> R {
+    // Set before anything in this process writes a file, which is why it lives
+    // here rather than in `run_seeds_inner`: the pinned single-seed regressions
+    // call `run_seed` directly, `cargo test` runs them alongside the sweeps, and
+    // `write_atomic` reads the policy exactly once per process. Whichever test
+    // saved first used to decide for everybody, so a full run mostly kept
+    // fsyncing and the sweeps saw none of the speedup.
+    //
+    // Durability costs more than everything else here put together: on macOS
+    // each `sync_all` is `fcntl(F_FULLFSYNC)` — 4.9 ms against 0.1 ms for the
+    // same write — and one simulated sync performs a dozen or more, whose
+    // flush-cache commands serialize in the drive so more workers made it
+    // slower. This model's crashes are `CrashPoint`s: which files had been
+    // written, chosen explicitly, never a killed process. Nothing asserted here
+    // depends on bytes reaching the platter, and writes stay atomic regardless.
+    static DURABILITY: std::sync::Once = std::sync::Once::new();
+    DURABILITY.call_once(|| std::env::set_var("KNOTQ_STORAGE_SKIP_FSYNC", "1"));
+
     static ENV_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
     let _lock = ENV_LOCK
         .get_or_init(|| Mutex::new(()))
@@ -786,15 +803,6 @@ fn run_seeds_inner(first_seed: u64, config: impl Fn() -> Config + Sync) {
     // stray call must never reach the user's real KnotQ data.
     static GUARD: std::sync::Once = std::sync::Once::new();
     GUARD.call_once(|| {
-        // Durability costs more than everything else here put together. On
-        // macOS each `sync_all` is `fcntl(F_FULLFSYNC)` — 4.9 ms against 0.1 ms
-        // for the same write without it — and a simulated sync performs a dozen
-        // or more, so the fuzzer spends most of its wall clock waiting on
-        // flush-cache commands that also serialize across workers. This model's
-        // crashes are `CrashPoint`s: which files had been written, chosen
-        // explicitly, never a killed process. Nothing asserted here depends on
-        // bytes reaching the platter, and writes stay atomic regardless.
-        std::env::set_var("KNOTQ_STORAGE_SKIP_FSYNC", "1");
         std::env::set_var(
             "KNOTQ_DATA_DIR",
             std::env::temp_dir().join(format!(
