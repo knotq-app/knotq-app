@@ -392,6 +392,30 @@ pub struct CrdtDocumentPopulation {
     pub deferred_schemes: usize,
 }
 
+/// Whether `state_v1` decodes to a **workspace-index** document.
+///
+/// A document id carries no kind, so the only way to tell an index apart from a
+/// scheme content document by its persisted bytes is the shape: the index keys
+/// its content under `nodes`, a scheme document under `items_by_id`. Used to
+/// find the workspace document when the plain workspace's identity has moved
+/// but the persisted state is still keyed by an earlier id — see
+/// `workspace_document_state_to_carry` in the desktop sync snapshot.
+pub fn state_is_workspace_index(state: &[u8]) -> bool {
+    let Ok(update) = Update::decode_v1(state) else {
+        return false;
+    };
+    let doc = Doc::new();
+    if doc.transact_mut().apply_update(update).is_err() {
+        return false;
+    }
+    let txn = doc.transact();
+    // Non-empty, not merely present: `get_or_insert_map` on a fresh read would
+    // report every root as existing, and an index with no nodes is nothing to
+    // carry anyway.
+    txn.get_map("nodes")
+        .is_some_and(|nodes| nodes.len(&txn) > 0)
+}
+
 impl WorkspaceCrdtDocuments {
     pub fn snapshot_updates(workspace: &Workspace) -> WorkspaceCrdtSyncOutcome {
         let mut docs = Self::empty(workspace);

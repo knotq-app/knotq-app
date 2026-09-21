@@ -167,8 +167,18 @@ pub(super) fn sync_snapshot_in(
     // `queue_workspace_bootstrap_updates` only force-pushes docs with no server base.
     let account_switched = workspace.sync.id != previous_workspace_document_id;
     let reidentified_workspace = if account_switched {
-        crdt_states
-            .remove(&previous_workspace_document_id)
+        let source = if crdt_states.contains_key(&previous_workspace_document_id) {
+            Some(previous_workspace_document_id)
+        } else if had_prior_sync_identity && !crdt_states.contains_key(&workspace.sync.id) {
+            // Neither id has a state, so `from_states` is about to build this
+            // account's index EMPTY and the pull will materialize over nothing.
+            // Look the index up by shape instead — see the function's comment.
+            stale_workspace_index_by_shape(&crdt_states, workspace.sync.id, &workspace)
+        } else {
+            None
+        };
+        source
+            .and_then(|document| crdt_states.remove(&document))
             .map(|state| {
                 crdt_states.insert(workspace.sync.id, state.clone());
                 CrdtDocumentUpdate {
@@ -631,11 +641,25 @@ pub(super) fn workspace_for_background_sync(
         return current;
     };
     if full.id != current.id {
+        // Report it, but do NOT fall back to `current`. `current` holds only the
+        // loaded window, so every unloaded scheme — every Daily page outside the
+        // window, every scheme this session has not opened — would look absent,
+        // and the index write below publishes an absence as an authoritative
+        // deletion for the whole account. Production fuzz chaos seed 140: three
+        // schemes, a Daily page, its item and its queue binding left device 0 in
+        // a single step, with nothing deleted anywhere.
+        //
+        // A mismatch is not evidence of a foreign data directory. `current` was
+        // itself loaded from `path`; the ids differ because the in-memory
+        // workspace adopted a canonical sync identity (sign-in, account switch)
+        // that the save task has not written out yet. The overlay already
+        // resolves exactly that: it takes the in-memory identity wholesale
+        // (`full.id = id`, and every other field but `schemes`) and keeps only
+        // the disk's copy of the schemes memory does not hold.
         eprintln!(
-            "sync full workspace load ignored: loaded workspace id {} does not match in-memory id {}",
+            "sync full workspace load: stored workspace id {} is behind the in-memory id {}; keeping its unloaded schemes",
             full.id, current.id
         );
-        return current;
     }
     overlay_current_workspace_for_sync(&mut full, current);
     full
@@ -700,6 +724,56 @@ fn configure_local_state(
     local_state.workspace_id = Some(server_workspace_id);
     local_state.replica_id = Some(replica_id);
     local_state.server_url = Some(account.api_base.clone());
+}
+
+/// The id this device's workspace-index document is actually sitting under,
+/// when the plain workspace names an id that nothing has ever written.
+///
+/// `WorkspaceCrdtDocuments::from_states` keys the index by `workspace.sync.id`.
+/// With no state under that id it builds the index **empty**, the pull
+/// materializes the account's index over nothing, and every scheme this device
+/// holds that the account does not is dropped — then published to the account
+/// as an authoritative deletion by the next index write.
+///
+/// The caller only reaches this when the current id has no state *and* the id
+/// the switch moved away from has none either, so whenever it returns `Some`
+/// the alternative was provably an empty index: a wrong answer here cannot be
+/// worse than no answer.
+///
+/// That situation means the workspace's identity moved without the CRDT
+/// following it (production fuzz chaos seed 140: device 0's workspace id became
+/// a freshly minted UUID between two syncs while its index document stayed
+/// under the account's id, so the account switch a few steps later looked for
+/// the index under an id nothing had ever written, and the device lost three
+/// schemes, a Daily page, its item and its queue binding). The index is then
+/// found by shape rather than by id: a persisted state the workspace index does
+/// not address, which decodes as an index rather than as scheme content.
+fn stale_workspace_index_by_shape(
+    crdt_states: &std::collections::HashMap<knotq_model::DocumentId, std::sync::Arc<[u8]>>,
+    current: knotq_model::DocumentId,
+    workspace: &Workspace,
+) -> Option<knotq_model::DocumentId> {
+    let addressed: std::collections::HashSet<knotq_model::DocumentId> = workspace
+        .scheme_sync
+        .values()
+        .map(|metadata| metadata.id)
+        .chain(
+            workspace
+                .daily_queue
+                .keys()
+                .map(|date| knotq_model::daily_queue_document_id(*date)),
+        )
+        .collect();
+    // Deterministic: a directory that somehow holds two stale indexes must not
+    // pick between them by hash order.
+    let mut candidates: Vec<knotq_model::DocumentId> = crdt_states
+        .iter()
+        .filter(|(document, _)| **document != current && !addressed.contains(document))
+        .filter(|(_, state)| knotq_sync::state_is_workspace_index(state))
+        .map(|(document, _)| *document)
+        .collect();
+    candidates.sort();
+    candidates.into_iter().next()
 }
 
 fn sync_workspace_id(account: &SyncAccountSettings, fallback: WorkspaceId) -> WorkspaceId {
