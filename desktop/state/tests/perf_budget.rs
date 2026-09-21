@@ -37,6 +37,24 @@ fn ceilings_enabled() -> bool {
     std::env::var("KNOTQ_PERF_BUDGET").is_ok_and(|v| v != "0" && !v.is_empty())
 }
 
+/// The fastest of several measurements of the same thing.
+///
+/// A shape test divides one timing by another, which holds only while both
+/// samples were slowed by the *same* proportion. That is what a debug build or
+/// a uniformly loaded machine does. A CI runner preempted for part of one phase
+/// does not: it inflates that phase alone and the ratio reports an algorithmic
+/// regression that is not there (`keystroke_cost_grows_no_faster_than_linearly
+/// _in_scheme_count` failed at 14.8x on a run whose binaries were identical to
+/// a passing one). The minimum is the standard estimator under interference —
+/// interference can only ever add time, so the smallest sample is the one least
+/// contaminated. Nothing about the budget is loosened: a genuinely slower
+/// implementation is slower in every sample, including the best one.
+fn fastest_of(samples: usize, mut measure: impl FnMut() -> f64) -> f64 {
+    (0..samples.max(1))
+        .map(|_| measure())
+        .fold(f64::INFINITY, f64::min)
+}
+
 fn workspace_of(schemes: usize, items_per_scheme: usize, text_len: usize) -> Workspace {
     let mut workspace = Workspace::new();
     let root = workspace.root;
@@ -199,8 +217,8 @@ fn keystroke_cost_stays_flat_as_a_scheme_grows() {
     let mut small_state = state_of(&small_ws);
     let mut large_state = state_of(&large_ws);
 
-    let small = keystroke_ms(&mut small_state, &small_ws, 20).max(0.001);
-    let large = keystroke_ms(&mut large_state, &large_ws, 20);
+    let small = fastest_of(3, || keystroke_ms(&mut small_state, &small_ws, 20)).max(0.001);
+    let large = fastest_of(3, || keystroke_ms(&mut large_state, &large_ws, 20));
 
     // 5x the items currently costs ~9x the time. Ideally this ratio is ~1 (the
     // work is proportional to what changed). Before this series it was far
@@ -242,8 +260,8 @@ fn keystroke_cost_grows_no_faster_than_linearly_in_scheme_count() {
     let mut small_state = state_of(&small_ws);
     let mut large_state = state_of(&large_ws);
 
-    let small = keystroke_ms(&mut small_state, &small_ws, 20).max(0.001);
-    let large = keystroke_ms(&mut large_state, &large_ws, 20);
+    let small = fastest_of(3, || keystroke_ms(&mut small_state, &small_ws, 20)).max(0.001);
+    let large = fastest_of(3, || keystroke_ms(&mut large_state, &large_ws, 20));
 
     // 4x the schemes for 4x the time is the linear line. The headroom absorbs a
     // preempted run on a shared runner; anything quadratic is 16x and cannot
