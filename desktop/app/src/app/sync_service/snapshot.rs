@@ -246,7 +246,7 @@ pub(super) fn sync_snapshot_in(
     let (repaired_identity, repaired_identity_changed) =
         workspace.canonicalize_personal_sync_identity_with_change(server_workspace_id);
     let repaired_folders = workspace.normalize_one_level_folders();
-    let repaired_marker_schemes = workspace.normalize_item_markers();
+    let repaired_marker_schemes = workspace.repair_item_markers();
     let repaired_markers = !repaired_marker_schemes.is_empty();
     let repaired_workspace_changed = repaired_identity || repaired_folders || repaired_markers;
     let repaired_workspace_persist_changed =

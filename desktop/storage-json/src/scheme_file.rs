@@ -208,6 +208,20 @@ pub(crate) fn write_scheme_file(
     write_atomic_if_changed(&path, xml.as_bytes())
 }
 
+/// Write a scheme to its file by id, without requiring the workspace to hold it.
+///
+/// [`write_scheme_file`] resolves the path through [`scheme_path_for_workspace`],
+/// which returns `None` for a scheme the workspace does not have in memory —
+/// which is exactly the situation an off-window Daily page is in, and exactly
+/// the situation `save_unloaded_scheme_files` exists to handle. Every scheme
+/// file, daily or not, lives at `schemes/{id}.knotq`, so the path is derivable
+/// from the id alone and needs no membership test.
+pub(crate) fn write_unloaded_scheme_file(base_dir: &Path, scheme: &Scheme) -> Result<()> {
+    let path = scheme_file_path(base_dir, scheme.id);
+    let xml = encode_scheme_xml(scheme)?;
+    write_atomic_if_changed(&path, xml.as_bytes())
+}
+
 pub fn scheme_path_for_workspace(
     base_dir: &Path,
     workspace: &Workspace,

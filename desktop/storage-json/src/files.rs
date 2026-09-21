@@ -235,12 +235,20 @@ pub fn save_unloaded_scheme_files(
             // The ordinary save already owns this one.
             continue;
         }
-        if scheme_path_for_workspace(&base_dir, &workspace, scheme.id)?.is_none() {
-            // Not addressable from this index (no folder placement and no daily
-            // binding): writing it would put a file where nothing looks.
+        // Addressable from this index? A scheme with neither a sync binding nor
+        // a daily binding is not reachable from anything, and writing it would
+        // put a file where nothing looks.
+        //
+        // Asked of the *index*, not of `workspace.schemes`: the whole point of
+        // this function is the schemes the in-memory workspace does not hold,
+        // and `scheme_path_for_workspace` answers `None` for every one of them.
+        // Using it here meant this function had never written a single file.
+        let addressable = workspace.scheme_sync.contains_key(&scheme.id)
+            || workspace.daily_queue.values().any(|id| *id == scheme.id);
+        if !addressable {
             continue;
         }
-        write_scheme_file(&base_dir, &workspace, scheme)
+        crate::scheme_file::write_unloaded_scheme_file(&base_dir, scheme)
             .with_context(|| format!("write unloaded scheme {}", scheme.id))?;
     }
     refresh_unloaded_daily_index_entries(path, schemes)

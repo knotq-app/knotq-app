@@ -324,7 +324,7 @@ fn normalizing_markers_reports_the_schemes_it_repaired() {
         .items
         .push(item);
 
-    let repaired = workspace.normalize_item_markers();
+    let repaired = workspace.repair_item_markers();
 
     assert!(
         repaired.contains(&scheme_id),
@@ -335,7 +335,7 @@ fn normalizing_markers_reports_the_schemes_it_repaired() {
         MarkerFamily::Standard
     );
     assert!(
-        workspace.normalize_item_markers().is_empty(),
+        workspace.repair_item_markers().is_empty(),
         "normalization is idempotent"
     );
 }

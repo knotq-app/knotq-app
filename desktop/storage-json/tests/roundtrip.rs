@@ -530,3 +530,76 @@ fn unique_temp_dir(prefix: &str) -> PathBuf {
     fs::create_dir_all(&path).unwrap();
     path
 }
+
+/// A Daily page whose body is not loaded still gets its file written and its
+/// index entry refreshed.
+///
+/// The plain save can only write what the in-memory workspace holds, and an
+/// off-window Daily page is deliberately not in it — so `from_workspace_preserving`
+/// keeps whatever the index already said about that day. A remote rename or
+/// recolour of such a day therefore reached the documents and had nowhere to
+/// land on disk, and the next load read the stale name and colour back (see
+/// `save_unloaded_scheme_files`). Both halves are asserted here: the body the
+/// save could not see, and the metadata the index alone carries.
+#[test]
+fn saving_unloaded_schemes_writes_their_files_and_refreshes_their_index_entries() {
+    let dir = unique_temp_dir("knotq-storage-unloaded-daily");
+    let workspace_file = dir.join("workspace.json");
+    let date = NaiveDate::from_ymd_opt(2026, 9, 16).unwrap();
+    let mut workspace = Workspace::new();
+
+    let daily_id = knotq_model::daily_queue_scheme_id(date);
+    let mut daily = Scheme::new("Daily 2026-09-16", 0);
+    daily.id = daily_id;
+    daily.items.push(Item::new("first note"));
+    workspace.daily_queue.insert(date, daily_id);
+    workspace.schemes.insert(daily_id, daily);
+    save_workspace(&workspace_file, &workspace).unwrap();
+
+    // Reload with the day outside the window: bound in the index, body absent.
+    let unloaded = load_workspace_with_options(
+        &workspace_file,
+        WorkspaceLoadOptions::daily_queue_range(
+            NaiveDate::from_ymd_opt(2026, 10, 1).unwrap(),
+            NaiveDate::from_ymd_opt(2026, 10, 2).unwrap(),
+        ),
+    )
+    .unwrap()
+    .unwrap();
+    assert!(
+        !unloaded.schemes.contains_key(&daily_id),
+        "the day must be out of the window for this to prove anything"
+    );
+
+    // What the device's own documents say about that day now: recoloured,
+    // renamed, and with a line the plain save never saw.
+    let mut from_documents = Scheme::new("Daily 2026-09-16", 7);
+    from_documents.id = daily_id;
+    from_documents.items.push(Item::new("first note"));
+    from_documents
+        .items
+        .push(Item::new("added while off-window"));
+
+    save_workspace(&workspace_file, &unloaded).unwrap();
+    knotq_storage_json::save_unloaded_scheme_files(
+        &workspace_file,
+        &unloaded,
+        std::slice::from_ref(&from_documents),
+    )
+    .unwrap();
+
+    let reloaded = load_daily_queue_scheme(&workspace_file, date)
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        reloaded.color_index, 7,
+        "the index entry has to take the colour the documents hold"
+    );
+    assert_eq!(
+        reloaded.items.len(),
+        2,
+        "and the body the plain save could not see has to be on disk"
+    );
+
+    let _ = fs::remove_dir_all(dir);
+}

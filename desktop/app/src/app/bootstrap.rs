@@ -70,7 +70,7 @@ pub(crate) fn load_or_seed_from_path(path: &Path, today: NaiveDate) -> Workspace
     match load_workspace_with_options(path, options) {
         Ok(Some(mut workspace)) => {
             let folders_changed = workspace.normalize_one_level_folders();
-            let markers_changed = !workspace.normalize_item_markers().is_empty();
+            let markers_changed = workspace.normalize_item_markers();
             if folders_changed || markers_changed {
                 if let Err(err) = save_workspace(path, &workspace) {
                     eprintln!("workspace repair save failed: {err:#}");

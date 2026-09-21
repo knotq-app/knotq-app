@@ -330,7 +330,24 @@ impl Workspace {
     /// value over the merged one — a revert with no other device involved. See
     /// `queue_repair_crdt_updates` in the desktop sync service, which takes
     /// this set as its change set.
-    pub fn normalize_item_markers(&mut self) -> HashSet<SchemeId> {
+    /// [`repair_item_markers`](Self::repair_item_markers), reporting only
+    /// whether anything changed.
+    ///
+    /// This signature is deliberately unchanged. The mobile core builds against
+    /// this crate *by path* from a separate repository, and its CI checks out
+    /// this repo's `main` — so changing the return type in place leaves the two
+    /// repositories mutually un-buildable until both land, a circular
+    /// dependency that no merge ordering resolves. A caller that writes the
+    /// repair into the CRDT documents needs the set and should call
+    /// `repair_item_markers`; one that only asks "did anything move" keeps
+    /// this.
+    pub fn normalize_item_markers(&mut self) -> bool {
+        !self.repair_item_markers().is_empty()
+    }
+
+    /// Enforce the per-item marker invariants, reporting **which schemes**
+    /// changed rather than merely whether any did.
+    pub fn repair_item_markers(&mut self) -> HashSet<SchemeId> {
         let mut changed = HashSet::new();
         for (id, scheme) in self.schemes.iter_mut() {
             for item in &mut scheme.items {

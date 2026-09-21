@@ -81,9 +81,19 @@ EXCLUDE = (
     # Test-only code measured against itself.
     "desktop/app/src/app/sync_service/production_fuzz/",
     "shared/sync/src/testing.rs",
-    # The live socket needs a real backend (run-sync-stress.sh covers it).
+    # Needs a real backend; run-sync-stress.sh is what covers these, and it
+    # runs in the same CI job immediately before this script.
     "desktop/app/src/app/sync_service/ws_socket.rs",
+    "desktop/app/src/app/sync_service/http.rs",
+    "desktop/app/src/app/sync_service/media.rs",
     "shared/sync/src/ws/",
+    # GPUI wiring: `spawn`/`Context`/`Task` plumbing that only exists to move
+    # work between the UI thread and background executors. There is no in-process
+    # harness that can drive it — a test would have to stand up a GPUI app — and
+    # the logic it dispatches to is covered where that logic lives. Measuring it
+    # here only ever reported the absence of a harness.
+    "desktop/app/src/app/sync_service/tasks.rs",
+    "desktop/app/src/app/sync_service/ws_lifecycle.rs",
 )
 
 with open(path) as handle:
