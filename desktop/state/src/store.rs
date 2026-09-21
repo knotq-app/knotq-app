@@ -348,17 +348,31 @@ impl WorkspaceStore {
     /// documents are the durable record — they are what sync pushes — so the
     /// visible half adopts them.
     ///
-    /// Safe in the other direction because it only ever *adds* what the
-    /// documents hold: a scheme with no document, an unseeded workspace
-    /// document and an empty document (`trust_empty_crdt` is false for every
-    /// scheme) all keep the plain content. A device that has never synced
-    /// therefore passes through untouched rather than being emptied.
+    /// An empty document is trusted exactly where the projection law trusts
+    /// one, and the two must agree or they deadlock: the law reads an empty
+    /// *populated* document as "every item was deleted" and expects the visible
+    /// scheme to be empty too, so a reconcile that kept the plain items instead
+    /// left a divergence nothing could ever clear — a line present in the
+    /// workspace and in no document at all, reported on every step from then on
+    /// (chaos seed 188, after a crash and relaunch).
+    ///
+    /// Still safe in the other direction, which is the point of the
+    /// distinction: a scheme with no document, an unseeded workspace document
+    /// and an *unpopulated* one all keep the plain content, so a device that
+    /// has never synced passes through untouched rather than being emptied.
     ///
     /// Returns whether anything moved.
     pub fn reconcile_workspace_from_documents(&mut self) -> bool {
+        let unpopulated: std::collections::HashSet<SchemeId> = self
+            .workspace
+            .schemes
+            .keys()
+            .copied()
+            .filter(|id| self.crdt.scheme_document_is_unpopulated(*id))
+            .collect();
         let Ok(mut recovered) = self
             .crdt
-            .materialized_workspace_repair(&self.workspace, &|_| false)
+            .materialized_workspace_repair(&self.workspace, &|id| !unpopulated.contains(id))
         else {
             return false;
         };
