@@ -247,7 +247,14 @@ fn popover_button(
     on_click: impl Fn(&mut KnotQApp, &mut Window, &mut Context<KnotQApp>) + 'static,
 ) -> gpui::AnyElement {
     if primary {
-        return popover_filled_button(id, label, t.text_highlight, 0xe66f1fff, cx, on_click);
+        return popover_filled_button(
+            id,
+            label,
+            crate::views::sync_cta_bg(),
+            crate::views::sync_cta_hover_bg(),
+            cx,
+            on_click,
+        );
     }
 
     let base = div()
