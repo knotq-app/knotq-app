@@ -410,8 +410,10 @@ pub(crate) fn write_atomic(path: &Path, contents: &[u8]) -> Result<()> {
         // Flush to disk before the rename publishes the file: without this a
         // crash or I/O stall can land the rename ahead of the data and leave
         // a zero-length "complete" file behind.
-        file.sync_all()
-            .with_context(|| format!("sync {}", tmp.display()))?;
+        if durable_writes() {
+            file.sync_all()
+                .with_context(|| format!("sync {}", tmp.display()))?;
+        }
         fs::rename(&tmp, path).with_context(|| format!("rename {}", path.display()))?;
         // `sync_all` above makes the replacement file durable, but a rename is
         // a directory operation. Flush the containing directory too so a power
@@ -420,13 +422,40 @@ pub(crate) fn write_atomic(path: &Path, contents: &[u8]) -> Result<()> {
         // directory flush on Windows; its rename semantics remain the platform
         // default there, while every Unix target we ship (macOS, Linux, iOS)
         // gets the stronger guarantee.
-        sync_parent_directory(path)?;
+        if durable_writes() {
+            sync_parent_directory(path)?;
+        }
         Ok(())
     })();
     if write_result.is_err() {
         let _ = fs::remove_file(&tmp);
     }
     write_result
+}
+
+/// Whether a save flushes to the platter before returning.
+///
+/// True everywhere except a fuzz run that opts out with
+/// `KNOTQ_STORAGE_SKIP_FSYNC=1`. On macOS `File::sync_all` is
+/// `fcntl(F_FULLFSYNC)`, measured at **4.9 ms** against 0.1 ms for the same
+/// write without it — roughly fifty times the cost — and the production-path
+/// fuzzer performs a dozen or more of them per simulated sync. That single
+/// syscall, not CRDT work, is most of the fuzzer's wall clock, and because the
+/// flush-cache commands serialize in the drive it gets worse with more workers
+/// rather than better.
+///
+/// Opting out is sound *for the fuzzer specifically* because its crash model
+/// (`CrashPoint`) is "which files had been written", simulated by choosing what
+/// to write — never a killed process or a power cut. Nothing it asserts depends
+/// on bytes having reached the platter. The tmp-file-and-rename is untouched,
+/// so writes stay atomic either way; only durability against power loss is
+/// traded, and only in a process that has opted in by environment variable.
+///
+/// Read once: a save path must not change behaviour partway through a run.
+fn durable_writes() -> bool {
+    static DURABLE: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *DURABLE
+        .get_or_init(|| !std::env::var("KNOTQ_STORAGE_SKIP_FSYNC").is_ok_and(|value| value == "1"))
 }
 
 /// Persist `contents` only when it differs from the current file.

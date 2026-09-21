@@ -1,0 +1,24 @@
+    Blocking waiting for file lock on package cache
+    Blocking waiting for file lock on package cache
+    Blocking waiting for file lock on package cache
+    Blocking waiting for file lock on package cache
+   Compiling knotq-mobile-core v0.1.0 (/Users/manubhat/home/businesses/nutq2/app/mobile/core)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 7.89s
+     Running unittests src/lib.rs (target/debug/deps/knotq_mobile_core-c4aa923acbce843f)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 77 filtered out; finished in 0.00s
+
+     Running unittests src/bin/edit_cost.rs (target/debug/deps/edit_cost-4e236ee5655d1040)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests src/bin/load_cost.rs (target/debug/deps/load_cost-dfac8ff2f6c1490d)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+

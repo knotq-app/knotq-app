@@ -1,0 +1,21 @@
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1.66s
+     Running unittests src/lib.rs (target/debug/deps/knotq_mobile_core-c4aa923acbce843f)
+
+running 1 test
+test tests_daily::seeded_lazy_daily_lifecycle_fuzz_converges_before_navigation has been running for over 60 seconds
+test tests_daily::seeded_lazy_daily_lifecycle_fuzz_converges_before_navigation ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 76 filtered out; finished in 532.61s
+
+     Running unittests src/bin/edit_cost.rs (target/debug/deps/edit_cost-4e236ee5655d1040)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests src/bin/load_cost.rs (target/debug/deps/load_cost-dfac8ff2f6c1490d)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+

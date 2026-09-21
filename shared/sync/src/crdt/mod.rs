@@ -1963,6 +1963,30 @@ impl WorkspaceCrdtDocuments {
         self.materialize_workspace_inner(current, false, trust_empty_crdt)
     }
 
+    /// Every scheme document that holds a live copy of `item`.
+    ///
+    /// An item id is globally unique, so more than one entry means two
+    /// documents both believe they own the line — the cross-document duplicate
+    /// placement that `dedupe_materialized_items` resolves by lowest scheme id.
+    /// Diagnostic: when the visible workspace and the documents disagree about
+    /// where a line lives, this says whether the cause is a duplicate (two
+    /// entries) or a plain mismatch (one entry, in the wrong place).
+    pub fn documents_holding_item(&self, item: knotq_model::ItemId) -> Vec<SchemeId> {
+        let mut holders: Vec<SchemeId> = self
+            .schemes
+            .iter()
+            .filter(|(_, document)| {
+                document
+                    .scheme_items()
+                    .map(|items| items.iter().any(|candidate| candidate.id == item))
+                    .unwrap_or(false)
+            })
+            .map(|(id, _)| *id)
+            .collect();
+        holders.sort();
+        holders
+    }
+
     /// Read one live scheme document without applying workspace-wide duplicate
     /// placement dedupe. The pre-pull repair path needs the raw per-document
     /// item set: a copy hidden by materialization is still authoritative CRDT

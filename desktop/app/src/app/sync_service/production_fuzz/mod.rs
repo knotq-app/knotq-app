@@ -786,6 +786,15 @@ fn run_seeds_inner(first_seed: u64, config: impl Fn() -> Config + Sync) {
     // stray call must never reach the user's real KnotQ data.
     static GUARD: std::sync::Once = std::sync::Once::new();
     GUARD.call_once(|| {
+        // Durability costs more than everything else here put together. On
+        // macOS each `sync_all` is `fcntl(F_FULLFSYNC)` — 4.9 ms against 0.1 ms
+        // for the same write without it — and a simulated sync performs a dozen
+        // or more, so the fuzzer spends most of its wall clock waiting on
+        // flush-cache commands that also serialize across workers. This model's
+        // crashes are `CrashPoint`s: which files had been written, chosen
+        // explicitly, never a killed process. Nothing asserted here depends on
+        // bytes reaching the platter, and writes stay atomic regardless.
+        std::env::set_var("KNOTQ_STORAGE_SKIP_FSYNC", "1");
         std::env::set_var(
             "KNOTQ_DATA_DIR",
             std::env::temp_dir().join(format!(

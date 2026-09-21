@@ -698,6 +698,23 @@ impl WorkspaceStore {
         true
     }
 
+    /// Reconcile deferred CRDT changes without encoding anything.
+    ///
+    /// `crdt_document_states()` was being called purely for its flush, and it
+    /// encodes the full state of every changed document on the way past — bytes
+    /// the caller discards. The projection check runs after every step, so that
+    /// was a whole-workspace encode a few hundred times a seed for nothing.
+    pub fn flush_pending_crdt(&mut self) {
+        self.flush_crdt();
+    }
+
+    /// Every scheme document holding a live copy of `item` — see
+    /// [`WorkspaceCrdtDocuments::documents_holding_item`]. Diagnostic only.
+    pub fn documents_holding_item(&mut self, item: knotq_model::ItemId) -> Vec<SchemeId> {
+        self.flush_crdt();
+        self.crdt.documents_holding_item(item)
+    }
+
     /// Where the visible workspace disagrees with the CRDT documents it is a
     /// projection of — see [`knotq_sync::projection`] for why that equality is
     /// the local precondition for two devices converging.
@@ -1549,6 +1566,7 @@ impl WorkspaceStore {
     ) -> Result<CommandReceipt, knotq_commands::CommandError> {
         let may_change_document_set = command_may_change_document_set(&command);
         self.record_population_bases(&command);
+        let restored_probe = command.clone();
         let receipt = self.workspace.apply(command.clone())?;
         let crdt_changes = crdt_change_set_for_command(&command);
         let crdt_updates =
@@ -1564,6 +1582,22 @@ impl WorkspaceStore {
             crdt_updates,
         });
         self.next_sequence += 1;
+        if command_restores_content(&restored_probe) {
+            // A restore replays a *snapshot* of the node as it was when it was
+            // deleted, and the documents have moved on since: a line that left
+            // for another scheme in the meantime comes back here too, live in
+            // two documents at once, and any line the document gained is kept
+            // by `merge_raw_only_items` and so exists in the document but not in
+            // the restored plain copy. Either way the device now shows
+            // something its own documents do not (single-account fuzz seed
+            // 10193: an undo that restored a scheme).
+            //
+            // Reconciling puts both right: it resolves the duplicate by
+            // deleting the losing copy and takes the restored scheme's items
+            // from the documents. Restores are rare, so paying a materialization
+            // here costs nothing measurable — unlike doing it per keystroke.
+            self.reconcile_item_placements();
+        }
         Ok(receipt)
     }
 
@@ -1668,6 +1702,24 @@ fn restored_workspace_crdt<B: AsRef<[u8]>>(
             eprintln!("restore CRDT documents failed: {err:#}");
             WorkspaceCrdtDocuments::empty_for_replica(workspace, replica_id)
         }
+    }
+}
+
+/// Whether `command` puts a previously removed node back, carrying a snapshot
+/// of its contents from the moment it was removed.
+///
+/// These are the commands whose payload can be *stale*: everything else
+/// describes a change relative to the current state, while a restore replays
+/// what a node looked like at some earlier point. See the call site for what
+/// goes wrong when the documents have moved on in between.
+fn command_restores_content(command: &Command) -> bool {
+    match command {
+        Command::RestoreScheme { .. }
+        | Command::RestoreDeletedScheme { .. }
+        | Command::RestoreFolder { .. }
+        | Command::RestoreDeletedFolder { .. } => true,
+        Command::Batch(commands) => commands.iter().any(command_restores_content),
+        _ => false,
     }
 }
 

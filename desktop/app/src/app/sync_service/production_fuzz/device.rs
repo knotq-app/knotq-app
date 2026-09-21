@@ -184,9 +184,28 @@ impl DesktopDevice {
         // The reading is taken after the flush inside `projection_divergences`
         // only in effect — that flush is a real mutation whose ids must stand —
         // so flush first, explicitly, and guard only the read that follows.
-        let _ = self.state.crdt_document_states();
+        self.state.flush_pending_crdt();
         let id_stream = knotq_model::deterministic_id_seed();
-        let divergences = self.state.projection_divergences();
+        let mut divergences = self.state.projection_divergences();
+        // For a placement disagreement, say whether two documents both hold the
+        // line (a cross-document duplicate, resolved by lowest scheme id) or
+        // only one does (a plain mismatch). They need completely different
+        // fixes and the message alone cannot tell them apart.
+        if std::env::var("KNOTQ_DBG_DUP").is_ok() {
+            let ids: Vec<knotq_model::ItemId> = divergences
+                .iter()
+                .flat_map(|line| {
+                    line.match_indices("ItemId(")
+                        .filter_map(|(at, _)| line.get(at + 7..at + 43))
+                        .filter_map(|raw| raw.parse().ok())
+                        .collect::<Vec<_>>()
+                })
+                .collect();
+            for item in ids {
+                let holders = self.state.documents_holding_item(item);
+                divergences.push(format!("    [dup] {item:?} live in {holders:?}"));
+            }
+        }
         knotq_model::set_deterministic_id_seed(id_stream);
         divergences
     }

@@ -1,0 +1,115 @@
+run-sync-stress: pre-building test binaries…
+    Blocking waiting for file lock on package cache
+    Blocking waiting for file lock on package cache
+    Blocking waiting for file lock on package cache
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 3.15s
+  Executable tests/backend_integration.rs (target/debug/deps/backend_integration-cef0a61a0f589676)
+  Executable tests/ws_integration.rs (target/debug/deps/ws_integration-d0f602d41586b2e9)
+run-sync-stress: applying D1 migrations…
+
+ ⛅️ wrangler 4.95.0 (update available 4.135.0)
+──────────────────────────────────────────────
+Resource location: local 
+
+Use --remote if you want to access the remote instance.
+
+✅ No migrations to apply!
+run-sync-stress: starting wrangler dev on :8788 (KNOTQ_TEST_MODE=1)…
+run-sync-stress: backend ready after 1 attempts.
+run-sync-stress: /__test/bootstrap probe ok.
+
+run-sync-stress: HTTP scenario suite…
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.87s
+     Running tests/backend_integration.rs (target/debug/deps/backend_integration-cef0a61a0f589676)
+[31m✘ [41;31m[[41;97mERROR[41;31m][0m [1mThe Workers runtime failed to start. There is likely additional logging output above.[0m
+
+
+🪵  Logs were written to "/Users/manubhat/Library/Preferences/.wrangler/logs/wrangler-2026-09-21_03-48-31_769.log"
+
+running 26 tests
+[atomic_batch_rejection] verified: server atomically rejects bad batches and accepts clean reseed
+test atomic_batch_rejection_and_server_gate ... ok
+sync: workspace index write removes 1 node entr(ies): 6b96530f-0e57-4ce7-9f91-ec382e32f148
+sync: workspace index write removes 1 node entr(ies): 5f117e22-ac26-4cfc-a63a-aa4c50e98242
+sync: workspace index write removes 1 node entr(ies): 7d15f367-6818-4319-ba28-d5c8369ef351
+test http_scenario_a_edit_vs_delete_a_first ... ok
+test http_scenario_a_edit_vs_delete_b_first ... ok
+test http_scenario_g2_daily_queue_direct_creation ... ok
+test http_scenario_b_delete_vs_archive_race ... ok
+test http_scenario_c_folder_shuffle_storm ... ok
+test http_scenario_f_offline_restart_combo ... ok
+test http_scenario_g_daily_queue_conflicts ... ok
+sync: workspace index write removes 1 node entr(ies): 8c598a29-175e-428a-af21-5f769627de25
+sync: workspace index write removes 1 node entr(ies): eb3f7ec2-fdc2-4de0-bdcf-dd2371c51563
+test http_scenario_i_media_scheme_deleted ... ok
+test http_scenario_j_notification_schedule_monotonic ... ok
+test http_scenario_h_calendar_lifecycle ... ok
+test http_scenario_k_fresh_device_join ... ok
+test http_scenario_i_media_concurrent_attach ... ok
+test http_scenario_d_zigzag_interleave ... ok
+test http_scenario_m5_carryover_offline_restart ... ok
+test http_scenario_m2_carryover_concurrent_shared_today ... ok
+test http_scenario_m4_carryover_vs_yesterday_edit ... ok
+test http_scenario_m_carryover_basic ... ok
+test http_scenario_m3_carryover_concurrent_independent_today ... ok
+test orphan_tolerance ... ok
+test media_round_trip ... ok
+test two_device_convergence ... ok
+test http_scenario_e_long_offline_divergence ... ok
+test restart_with_pending_edits ... ok
+test http_scenario_n_carryover_chain ... ok
+test http_scenario_l_randomized_fuzz ... ok
+
+test result: ok. 26 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 13.73s
+
+
+run-sync-stress: WebSocket scenario suite…
+    Blocking waiting for file lock on package cache
+    Blocking waiting for file lock on package cache
+    Blocking waiting for file lock on package cache
+    Blocking waiting for file lock on package cache
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 2.56s
+     Running tests/ws_integration.rs (target/debug/deps/ws_integration-d0f602d41586b2e9)
+
+running 9 tests
+test ws_presence_relays_between_sockets_over_real_backend ... ok
+sync: workspace index write removes 1 node entr(ies): bd3f9111-22fb-8c38-a588-0568a74cef22
+test ws_push_broadcasts_changed_to_other_socket ... ok
+test ws_account_switch_carries_content_over_real_socket ... ok
+test ws_two_device_convergence_over_real_socket ... ok
+test ws_scenario_g2_daily_queue_direct_creation ... ok
+test ws_scenario_g_daily_queue_conflicts ... ok
+test ws_scenario_m2_carryover_concurrent_shared_today ... ok
+test ws_scenario_f_offline_restart_combo ... ok
+test ws_scenario_e_long_offline_divergence ... ok
+
+test result: ok. 9 passed; 0 failed; 0 ignored; 0 measured; 3 filtered out; finished in 9.77s
+
+
+run-sync-stress: WebSocket + mixed-transport + account-hopping fuzz…
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1.28s
+     Running tests/ws_integration.rs (target/debug/deps/ws_integration-d0f602d41586b2e9)
+
+running 3 tests
+sync: workspace index write removes 1 node entr(ies): 859ca714-5216-8aba-9ab2-9521e1c1aeae
+sync: workspace index write removes 1 node entr(ies): 859ca714-5216-8aba-9ab2-9521e1c1aeae
+sync: workspace index write removes 2 node entr(ies): 229a243d-ff16-8ca0-9a9a-457295fdb8da, 58c3bb83-cb3a-876e-9146-84368bb2a263
+sync: workspace index write removes 1 node entr(ies): 859ca714-5216-8aba-9ab2-9521e1c1aeae
+sync: workspace index write removes 1 node entr(ies): 229a243d-ff16-8ca0-9a9a-457295fdb8da
+sync: workspace index write removes 1 node entr(ies): 8eec4ca8-16d0-867a-a021-8ee65debc9b2
+sync: workspace index write removes 1 node entr(ies): be081cc4-d9b5-85bd-bd2d-0f8e5612ba8c
+sync: workspace index write removes 1 node entr(ies): 8eec4ca8-16d0-867a-a021-8ee65debc9b2
+test ws_scenario_l_randomized_fuzz_mixed_transport ... ok
+sync: workspace index write removes 1 node entr(ies): 21217674-ffd5-8d91-a278-c0a398e1b14f
+sync: workspace index write removes 1 node entr(ies): 1c84fdcd-979d-85f9-8022-faa3e256fcda
+sync: workspace index write removes 1 node entr(ies): 21217674-ffd5-8d91-a278-c0a398e1b14f
+sync: workspace index write removes 1 node entr(ies): 487f03a1-864b-8d67-8923-70a83ea4d168
+test ws_scenario_l_randomized_fuzz ... ok
+sync: workspace index write removes 1 node entr(ies): 487f03a1-864b-8d67-8923-70a83ea4d168
+sync: workspace index write removes 1 node entr(ies): 1c84fdcd-979d-85f9-8022-faa3e256fcda
+test ws_account_hopping_fuzz_converges ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 9 filtered out; finished in 50.16s
+
+
+run-sync-stress: PASSED.

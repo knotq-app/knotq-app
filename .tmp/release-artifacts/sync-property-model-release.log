@@ -1,0 +1,40 @@
+    Blocking waiting for file lock on package cache
+    Blocking waiting for file lock on package cache
+    Blocking waiting for file lock on package cache
+    Blocking waiting for file lock on package cache
+    Blocking waiting for file lock on shared package cache
+   Compiling knotq-model v0.1.0 (/Users/manubhat/home/businesses/nutq2/app/shared/model)
+   Compiling knotq-date-util v0.1.0 (/Users/manubhat/home/businesses/nutq2/app/desktop/date-util)
+   Compiling knotq-sync v0.1.0 (/Users/manubhat/home/businesses/nutq2/app/shared/sync)
+   Compiling knotq-rrule v0.1.0 (/Users/manubhat/home/businesses/nutq2/app/desktop/rrule)
+   Compiling knotq-commands v0.1.0 (/Users/manubhat/home/businesses/nutq2/app/desktop/commands)
+   Compiling knotq-index v0.1.0 (/Users/manubhat/home/businesses/nutq2/app/desktop/index)
+   Compiling knotq-mcp v0.1.0 (/Users/manubhat/home/businesses/nutq2/app/desktop/mcp)
+   Compiling knotq-notifications v0.1.0 (/Users/manubhat/home/businesses/nutq2/app/desktop/notifications)
+    Finished `release` profile [optimized] target(s) in 3m 39s
+     Running tests/sync_property_model.rs (target/release/deps/sync_property_model-1d146c5912f92688)
+
+running 19 tests
+test account_switch_push_corruption_regression ... ok
+test materialization_gap_fuzz_is_bounded ... ok
+test daily_queue_carryover_merge_regression ... ok
+test account_switch_self_heal_and_convergence_regression_seed_33 ... ok
+test replay_compaction_seed ... ignored, triage helper; runs one compaction seed chosen by KNOTQ_REPRO_SEED
+test replay_restart_seed ... ignored, triage helper; runs one restart seed chosen by KNOTQ_REPRO_SEED
+test replay_seed ... ignored, triage helper; runs one seed chosen by KNOTQ_REPRO_SEED
+test replay_undo_seed ... ignored, triage helper; runs one seed chosen by KNOTQ_REPRO_SEED
+test account_switch_reseed_and_noop_materialization_regression_seed_127 ... ok
+test frozen_stale_workspace_divergence_regression ... ok
+test account_hopping_fuzz_converges has been running for over 60 seconds
+test compaction_sweep_fuzz_converges has been running for over 60 seconds
+test daily_queue_multiorigin_stress has been running for over 60 seconds
+test multi_account_fuzz_converges has been running for over 60 seconds
+test persistence_boundary_fuzz_converges has been running for over 60 seconds
+test restart_fuzz_converges has been running for over 60 seconds
+test restarting_with_unpushed_edits_keeps_them_pushable has been running for over 60 seconds
+test single_account_many_devices_fuzz_converges has been running for over 60 seconds
+test persistence_boundary_fuzz_converges ... ok
+test undo_redo_fuzz_converges has been running for over 60 seconds
+test restarting_with_unpushed_edits_keeps_them_pushable ... ok
+test account_hopping_fuzz_converges ... ok
+test single_account_many_devices_fuzz_converges ... ok

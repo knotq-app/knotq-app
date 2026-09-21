@@ -1,0 +1,16 @@
+run-mobile-ws-integration: pre-building mobile test binary…
+    Blocking waiting for file lock on package cache
+    Blocking waiting for file lock on package cache
+    Blocking waiting for file lock on package cache
+    Blocking waiting for file lock on shared package cache
+   Compiling knotq-model v0.1.0 (/Users/manubhat/home/businesses/nutq2/app/shared/model)
+   Compiling knotq-date-util v0.1.0 (/Users/manubhat/home/businesses/nutq2/app/desktop/date-util)
+   Compiling knotq-sync v0.1.0 (/Users/manubhat/home/businesses/nutq2/app/shared/sync)
+   Compiling knotq-storage v0.1.0 (/Users/manubhat/home/businesses/nutq2/app/desktop/storage)
+   Compiling knotq-rrule v0.1.0 (/Users/manubhat/home/businesses/nutq2/app/desktop/rrule)
+   Compiling knotq-commands v0.1.0 (/Users/manubhat/home/businesses/nutq2/app/desktop/commands)
+   Compiling knotq-index v0.1.0 (/Users/manubhat/home/businesses/nutq2/app/desktop/index)
+   Compiling knotq-notifications v0.1.0 (/Users/manubhat/home/businesses/nutq2/app/desktop/notifications)
+   Compiling knotq-storage-json v0.1.0 (/Users/manubhat/home/businesses/nutq2/app/desktop/storage-json)
+   Compiling knotq-state v0.1.0 (/Users/manubhat/home/businesses/nutq2/app/desktop/state)
+   Compiling knotq-mobile-core v0.1.0 (/Users/manubhat/home/businesses/nutq2/app/mobile/core)

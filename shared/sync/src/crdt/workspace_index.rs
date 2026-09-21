@@ -684,6 +684,29 @@ impl YrsJsonDocument {
                 );
             }
         }
+        // The same report for the Daily Queue bindings. A day's binding is what
+        // makes its page addressable at all: drop it and the page's document
+        // survives on the server with nothing pointing at it, which reads to
+        // every device as the day having been emptied.
+        {
+            let desired: HashSet<&str> = daily_queue_entries
+                .iter()
+                .map(|(date, _)| date.as_str())
+                .collect();
+            let mut removed: Vec<String> = string_map_entries(&daily_queue, &txn)
+                .into_iter()
+                .map(|(date, _)| date)
+                .filter(|date| !desired.contains(date.as_str()))
+                .collect();
+            if !removed.is_empty() {
+                removed.sort();
+                eprintln!(
+                    "sync: workspace index write removes {} daily binding(s): {}",
+                    removed.len(),
+                    removed.join(", ")
+                );
+            }
+        }
         changed |= sync_string_map(&nodes, &mut txn, &node_entries);
         changed |= sync_string_map(&node_fields, &mut txn, &node_field_entries);
         changed |= sync_string_map(&scheme_sync, &mut txn, &scheme_sync_entries);

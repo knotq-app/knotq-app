@@ -1,0 +1,7 @@
+Writing result bundle at path:
+	/Users/manubhat/home/businesses/nutq2/app/.tmp/release-artifacts/ios-tests/KnotQMobileTests-iPhone14-America_New_York.xcresult
+
+2026-09-20 23:50:16.530 xcodebuild[61121:9161598] [MT] IDETestOperationsObserverDebug: 20.459 elapsed -- Testing started completed.
+2026-09-20 23:50:16.530 xcodebuild[61121:9161598] [MT] IDETestOperationsObserverDebug: 0.000 sec, +0.000 sec -- start
+2026-09-20 23:50:16.530 xcodebuild[61121:9161598] [MT] IDETestOperationsObserverDebug: 20.459 sec, +20.459 sec -- end
+Testing started

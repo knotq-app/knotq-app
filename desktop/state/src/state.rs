@@ -188,6 +188,18 @@ impl AppState {
     /// Both halves are the same law — what the user sees is what will sync —
     /// and a violation of either is a local corruption that the next sync
     /// landing turns into an apparent remote change nobody made.
+    /// Reconcile deferred CRDT changes without encoding anything. See
+    /// [`WorkspaceStore::flush_pending_crdt`].
+    pub fn flush_pending_crdt(&mut self) {
+        self.store.flush_pending_crdt();
+    }
+
+    /// Every scheme document holding a live copy of `item`. Diagnostic only;
+    /// see [`WorkspaceStore::documents_holding_item`].
+    pub fn documents_holding_item(&mut self, item: knotq_model::ItemId) -> Vec<SchemeId> {
+        self.store.documents_holding_item(item)
+    }
+
     pub fn projection_divergences(&mut self) -> Vec<String> {
         let drifted: Vec<String> = {
             let ui = &self.workspace;
