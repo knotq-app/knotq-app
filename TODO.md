@@ -446,9 +446,37 @@ populates schema-less documents, so starting empty loses everything local that
 the destination does not already have. Any fix must keep the *content* and drop
 only the *history*.
 
-The shape that should work: re-seed with a history-free population (the
-`populate` path, which writes content with no tombstones) rather than
-`encode_state_v1`. The principled alternative is to put the account's workspace
+### A second fix attempt that failed — and it rules out the obvious shape
+
+This entry used to propose re-seeding with a history-free population rather
+than `encode_state_v1`, on the grounds that it carries the content without the
+tombstones. **That was tried on 2026-09-22 and took the gate from 3 failing
+chaos seeds to 87**, plus 5 in the single-account configuration that had been
+green.
+
+The reason is already written down elsewhere in the crate, in
+`adopt_squashed_document`: a rebuilt document "shares no Yjs history with its
+predecessor, so a merge would double content" — which is why a squash is
+*adopted*, replacing the local document, and never merged. The account-switch
+re-seed is an ordinary push, so the server merges it. A history-free rebuild
+pushed into a merge is therefore the one thing it must never be.
+
+So dropping the history requires the destination to REPLACE rather than merge,
+which means going through the epoch/squash mechanism rather than the pending
+queue — a much larger change than this entry previously implied. The remaining
+candidates:
+
+1. Re-seed through an epoch bump, so the destination adopts instead of merging.
+2. Put the account's workspace id into the document-id hash, so the two
+   accounts cannot address the same document at all. A format change: it needs
+   `storage-json/src/upgrade/`, a captured release fixture, and desktop and
+   mobile shipped together. Note this is *not* needed to stop a server-side
+   collision — `WORKSPACE_OBJECTS.idFromName(workspaceId)` already scopes every
+   document per account — it is only about making the structs stop aliasing.
+3. Scope the population clientID by account, which stops the structs aliasing
+   without moving any document. Fleet-visible via
+   `SCHEME_POPULATION_ENCODING_VERSION`, and the determinism is load-bearing
+   *within* an account, so first-population dedupe has to keep working. The principled alternative is to put the account's workspace
 id into the document-id hash so the two accounts can never address the same
 document — a format change needing `storage-json/src/upgrade/`, a captured
 fixture, and desktop+mobile shipped together.

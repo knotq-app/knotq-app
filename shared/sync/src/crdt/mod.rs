@@ -2242,12 +2242,16 @@ impl WorkspaceCrdtDocuments {
                 // 10204: a fresh joiner materializes 7 schemes instead of 8 and
                 // "Daily 2026-09-14" is simply absent).
                 let is_daily = workspace.daily_queue.values().any(|id| id == &entry.id);
+                let current_knows_daily = current.daily_queue.values().any(|id| id == &entry.id);
                 // Skipping an entry means the scheme does not exist in the
                 // result. That is right for an ordinary deferred scheme, whose
                 // plain file is the cheap fallback and is already visible — but
                 // a day this replica has no plain copy of has no fallback, so
                 // the only way to produce it is to decode the document.
-                if !visible && !is_daily && !hydrate_all_deferred {
+                if !visible
+                    && (!is_daily || current_knows_daily)
+                    && !hydrate_all_deferred
+                {
                     continue;
                 }
                 if visible && !is_daily && !hydrate_all_deferred {
