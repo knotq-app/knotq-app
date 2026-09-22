@@ -9,14 +9,9 @@ not sync-convergence bugs. Item 4 remains explicitly deferred undo-history work.
 
 **Where the release-depth gate stands (300 seeds x 200 steps per
 configuration).** The single-account configuration passes every seed. The chaos
-configuration fails four. In 140, 220 and 287 the device under test has itself
-signed into a second account (see 0i). 253 is different: its device 0 is
-installed on account 1 and never switches, and the line it loses has a random
-id that cannot alias across accounts — so the mechanism is single-account even
-though the scenario is not (other devices hop into account 1 during the run,
-and the single-account configuration does not reproduce it). 253 is written up
-under 0s below; its obvious fix took the gate from 5 failing seeds to 17 and
-was reverted.
+configuration fails three — 140, 220 and 287 — and in every one of them the
+device under test has itself signed into a second account (see 0i). **Every
+remaining failure at release depth is the account-switch exclusion.**
 
 Two findings worth not re-deriving: a Daily page bound in the index with no
 `nodes` entry is normal rather than corruption (clients rebuild it through
@@ -449,32 +444,35 @@ document — a format change needing `storage-json/src/upgrade/`, a captured
 fixture, and desktop+mobile shipped together.
 
 
-## 0s. A device's first successful sync can drop what it edited before it
+## 0s. [FIXED] A device's first successful sync dropped what it edited before it
 
-**Open.** Production fuzz chaos seed 253: device 0 inserts a line at step 19,
-every sync attempt until step 148 fails, and that first successful sync loses
-the line. Device 0 never switches accounts, and the lost line's id is a random
-v4 — not one of the derived ids that alias across accounts — so this is not
-0i wearing a different hat, even though the seed runs in the two-account
-configuration. The line is in the device's own CRDT document right up to the sync,
-no remote update removes it, no adoption drops it, and the launch reconcile
-never touches it — all four now report, so all four were ruled out by reading
-the log rather than by inference.
+**Fixed 2026-09-22.** Production fuzz chaos seed 253: device 0 inserted a line
+at step 19, every sync attempt until step 148 failed, and that first successful
+sync lost the line. Device 0 never switches accounts and the lost id is a
+random v4 — not one of the derived ids that alias across accounts — so this was
+never 0i wearing a different hat, even though the seed runs in the two-account
+configuration.
 
-The cause is the `document_cursors.is_empty()` guard in
+The cause was the `document_cursors.is_empty()` guard in
 `queue_local_only_documents_before_pull`. A device that has never synced with
-this server skips the whole pre-pull repair, so content only it holds is never
-written into the documents before the pull merges the server's copy over them;
-the post-pull bootstrap cannot recover it either, because it only repopulates
+this server skipped the whole pre-pull repair, so content only it held was
+never written into the documents before the pull merged the server's copy over
+them. The post-pull bootstrap could not recover it either: it only repopulates
 documents that are still schema-less, and by then the pull has populated them.
 
-**The obvious fix does not work.** The guard's stated reason is about the
-workspace *index* — writing this device's index before the account's is pulled
-costs the account everything (`offline_device_join.rs`). Letting only the
-content half run took the release-depth gate from 5 failing seeds to 17: a
-device whose plain files still hold starter content the account has since
-deleted resurrects it. A real fix has to tell unpublished *user* content from
-unpublished *starter* content, which nothing in the repair currently can.
+The guard had two real reasons behind it, and only one of them is about the
+index. Writing this device's workspace index before the account's is pulled
+costs the account everything (`offline_device_join.rs`). But most of a
+never-synced device's plain *content* is not its own either — a fresh install's
+starter lines are the same lines the account may have deleted long ago, and
+re-asserting them resurrects them. Letting the whole content half run took the
+gate from 5 failing seeds to **17** for exactly that reason.
+
+Both concerns are satisfied at once by asking which lines the device can prove
+it authored. A starter line's id is fixed and derived, byte-identical on every
+install; a line someone typed gets a random v4 id that exists nowhere else by
+construction. So a first sync now repairs only v4 ids, and leaves the index —
+and every derived id, including a carryover's archived row — alone.
 
 ## 0i-b. A device that has switched accounts still breaks the projection law
 

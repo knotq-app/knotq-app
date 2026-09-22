@@ -1058,9 +1058,28 @@ fn queue_local_only_documents_before_pull(
     // seed 253 — a line lost because this repair is skipped — needs a fix that
     // can tell unpublished user content from unpublished starter content, which
     // this cannot.
-    if local_state.document_cursors.is_empty() {
-        trace_pre_pull_repair("skipped: no document cursors (never synced with this server)");
-        return None;
+    // A device with no cursors has never synced with this server. Its workspace
+    // INDEX must not be written before the account's is pulled — that index is
+    // its own, local root and all, and writing it first costs the account
+    // everything (`offline_device_join.rs`) — and most of its plain content is
+    // not really its own either: a fresh install's starter lines are the same
+    // lines the account may have deleted long ago, and re-asserting them here
+    // resurrects them.
+    //
+    // Skipping the whole repair for that reason took scheme content with it,
+    // and a line this device actually authored is then dropped by the pull's
+    // materialization with nothing able to bring it back (chaos seed 253:
+    // device 0 inserts a line at step 19, every sync until step 148 fails, and
+    // that first successful sync loses it).
+    //
+    // Both can be true at once. A starter line's id is FIXED — derived, so
+    // byte-identical on every install — while a line someone typed gets a
+    // random v4 id that exists nowhere else by construction. So on a first
+    // sync, repair only the ids that cannot be starter content, and leave the
+    // index alone entirely.
+    let first_sync_with_this_server = local_state.document_cursors.is_empty();
+    if first_sync_with_this_server {
+        trace_pre_pull_repair("first sync: index repair suppressed, authored lines only");
     }
     let known_documents = crdt_docs.known_document_ids();
     let mut missing_schemes = workspace
@@ -1073,16 +1092,23 @@ fn queue_local_only_documents_before_pull(
             .then_some((*scheme_id, metadata.id))
         })
         .collect::<Vec<_>>();
-    let workspace_index_mismatch = match crdt_docs.workspace_folder_records_match(workspace) {
-        Ok(matches) => !matches,
-        Err(error) => {
-            // An unreadable comparison is not permission to discard the plain
-            // workspace. Queue a reconciliation; the normal CRDT validation
-            // will reject only the repair itself if the bytes are unusable.
-            eprintln!("knotq sync: could not compare plain and CRDT workspace indexes: {error:#}");
-            true
-        }
-    };
+    if first_sync_with_this_server {
+        missing_schemes.clear();
+    }
+    let workspace_index_mismatch = !first_sync_with_this_server
+        && match crdt_docs.workspace_folder_records_match(workspace) {
+            Ok(matches) => !matches,
+            Err(error) => {
+                // An unreadable comparison is not permission to discard the
+                // plain workspace. Queue a reconciliation; the normal CRDT
+                // validation will reject only the repair itself if the bytes
+                // are unusable.
+                eprintln!(
+                    "knotq sync: could not compare plain and CRDT workspace indexes: {error:#}"
+                );
+                true
+            }
+        };
     missing_schemes.sort_by_key(|(scheme_id, _)| *scheme_id);
 
     // The workspace index can be perfectly current while a plain scheme file
@@ -1141,14 +1167,30 @@ fn queue_local_only_documents_before_pull(
             .filter(|item| !local_ids.contains(&item.id.to_string()))
             .cloned()
             .collect();
-        if !missing_from_plain.is_empty() {
+        if !missing_from_plain.is_empty() && !first_sync_with_this_server {
             // Preserve the complete raw scheme snapshot while reconciling. The
             // materialized workspace may intentionally omit a duplicate copy,
             // but replace_scheme would otherwise turn that omission into a
             // destructive tombstone.
             crdt_only_items.insert(*scheme_id, crdt_items);
         }
-        if !ahead.is_empty() || !missing_from_plain.is_empty() {
+        // On a first sync, only lines this device can prove it authored: a
+        // random (v4) id. A derived id is generated — starter content, a
+        // carryover's archived row — and may be something the account deleted
+        // before this device ever reached it.
+        let ahead: HashSet<String> = if first_sync_with_this_server {
+            ahead
+                .into_iter()
+                .filter(|item| {
+                    item.parse::<knotq_model::ItemId>()
+                        .is_ok_and(|id| id.0.get_version_num() == 4)
+                })
+                .collect()
+        } else {
+            ahead
+        };
+        let carries_crdt_only = !missing_from_plain.is_empty() && !first_sync_with_this_server;
+        if !ahead.is_empty() || carries_crdt_only {
             local_ahead_items.insert(*scheme_id, ahead);
         }
     }
