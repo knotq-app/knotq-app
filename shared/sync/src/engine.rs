@@ -998,6 +998,14 @@ struct LocalPrePullRepair {
     local_ahead_items: HashMap<knotq_model::SchemeId, HashSet<String>>,
 }
 
+/// Say what the pre-pull repair decided. Behind an env var: it runs on every
+/// sync and the common answer is "nothing to repair".
+fn trace_pre_pull_repair(what: &str) {
+    if std::env::var("KNOTQ_TRACE_PRE_PULL_REPAIR").is_ok() {
+        eprintln!("sync: pre-pull local-only repair {what}");
+    }
+}
+
 fn queue_local_only_documents_before_pull(
     crdt_docs: &mut WorkspaceCrdtDocuments,
     local_state: &mut LocalSyncState,
@@ -1008,6 +1016,7 @@ fn queue_local_only_documents_before_pull(
     // old CRDT belongs to the source account and must not be pushed into the
     // destination account before its workspace index has been adopted.
     if local_state.needs_full_reseed() {
+        trace_pre_pull_repair("skipped: account switch pending a full re-seed");
         return None;
     }
     // An unseeded workspace document has no history to merge with, so it must
@@ -1020,6 +1029,7 @@ fn queue_local_only_documents_before_pull(
     // and an unseeded CRDT (`fresh_install_join.rs`). The repair below is for a
     // seeded CRDT that fell behind the plain files.
     if !crdt_docs.workspace_is_seeded() {
+        trace_pre_pull_repair("skipped: workspace document not seeded yet");
         return None;
     }
     // The repair is for a CRDT that already synced with this server and then
@@ -1031,7 +1041,25 @@ fn queue_local_only_documents_before_pull(
     // workspace index — local root, local identity — over the account's, and the
     // account loses everything (`offline_device_join.rs`). A first sign-in does
     // not trip `needs_full_reseed`: there is no previous account to reset from.
+    // The repair is for a CRDT that already synced with this server and then
+    // fell behind the plain files. A device that has never synced with this
+    // server — no pull or push cursor at all — has nothing for its plain files to
+    // be ahead of: its offline history reaches the account through the
+    // re-identified workspace snapshot and the post-pull bootstrap, like any
+    // first sign-in. Running the repair first instead writes the pre-sign-in
+    // workspace index — local root, local identity — over the account's, and the
+    // account loses everything (`offline_device_join.rs`). A first sign-in does
+    // not trip `needs_full_reseed`: there is no previous account to reset from.
+    //
+    // Letting the CONTENT half run here while suppressing only the index was
+    // tried and took the release-depth gate from 5 failing seeds to 17: on a
+    // device whose plain files still hold starter content the account has since
+    // deleted, re-asserting that content before the pull resurrects it. Chaos
+    // seed 253 — a line lost because this repair is skipped — needs a fix that
+    // can tell unpublished user content from unpublished starter content, which
+    // this cannot.
     if local_state.document_cursors.is_empty() {
+        trace_pre_pull_repair("skipped: no document cursors (never synced with this server)");
         return None;
     }
     let known_documents = crdt_docs.known_document_ids();
@@ -1130,8 +1158,14 @@ fn queue_local_only_documents_before_pull(
         && !workspace_index_mismatch
         && content_mismatch_schemes.is_empty()
     {
+        trace_pre_pull_repair("nothing to repair");
         return None;
     }
+    trace_pre_pull_repair(&format!(
+        "repairing {} missing scheme doc(s), index_mismatch={workspace_index_mismatch}, {} scheme(s) with local-ahead content",
+        missing_schemes.len(),
+        content_mismatch_schemes.len()
+    ));
     // Only a repair that rewrites the workspace index replaces the index edits
     // queued before it (with a full snapshot, below). A repair of scheme
     // content alone leaves them queued: dropping them there discarded this

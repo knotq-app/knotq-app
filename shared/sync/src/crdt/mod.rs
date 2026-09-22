@@ -1270,6 +1270,33 @@ impl WorkspaceCrdtDocuments {
             _ => None,
         };
 
+        // Adoption REPLACES the local document, so anything this device holds
+        // that the adopted state does not is gone. The rescue above covers
+        // items this device has pending; anything else — a line durable in the
+        // local CRDT but never queued, because a crash took the pending queue
+        // with it — disappears with nothing to say so. Name it: this is the one
+        // place an adoption can cost content.
+        if let (Some(local), Ok(kept_items)) =
+            (self.schemes.get(&scheme_id), adopted.scheme_items())
+        {
+            if let Ok(held) = local.scheme_items() {
+                let kept: HashSet<knotq_model::ItemId> =
+                    kept_items.iter().map(|item| item.id).collect();
+                let dropped: Vec<String> = held
+                    .iter()
+                    .filter(|item| !kept.contains(&item.id))
+                    .map(|item| item.id.to_string())
+                    .collect();
+                if !dropped.is_empty() {
+                    eprintln!(
+                        "sync: adoption of {document} drops {} local item(s) the adopted state                          does not carry (rescued={}): {}",
+                        dropped.len(),
+                        rescue.is_some(),
+                        dropped.join(", ")
+                    );
+                }
+            }
+        }
         // An adopted document replaces whatever we held — including a deferred
         // entry for the same scheme (a squash of an off-window daily). Drop it
         // so `document_states` does not later re-emit the pre-squash bytes.
@@ -1844,6 +1871,21 @@ impl WorkspaceCrdtDocuments {
             // lands on real history and the normal materialization path can
             // repair any stale scheme file before a later navigation.
             self.hydrate_deferred(scheme_id);
+            // Which live items this document held before the merge. A merge can
+            // only remove one via a delete set, so a removal here is a remote
+            // tombstone landing on local content — the shape that costs a line
+            // nobody deleted. Behind an env var: it materializes the document
+            // twice per update, which the keystroke path cannot afford.
+            let before_merge: Option<HashSet<knotq_model::ItemId>> =
+                std::env::var("KNOTQ_TRACE_MERGE_REMOVALS")
+                    .is_ok()
+                    .then(|| {
+                        self.schemes
+                            .get(&scheme_id)
+                            .and_then(|document| document.scheme_items().ok())
+                            .map(|items| items.iter().map(|item| item.id).collect())
+                            .unwrap_or_default()
+                    });
             // First sight of this content doc: create it from an empty base and adopt
             // the server's structs from the update below. A fresh identity (`None`) — not
             // the stable clientID — keeps it from reusing a `(clientID, clock)` the server
@@ -1862,6 +1904,28 @@ impl WorkspaceCrdtDocuments {
                     outcome.applied += 1;
                     touched_schemes.insert(scheme_id);
                     outcome.changed_documents.insert(update.document);
+                    if let Some(before_merge) = before_merge {
+                        let after: HashSet<knotq_model::ItemId> = self
+                            .schemes
+                            .get(&scheme_id)
+                            .and_then(|document| document.scheme_items().ok())
+                            .map(|items| items.iter().map(|item| item.id).collect())
+                            .unwrap_or_default();
+                        let mut removed: Vec<String> = before_merge
+                            .difference(&after)
+                            .map(|item| item.to_string())
+                            .collect();
+                        if !removed.is_empty() {
+                            removed.sort();
+                            eprintln!(
+                                "sync: remote update {} to {} removed {} live item(s): {}",
+                                update.sequence,
+                                update.document,
+                                removed.len(),
+                                removed.join(", ")
+                            );
+                        }
+                    }
                 }
                 Ok(false) => {
                     // A byte-level no-op is usually an echo of this replica's own

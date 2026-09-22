@@ -388,6 +388,35 @@ impl WorkspaceStore {
         if recovered == self.workspace {
             return false;
         }
+        // Reconciling takes the documents as the truth, so anything the plain
+        // workspace held that they do not is dropped here. That is the point
+        // when the two halves have merely drifted — but it is also how a crash
+        // that saved `workspace.json` and not the CRDT states turns a line into
+        // nothing. Name what goes, so a later "an item vanished" is attributable
+        // to this step rather than to the sync three steps after it.
+        {
+            let kept: std::collections::HashSet<knotq_model::ItemId> = recovered
+                .schemes
+                .values()
+                .flat_map(|scheme| scheme.items.iter().map(|item| item.id))
+                .collect();
+            let mut dropped: Vec<String> = self
+                .workspace
+                .schemes
+                .values()
+                .flat_map(|scheme| scheme.items.iter())
+                .filter(|item| !kept.contains(&item.id))
+                .map(|item| item.id.to_string())
+                .collect();
+            if !dropped.is_empty() {
+                dropped.sort();
+                eprintln!(
+                    "sync: launch reconcile drops {} item(s) the workspace held but its                      documents do not: {}",
+                    dropped.len(),
+                    dropped.join(", ")
+                );
+            }
+        }
         self.workspace = recovered;
         self.index_stale = true;
         self.dirty = WorkspaceDirtyState::all(&self.workspace);
