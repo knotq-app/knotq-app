@@ -9,19 +9,14 @@ not sync-convergence bugs. Item 4 remains explicitly deferred undo-history work.
 
 **Where the release-depth gate stands (300 seeds x 200 steps per
 configuration).** The single-account configuration passes every seed. The chaos
-configuration fails three — 140, 220 and 287 — and in every one of them the
-device under test has itself signed into a second account (see 0i). **Every
-remaining failure at release depth is the account-switch exclusion.**
+configuration fails **one: seed 140**, written up as 0t below. 220 and 287 —
+the account-switch deletion — are fixed.
 
-> **RELEASE BLOCKER — these three must be tackled.** `release.yml` gates every
+> **RELEASE BLOCKER — seed 140 is the last one.** `release.yml` gates every
 > build job on `needs: [sync-stress, mobile-accounts]`, and the sync-stress job
-> runs this fuzzer at 300 seeds, so while 140, 220 and 287 fail **no `v*` tag
-> can produce an artifact**. That is the gate working as designed; it is not to
-> be skipped, narrowed or marked `continue-on-error` to get a build out. The
-> work is 0i: an account switch carries the source account's history into the
-> destination account's identically-shaped documents. 140 is the same switch
-> seen from the other side — a scheme created while a post-switch sync is in
-> flight does not survive the next one.
+> runs this fuzzer at 300 seeds, so while 140 fails **no `v*` tag can produce an
+> artifact**. That is the gate working as designed; it is not to be skipped,
+> narrowed or marked `continue-on-error` to get a build out.
 
 Two findings worth not re-deriving: a Daily page bound in the index with no
 `nodes` entry is normal rather than corruption (clients rebuild it through
@@ -511,6 +506,33 @@ it authored. A starter line's id is fixed and derived, byte-identical on every
 install; a line someone typed gets a random v4 id that exists nowhere else by
 construction. So a first sync now repairs only v4 ids, and leaves the index —
 and every derived id, including a carryover's archived row — alone.
+
+## 0t. An edit made while a post-switch sync is in flight does not survive
+
+**Open — the last failing seed at release depth.** Production fuzz chaos seed
+140. Device 0 signs into account 0 at step 35. At step 42 its sync fails
+("connection dropped"), and *during* that run the fuzzer applies
+`CreateScheme { folder: 0b1b17de, name: "scheme 7911" }` — into a folder that
+the same run's index write has just removed, because that folder belongs to the
+account being left. The next sync, at step 43, loses the scheme.
+
+What is known, from the diagnostics rather than by inference:
+
+- The index write at step 43 removes nothing, so the scheme's node entry was
+  never in this device's index document to be removed.
+- The projection law does **not** fire at step 43. That is the useful fact: the
+  plain workspace and the documents still agree afterwards, so the scheme is
+  gone from the CRDT too, not merely rewritten out of the visible half. A fix
+  that only re-homes the scheme in the plain workspace will not hold.
+- `normalize_one_level_folders` re-homes a scheme whose parent folder has gone
+  (0a), so the parentless-scheme path is already handled; this is upstream of
+  that.
+
+Still to establish: whether the scheme's create ever reaches the CRDT index
+document at all given it is authored between the run's snapshot and its
+landing, or whether it reaches it and is then dropped by the post-pull
+materialization. The next step is a diagnostic in the landing that reports
+schemes present in the store's workspace and absent from the materialized one.
 
 ## 0i-b. A device that has switched accounts still breaks the projection law
 
