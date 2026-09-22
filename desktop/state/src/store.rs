@@ -1611,6 +1611,33 @@ impl WorkspaceStore {
             // from the documents. Restores are rare, so paying a materialization
             // here costs nothing measurable — unlike doing it per keystroke.
             self.reconcile_item_placements();
+        } else {
+            // A line that moves between schemes can land in a document that
+            // already holds a copy of it. A Daily Queue carryover is the way
+            // this happens without anyone dragging anything: the displaced
+            // archive id is derived from `(row, source date)`, so a device that
+            // rolls a day another device has already rolled mints the SAME id
+            // in its own source day while the merged documents already carry it
+            // in the destination day. The item is then live in two documents,
+            // materialization hands it to the lower scheme id, and the plain
+            // workspace — which just placed it here — disagrees with its own
+            // documents (single-account fuzz seed 10297).
+            //
+            // Deliberately narrower than "reconcile after every cross-scheme
+            // move", which was tried and wedged chaos seeds 6 and 12: an
+            // ordinary move deletes the source copy in the same command, so no
+            // duplicate exists, and reconciling anyway re-materialized the move
+            // away from where the user put it. Ask the documents first and
+            // reconcile only when a moved id really is in more than one of
+            // them.
+            let suspect = items_that_may_already_live_elsewhere(&restored_probe);
+            if !suspect.is_empty()
+                && suspect
+                    .iter()
+                    .any(|item| self.documents_holding_item(*item).len() > 1)
+            {
+                self.reconcile_item_placements();
+            }
         }
         Ok(receipt)
     }
@@ -1759,6 +1786,51 @@ fn crdt_change_set_for_command(command: &Command) -> WorkspaceCrdtChangeSet {
         schemes: documents.schemes.into_iter().collect(),
         deleted_items,
     }
+}
+
+/// Item ids this command inserts that could already be live in another
+/// document, so the insert would make one line exist in two schemes at once.
+///
+/// Two shapes qualify, and a plain new line is neither:
+///
+/// - **A derived id.** A freshly typed line gets a random (v4) id that exists
+///   nowhere else by construction. A *derived* (v8) id is a pure function of
+///   something else — a Daily Queue carryover's displaced row is
+///   `(row, source date)` — so a device rolling a day that another device has
+///   already rolled mints exactly the same id the merged documents already
+///   carry in the destination day.
+/// - **A cross-scheme move**, where the same id is deleted from one scheme and
+///   inserted into another. An id deleted and re-inserted in the SAME scheme (a
+///   batch swapping a placeholder for the carried row) is not a move.
+///
+/// This is only a filter for asking the documents; the caller still checks
+/// whether the id really is in more than one of them before reconciling.
+fn items_that_may_already_live_elsewhere(command: &Command) -> Vec<knotq_model::ItemId> {
+    let mut deleted: HashMap<SchemeId, HashSet<String>> = HashMap::new();
+    let mut inserted: HashMap<SchemeId, HashSet<String>> = HashMap::new();
+    collect_inserted_item_ids(command, &mut inserted);
+    if inserted.is_empty() {
+        return Vec::new();
+    }
+    collect_deleted_item_ids(command, &mut deleted);
+    let mut suspect: Vec<knotq_model::ItemId> = Vec::new();
+    for (destination, items) in &inserted {
+        for item in items {
+            let Ok(id) = item.parse::<knotq_model::ItemId>() else {
+                continue;
+            };
+            let derived = id.0.get_version_num() == 8;
+            let moved = deleted
+                .iter()
+                .any(|(source, removed)| source != destination && removed.contains(item));
+            if derived || moved {
+                suspect.push(id);
+            }
+        }
+    }
+    suspect.sort();
+    suspect.dedup();
+    suspect
 }
 
 fn collect_deleted_item_ids(
