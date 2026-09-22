@@ -2248,10 +2248,7 @@ impl WorkspaceCrdtDocuments {
                 // plain file is the cheap fallback and is already visible — but
                 // a day this replica has no plain copy of has no fallback, so
                 // the only way to produce it is to decode the document.
-                if !visible
-                    && (!is_daily || current_knows_daily)
-                    && !hydrate_all_deferred
-                {
+                if !visible && (!is_daily || current_knows_daily) && !hydrate_all_deferred {
                     continue;
                 }
                 if visible && !is_daily && !hydrate_all_deferred {

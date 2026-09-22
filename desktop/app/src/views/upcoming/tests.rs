@@ -964,26 +964,36 @@ fn phase_two_cost_does_not_scale_with_the_workspace() {
         started.elapsed() / RENDERS
     };
     // Alternated, so a machine that speeds up or slows down partway through
-    // biases both measurements the same way.
-    let mut plain_total = std::time::Duration::ZERO;
-    let mut padded_total = std::time::Duration::ZERO;
+    // biases both measurements the same way — and then the FASTEST of the three
+    // rounds on each side, not their sum. Alternation handles drift; it does
+    // not handle a single round being preempted, and summing lets one such
+    // round dominate the total and report an algorithmic regression that is not
+    // there (this failed during a `cargo test --workspace` run that shared the
+    // machine with an Android emulator, and passed alone on the same binary).
+    // Interference can only ever add time, so the smallest sample is the one
+    // least contaminated. Nothing is loosened: the ratio bound is unchanged,
+    // and an implementation that really walks the items is slower in every
+    // round including its best. Mirrors `fastest_of` in
+    // `knotq-state`'s `perf_budget.rs`, which documents the same reasoning.
+    let mut plain_rounds = Vec::with_capacity(3);
+    let mut padded_rounds = Vec::with_capacity(3);
     for _ in 0..3 {
-        plain_total += time(&plain);
-        padded_total += time(&padded);
+        plain_rounds.push(time(&plain));
+        padded_rounds.push(time(&padded));
     }
+    let plain_best = plain_rounds.into_iter().min().unwrap_or_default();
+    let padded_best = padded_rounds.into_iter().min().unwrap_or_default();
     println!(
-        "phase 2 for {row_count} rows: {:?} per render, {:?} with 10x the items",
-        plain_total / 3,
-        padded_total / 3
+        "phase 2 for {row_count} rows: {plain_best:?} per render,          {padded_best:?} with 10x the items"
     );
 
     assert!(
-        padded_total < plain_total * 2,
+        padded_best < plain_best * 2,
         "phase 2 took {:?} per render over {} items but {:?} over {} — it is \
          still walking the items, not the candidates",
-        plain_total / 3,
+        plain_best,
         plain_items.iter().map(Vec::len).sum::<usize>(),
-        padded_total / 3,
+        padded_best,
         padded_items.iter().map(Vec::len).sum::<usize>(),
     );
 }
