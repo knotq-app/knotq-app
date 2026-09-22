@@ -349,7 +349,59 @@ impl World {
             base,
             replica,
         ) {
-            Ok(outcome) => View::of(&outcome.workspace),
+            Ok(outcome) => {
+                // The audit is a brand-new device pulling the whole account, so
+                // a document it cannot apply is precisely a document the account
+                // has lost for every future joiner. Never silent.
+                for skipped in &outcome.skipped {
+                    eprintln!(
+                        "audit pull skipped {} ({:?}): {}",
+                        skipped.document, skipped.kind, skipped.reason
+                    );
+                }
+                if std::env::var("KNOTQ_DBG_AUDIT").is_ok() {
+                    let mut daily: Vec<String> = outcome
+                        .workspace
+                        .daily_queue
+                        .iter()
+                        .map(|(date, scheme)| {
+                            let document = outcome
+                                .workspace
+                                .scheme_sync
+                                .get(scheme)
+                                .map(|meta| meta.id.to_string())
+                                .unwrap_or_else(|| "<no scheme_sync>".to_string());
+                            let items = outcome
+                                .workspace
+                                .schemes
+                                .get(scheme)
+                                .map(|scheme| scheme.items.len())
+                                .map(|count| count.to_string())
+                                .unwrap_or_else(|| "<no scheme>".to_string());
+                            let archived = outcome.workspace.recently_deleted.contains(scheme);
+                            let origin = outcome
+                                .workspace
+                                .deleted_scheme_origins
+                                .get(scheme)
+                                .map(|origin| origin.position.to_string())
+                                .unwrap_or_else(|| "-".to_string());
+                            format!(
+                                "{date} -> {scheme} doc={document} items={items} archived={archived} origin={origin}"
+                            )
+                        })
+                        .collect();
+                    daily.sort();
+                    eprintln!(
+                        "AUDIT pulls={} docs={} applied={} schemes={} daily: {}",
+                        outcome.pull_requests,
+                        outcome.remote_documents_received,
+                        outcome.remote_updates_applied,
+                        outcome.workspace.schemes.len(),
+                        daily.join(" | ")
+                    );
+                }
+                View::of(&outcome.workspace)
+            }
             Err(err) => {
                 self.log(format!("server audit pull failed: {err:#}"));
                 self.server_views[account.index].clone()

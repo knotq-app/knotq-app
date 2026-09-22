@@ -52,6 +52,17 @@ impl InFlightSync {
     /// A one-line account of what the run did, for traces.
     pub(super) fn summary(&self) -> String {
         match &self.result {
+            Ok(result) if std::env::var("KNOTQ_DBG_PUSH").is_ok() => format!(
+                "pushed {:?}, applied {} remote update(s), {} pending left, local change {}",
+                result
+                    .pushed
+                    .iter()
+                    .map(|doc| format!("{doc:?}"))
+                    .collect::<Vec<_>>(),
+                result.remote_updates_applied,
+                result.remaining_pending,
+                result.local_workspace_changed,
+            ),
             Ok(result) => format!(
                 "pushed {} doc(s), applied {} remote update(s), {} pending left, local change {}",
                 result.pushed.len(),

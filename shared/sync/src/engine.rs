@@ -780,6 +780,11 @@ fn batch_pull_and_apply_with_integrity_documents_inner(
             }
             let count = cursor_reset_counts.entry(meta.id).or_insert(0);
             if *count >= MAX_CURSOR_RESETS_PER_DOCUMENT {
+                // Giving up on a document silently is how a page goes missing
+                // with nothing to show for it: the caller sees a clean pull, no
+                // skipped entry, and a workspace with one scheme fewer. Record
+                // it as a gap so it is reported like any other.
+                materialization_gaps.push((meta.id, meta.kind));
                 continue;
             }
             *count += 1;
