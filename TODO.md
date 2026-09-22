@@ -1,11 +1,26 @@
 # Known gaps
 
-**Updated 2026-09-20.** These notes track confirmed data-loss/convergence
+**Updated 2026-09-22.** These notes track confirmed data-loss/convergence
 bugs and deferred release work. Current deploy-blocking status: 0a, 0b, 0c, 0d,
 0e, 0f, 0g, 0h, 0j, 0k, 0l, 0m, 0n, 0o, 0p, 0q, 1, and 2 are fixed and
 verified; 0i (the account-switch exclusion) and 0r (one scheme colour, the last
 CI-depth failure) are open; 3 and 5 remain backend/ops gaps,
 not sync-convergence bugs. Item 4 remains explicitly deferred undo-history work.
+
+**Where the release-depth gate stands (300 seeds x 200 steps per
+configuration).** The single-account configuration passes every seed. The chaos
+configuration fails four: 140, 220 and 287 are multi-account (the device under
+test has signed into a second account — see 0i), and 253 is a device whose
+first *successful* sync happens long after it starts editing. 253's mechanism
+is known and written up under 0s below; its obvious fix took the gate from 5
+failing seeds to 17 and was reverted.
+
+Two findings worth not re-deriving: a Daily page bound in the index with no
+`nodes` entry is normal rather than corruption (clients rebuild it through
+`ensure_daily_queue`, so do not rebuild it in `materialize_workspace_inner` —
+that breaks the projection law from the other side), and a carryover's
+displaced item id is derived from `(row, source date)`, so two devices rolling
+the same day mint the same id and the line goes live in two documents.
 
 **Depth matters, and the gate at depth was already red.** The PR gate runs the
 production fuzzer at its default depth; at CI depth
@@ -430,6 +445,30 @@ id into the document-id hash so the two accounts can never address the same
 document — a format change needing `storage-json/src/upgrade/`, a captured
 fixture, and desktop+mobile shipped together.
 
+
+## 0s. A device's first successful sync can drop what it edited before it
+
+**Open.** Production fuzz chaos seed 253: device 0 inserts a line at step 19,
+every sync attempt until step 148 fails, and that first successful sync loses
+the line. The line is in the device's own CRDT document right up to the sync,
+no remote update removes it, no adoption drops it, and the launch reconcile
+never touches it — all four now report, so all four were ruled out by reading
+the log rather than by inference.
+
+The cause is the `document_cursors.is_empty()` guard in
+`queue_local_only_documents_before_pull`. A device that has never synced with
+this server skips the whole pre-pull repair, so content only it holds is never
+written into the documents before the pull merges the server's copy over them;
+the post-pull bootstrap cannot recover it either, because it only repopulates
+documents that are still schema-less, and by then the pull has populated them.
+
+**The obvious fix does not work.** The guard's stated reason is about the
+workspace *index* — writing this device's index before the account's is pulled
+costs the account everything (`offline_device_join.rs`). Letting only the
+content half run took the release-depth gate from 5 failing seeds to 17: a
+device whose plain files still hold starter content the account has since
+deleted resurrects it. A real fix has to tell unpublished *user* content from
+unpublished *starter* content, which nothing in the repair currently can.
 
 ## 0i-b. A device that has switched accounts still breaks the projection law
 
