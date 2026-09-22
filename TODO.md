@@ -528,11 +528,29 @@ What is known, from the diagnostics rather than by inference:
   (0a), so the parentless-scheme path is already handled; this is upstream of
   that.
 
-Still to establish: whether the scheme's create ever reaches the CRDT index
-document at all given it is authored between the run's snapshot and its
-landing, or whether it reaches it and is then dropped by the post-pull
-materialization. The next step is a diagnostic in the landing that reports
-schemes present in the store's workspace and absent from the materialized one.
+**Established since:** the scheme is in the plain workspace, it HAS a CRDT
+content document, and it is **absent from this device's workspace index
+document**. The pull materializes from the index, so it drops it — the new
+"the pull dropped N scheme(s) this device held" report names it directly. The
+index entry has not been written yet because the index write happens after the
+pull, from the pull's own result.
+
+`materialize_workspace_inner` already has the rescue for this shape —
+`retained_loaded_schemes`, which keeps a scheme in `current.schemes` that the
+merged `nodes` map has lost — but it requires the MERGED index to still carry
+the scheme's `scheme_sync` binding, and here the index has never heard of the
+scheme at all.
+
+**Do not simply fall back to `current.scheme_sync` there.** Tried: it took the
+gate from 1 failing seed to 32 (27 chaos, 5 single-account). `current` is the
+pre-pull workspace, so it still lists schemes the account deleted remotely, and
+retaining on its binding resurrects every one of them.
+
+The distinction the rescue needs is "this device created it and has never
+published it", which is a server-sequence question — `pull.remote_latest` in
+the desktop snapshot has the answer, `materialize_workspace_inner` does not. So
+the narrow fix probably belongs in `sync_snapshot` after the pull, re-adding
+only dropped schemes whose documents the server has never seen.
 
 ## 0i-b. A device that has switched accounts still breaks the projection law
 

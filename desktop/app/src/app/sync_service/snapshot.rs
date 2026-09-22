@@ -238,6 +238,39 @@ pub(super) fn sync_snapshot_in(
     // document created on another device). Applying it materializes the merged
     // workspace; the engine applies the workspace index before scheme content so
     // newly discovered schemes route correctly.
+    // What this device held going in. A pull merges; it should not subtract, so
+    // a scheme here that is missing afterwards is one the merge could not
+    // account for — the shape that costs a whole page and leaves no removal in
+    // any index write to explain it.
+    let schemes_before_pull: std::collections::HashSet<knotq_model::SchemeId> =
+        workspace.schemes.keys().copied().collect();
+    {
+        // A scheme the plain workspace has whose content document this replica
+        // does not hold at all. The pull is about to materialize from the
+        // documents, so such a scheme cannot survive it — and on a device that
+        // has switched accounts the projection law is excused (TODO 0i-b), so
+        // nothing upstream reports the gap either.
+        let known = crdt_docs.known_document_ids();
+        let mut documentless: Vec<String> = workspace
+            .schemes
+            .keys()
+            .filter(|id| {
+                workspace
+                    .scheme_sync
+                    .get(id)
+                    .is_none_or(|meta| !known.contains(&meta.id))
+            })
+            .map(|id| id.to_string())
+            .collect();
+        if !documentless.is_empty() {
+            documentless.sort();
+            eprintln!(
+                "sync: {} scheme(s) have no CRDT document going into the pull: {}",
+                documentless.len(),
+                documentless.join(", ")
+            );
+        }
+    }
     let pull = batch_pull_and_apply(
         transport,
         &mut crdt_docs,
@@ -251,6 +284,21 @@ pub(super) fn sync_snapshot_in(
     let pulled_changes: Vec<knotq_model::DocumentId> =
         pull.changed_documents.iter().copied().collect();
     let mut workspace = pull.workspace;
+    {
+        let mut dropped: Vec<String> = schemes_before_pull
+            .iter()
+            .filter(|id| !workspace.schemes.contains_key(id))
+            .map(|id| id.to_string())
+            .collect();
+        if !dropped.is_empty() {
+            dropped.sort();
+            eprintln!(
+                "sync: the pull dropped {} scheme(s) this device held: {}",
+                dropped.len(),
+                dropped.join(", ")
+            );
+        }
+    }
     let remote_updates_applied = pull.remote_updates_applied;
     let locally_repaired_documents = pull.locally_repaired_documents;
     let (repaired_identity, repaired_identity_changed) =
