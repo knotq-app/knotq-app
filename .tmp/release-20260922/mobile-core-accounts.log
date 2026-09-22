@@ -1,0 +1,116 @@
+    Blocking waiting for file lock on package cache
+    Blocking waiting for file lock on package cache
+    Blocking waiting for file lock on package cache
+   Compiling knotq-sync v0.1.0 (/Users/manubhat/home/businesses/nutq2/app/shared/sync)
+   Compiling knotq-state v0.1.0 (/Users/manubhat/home/businesses/nutq2/app/desktop/state)
+   Compiling knotq-storage-json v0.1.0 (/Users/manubhat/home/businesses/nutq2/app/desktop/storage-json)
+   Compiling knotq-mobile-core v0.1.0 (/Users/manubhat/home/businesses/nutq2/app/mobile/core)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 11.68s
+     Running unittests src/lib.rs (target/debug/deps/knotq_mobile_core-c4aa923acbce843f)
+
+running 77 tests
+test media_sync::sync_api_base_tests::https_is_accepted_http_loopback_only ... ok
+test media_sync::sync_api_base_tests::api_base_rejects_ambiguous_or_credentialed_urls ... ok
+test media_sync::sync_api_base_tests::bounded_json_reader_enforces_response_limit ... ok
+test media_sync::sync_api_base_tests::bounded_json_reader_accepts_gzip_without_content_encoding_header ... ok
+test media_sync::sync_api_base_tests::mobile_media_assets_include_images_inside_table_cells ... ok
+test media_sync::sync_api_base_tests::mobile_media_assets_use_scheme_sync_document_ids ... ok
+test parsing::tests::custom_theme_modes_round_trip ... ok
+test parsing::tests::daily_history_normalization_is_bounded_for_extreme_inputs ... ok
+test media_sync::sync_api_base_tests::media_asset_filter_scopes_upload_discovery_to_changed_documents ... ok
+test media_sync::push_http_error_tests::push_4xx_content_rejection_still_uses_push_rejected ... ok
+test media_sync::push_http_error_tests::push_426_is_not_push_rejected ... ok
+test parsing::tests::rfc3339_offsets_describe_one_stable_instant ... ok
+test parsing::tests::malformed_dates_never_fall_back_to_a_different_explicit_date ... ok
+test parsing::tests::local_midnight_round_trips_across_dst_boundaries ... ok
+test media_sync::sync_api_base_tests::zero_byte_mobile_media_file_is_downloaded_again ... ok
+test media_sync::sync_api_base_tests::oversized_media_upload_is_skipped_not_wedged ... ok
+test tests::bootstrap_snapshot_supersedes_pending_delta_for_new_remote_document ... ok
+test tests::bootstrap_drops_orphaned_pending_delta_without_remote_base ... ok
+test media_sync::sync_api_base_tests::failed_media_download_is_skipped_not_wedged ... ok
+test media_sync::sync_api_base_tests::failed_media_upload_is_skipped_not_wedged ... ok
+test tests::cold_start_pull_merges_remote_content_with_no_concurrent_edit ... ok
+test tests::cold_start_pull_is_only_offered_before_the_first_ever_sync ... ok
+test tests::failed_sync_does_not_throttle_the_next_retry ... ok
+test tests::idle_remote_syncs_are_coalesced_but_pending_edits_bypass_the_throttle ... ok
+test tests::mobile_two_device_convergence_over_real_websocket ... ok
+test tests::cached_index_is_invalidated_by_a_local_write ... ok
+test tests::push_registration_environment_change_forces_reregistration ... ok
+test tests::new_daily_queue_is_empty ... ok
+test tests::daily_add_always_targets_today_not_selected_snapshot_date ... ok
+test tests::stderr_capture_rotation_keeps_log_bounded ... ok
+test tests::startup_integrity_proof_is_reserved_for_interrupted_syncs ... ok
+test tests::mobile_core_flow_creates_edits_and_searches ... ok
+test tests::a_notification_action_reaches_the_server_and_flags_the_offline_peer_wake ... ok
+test tests::completing_a_past_event_flags_background_refresh_then_clears_it_after_push ... ok
+test tests::cold_start_pull_preserves_a_concurrent_local_edit ... ok
+test tests_calendar::google_calendar_full_sync_updates_an_event_without_minting_a_new_item ... ok
+test tests::completing_an_overdue_assignment_keeps_it_on_the_upcoming_panel ... ok
+test tests_calendar::google_calendar_sync_deletes_duplicate_imported_schemes_after_first ... ok
+test tests_calendar::google_calendar_import_restores_an_archived_calendar_instead_of_duplicating_it ... ok
+test tests_calendar::calendar_snapshot_groups_occurrences_by_local_day ... ok
+test tests::replace_scheme_items_preserves_existing_metadata ... ok
+test tests_daily::daily_queue_loads_old_entries_on_demand ... ok
+test tests_daily::historical_daily_load_refreshes_search_index_without_decoding_all_history ... ok
+test tests_archive::restoring_a_nested_scheme_lifts_it_to_root_and_out_of_archive ... ok
+test tests_more::a_grant_without_calendar_access_is_reported_not_stored ... ok
+test tests_archive::restoring_a_nested_folder_lifts_its_subtree_to_root ... ok
+test tests_more::lock_recovers_after_a_poisoning_panic ... ok
+test tests_daily::lazy_daily_remote_update_survives_save_restart_and_caught_up_pull ... FAILED
+test tests_daily::cold_restore_and_caught_up_pull_scale_with_visible_dailies_not_history ... FAILED
+test tests_archive::archive_keeps_folder_hierarchy_and_restores_and_purges ... ok
+test tests_more::mobile_upcoming_excludes_items_beyond_shared_horizon ... ok
+test tests_more::mobile_recurring_reminders_keep_overdue_but_only_next_upcoming ... ok
+test tests_more::delivered_notifications_to_clear_targets_expired_events_and_completed_items ... ok
+test tests_more::mobile_upcoming_only_shows_next_recurring_occurrence ... ok
+test tests_more::pending_event_notifications_include_end_at ... ok
+test tests_more::move_item_to_scheme_transfers_item_preserving_identity ... ok
+test tests_more::platform_identity_accounts_never_refresh_through_the_oauth_endpoint ... ok
+test tests_more::notification_defaults_and_item_override_roundtrip ... ok
+test tests_more::pending_notifications_use_stable_mobile_ids_and_actions ... ok
+test tests_daily::seeded_lazy_daily_lifecycle_fuzz_converges_before_navigation ... FAILED
+test tests_more::reopening_an_unchanged_workspace_does_not_rewrite_it ... ok
+test tests_more::recurring_event_delete_this_event_adds_exception_not_delete_item ... ok
+test tests_more::recurring_event_edit_this_event_uses_desktop_scoped_commit ... ok
+test tests_more::upcoming_display_settings_reject_out_of_range_values ... ok
+test tests_notifications::command_requires_background_refresh_covers_completion_and_schedule_edits ... ok
+test tests_notifications::notification_schedule_cache_only_invalidates_for_scheduled_item_changes ... ok
+test ws_sync::tests::mobile_websocket_timeout_is_bounded ... ok
+test ws_sync::tests::ws_push_content_rejection_still_uses_push_rejected ... ok
+test ws_sync::tests::ws_push_protocol_outdated_is_not_push_rejected ... ok
+test ws_sync::tests::ws_push_unauthorized_is_not_a_content_rejection ... ok
+test tests_more::mobile_tables_are_visible_editable_and_preserved_by_document_saves ... ok
+test tests_more::replace_scheme_items_applies_rich_metadata_for_new_items ... ok
+test tests_more::upcoming_display_settings_persist_and_apply_each_kind_horizon ... ok
+test tests_more::replace_scheme_items_clears_calendar_metadata_for_plain_text ... ok
+test tests_more::notification_snooze_actions_reschedule_visible_ios_options ... ok
+test tests_daily::seeded_disk_fault_fuzz_recovers_lazy_daily_parser_wedges ... ok
+test tests::two_device_lazy_daily_lifecycle_fuzz_converges ... ok
+
+failures:
+
+---- tests_daily::lazy_daily_remote_update_survives_save_restart_and_caught_up_pull stdout ----
+
+thread 'tests_daily::lazy_daily_remote_update_survives_save_restart_and_caught_up_pull' (11316191) panicked at core/src/tests_daily.rs:513:5:
+assertion failed: !bootstrap_pull.workspace.schemes.contains_key(&daily_id)
+
+---- tests_daily::cold_restore_and_caught_up_pull_scale_with_visible_dailies_not_history stdout ----
+
+thread 'tests_daily::cold_restore_and_caught_up_pull_scale_with_visible_dailies_not_history' (11316178) panicked at core/src/tests_daily.rs:206:5:
+a caught-up pull eagerly materialized an off-window daily
+
+---- tests_daily::seeded_lazy_daily_lifecycle_fuzz_converges_before_navigation stdout ----
+knotq: daily queue 2026-07-14 file unreadable (read daily queue scheme for 2026-07-14: unexpected EOF inside <item>); scheduled CRDT-backed recovery for 6e8e9730-8d10-8bc4-9a2d-00025a613edc
+
+thread 'tests_daily::seeded_lazy_daily_lifecycle_fuzz_converges_before_navigation' (11316222) panicked at core/src/tests_daily.rs:1112:29:
+seed 0 step 12: caught-up pull eagerly materialized off-window daily 2026-11-01
+
+
+failures:
+    tests_daily::cold_restore_and_caught_up_pull_scale_with_visible_dailies_not_history
+    tests_daily::lazy_daily_remote_update_survives_save_restart_and_caught_up_pull
+    tests_daily::seeded_lazy_daily_lifecycle_fuzz_converges_before_navigation
+
+test result: FAILED. 74 passed; 3 failed; 0 ignored; 0 measured; 0 filtered out; finished in 52.33s
+
+error: test failed, to rerun pass `-p knotq-mobile-core --lib`

@@ -2059,6 +2059,23 @@ impl WorkspaceCrdtDocuments {
     /// Diagnostic: when the visible workspace and the documents disagree about
     /// where a line lives, this says whether the cause is a duplicate (two
     /// entries) or a plain mismatch (one entry, in the wrong place).
+    /// This replica's items for `scheme`, from a live document or a deferred
+    /// one, or `None` when it holds neither.
+    ///
+    /// The one way to rebuild a page the workspace index binds but does not
+    /// list as a node — which is how a Daily page reaches a device that has not
+    /// brought that day into being yet (see `ensure_daily_queue` in the desktop
+    /// state layer, which does exactly this before creating anything).
+    pub fn materialized_scheme_items(&self, scheme: SchemeId) -> Option<Vec<Item>> {
+        if let Some(document) = self.schemes.get(&scheme) {
+            return document.scheme_items().ok();
+        }
+        self.deferred
+            .get(&scheme)
+            .and_then(|deferred| deferred_live_document(deferred).ok())
+            .and_then(|document| document.scheme_items().ok())
+    }
+
     pub fn documents_holding_item(&self, item: knotq_model::ItemId) -> Vec<SchemeId> {
         let mut holders: Vec<SchemeId> = self
             .schemes
@@ -2215,10 +2232,24 @@ impl WorkspaceCrdtDocuments {
                 // explicitly asks for its CRDT bytes. This keeps an unrelated
                 // remote update from decoding every untouched scheme.
                 let visible = current.schemes.contains_key(&entry.id);
-                if !visible && !hydrate_all_deferred {
+                // Against the INDEX being materialized, not `current`. A device
+                // that does not already hold the day — a fresh join, or the
+                // fuzzer's server audit — has an empty `current.daily_queue`,
+                // so every Daily page read as an ordinary scheme and was
+                // skipped by the `!visible` guard below. The day then did not
+                // exist for that device at all, even though the index bound it
+                // and its document was right there (single-account fuzz seed
+                // 10204: a fresh joiner materializes 7 schemes instead of 8 and
+                // "Daily 2026-09-14" is simply absent).
+                let is_daily = workspace.daily_queue.values().any(|id| id == &entry.id);
+                // Skipping an entry means the scheme does not exist in the
+                // result. That is right for an ordinary deferred scheme, whose
+                // plain file is the cheap fallback and is already visible — but
+                // a day this replica has no plain copy of has no fallback, so
+                // the only way to produce it is to decode the document.
+                if !visible && !is_daily && !hydrate_all_deferred {
                     continue;
                 }
-                let is_daily = current.daily_queue.values().any(|id| id == &entry.id);
                 if visible && !is_daily && !hydrate_all_deferred {
                     if let Some(scheme) = current.schemes.get(&entry.id) {
                         scheme.items.clone()
@@ -2259,6 +2290,48 @@ impl WorkspaceCrdtDocuments {
                     items,
                 },
             );
+        }
+
+        // A Daily page can be bound in the index — a `daily_queue` entry and a
+        // durable `scheme_sync` binding — with no entry in the merged `nodes`
+        // map, and then it materializes into nothing: the binding names it, its
+        // document is often sitting right here, and no map entry was removed,
+        // no update failed and nothing was logged. A replica that already holds
+        // the page recovers it just below from `current.schemes`; one that does
+        // not — a fresh join, or the fuzzer's server audit — had no path at all
+        // (single-account fuzz seed 10204: a fresh joiner materializes 7
+        // schemes instead of 8 and "Daily 2026-09-14" is gone for the account).
+        //
+        // Rebuilding the page here from the binding was tried and is NOT the
+        // fix: a day outside the loaded window is deliberately absent from the
+        // plain workspace, so rebuilding it puts a scheme in the materialized
+        // half that the visible half does not have, and the projection law
+        // breaks the other way (chaos 108, single-account 10214). The bug is
+        // upstream — a day should not reach the index with a binding and no
+        // node entry — so this reports and leaves the page alone.
+        {
+            let missing: Vec<String> = workspace
+                .daily_queue
+                .iter()
+                .filter(|(_, scheme)| !workspace.schemes.contains_key(scheme))
+                .map(|(date, scheme)| {
+                    let document = workspace
+                        .scheme_sync
+                        .get(scheme)
+                        .map(|meta| meta.id.to_string())
+                        .unwrap_or_else(|| "<unbound>".to_string());
+                    let held = self.schemes.contains_key(scheme);
+                    let deferred = self.deferred.contains_key(scheme);
+                    format!("{date} -> {scheme} doc={document} live={held} deferred={deferred}")
+                })
+                .collect();
+            if !missing.is_empty() {
+                eprintln!(
+                    "sync: {} daily binding(s) materialized no scheme: {}",
+                    missing.len(),
+                    missing.join(", ")
+                );
+            }
         }
 
         // A loaded scheme can be absent from the merged `nodes` map while its

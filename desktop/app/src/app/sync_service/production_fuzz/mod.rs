@@ -349,7 +349,48 @@ impl World {
             base,
             replica,
         ) {
-            Ok(outcome) => {
+            Ok(mut outcome) => {
+                // Bring each bound day into being, the way a real device does.
+                //
+                // A Daily page can be bound in the index — a `daily_queue`
+                // entry and a `scheme_sync` binding — with no entry in the
+                // merged `nodes` map, because a node entry is only ever written
+                // by a device that had the page materialized. Index
+                // materialization alone therefore does not produce the day, and
+                // this audit used to report it as content the account had lost
+                // (single-account seed 10204).
+                //
+                // A real device does not stop there: `ensure_daily_queue` (the
+                // one way a client brings a day into being) rebuilds a day the
+                // index binds but that is not in memory from its CRDT document
+                // before creating anything. Without this the audit is a
+                // *stricter* reader than any real client, and reports losses no
+                // user could see. Deliberately only for days the index already
+                // binds, and only from a document this replica actually holds —
+                // nothing is invented.
+                let unbuilt: Vec<(chrono::NaiveDate, knotq_model::SchemeId)> = outcome
+                    .workspace
+                    .daily_queue
+                    .iter()
+                    .filter(|(_, scheme)| !outcome.workspace.schemes.contains_key(scheme))
+                    .map(|(date, scheme)| (*date, *scheme))
+                    .collect();
+                for (date, scheme_id) in unbuilt {
+                    let Some(items) = crdt.materialized_scheme_items(scheme_id) else {
+                        continue;
+                    };
+                    outcome.workspace.schemes.insert(
+                        scheme_id,
+                        knotq_model::Scheme {
+                            id: scheme_id,
+                            name: knotq_model::daily_queue_scheme_name(date),
+                            color_index: knotq_model::DAILY_QUEUE_COLOR_INDEX,
+                            gsync: false,
+                            source: knotq_model::SchemeSource::default(),
+                            items,
+                        },
+                    );
+                }
                 // The audit is a brand-new device pulling the whole account, so
                 // a document it cannot apply is precisely a document the account
                 // has lost for every future joiner. Never silent.

@@ -1,0 +1,47 @@
+To honour the JVM settings for this build a single-use Daemon process will be forked. For more on this, please refer to https://docs.gradle.org/8.9/userguide/gradle_daemon.html#sec:disabling_the_daemon in the Gradle documentation.
+Daemon will be stopped at the end of the build 
+> Task :app:preBuild UP-TO-DATE
+> Task :app:preReleaseBuild UP-TO-DATE
+> Task :app:generateReleaseFeatureMetadata UP-TO-DATE
+> Task :app:buildKotlinToolingMetadata UP-TO-DATE
+> Task :app:checkReleaseDuplicateClasses UP-TO-DATE
+> Task :app:checkKotlinGradlePluginConfigurationErrors SKIPPED
+> Task :app:generateReleaseBuildConfig
+> Task :app:checkReleaseAarMetadata UP-TO-DATE
+> Task :app:generateReleaseResValues UP-TO-DATE
+> Task :app:processReleaseGoogleServices UP-TO-DATE
+> Task :app:mapReleaseSourceSetPaths UP-TO-DATE
+> Task :app:generateReleaseResources UP-TO-DATE
+> Task :app:mergeReleaseResources UP-TO-DATE
+> Task :app:packageReleaseResources UP-TO-DATE
+> Task :app:parseReleaseLocalResources UP-TO-DATE
+> Task :app:createReleaseCompatibleScreenManifests
+> Task :app:extractDeepLinksRelease UP-TO-DATE
+> Task :app:processReleaseMainManifest
+> Task :app:processReleaseManifest
+> Task :app:javaPreCompileRelease UP-TO-DATE
+> Task :app:mergeReleaseArtProfile UP-TO-DATE
+> Task :app:extractProguardFiles UP-TO-DATE
+> Task :app:mergeReleaseStartupProfile UP-TO-DATE
+> Task :app:processApplicationManifestReleaseForBundle
+> Task :app:extractReleaseVersionControlInfo UP-TO-DATE
+> Task :app:mergeReleaseShaders UP-TO-DATE
+> Task :app:compileReleaseShaders NO-SOURCE
+> Task :app:generateReleaseAssets UP-TO-DATE
+> Task :app:mergeReleaseAssets UP-TO-DATE
+
+> Task :app:buildRustRelease
+   Compiling knotq-sync v0.1.0 (/Users/manubhat/home/businesses/nutq2/app/shared/sync)
+   Compiling knotq-storage-json v0.1.0 (/Users/manubhat/home/businesses/nutq2/app/desktop/storage-json)
+   Compiling knotq-state v0.1.0 (/Users/manubhat/home/businesses/nutq2/app/desktop/state)
+   Compiling knotq-mobile-core v0.1.0 (/Users/manubhat/home/businesses/nutq2/app/mobile/core)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 15.97s
+     Running `/Users/manubhat/home/businesses/nutq2/app/mobile/target/debug/uniffi-bindgen generate /Users/manubhat/home/businesses/nutq2/app/mobile/core/src/knotq_mobile_core.udl --config /Users/manubhat/home/businesses/nutq2/app/mobile/core/uniffi.toml --language kotlin --out-dir /Users/manubhat/home/businesses/nutq2/app/mobile/android/app/src/main/kotlin --no-format`
+   Compiling knotq-sync v0.1.0 (/Users/manubhat/home/businesses/nutq2/app/shared/sync)
+   Compiling knotq-storage-json v0.1.0 (/Users/manubhat/home/businesses/nutq2/app/desktop/storage-json)
+   Compiling knotq-state v0.1.0 (/Users/manubhat/home/businesses/nutq2/app/desktop/state)
+
+> Task :app:processReleaseManifestForPackage
+
+> Task :app:buildRustRelease
+   Compiling knotq-mobile-core v0.1.0 (/Users/manubhat/home/businesses/nutq2/app/mobile/core)

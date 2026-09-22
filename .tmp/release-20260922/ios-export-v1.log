@@ -1,0 +1,7 @@
+2026-09-22 00:08:14.969 xcodebuild[8195:11312252] [MT] IDEDistribution: -[IDEDistributionLogging _createLoggingBundleAtPath:]: Created bundle at path "/var/folders/h4/d59d3jv946589j254fgp09hm0000gn/T/KnotQMobile_2026-09-22_00-08-14.968.xcdistributionlogs".
+2026-09-22 00:08:15.102 xcodebuild[8195:11312252] [MT] IDEDistribution: Command line name "app-store" is deprecated. Use "app-store-connect" instead.
+2026-09-22 00:08:15.184 xcodebuild[8195:11312308]  DVTDeveloperAccountManager: Failed to load credentials for manu.s.bhat@gmail.com: Error Domain=DVTDeveloperAccountCredentialsError Code=0 "Invalid credentials in keychain for manu.s.bhat@gmail.com, missing Xcode-Token" UserInfo={NSLocalizedDescription=Invalid credentials in keychain for manu.s.bhat@gmail.com, missing Xcode-Token}
+error: exportArchive Copy failed
+
+** EXPORT FAILED **
+

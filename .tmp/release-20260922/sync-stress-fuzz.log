@@ -1,0 +1,5 @@
+run-sync-stress: pre-building test binaries…
+    Blocking waiting for file lock on package cache
+    Blocking waiting for file lock on package cache
+    Blocking waiting for file lock on package cache
+   Compiling knotq-sync v0.1.0 (/Users/manubhat/home/businesses/nutq2/app/shared/sync)

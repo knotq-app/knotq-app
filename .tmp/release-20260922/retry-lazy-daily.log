@@ -1,0 +1,21 @@
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.43s
+     Running unittests src/lib.rs (target/debug/deps/knotq_mobile_core-c4aa923acbce843f)
+
+running 1 test
+test tests_daily::lazy_daily_remote_update_survives_save_restart_and_caught_up_pull ... FAILED
+
+failures:
+
+---- tests_daily::lazy_daily_remote_update_survives_save_restart_and_caught_up_pull stdout ----
+
+thread 'tests_daily::lazy_daily_remote_update_survives_save_restart_and_caught_up_pull' (11343653) panicked at core/src/tests_daily.rs:513:5:
+assertion failed: !bootstrap_pull.workspace.schemes.contains_key(&daily_id)
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    tests_daily::lazy_daily_remote_update_survives_save_restart_and_caught_up_pull
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 76 filtered out; finished in 0.19s
+
+error: test failed, to rerun pass `-p knotq-mobile-core --lib`
