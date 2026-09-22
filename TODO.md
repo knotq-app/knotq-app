@@ -13,6 +13,16 @@ configuration fails three — 140, 220 and 287 — and in every one of them the
 device under test has itself signed into a second account (see 0i). **Every
 remaining failure at release depth is the account-switch exclusion.**
 
+> **RELEASE BLOCKER — these three must be tackled.** `release.yml` gates every
+> build job on `needs: [sync-stress, mobile-accounts]`, and the sync-stress job
+> runs this fuzzer at 300 seeds, so while 140, 220 and 287 fail **no `v*` tag
+> can produce an artifact**. That is the gate working as designed; it is not to
+> be skipped, narrowed or marked `continue-on-error` to get a build out. The
+> work is 0i: an account switch carries the source account's history into the
+> destination account's identically-shaped documents. 140 is the same switch
+> seen from the other side — a scheme created while a post-switch sync is in
+> flight does not survive the next one.
+
 Two findings worth not re-deriving: a Daily page bound in the index with no
 `nodes` entry is normal rather than corruption (clients rebuild it through
 `ensure_daily_queue`, so do not rebuild it in `materialize_workspace_inner` —
