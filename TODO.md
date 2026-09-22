@@ -9,11 +9,14 @@ not sync-convergence bugs. Item 4 remains explicitly deferred undo-history work.
 
 **Where the release-depth gate stands (300 seeds x 200 steps per
 configuration).** The single-account configuration passes every seed. The chaos
-configuration fails four: 140, 220 and 287 are multi-account (the device under
-test has signed into a second account — see 0i), and 253 is a device whose
-first *successful* sync happens long after it starts editing. 253's mechanism
-is known and written up under 0s below; its obvious fix took the gate from 5
-failing seeds to 17 and was reverted.
+configuration fails four. In 140, 220 and 287 the device under test has itself
+signed into a second account (see 0i). 253 is different: its device 0 is
+installed on account 1 and never switches, and the line it loses has a random
+id that cannot alias across accounts — so the mechanism is single-account even
+though the scenario is not (other devices hop into account 1 during the run,
+and the single-account configuration does not reproduce it). 253 is written up
+under 0s below; its obvious fix took the gate from 5 failing seeds to 17 and
+was reverted.
 
 Two findings worth not re-deriving: a Daily page bound in the index with no
 `nodes` entry is normal rather than corruption (clients rebuild it through
@@ -450,7 +453,10 @@ fixture, and desktop+mobile shipped together.
 
 **Open.** Production fuzz chaos seed 253: device 0 inserts a line at step 19,
 every sync attempt until step 148 fails, and that first successful sync loses
-the line. The line is in the device's own CRDT document right up to the sync,
+the line. Device 0 never switches accounts, and the lost line's id is a random
+v4 — not one of the derived ids that alias across accounts — so this is not
+0i wearing a different hat, even though the seed runs in the two-account
+configuration. The line is in the device's own CRDT document right up to the sync,
 no remote update removes it, no adoption drops it, and the launch reconcile
 never touches it — all four now report, so all four were ruled out by reading
 the log rather than by inference.
