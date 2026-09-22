@@ -11,6 +11,7 @@ mod scheme_file;
 mod scheme_xml;
 pub mod secrets;
 mod settings;
+mod snapshot;
 mod sync_state;
 mod upgrade;
 
@@ -49,6 +50,10 @@ pub use scheme_file::scheme_path_for_workspace;
 pub use settings::{
     load_app_settings, load_settings_or_recover, save_app_settings, SettingsBootstrap,
     SettingsLoadError,
+};
+pub use snapshot::{
+    cancel_restore, capture_daily_snapshot, list_snapshots, pending_restore, request_restore,
+    restore_snapshot, take_pending_restore, RecoverySnapshot,
 };
 pub use sync_state::{
     begin_workspace_save_recovery, clear_workspace_save_recovery, load_local_sync_state,
