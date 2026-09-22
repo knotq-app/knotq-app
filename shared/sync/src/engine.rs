@@ -315,6 +315,14 @@ fn batch_pull_and_apply_with_integrity_documents_inner(
     let mut authoritative_remote_latest: Option<HashMap<DocumentId, u64>> = None;
     let mut all_skipped: Vec<SkippedDocument> = Vec::new();
     let mut changed_documents: HashSet<DocumentId> = HashSet::new();
+    let mut account_switch_merges: HashMap<DocumentId, crate::AccountSwitchMerge> = HashMap::new();
+    // The first pull after an account switch: every cursor was reset and the
+    // re-seed is still owed. Decided once, before the pages advance the
+    // cursors. A later pull while the re-seed is still owed (its push failed)
+    // is an ordinary one: by then a row missing locally may be one the user
+    // removed on this account, which must stay removed.
+    let account_switch_first_pull =
+        local_state.needs_full_reseed() && local_state.document_cursors.is_empty();
     // A state-vector proof is tiny compared with a merged document, but it still
     // walks every decoded document on a caught-up pull. Never put that workspace-
     // wide work on the local-edit path: pending edits are about to be pushed, so
@@ -544,6 +552,27 @@ fn batch_pull_and_apply_with_integrity_documents_inner(
             .documents
             .iter()
             .partition(|doc| needs_adoption(doc));
+        // After an account switch the local documents still carry the account
+        // being left, under document ids the destination uses too, with structs
+        // the destination holds live and this device holds removed (a Daily
+        // page's starter rows, a row it rolled forward there, anything it
+        // carried across before). An ordinary merge keeps this device's
+        // removals and the full-snapshot re-seed then pushes them onto the
+        // destination's identical rows, deleting them for every device there.
+        // So the switch's first pull — every cursor reset, every response a
+        // full state — merges each document so that nothing the account being
+        // left removed reaches what the destination still has
+        // (`apply_remote_updates_for_account_switch`). A delta response cannot
+        // be handled that way and takes the ordinary merge.
+        let account_switch_documents: HashSet<DocumentId> = if account_switch_first_pull {
+            merges
+                .iter()
+                .filter(|doc| !doc.state_v1_is_delta)
+                .map(|doc| doc.document)
+                .collect()
+        } else {
+            HashSet::new()
+        };
 
         // A complete snapshot for an off-window deferred scheme can be stored
         // as bytes without hydrating that historical Yjs document. This is the
@@ -590,7 +619,11 @@ fn batch_pull_and_apply_with_integrity_documents_inner(
         // before scheme-kind ones, so a scheme created on another device — whose
         // workspace-index entry and scheme document arrive in the same response — is
         // routed correctly even though this replica had never seen it.
-        let outcome = crdt_docs.apply_remote_updates(&workspace, &updates);
+        let outcome = crdt_docs.apply_remote_updates_for_account_switch(
+            &workspace,
+            &updates,
+            &account_switch_documents,
+        );
         // Workspace-level errors (corrupt index, materialization failure) are fatal:
         // we cannot trust the resulting workspace or any scheme content.
         if !outcome.workspace_is_ok() {
@@ -607,6 +640,43 @@ fn batch_pull_and_apply_with_integrity_documents_inner(
         workspace = outcome.workspace;
 
         changed_documents.extend(outcome.changed_documents.iter().copied());
+        account_switch_merges.extend(
+            outcome
+                .account_switch_merges
+                .iter()
+                .map(|(k, v)| (*k, v.clone())),
+        );
+
+        // The switch queued this device's workspace index for push before the
+        // pull (`reidentify_workspace_document`): the index as it stood on the
+        // account being left, delete set and all. That index was just rebuilt
+        // remote-first, so every queued index edit — that snapshot, and any
+        // older index delta whose structs the rebuilt document already carries
+        // — now carries the rebuilt state instead, which holds no tombstone
+        // for an entry the destination still has. Rewritten in place, under
+        // the same operation ids and sequences: the store that handed these
+        // edits to the run clears them by exact id once they are pushed, and a
+        // replacement queued under a fresh id would leave the originals in the
+        // store to be handed to every later run, pushed, and never cleared
+        // (chaos seed 141 wedged that way).
+        if account_switch_documents.contains(&workspace.sync.id) {
+            let rebuilt = crdt_docs
+                .full_snapshot_updates_for_documents(&HashSet::from([workspace.sync.id]))
+                .updates
+                .into_iter()
+                .find(|update| update.document == workspace.sync.id);
+            if let Some(rebuilt) = rebuilt {
+                for edit in local_state
+                    .pending
+                    .iter_mut()
+                    .filter(|edit| edit.kind == SyncDocumentKind::PersonalWorkspace)
+                {
+                    edit.document = rebuilt.document;
+                    edit.update_v1 = rebuilt.update_v1.clone();
+                    edit.touched_items = rebuilt.touched_items.clone();
+                }
+            }
+        }
 
         // If the server had to return a changed page before it could evaluate
         // the proof, refresh those entries in the request-local cache. The
@@ -824,6 +894,15 @@ fn batch_pull_and_apply_with_integrity_documents_inner(
             // budget and finish the pull; the next sync can try again.
             break;
         }
+    }
+    // Every page of the switch's pull is in: keep the rows the merge would
+    // otherwise cost (see `revive_after_account_switch`).
+    if !account_switch_merges.is_empty() {
+        let (revived_workspace, written) = crdt_docs
+            .revive_after_account_switch(&workspace, &account_switch_merges)
+            .context("account-switch revival")?;
+        workspace = revived_workspace;
+        changed_documents.extend(written);
     }
     // A cursor proves that this replica received a server document version; it
     // does *not* prove that the separately-persisted, UI-facing `Workspace`

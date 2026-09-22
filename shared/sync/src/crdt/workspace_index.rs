@@ -799,6 +799,38 @@ impl YrsJsonDocument {
         Ok(txn.snapshot() != before)
     }
 
+    /// The workspace index this replica should hold after an account switch,
+    /// given `remote_state_v1`, the destination account's full index state.
+    ///
+    /// Index entries are removed outright (`sync_string_map` deletes the key),
+    /// so here the removal IS the Yjs tombstone, and a device that carried its
+    /// index into an account and back holds that account's very structs. Its
+    /// tombstones for them — a scheme it archived elsewhere — must not delete
+    /// the entries the destination still has. So the merge is built
+    /// remote-first: a fresh document takes the destination's state, then this
+    /// document's full state with its delete set narrowed to clocks the
+    /// destination does not know (`update_v1_without_deletes_known_to`). A
+    /// struct both sides hold is skipped as already integrated; every struct
+    /// only this device holds carries over with its history intact, so the
+    /// snapshot the switch then pushes merges on the server instead of
+    /// doubling. (A scheme document takes a different route —
+    /// `YrsSchemeDocument::merge_for_account_switch` — because its rows are
+    /// soft-deleted through presence tags rather than tombstones, and its text
+    /// edits must keep crossing whole.)
+    pub(crate) fn remerged_remote_first(&self, remote_state_v1: &[u8]) -> anyhow::Result<Self> {
+        let fresh = Self::for_replica(self.id, self.kind, None);
+        fresh
+            .apply_update_v1(remote_state_v1)
+            .context("adopt the destination account's workspace index")?;
+        let known = fresh.doc.transact().state_vector();
+        let local_only =
+            super::encoding::update_v1_without_deletes_known_to(&self.encode_state_v1(), &known)?;
+        fresh
+            .apply_update_v1(&local_only)
+            .context("re-apply this device's index structs on the destination's")?;
+        Ok(fresh)
+    }
+
     /// Whether this document has ever been written or restored, as opposed to
     /// being the bare set of empty root maps a constructor leaves behind.
     ///

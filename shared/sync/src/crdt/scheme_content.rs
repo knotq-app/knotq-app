@@ -799,6 +799,56 @@ impl YrsSchemeDocument {
         Ok(txn.snapshot() != before)
     }
 
+    /// Merge the destination account's full state into this document for an
+    /// account switch, reporting which rows each side held live beforehand so
+    /// the caller can keep a row the merge would otherwise cost
+    /// (`WorkspaceCrdtDocuments::revive_after_account_switch`).
+    ///
+    /// Rows are soft-deleted through observed-remove presence tags, and the two
+    /// accounts hold byte-identical structs for the same derived document id —
+    /// every install populates a Daily page's starter rows the same way, and a
+    /// device that switched before carried its very structs across. So a row
+    /// this device removed on the account it is leaving carries `r:` tags that
+    /// observed the destination's own `a:` tag, and the merge removes the
+    /// destination's live row — for this device now, and for every device on
+    /// the destination once the switch's full-snapshot re-seed pushes it.
+    pub(crate) fn merge_for_account_switch(
+        &self,
+        remote_state_v1: &[u8],
+    ) -> anyhow::Result<(bool, AccountSwitchMerge)> {
+        let destination = Self::for_replica(self.id, None);
+        destination
+            .apply_update_v1(remote_state_v1)
+            .context("read the destination account's state")?;
+        let live_ids = |doc: &Self| -> Vec<ItemId> {
+            doc.scheme_items()
+                .map(|items| items.into_iter().map(|item| item.id).collect())
+                .unwrap_or_default()
+        };
+        let merge = AccountSwitchMerge {
+            destination_live: live_ids(&destination),
+            local_live: live_ids(self),
+        };
+        let changed = self.apply_update_v1(remote_state_v1)?;
+        Ok((changed, merge))
+    }
+
+    /// Bring a soft-deleted row back through the resurrection path an edit
+    /// takes, which every client honours over the removal it observed. `false`
+    /// when this document has no entry for the row.
+    pub(crate) fn revive_item(&self, id: ItemId) -> anyhow::Result<bool> {
+        let epoch = self.presence_epoch();
+        let items_by_id = self.doc.get_or_insert_map("items_by_id");
+        let mut txn = self.doc.transact_mut();
+        let Some(item_map) = item_map_ref(&items_by_id, &txn, &id.to_string()) else {
+            return Ok(false);
+        };
+        ensure_item_presence(&item_map, &mut txn, id, Some(epoch.as_str()))?;
+        // The scalar older clients read; a fresh write, so it wins.
+        item_map.insert(&mut txn, "deleted", false);
+        Ok(true)
+    }
+
     pub(crate) fn validate(&self) -> anyhow::Result<()> {
         validate_scheme_document(&self.doc)
     }
@@ -912,6 +962,14 @@ pub(crate) fn item_text_ref(item_map: &MapRef, txn: &impl ReadTxn) -> Option<Tex
         Some(Out::YText(text)) => Some(text),
         _ => None,
     }
+}
+
+/// What each side of an account-switch merge held live in one document
+/// beforehand — see `YrsSchemeDocument::merge_for_account_switch`.
+#[derive(Clone, Debug, Default)]
+pub struct AccountSwitchMerge {
+    pub destination_live: Vec<ItemId>,
+    pub local_live: Vec<ItemId>,
 }
 
 fn presence_map_ref(item_map: &MapRef, txn: &impl ReadTxn) -> Option<MapRef> {

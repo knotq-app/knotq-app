@@ -193,7 +193,7 @@ mod workspace_index;
 use update_capture::{Delta, UpdateCapture};
 
 pub use encoding::stable_client_id;
-pub use scheme_content::YrsSchemeDocument;
+pub use scheme_content::{AccountSwitchMerge, YrsSchemeDocument};
 pub use validation::validate_crdt_update_sequence;
 
 pub(crate) use encoding::{
@@ -303,6 +303,12 @@ pub struct WorkspaceCrdtApplyOutcome {
     pub document_errors: Vec<DocumentApplyError>,
     /// Workspace-level fatal errors: if non-empty the caller must abort the pull.
     pub workspace_errors: Vec<WorkspaceApplyError>,
+    /// For each scheme document merged as an account switch
+    /// ([`WorkspaceCrdtDocuments::apply_remote_updates_for_account_switch`]),
+    /// what each side held live before the merge — the input to
+    /// [`WorkspaceCrdtDocuments::revive_after_account_switch`] once every page
+    /// of the switch's pull has been applied.
+    pub account_switch_merges: HashMap<DocumentId, AccountSwitchMerge>,
 }
 
 impl WorkspaceCrdtApplyOutcome {
@@ -1221,6 +1227,95 @@ impl WorkspaceCrdtDocuments {
         healed
     }
 
+    /// After every page of an account switch's pull has merged, keep the rows
+    /// the switch would otherwise cost: a row the destination account held
+    /// live that the merged documents now hold live NOWHERE on this device.
+    ///
+    /// The switch carries the user's content across, and a row is content
+    /// whichever side held it. But the two accounts hold byte-identical
+    /// structs for the same derived document ids, so each side's removals
+    /// land on the other's rows: a row this device rolled forward on the
+    /// account it left is removed on its source day here, and a row the
+    /// destination resolved as a cross-document duplicate is removed on the
+    /// day this device carries it on. Either alone is a move; both together
+    /// leave the row dead in every document (chaos seeds 220 and 287), and
+    /// the full-snapshot re-seed then publishes that to every device on the
+    /// destination.
+    ///
+    /// Only a row that is live nowhere is revived — a row this device holds
+    /// live in another document is a move, and reviving it too would make
+    /// it a duplicate that the desktop's placement reconciliation deletes
+    /// again, in a race with any concurrent carryover (reviving every row the
+    /// destination held took the release gate from 3 failing seeds to 25). It
+    /// comes back where this device last held it live, so the move follows
+    /// the user; a row this device never held live comes back where the
+    /// destination had it.
+    ///
+    /// Returns the re-materialized workspace and the documents written.
+    pub fn revive_after_account_switch(
+        &mut self,
+        current: &Workspace,
+        merges: &HashMap<DocumentId, AccountSwitchMerge>,
+    ) -> anyhow::Result<(Workspace, Vec<DocumentId>)> {
+        if merges.is_empty() {
+            return Ok((current.clone(), Vec::new()));
+        }
+        let live_anywhere: HashSet<knotq_model::ItemId> = self
+            .schemes
+            .values()
+            .filter_map(|document| document.scheme_items().ok())
+            .flatten()
+            .map(|item| item.id)
+            .collect();
+        let scheme_by_document = scheme_documents_by_id(current);
+        // Where this device last held each row live, if anywhere.
+        let mut local_placement: HashMap<knotq_model::ItemId, DocumentId> = HashMap::new();
+        for (document, merge) in merges {
+            for id in &merge.local_live {
+                local_placement.entry(*id).or_insert(*document);
+            }
+        }
+        let local_placement = &local_placement;
+        let live_anywhere = &live_anywhere;
+        let mut revive: Vec<(DocumentId, knotq_model::ItemId)> = merges
+            .iter()
+            .flat_map(|(document, merge)| {
+                merge
+                    .destination_live
+                    .iter()
+                    .filter(|id| !live_anywhere.contains(id))
+                    .map(move |id| (local_placement.get(id).copied().unwrap_or(*document), *id))
+            })
+            .collect();
+        revive.sort();
+        revive.dedup();
+        let mut written: Vec<DocumentId> = Vec::new();
+        for (document, id) in revive {
+            let Some(scheme_id) = scheme_by_document.get(&document) else {
+                continue;
+            };
+            let Some(doc) = self.schemes.get(scheme_id) else {
+                continue;
+            };
+            if doc.revive_item(id)? {
+                eprintln!(
+                    "sync: account switch keeps row {id} live on {document}: removed on the \
+                     account this device left, live on the account it joined"
+                );
+                if written.last() != Some(&document) {
+                    written.push(document);
+                }
+            }
+        }
+        if written.is_empty() {
+            return Ok((current.clone(), written));
+        }
+        let workspace = self
+            .materialized_workspace_repair(current, &|_| false)
+            .context("materialize after account-switch revival")?;
+        Ok((workspace, written))
+    }
+
     /// Adopt a squashed (epoch-bumped) scheme document: REPLACE the local CRDT
     /// document with `state` instead of merging (the squashed document shares no
     /// Yjs history with its predecessor, so a merge would double content), then
@@ -1677,12 +1772,33 @@ impl WorkspaceCrdtDocuments {
         current: &Workspace,
         updates: &[StoredCrdtUpdate],
     ) -> WorkspaceCrdtApplyOutcome {
+        self.apply_remote_updates_for_account_switch(current, updates, &HashSet::new())
+    }
+
+    /// [`Self::apply_remote_updates`], except that each document in
+    /// `account_switch` — whose update must be the server's FULL state — is
+    /// merged as the first pull after an account switch: the local documents
+    /// still carry the account being left, under ids the destination uses too,
+    /// and nothing that account removed may reach the destination's identical
+    /// rows. The workspace index is rebuilt from the destination's state with
+    /// the local structs re-applied on top
+    /// ([`YrsJsonDocument::remerged_remote_first`]); a scheme document merges
+    /// as usual and reports what each side held live, for
+    /// [`Self::revive_after_account_switch`] to act on once the whole pull is
+    /// in ([`YrsSchemeDocument::merge_for_account_switch`]).
+    pub fn apply_remote_updates_for_account_switch(
+        &mut self,
+        current: &Workspace,
+        updates: &[StoredCrdtUpdate],
+        account_switch: &HashSet<DocumentId>,
+    ) -> WorkspaceCrdtApplyOutcome {
         let mut outcome = WorkspaceCrdtApplyOutcome {
             workspace: current.clone(),
             applied: 0,
             changed_documents: HashSet::new(),
             document_errors: Vec::new(),
             workspace_errors: Vec::new(),
+            account_switch_merges: HashMap::new(),
         };
 
         let mut workspace_applied = false;
@@ -1703,7 +1819,16 @@ impl WorkspaceCrdtDocuments {
                 continue;
             }
             workspace_update_eligible_for_materialization = true;
-            let apply_result = self.workspace.apply_update_v1(&update.update_v1);
+            let apply_result = if account_switch.contains(&update.document) {
+                self.workspace
+                    .remerged_remote_first(&update.update_v1)
+                    .map(|fresh| {
+                        self.workspace = fresh;
+                        true
+                    })
+            } else {
+                self.workspace.apply_update_v1(&update.update_v1)
+            };
             match apply_result {
                 // Only a merge that actually changed the document counts as
                 // applied. An echo of this replica's own push (the server
@@ -1890,12 +2015,22 @@ impl WorkspaceCrdtDocuments {
             // the server's structs from the update below. A fresh identity (`None`) — not
             // the stable clientID — keeps it from reusing a `(clientID, clock)` the server
             // may already hold under that clientID from a prior local incarnation.
-            match self
-                .schemes
-                .entry(scheme_id)
-                .or_insert_with(|| YrsSchemeDocument::for_replica(update.document, None))
-                .apply_update_v1(&update.update_v1)
-            {
+            let apply_result = {
+                let doc = self
+                    .schemes
+                    .entry(scheme_id)
+                    .or_insert_with(|| YrsSchemeDocument::for_replica(update.document, None));
+                if account_switch.contains(&update.document) {
+                    doc.merge_for_account_switch(&update.update_v1)
+                        .map(|(changed, merge)| {
+                            outcome.account_switch_merges.insert(update.document, merge);
+                            changed
+                        })
+                } else {
+                    doc.apply_update_v1(&update.update_v1)
+                }
+            };
+            match apply_result {
                 // As with the workspace document above: an echoed no-op merge
                 // must not mark the scheme touched, or the scheme the user is
                 // actively editing gets re-materialized (and the UI reloaded)
