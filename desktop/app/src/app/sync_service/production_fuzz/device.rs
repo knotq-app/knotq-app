@@ -490,7 +490,12 @@ impl DesktopDevice {
                 self.state.remember_captured_item_edits(&local_item_edits);
                 let local_scheme_edits = capture_local_scheme_edits(&self.state);
                 let local_folder_edits = capture_local_folder_edits(&self.state, &result.workspace);
-                clear_pushed_edits(&mut self.state, &result.pushed, watermark);
+                clear_pushed_edits(
+                    &mut self.state,
+                    &result.pushed,
+                    &result.workspace,
+                    watermark,
+                );
                 if run_changed_workspace(
                     result.remote_updates_applied,
                     result.local_workspace_changed,

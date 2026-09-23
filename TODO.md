@@ -2,26 +2,22 @@
 
 **Updated 2026-09-22.** These notes track confirmed data-loss/convergence
 bugs and deferred release work. Current deploy-blocking status: 0a, 0b, 0c, 0d,
-0e, 0f, 0g, 0h, 0j, 0k, 0l, 0m, 0n, 0o, 0p, 0q, 0t, 1, and 2 are fixed and
-verified; 0u (the last release-depth failure), 0i (the account-switch
-exclusion) and 0r (one scheme colour, the last CI-depth failure) are open; 3 and 5 remain backend/ops gaps,
+0e, 0f, 0g, 0h, 0j, 0k, 0l, 0m, 0n, 0o, 0p, 0q, 0t, 0u, 1, and 2 are fixed
+and verified; 0i (the account-switch exclusion) is open, and 0r (one scheme colour) now passes but is untraced; 3 and 5 remain backend/ops gaps,
 not sync-convergence bugs. Item 4 remains explicitly deferred undo-history work.
 
 **Where the release-depth gate stands (300 seeds x 200 steps per
-configuration).** The chaos configuration passes every seed: 140 is fixed (0t),
-as are 220 and 287 — the account-switch deletion. The single-account
-configuration fails **one: seed 10290**, written up as 0u below — the same
-in-flight-create trigger as 0t, failing the other way round.
+configuration).** Both configurations pass every seed (2026-09-22). Chaos 140
+is fixed (0t), single-account 10290 is fixed (0u), and 220 and 287 — the
+account-switch deletion — were fixed before.
 
 10290 is not new. It fails identically on `472edf1`, measured at the same depth
 in a clean worktree; the claim on that commit that single-account was "green
 across all 300" was wrong. Verifying a gate claim against the actual baseline,
 rather than against the last note about it, is worth the four minutes it costs.
 
-> **RELEASE BLOCKER — seed 10290 is the last one.** `release.yml` gates every
-> build job on `needs: [sync-stress, mobile-accounts]`, and the sync-stress job
-> runs this fuzzer at 300 seeds, so while 10290 fails **no `v*` tag can produce
-> an artifact**. That is the gate working as designed; it is not to be skipped,
+> The release gate is the one to keep green. `release.yml` gates every build
+> job on `needs: [sync-stress, mobile-accounts]`; it is not to be skipped,
 > narrowed or marked `continue-on-error` to get a build out.
 
 Two findings worth not re-deriving: a Daily page bound in the index with no
@@ -582,75 +578,45 @@ configurations, against the same depth on `472edf1`:
 ("single-account green across all 300") was wrong, and 10290 is an unrelated
 pre-existing failure — see 0u.
 
-## 0u. A scheme created while a sync is in flight is never published to the account
+## 0u. [FIXED] A scheme created while a sync was in flight was never published to the account
 
-**Open — the only failing seed at release depth.** Production fuzz
-single-account seed 10290, and it fails identically on `472edf1`, so it predates
-the 0t work and is not a regression from it.
+**Fixed.** Production fuzz single-account seed 10290 — failing on `472edf1` too,
+so it predates 0t. Device 3 creates "scheme 6321" while a sync is in flight
+(step 158). Device 3 keeps it; every other device ignores its content document
+as an orphan with no index entry, and device 3 reports `0 pending left` forever.
 
-Devices 0 and 3 do not converge. Device 3 holds scheme `86cb032c`
-("scheme 6321") inside folder `56019bfa`. Device 0 does not hold `86cb032c` at
-all — not its name, colour, parent, source, or body. The same divergence is
-reported a second time as "device 0 and 3 diverged after fresh join".
+**The mechanism, from probes rather than inference.** Device 3's index document
+held client `4019…063` clocks 10–43 that the server never received. The
+in-flight `CreateScheme` WAS queued correctly (op #4 on the index document), but
+the landing threw it away:
 
-The folder `56019bfa` also sits at different parents on the two devices, which
-makes this look at first like a concurrent folder move losing a sibling. It is
-not — see below. The move is a second, harmless disagreement riding along with
-the real one.
+1. Landing calls `drop_unbound_pending_crdt_edits` BEFORE it adopts the run's
+   workspace. At that moment the store's workspace named a stale index document
+   (`712ba4a2`, which the server has never heard of) while every CRDT write went
+   to the real one (`a5f399d3`). The identity is only brought back in line by
+   the adoption that follows.
+2. Judged against the store alone, ops #3 and #4 for the real index looked
+   unbound, and were dropped — including the in-flight edit no run had sent.
+3. The adoption then merged those structs into the document, so the edit
+   queued afterwards (#5) was an EMPTY diff. It was pushed and cleared; the
+   structs never left the device.
 
-**What the trace establishes.** Device 3 creates the scheme at step 158 *while a
-sync is in flight* — `[step 158] device 3 in-flight: create scheme`, the same
-trigger as 0t, but this seed fails the other way round. Device 3 keeps the
-scheme; the rest of the account never gets it. From step 179 onward every other
-device reports the same pair on every sync:
+**The fix** (`WorkspaceStore::drop_unbound_pending_crdt_edits_at_landing`):
+an edit the run never saw (`sequence >= local_edit_watermark`) is kept when the
+workspace the landing is about to adopt binds its document. The watermark was
+already threaded into `clear_pushed_edits` and unused.
 
-```
-audit pull skipped 14e0f973 (Scheme): unknown scheme document 14e0f973
-sync: ignored 1 orphan document(s) (no workspace index entry); sample=14e0f973
-```
+**The watermark gate is load-bearing.** The first version kept any edit the
+incoming workspace bound, and broke single-account seed 10208: a device's
+pre-canonical index edits that its run had deliberately discarded (seqs 1–9,
+"0 pending left") came back, were re-sent later as superseded deltas, and a
+Daily line was lost on the server. An edit that WAS in the run keeps the
+store-only rule; the run already decided what to do with it.
 
-So the scheme's CONTENT document reached the server but its node entry in the
-workspace INDEX did not, and the content arrives everywhere else as an orphan
-and is ignored. Device 3 meanwhile believes it is converged: its later syncs
-report `pushed 0 doc(s), applied 0 remote update(s), 0 pending left`.
-
-**Three explanations already ruled out, with the probes that did it:**
-
-- *The index entry was removed by an index write.* No: no `workspace index write
-  removes …` line ever names `86cb032c`. It was never written, not unwritten.
-- *A pull subtracted the scheme on device 3.* No: 0t's rescue never fires here
-  and the "the pull dropped …" report is never emitted.
-- *`retained_loaded_schemes` is masking a missing node entry locally.* No.
-  Instrumenting that rescue to name what it retains prints nothing for this
-  seed, and a probe comparing `workspace.schemes` against the node entries in
-  the local index document (`snapshot().schemes`) also prints nothing — device
-  3's own index document genuinely DOES list the scheme.
-
-**So the question is narrow:** device 3's local index document holds the node
-entry, the server's does not, and device 3 never pushes again because nothing
-tells it the two differ. A Yjs merge cannot drop an insert, so the update
-carrying that entry was most likely never queued — the in-flight edit's pending
-delta clobbered by the completing sync run's own `save_local_sync_state`, which
-writes the `local_state` the run loaded before the edit existed. The content
-document survives that because `queue_workspace_bootstrap_updates` re-snapshots
-any document the server has no base for; the index document already HAS a server
-base, so it is never re-snapshotted and the lost delta is lost for good.
-
-**Where to start:** confirm the above by logging `local_state.pending` for the
-index document across step 158 on device 3. If it holds, the fix is either to
-stop the completing run from overwriting edits queued during it, or to make a
-document whose local state is ahead of what was pushed re-publish itself rather
-than trusting a delta queue that can lose an entry. Note that pushes here are
-delta-based, so nothing currently reconciles a local document against the
-server's state vector.
-
-**Reproduce:**
-
-```sh
-KNOTQ_REPRO_SEED=10290 KNOTQ_REPRO_PLAIN=1 KNOTQ_FUZZ_STEPS=200 KNOTQ_FUZZ_TRACE=1 \
-  cargo test --release -p knotq-app replay_production_seed -- --ignored --nocapture
-```
-
+**Still worth knowing:** the store's plain workspace naming a different index
+document than its CRDT between landings is itself odd, and is what made this
+possible. It is harmless now that nothing destructive judges by it alone, but it
+is the next thing to look at if a similar shape turns up.
 
 ## 0i-b. A device that has switched accounts still breaks the projection law
 
@@ -978,6 +944,12 @@ whole chaos sweep is green and the single-account sweep fails one seed, against
 
 
 ## 0r. The last CI-depth failure: a Daily page's colour, single-account seed 10105
+
+**2026-09-22: passes.** Seed 10105 is inside the release-depth single-account
+sweep (seeds 10000–10299 at 200 steps), which is green end to end after 0t and
+0u. Nobody has traced WHY it stopped failing, so this stays listed until someone
+does — a fix that arrives as a side effect is worth one replay with the trace
+to confirm it is the same mechanism and not a masked one.
 
 **Open, and the only seed failing the 128×200 sweep.** Not content loss — one
 scheme metadata field.

@@ -10,19 +10,21 @@ use knotq_state::AppState;
 use knotq_sync::PushedDocument;
 
 /// Drop the pending edits a run pushed, and any the run discarded because their
-/// document is no longer bound (see `drop_unbound_pending_crdt_edits`).
+/// document is no longer bound (see `drop_unbound_pending_crdt_edits_at_landing`).
 ///
 /// `local_edit_watermark` is the store's sequence when the run took its
 /// snapshot: an edit made after it was not in the run, whatever its sequence.
+/// `workspace` is the run's result, the one this landing is about to adopt.
 pub(super) fn clear_pushed_edits(
     state: &mut AppState,
     pushed: &[PushedDocument],
-    _local_edit_watermark: u64,
+    workspace: &Workspace,
+    local_edit_watermark: u64,
 ) {
     for pushed in pushed {
         state.clear_pushed_crdt_edits_exact(pushed.document, &pushed.sent_edits);
     }
-    state.drop_unbound_pending_crdt_edits();
+    state.drop_unbound_pending_crdt_edits_at_landing(workspace, local_edit_watermark);
 }
 
 /// The line edits still queued before a landing clears what the run pushed, so

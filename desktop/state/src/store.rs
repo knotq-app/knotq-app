@@ -948,9 +948,36 @@ impl WorkspaceStore {
     /// store's copy was handed to the next run, discarded again, and so on for
     /// ever: the device reported unsynced work it could never push.
     pub fn drop_unbound_pending_crdt_edits(&mut self) -> usize {
+        self.drop_unbound_pending_crdt_edits_at_landing(None)
+    }
+
+    /// [`Self::drop_unbound_pending_crdt_edits`] as a landing runs it:
+    /// `in_flight` is the workspace the landing is about to adopt and the local
+    /// sequence watermark the run snapshotted at.
+    ///
+    /// The landing drops unbound edits BEFORE it adopts the run's workspace,
+    /// and at that moment the store's own workspace can still name a stale
+    /// index document — the identity it carries is only brought back in line by
+    /// the adoption that follows. Judged against the store alone, an edit made
+    /// while the run was in flight then looks unbound and is discarded, although
+    /// no run has ever sent it. The adoption merges its structs into the
+    /// document, so the edit queued afterwards is an empty diff and the change
+    /// never leaves the device: a scheme created mid-sync stayed on this device
+    /// while every other device ignored its content document as an orphan with
+    /// no index entry (production fuzz single-account seed 10290, TODO 0u).
+    ///
+    /// So an edit the run never saw (`sequence >= watermark`) is kept when the
+    /// incoming workspace binds its document. An edit that WAS in the run keeps
+    /// the store-only rule: the run already decided what to do with it, and
+    /// keeping one it discarded re-sends a superseded delta later (seed 10208,
+    /// where a device's pre-canonical index edits came back that way and a Daily
+    /// line was lost on the server).
+    pub fn drop_unbound_pending_crdt_edits_at_landing(
+        &mut self,
+        in_flight: Option<(&Workspace, u64)>,
+    ) -> usize {
         self.flush_crdt();
-        let workspace = &self.workspace;
-        let bound = |document: DocumentId| {
+        let binds = |workspace: &Workspace, document: DocumentId| {
             workspace.sync.id == document
                 || workspace
                     .scheme_sync
@@ -961,12 +988,17 @@ impl WorkspaceStore {
                     .values()
                     .any(|meta| meta.id == document)
         };
+        let workspace = &self.workspace;
         let mut dropped = 0;
         for operation in &mut self.pending_operations {
             let before = operation.crdt_updates.len();
-            operation
-                .crdt_updates
-                .retain(|update| bound(update.document));
+            let incoming = in_flight
+                .filter(|(_, watermark)| operation.sequence >= *watermark)
+                .map(|(incoming, _)| incoming);
+            operation.crdt_updates.retain(|update| {
+                binds(workspace, update.document)
+                    || incoming.is_some_and(|incoming| binds(incoming, update.document))
+            });
             dropped += before - operation.crdt_updates.len();
         }
         if dropped > 0 {

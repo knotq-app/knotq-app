@@ -410,7 +410,12 @@ async fn run_sync_attempt(
                 let local_scheme_edits = super::landing::capture_local_scheme_edits(&app.state);
                 let local_folder_edits =
                     super::landing::capture_local_folder_edits(&app.state, &workspace);
-                super::landing::clear_pushed_edits(&mut app.state, &pushed, local_edit_watermark);
+                super::landing::clear_pushed_edits(
+                    &mut app.state,
+                    &pushed,
+                    &workspace,
+                    local_edit_watermark,
+                );
                 // Cache the schedule this run used against the generation it was
                 // computed at, so the next run can skip recomputing it when nothing
                 // schedule-relevant has changed since. If an edit bumped the
