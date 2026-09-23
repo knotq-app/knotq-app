@@ -10,7 +10,8 @@ not sync-convergence bugs. Item 4 remains explicitly deferred undo-history work.
 **Where the release-depth gate stands (300 seeds x 200 steps per
 configuration).** The chaos configuration passes every seed: 140 is fixed (0t),
 as are 220 and 287 — the account-switch deletion. The single-account
-configuration fails **one: seed 10290**, written up as 0u below.
+configuration fails **one: seed 10290**, written up as 0u below — the same
+in-flight-create trigger as 0t, failing the other way round.
 
 10290 is not new. It fails identically on `472edf1`, measured at the same depth
 in a clean worktree; the claim on that commit that single-account was "green
@@ -581,36 +582,74 @@ configurations, against the same depth on `472edf1`:
 ("single-account green across all 300") was wrong, and 10290 is an unrelated
 pre-existing failure — see 0u.
 
-## 0u. Two devices disagree about a scheme created in a folder another device moved
+## 0u. A scheme created while a sync is in flight is never published to the account
 
 **Open — the only failing seed at release depth.** Production fuzz
 single-account seed 10290, and it fails identically on `472edf1`, so it predates
 the 0t work and is not a regression from it.
 
 Devices 0 and 3 do not converge. Device 3 holds scheme `86cb032c`
-("scheme 6321") inside folder `56019bfa`, which it has under the root. Device 0
-has moved `56019bfa` under folder `830a06c1`, sees it as empty, and does not
-hold `86cb032c` at all — not its name, colour, parent, source, or body. The
-same divergence is reported a second time as "device 0 and 3 diverged after
-fresh join".
+("scheme 6321") inside folder `56019bfa`. Device 0 does not hold `86cb032c` at
+all — not its name, colour, parent, source, or body. The same divergence is
+reported a second time as "device 0 and 3 diverged after fresh join".
 
-The shape is a concurrent folder move against a scheme created inside that
-folder: the mover's index write describes the folder at its new parent with the
-children it knew about, which do not include the scheme the other device was
-adding at the same time.
+The folder `56019bfa` also sits at different parents on the two devices, which
+makes this look at first like a concurrent folder move losing a sibling. It is
+not — see below. The move is a second, harmless disagreement riding along with
+the real one.
+
+**What the trace establishes.** Device 3 creates the scheme at step 158 *while a
+sync is in flight* — `[step 158] device 3 in-flight: create scheme`, the same
+trigger as 0t, but this seed fails the other way round. Device 3 keeps the
+scheme; the rest of the account never gets it. From step 179 onward every other
+device reports the same pair on every sync:
+
+```
+audit pull skipped 14e0f973 (Scheme): unknown scheme document 14e0f973
+sync: ignored 1 orphan document(s) (no workspace index entry); sample=14e0f973
+```
+
+So the scheme's CONTENT document reached the server but its node entry in the
+workspace INDEX did not, and the content arrives everywhere else as an orphan
+and is ignored. Device 3 meanwhile believes it is converged: its later syncs
+report `pushed 0 doc(s), applied 0 remote update(s), 0 pending left`.
+
+**Three explanations already ruled out, with the probes that did it:**
+
+- *The index entry was removed by an index write.* No: no `workspace index write
+  removes …` line ever names `86cb032c`. It was never written, not unwritten.
+- *A pull subtracted the scheme on device 3.* No: 0t's rescue never fires here
+  and the "the pull dropped …" report is never emitted.
+- *`retained_loaded_schemes` is masking a missing node entry locally.* No.
+  Instrumenting that rescue to name what it retains prints nothing for this
+  seed, and a probe comparing `workspace.schemes` against the node entries in
+  the local index document (`snapshot().schemes`) also prints nothing — device
+  3's own index document genuinely DOES list the scheme.
+
+**So the question is narrow:** device 3's local index document holds the node
+entry, the server's does not, and device 3 never pushes again because nothing
+tells it the two differ. A Yjs merge cannot drop an insert, so the update
+carrying that entry was most likely never queued — the in-flight edit's pending
+delta clobbered by the completing sync run's own `save_local_sync_state`, which
+writes the `local_state` the run loaded before the edit existed. The content
+document survives that because `queue_workspace_bootstrap_updates` re-snapshots
+any document the server has no base for; the index document already HAS a server
+base, so it is never re-snapshotted and the lost delta is lost for good.
+
+**Where to start:** confirm the above by logging `local_state.pending` for the
+index document across step 158 on device 3. If it holds, the fix is either to
+stop the completing run from overwriting edits queued during it, or to make a
+document whose local state is ahead of what was pushed re-publish itself rather
+than trusting a delta queue that can lose an entry. Note that pushes here are
+delta-based, so nothing currently reconciles a local document against the
+server's state vector.
 
 **Reproduce:**
 
 ```sh
-KNOTQ_REPRO_SEED=10290 KNOTQ_REPRO_PLAIN=1 KNOTQ_FUZZ_STEPS=200 \
+KNOTQ_REPRO_SEED=10290 KNOTQ_REPRO_PLAIN=1 KNOTQ_FUZZ_STEPS=200 KNOTQ_FUZZ_TRACE=1 \
   cargo test --release -p knotq-app replay_production_seed -- --ignored --nocapture
 ```
-
-**Where to start:** this is a no-silent-loss failure, not a projection-law one —
-0t's rescue never fires in this seed (`restored` is logged zero times), so the
-scheme is not being dropped by a pull that subtracts. Look instead at how a
-folder move encodes its children into the index document, and whether a move
-publishes a child list that can erase a concurrent sibling insert.
 
 
 ## 0i-b. A device that has switched accounts still breaks the projection law
