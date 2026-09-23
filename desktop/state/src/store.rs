@@ -348,17 +348,31 @@ impl WorkspaceStore {
     /// documents are the durable record — they are what sync pushes — so the
     /// visible half adopts them.
     ///
-    /// Safe in the other direction because it only ever *adds* what the
-    /// documents hold: a scheme with no document, an unseeded workspace
-    /// document and an empty document (`trust_empty_crdt` is false for every
-    /// scheme) all keep the plain content. A device that has never synced
-    /// therefore passes through untouched rather than being emptied.
+    /// An empty document is trusted exactly where the projection law trusts
+    /// one, and the two must agree or they deadlock: the law reads an empty
+    /// *populated* document as "every item was deleted" and expects the visible
+    /// scheme to be empty too, so a reconcile that kept the plain items instead
+    /// left a divergence nothing could ever clear — a line present in the
+    /// workspace and in no document at all, reported on every step from then on
+    /// (chaos seed 188, after a crash and relaunch).
+    ///
+    /// Still safe in the other direction, which is the point of the
+    /// distinction: a scheme with no document, an unseeded workspace document
+    /// and an *unpopulated* one all keep the plain content, so a device that
+    /// has never synced passes through untouched rather than being emptied.
     ///
     /// Returns whether anything moved.
     pub fn reconcile_workspace_from_documents(&mut self) -> bool {
+        let unpopulated: std::collections::HashSet<SchemeId> = self
+            .workspace
+            .schemes
+            .keys()
+            .copied()
+            .filter(|id| self.crdt.scheme_document_is_unpopulated(*id))
+            .collect();
         let Ok(mut recovered) = self
             .crdt
-            .materialized_workspace_repair(&self.workspace, &|_| false)
+            .materialized_workspace_repair(&self.workspace, &|id| !unpopulated.contains(id))
         else {
             return false;
         };
@@ -373,6 +387,35 @@ impl WorkspaceStore {
         let _ = recovered.normalize_item_markers();
         if recovered == self.workspace {
             return false;
+        }
+        // Reconciling takes the documents as the truth, so anything the plain
+        // workspace held that they do not is dropped here. That is the point
+        // when the two halves have merely drifted — but it is also how a crash
+        // that saved `workspace.json` and not the CRDT states turns a line into
+        // nothing. Name what goes, so a later "an item vanished" is attributable
+        // to this step rather than to the sync three steps after it.
+        {
+            let kept: std::collections::HashSet<knotq_model::ItemId> = recovered
+                .schemes
+                .values()
+                .flat_map(|scheme| scheme.items.iter().map(|item| item.id))
+                .collect();
+            let mut dropped: Vec<String> = self
+                .workspace
+                .schemes
+                .values()
+                .flat_map(|scheme| scheme.items.iter())
+                .filter(|item| !kept.contains(&item.id))
+                .map(|item| item.id.to_string())
+                .collect();
+            if !dropped.is_empty() {
+                dropped.sort();
+                eprintln!(
+                    "sync: launch reconcile drops {} item(s) the workspace held but its                      documents do not: {}",
+                    dropped.len(),
+                    dropped.join(", ")
+                );
+            }
         }
         self.workspace = recovered;
         self.index_stale = true;
@@ -698,6 +741,23 @@ impl WorkspaceStore {
         true
     }
 
+    /// Reconcile deferred CRDT changes without encoding anything.
+    ///
+    /// `crdt_document_states()` was being called purely for its flush, and it
+    /// encodes the full state of every changed document on the way past — bytes
+    /// the caller discards. The projection check runs after every step, so that
+    /// was a whole-workspace encode a few hundred times a seed for nothing.
+    pub fn flush_pending_crdt(&mut self) {
+        self.flush_crdt();
+    }
+
+    /// Every scheme document holding a live copy of `item` — see
+    /// [`WorkspaceCrdtDocuments::documents_holding_item`]. Diagnostic only.
+    pub fn documents_holding_item(&mut self, item: knotq_model::ItemId) -> Vec<SchemeId> {
+        self.flush_crdt();
+        self.crdt.documents_holding_item(item)
+    }
+
     /// Where the visible workspace disagrees with the CRDT documents it is a
     /// projection of — see [`knotq_sync::projection`] for why that equality is
     /// the local precondition for two devices converging.
@@ -888,9 +948,36 @@ impl WorkspaceStore {
     /// store's copy was handed to the next run, discarded again, and so on for
     /// ever: the device reported unsynced work it could never push.
     pub fn drop_unbound_pending_crdt_edits(&mut self) -> usize {
+        self.drop_unbound_pending_crdt_edits_at_landing(None)
+    }
+
+    /// [`Self::drop_unbound_pending_crdt_edits`] as a landing runs it:
+    /// `in_flight` is the workspace the landing is about to adopt and the local
+    /// sequence watermark the run snapshotted at.
+    ///
+    /// The landing drops unbound edits BEFORE it adopts the run's workspace,
+    /// and at that moment the store's own workspace can still name a stale
+    /// index document — the identity it carries is only brought back in line by
+    /// the adoption that follows. Judged against the store alone, an edit made
+    /// while the run was in flight then looks unbound and is discarded, although
+    /// no run has ever sent it. The adoption merges its structs into the
+    /// document, so the edit queued afterwards is an empty diff and the change
+    /// never leaves the device: a scheme created mid-sync stayed on this device
+    /// while every other device ignored its content document as an orphan with
+    /// no index entry (production fuzz single-account seed 10290, TODO 0u).
+    ///
+    /// So an edit the run never saw (`sequence >= watermark`) is kept when the
+    /// incoming workspace binds its document. An edit that WAS in the run keeps
+    /// the store-only rule: the run already decided what to do with it, and
+    /// keeping one it discarded re-sends a superseded delta later (seed 10208,
+    /// where a device's pre-canonical index edits came back that way and a Daily
+    /// line was lost on the server).
+    pub fn drop_unbound_pending_crdt_edits_at_landing(
+        &mut self,
+        in_flight: Option<(&Workspace, u64)>,
+    ) -> usize {
         self.flush_crdt();
-        let workspace = &self.workspace;
-        let bound = |document: DocumentId| {
+        let binds = |workspace: &Workspace, document: DocumentId| {
             workspace.sync.id == document
                 || workspace
                     .scheme_sync
@@ -901,12 +988,17 @@ impl WorkspaceStore {
                     .values()
                     .any(|meta| meta.id == document)
         };
+        let workspace = &self.workspace;
         let mut dropped = 0;
         for operation in &mut self.pending_operations {
             let before = operation.crdt_updates.len();
-            operation
-                .crdt_updates
-                .retain(|update| bound(update.document));
+            let incoming = in_flight
+                .filter(|(_, watermark)| operation.sequence >= *watermark)
+                .map(|(incoming, _)| incoming);
+            operation.crdt_updates.retain(|update| {
+                binds(workspace, update.document)
+                    || incoming.is_some_and(|incoming| binds(incoming, update.document))
+            });
             dropped += before - operation.crdt_updates.len();
         }
         if dropped > 0 {
@@ -1549,6 +1641,7 @@ impl WorkspaceStore {
     ) -> Result<CommandReceipt, knotq_commands::CommandError> {
         let may_change_document_set = command_may_change_document_set(&command);
         self.record_population_bases(&command);
+        let restored_probe = command.clone();
         let receipt = self.workspace.apply(command.clone())?;
         let crdt_changes = crdt_change_set_for_command(&command);
         let crdt_updates =
@@ -1564,6 +1657,49 @@ impl WorkspaceStore {
             crdt_updates,
         });
         self.next_sequence += 1;
+        if command_restores_content(&restored_probe) {
+            // A restore replays a *snapshot* of the node as it was when it was
+            // deleted, and the documents have moved on since: a line that left
+            // for another scheme in the meantime comes back here too, live in
+            // two documents at once, and any line the document gained is kept
+            // by `merge_raw_only_items` and so exists in the document but not in
+            // the restored plain copy. Either way the device now shows
+            // something its own documents do not (single-account fuzz seed
+            // 10193: an undo that restored a scheme).
+            //
+            // Reconciling puts both right: it resolves the duplicate by
+            // deleting the losing copy and takes the restored scheme's items
+            // from the documents. Restores are rare, so paying a materialization
+            // here costs nothing measurable — unlike doing it per keystroke.
+            self.reconcile_item_placements();
+        } else {
+            // A line that moves between schemes can land in a document that
+            // already holds a copy of it. A Daily Queue carryover is the way
+            // this happens without anyone dragging anything: the displaced
+            // archive id is derived from `(row, source date)`, so a device that
+            // rolls a day another device has already rolled mints the SAME id
+            // in its own source day while the merged documents already carry it
+            // in the destination day. The item is then live in two documents,
+            // materialization hands it to the lower scheme id, and the plain
+            // workspace — which just placed it here — disagrees with its own
+            // documents (single-account fuzz seed 10297).
+            //
+            // Deliberately narrower than "reconcile after every cross-scheme
+            // move", which was tried and wedged chaos seeds 6 and 12: an
+            // ordinary move deletes the source copy in the same command, so no
+            // duplicate exists, and reconciling anyway re-materialized the move
+            // away from where the user put it. Ask the documents first and
+            // reconcile only when a moved id really is in more than one of
+            // them.
+            let suspect = items_that_may_already_live_elsewhere(&restored_probe);
+            if !suspect.is_empty()
+                && suspect
+                    .iter()
+                    .any(|item| self.documents_holding_item(*item).len() > 1)
+            {
+                self.reconcile_item_placements();
+            }
+        }
         Ok(receipt)
     }
 
@@ -1671,6 +1807,24 @@ fn restored_workspace_crdt<B: AsRef<[u8]>>(
     }
 }
 
+/// Whether `command` puts a previously removed node back, carrying a snapshot
+/// of its contents from the moment it was removed.
+///
+/// These are the commands whose payload can be *stale*: everything else
+/// describes a change relative to the current state, while a restore replays
+/// what a node looked like at some earlier point. See the call site for what
+/// goes wrong when the documents have moved on in between.
+fn command_restores_content(command: &Command) -> bool {
+    match command {
+        Command::RestoreScheme { .. }
+        | Command::RestoreDeletedScheme { .. }
+        | Command::RestoreFolder { .. }
+        | Command::RestoreDeletedFolder { .. } => true,
+        Command::Batch(commands) => commands.iter().any(command_restores_content),
+        _ => false,
+    }
+}
+
 fn crdt_change_set_for_command(command: &Command) -> WorkspaceCrdtChangeSet {
     let documents = command.crdt_documents();
     let mut deleted_items: HashMap<SchemeId, HashSet<String>> = HashMap::new();
@@ -1693,6 +1847,51 @@ fn crdt_change_set_for_command(command: &Command) -> WorkspaceCrdtChangeSet {
         schemes: documents.schemes.into_iter().collect(),
         deleted_items,
     }
+}
+
+/// Item ids this command inserts that could already be live in another
+/// document, so the insert would make one line exist in two schemes at once.
+///
+/// Two shapes qualify, and a plain new line is neither:
+///
+/// - **A derived id.** A freshly typed line gets a random (v4) id that exists
+///   nowhere else by construction. A *derived* (v8) id is a pure function of
+///   something else — a Daily Queue carryover's displaced row is
+///   `(row, source date)` — so a device rolling a day that another device has
+///   already rolled mints exactly the same id the merged documents already
+///   carry in the destination day.
+/// - **A cross-scheme move**, where the same id is deleted from one scheme and
+///   inserted into another. An id deleted and re-inserted in the SAME scheme (a
+///   batch swapping a placeholder for the carried row) is not a move.
+///
+/// This is only a filter for asking the documents; the caller still checks
+/// whether the id really is in more than one of them before reconciling.
+fn items_that_may_already_live_elsewhere(command: &Command) -> Vec<knotq_model::ItemId> {
+    let mut deleted: HashMap<SchemeId, HashSet<String>> = HashMap::new();
+    let mut inserted: HashMap<SchemeId, HashSet<String>> = HashMap::new();
+    collect_inserted_item_ids(command, &mut inserted);
+    if inserted.is_empty() {
+        return Vec::new();
+    }
+    collect_deleted_item_ids(command, &mut deleted);
+    let mut suspect: Vec<knotq_model::ItemId> = Vec::new();
+    for (destination, items) in &inserted {
+        for item in items {
+            let Ok(id) = item.parse::<knotq_model::ItemId>() else {
+                continue;
+            };
+            let derived = id.0.get_version_num() == 8;
+            let moved = deleted
+                .iter()
+                .any(|(source, removed)| source != destination && removed.contains(item));
+            if derived || moved {
+                suspect.push(id);
+            }
+        }
+    }
+    suspect.sort();
+    suspect.dedup();
+    suspect
 }
 
 fn collect_deleted_item_ids(

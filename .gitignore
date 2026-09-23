@@ -19,3 +19,6 @@ mobile/
 
 # Backend lives in its own nested repository.
 backend/
+
+# Local release/build scratch (xcarchives, exported IPAs, dSYMs). Never commit.
+.tmp/

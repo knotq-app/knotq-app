@@ -188,6 +188,18 @@ impl AppState {
     /// Both halves are the same law — what the user sees is what will sync —
     /// and a violation of either is a local corruption that the next sync
     /// landing turns into an apparent remote change nobody made.
+    /// Reconcile deferred CRDT changes without encoding anything. See
+    /// [`WorkspaceStore::flush_pending_crdt`].
+    pub fn flush_pending_crdt(&mut self) {
+        self.store.flush_pending_crdt();
+    }
+
+    /// Every scheme document holding a live copy of `item`. Diagnostic only;
+    /// see [`WorkspaceStore::documents_holding_item`].
+    pub fn documents_holding_item(&mut self, item: knotq_model::ItemId) -> Vec<SchemeId> {
+        self.store.documents_holding_item(item)
+    }
+
     pub fn projection_divergences(&mut self) -> Vec<String> {
         let drifted: Vec<String> = {
             let ui = &self.workspace;
@@ -475,6 +487,16 @@ impl AppState {
     /// See [`WorkspaceStore::drop_unbound_pending_crdt_edits`].
     pub fn drop_unbound_pending_crdt_edits(&mut self) -> usize {
         self.store.drop_unbound_pending_crdt_edits()
+    }
+
+    /// See [`WorkspaceStore::drop_unbound_pending_crdt_edits_at_landing`].
+    pub fn drop_unbound_pending_crdt_edits_at_landing(
+        &mut self,
+        incoming: &Workspace,
+        local_edit_watermark: u64,
+    ) -> usize {
+        self.store
+            .drop_unbound_pending_crdt_edits_at_landing(Some((incoming, local_edit_watermark)))
     }
 
     pub fn has_pending_crdt_edits(&mut self) -> bool {

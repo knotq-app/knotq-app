@@ -315,6 +315,14 @@ fn batch_pull_and_apply_with_integrity_documents_inner(
     let mut authoritative_remote_latest: Option<HashMap<DocumentId, u64>> = None;
     let mut all_skipped: Vec<SkippedDocument> = Vec::new();
     let mut changed_documents: HashSet<DocumentId> = HashSet::new();
+    let mut account_switch_merges: HashMap<DocumentId, crate::AccountSwitchMerge> = HashMap::new();
+    // The first pull after an account switch: every cursor was reset and the
+    // re-seed is still owed. Decided once, before the pages advance the
+    // cursors. A later pull while the re-seed is still owed (its push failed)
+    // is an ordinary one: by then a row missing locally may be one the user
+    // removed on this account, which must stay removed.
+    let account_switch_first_pull =
+        local_state.needs_full_reseed() && local_state.document_cursors.is_empty();
     // A state-vector proof is tiny compared with a merged document, but it still
     // walks every decoded document on a caught-up pull. Never put that workspace-
     // wide work on the local-edit path: pending edits are about to be pushed, so
@@ -544,6 +552,27 @@ fn batch_pull_and_apply_with_integrity_documents_inner(
             .documents
             .iter()
             .partition(|doc| needs_adoption(doc));
+        // After an account switch the local documents still carry the account
+        // being left, under document ids the destination uses too, with structs
+        // the destination holds live and this device holds removed (a Daily
+        // page's starter rows, a row it rolled forward there, anything it
+        // carried across before). An ordinary merge keeps this device's
+        // removals and the full-snapshot re-seed then pushes them onto the
+        // destination's identical rows, deleting them for every device there.
+        // So the switch's first pull — every cursor reset, every response a
+        // full state — merges each document so that nothing the account being
+        // left removed reaches what the destination still has
+        // (`apply_remote_updates_for_account_switch`). A delta response cannot
+        // be handled that way and takes the ordinary merge.
+        let account_switch_documents: HashSet<DocumentId> = if account_switch_first_pull {
+            merges
+                .iter()
+                .filter(|doc| !doc.state_v1_is_delta)
+                .map(|doc| doc.document)
+                .collect()
+        } else {
+            HashSet::new()
+        };
 
         // A complete snapshot for an off-window deferred scheme can be stored
         // as bytes without hydrating that historical Yjs document. This is the
@@ -590,7 +619,11 @@ fn batch_pull_and_apply_with_integrity_documents_inner(
         // before scheme-kind ones, so a scheme created on another device — whose
         // workspace-index entry and scheme document arrive in the same response — is
         // routed correctly even though this replica had never seen it.
-        let outcome = crdt_docs.apply_remote_updates(&workspace, &updates);
+        let outcome = crdt_docs.apply_remote_updates_for_account_switch(
+            &workspace,
+            &updates,
+            &account_switch_documents,
+        );
         // Workspace-level errors (corrupt index, materialization failure) are fatal:
         // we cannot trust the resulting workspace or any scheme content.
         if !outcome.workspace_is_ok() {
@@ -607,6 +640,43 @@ fn batch_pull_and_apply_with_integrity_documents_inner(
         workspace = outcome.workspace;
 
         changed_documents.extend(outcome.changed_documents.iter().copied());
+        account_switch_merges.extend(
+            outcome
+                .account_switch_merges
+                .iter()
+                .map(|(k, v)| (*k, v.clone())),
+        );
+
+        // The switch queued this device's workspace index for push before the
+        // pull (`reidentify_workspace_document`): the index as it stood on the
+        // account being left, delete set and all. That index was just rebuilt
+        // remote-first, so every queued index edit — that snapshot, and any
+        // older index delta whose structs the rebuilt document already carries
+        // — now carries the rebuilt state instead, which holds no tombstone
+        // for an entry the destination still has. Rewritten in place, under
+        // the same operation ids and sequences: the store that handed these
+        // edits to the run clears them by exact id once they are pushed, and a
+        // replacement queued under a fresh id would leave the originals in the
+        // store to be handed to every later run, pushed, and never cleared
+        // (chaos seed 141 wedged that way).
+        if account_switch_documents.contains(&workspace.sync.id) {
+            let rebuilt = crdt_docs
+                .full_snapshot_updates_for_documents(&HashSet::from([workspace.sync.id]))
+                .updates
+                .into_iter()
+                .find(|update| update.document == workspace.sync.id);
+            if let Some(rebuilt) = rebuilt {
+                for edit in local_state
+                    .pending
+                    .iter_mut()
+                    .filter(|edit| edit.kind == SyncDocumentKind::PersonalWorkspace)
+                {
+                    edit.document = rebuilt.document;
+                    edit.update_v1 = rebuilt.update_v1.clone();
+                    edit.touched_items = rebuilt.touched_items.clone();
+                }
+            }
+        }
 
         // If the server had to return a changed page before it could evaluate
         // the proof, refresh those entries in the request-local cache. The
@@ -780,6 +850,11 @@ fn batch_pull_and_apply_with_integrity_documents_inner(
             }
             let count = cursor_reset_counts.entry(meta.id).or_insert(0);
             if *count >= MAX_CURSOR_RESETS_PER_DOCUMENT {
+                // Giving up on a document silently is how a page goes missing
+                // with nothing to show for it: the caller sees a clean pull, no
+                // skipped entry, and a workspace with one scheme fewer. Record
+                // it as a gap so it is reported like any other.
+                materialization_gaps.push((meta.id, meta.kind));
                 continue;
             }
             *count += 1;
@@ -819,6 +894,15 @@ fn batch_pull_and_apply_with_integrity_documents_inner(
             // budget and finish the pull; the next sync can try again.
             break;
         }
+    }
+    // Every page of the switch's pull is in: keep the rows the merge would
+    // otherwise cost (see `revive_after_account_switch`).
+    if !account_switch_merges.is_empty() {
+        let (revived_workspace, written) = crdt_docs
+            .revive_after_account_switch(&workspace, &account_switch_merges)
+            .context("account-switch revival")?;
+        workspace = revived_workspace;
+        changed_documents.extend(written);
     }
     // A cursor proves that this replica received a server document version; it
     // does *not* prove that the separately-persisted, UI-facing `Workspace`
@@ -993,6 +1077,14 @@ struct LocalPrePullRepair {
     local_ahead_items: HashMap<knotq_model::SchemeId, HashSet<String>>,
 }
 
+/// Say what the pre-pull repair decided. Behind an env var: it runs on every
+/// sync and the common answer is "nothing to repair".
+fn trace_pre_pull_repair(what: &str) {
+    if std::env::var("KNOTQ_TRACE_PRE_PULL_REPAIR").is_ok() {
+        eprintln!("sync: pre-pull local-only repair {what}");
+    }
+}
+
 fn queue_local_only_documents_before_pull(
     crdt_docs: &mut WorkspaceCrdtDocuments,
     local_state: &mut LocalSyncState,
@@ -1003,6 +1095,7 @@ fn queue_local_only_documents_before_pull(
     // old CRDT belongs to the source account and must not be pushed into the
     // destination account before its workspace index has been adopted.
     if local_state.needs_full_reseed() {
+        trace_pre_pull_repair("skipped: account switch pending a full re-seed");
         return None;
     }
     // An unseeded workspace document has no history to merge with, so it must
@@ -1015,6 +1108,7 @@ fn queue_local_only_documents_before_pull(
     // and an unseeded CRDT (`fresh_install_join.rs`). The repair below is for a
     // seeded CRDT that fell behind the plain files.
     if !crdt_docs.workspace_is_seeded() {
+        trace_pre_pull_repair("skipped: workspace document not seeded yet");
         return None;
     }
     // The repair is for a CRDT that already synced with this server and then
@@ -1026,8 +1120,45 @@ fn queue_local_only_documents_before_pull(
     // workspace index — local root, local identity — over the account's, and the
     // account loses everything (`offline_device_join.rs`). A first sign-in does
     // not trip `needs_full_reseed`: there is no previous account to reset from.
-    if local_state.document_cursors.is_empty() {
-        return None;
+    // The repair is for a CRDT that already synced with this server and then
+    // fell behind the plain files. A device that has never synced with this
+    // server — no pull or push cursor at all — has nothing for its plain files to
+    // be ahead of: its offline history reaches the account through the
+    // re-identified workspace snapshot and the post-pull bootstrap, like any
+    // first sign-in. Running the repair first instead writes the pre-sign-in
+    // workspace index — local root, local identity — over the account's, and the
+    // account loses everything (`offline_device_join.rs`). A first sign-in does
+    // not trip `needs_full_reseed`: there is no previous account to reset from.
+    //
+    // Letting the CONTENT half run here while suppressing only the index was
+    // tried and took the release-depth gate from 5 failing seeds to 17: on a
+    // device whose plain files still hold starter content the account has since
+    // deleted, re-asserting that content before the pull resurrects it. Chaos
+    // seed 253 — a line lost because this repair is skipped — needs a fix that
+    // can tell unpublished user content from unpublished starter content, which
+    // this cannot.
+    // A device with no cursors has never synced with this server. Its workspace
+    // INDEX must not be written before the account's is pulled — that index is
+    // its own, local root and all, and writing it first costs the account
+    // everything (`offline_device_join.rs`) — and most of its plain content is
+    // not really its own either: a fresh install's starter lines are the same
+    // lines the account may have deleted long ago, and re-asserting them here
+    // resurrects them.
+    //
+    // Skipping the whole repair for that reason took scheme content with it,
+    // and a line this device actually authored is then dropped by the pull's
+    // materialization with nothing able to bring it back (chaos seed 253:
+    // device 0 inserts a line at step 19, every sync until step 148 fails, and
+    // that first successful sync loses it).
+    //
+    // Both can be true at once. A starter line's id is FIXED — derived, so
+    // byte-identical on every install — while a line someone typed gets a
+    // random v4 id that exists nowhere else by construction. So on a first
+    // sync, repair only the ids that cannot be starter content, and leave the
+    // index alone entirely.
+    let first_sync_with_this_server = local_state.document_cursors.is_empty();
+    if first_sync_with_this_server {
+        trace_pre_pull_repair("first sync: index repair suppressed, authored lines only");
     }
     let known_documents = crdt_docs.known_document_ids();
     let mut missing_schemes = workspace
@@ -1040,16 +1171,23 @@ fn queue_local_only_documents_before_pull(
             .then_some((*scheme_id, metadata.id))
         })
         .collect::<Vec<_>>();
-    let workspace_index_mismatch = match crdt_docs.workspace_folder_records_match(workspace) {
-        Ok(matches) => !matches,
-        Err(error) => {
-            // An unreadable comparison is not permission to discard the plain
-            // workspace. Queue a reconciliation; the normal CRDT validation
-            // will reject only the repair itself if the bytes are unusable.
-            eprintln!("knotq sync: could not compare plain and CRDT workspace indexes: {error:#}");
-            true
-        }
-    };
+    if first_sync_with_this_server {
+        missing_schemes.clear();
+    }
+    let workspace_index_mismatch = !first_sync_with_this_server
+        && match crdt_docs.workspace_folder_records_match(workspace) {
+            Ok(matches) => !matches,
+            Err(error) => {
+                // An unreadable comparison is not permission to discard the
+                // plain workspace. Queue a reconciliation; the normal CRDT
+                // validation will reject only the repair itself if the bytes
+                // are unusable.
+                eprintln!(
+                    "knotq sync: could not compare plain and CRDT workspace indexes: {error:#}"
+                );
+                true
+            }
+        };
     missing_schemes.sort_by_key(|(scheme_id, _)| *scheme_id);
 
     // The workspace index can be perfectly current while a plain scheme file
@@ -1108,14 +1246,30 @@ fn queue_local_only_documents_before_pull(
             .filter(|item| !local_ids.contains(&item.id.to_string()))
             .cloned()
             .collect();
-        if !missing_from_plain.is_empty() {
+        if !missing_from_plain.is_empty() && !first_sync_with_this_server {
             // Preserve the complete raw scheme snapshot while reconciling. The
             // materialized workspace may intentionally omit a duplicate copy,
             // but replace_scheme would otherwise turn that omission into a
             // destructive tombstone.
             crdt_only_items.insert(*scheme_id, crdt_items);
         }
-        if !ahead.is_empty() || !missing_from_plain.is_empty() {
+        // On a first sync, only lines this device can prove it authored: a
+        // random (v4) id. A derived id is generated — starter content, a
+        // carryover's archived row — and may be something the account deleted
+        // before this device ever reached it.
+        let ahead: HashSet<String> = if first_sync_with_this_server {
+            ahead
+                .into_iter()
+                .filter(|item| {
+                    item.parse::<knotq_model::ItemId>()
+                        .is_ok_and(|id| id.0.get_version_num() == 4)
+                })
+                .collect()
+        } else {
+            ahead
+        };
+        let carries_crdt_only = !missing_from_plain.is_empty() && !first_sync_with_this_server;
+        if !ahead.is_empty() || carries_crdt_only {
             local_ahead_items.insert(*scheme_id, ahead);
         }
     }
@@ -1125,8 +1279,14 @@ fn queue_local_only_documents_before_pull(
         && !workspace_index_mismatch
         && content_mismatch_schemes.is_empty()
     {
+        trace_pre_pull_repair("nothing to repair");
         return None;
     }
+    trace_pre_pull_repair(&format!(
+        "repairing {} missing scheme doc(s), index_mismatch={workspace_index_mismatch}, {} scheme(s) with local-ahead content",
+        missing_schemes.len(),
+        content_mismatch_schemes.len()
+    ));
     // Only a repair that rewrites the workspace index replaces the index edits
     // queued before it (with a full snapshot, below). A repair of scheme
     // content alone leaves them queued: dropping them there discarded this

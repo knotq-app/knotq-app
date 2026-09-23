@@ -7,9 +7,39 @@ use std::path::Path;
 fn upgraded_data_directory() -> &'static UpgradeReport {
     static REPORT: std::sync::OnceLock<UpgradeReport> = std::sync::OnceLock::new();
     REPORT.get_or_init(|| {
+        let data_dir = knotq_storage_json::data_dir();
+        // Before the upgrades, not after: a snapshot can be from an older
+        // build, and the whole point of the format upgrades is to bring
+        // whatever is on disk up to this one. Before anything reads the
+        // directory, too — the restore replaces both halves of it.
+        match knotq_storage_json::take_pending_restore(&data_dir) {
+            Some(Ok(displaced)) => eprintln!(
+                "restored a recovery snapshot; what was here is at {}",
+                displaced.display()
+            ),
+            // The data directory is untouched when this fails, so the app opens
+            // on exactly what it would have opened on anyway. Say so loudly:
+            // the user asked for this and is expecting their old workspace.
+            Some(Err(error)) => eprintln!("recovery snapshot NOT restored: {error:#}"),
+            None => {}
+        }
         let report = run_pending_upgrades(&workspace_path());
         if let Some(line) = report.log_line() {
             eprintln!("{line}");
+        }
+        // Take the day's recovery snapshot here, once, before anything has read
+        // or written the directory — so it holds the state the user left, not
+        // whatever this session goes on to do to it. Deliberately not on the
+        // save path: the first copy of a day is a whole-directory copy, and a
+        // save is on the interactive path. Every later call today costs one
+        // `exists()`.
+        match knotq_storage_json::capture_daily_snapshot(&data_dir) {
+            Ok(Some(snapshot)) => eprintln!("recovery snapshot: {}", snapshot.dir.display()),
+            Ok(None) => {}
+            // A snapshot that cannot be taken must never stop the app opening:
+            // the user's data is still there, they simply have one fewer way
+            // back if something later goes wrong.
+            Err(error) => eprintln!("recovery snapshot skipped: {error:#}"),
         }
         report
     })

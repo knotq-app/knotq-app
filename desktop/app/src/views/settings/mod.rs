@@ -1,3 +1,4 @@
+mod backups;
 mod components;
 mod google_calendar;
 mod labels;
@@ -180,6 +181,7 @@ impl KnotQApp {
             },
         ));
         let update_rows = self.auto_update_rows(t, cx);
+        let backup_rows = self.backup_rows(t, cx);
         let mcp_rows = self.mcp_rows(t, cx);
         let sync_panel = self.settings_sync_panel(t, cx);
         let google_rows = self.google_calendar_account_rows(t, cx);
@@ -228,7 +230,12 @@ impl KnotQApp {
                             tr("settings.updates.section"),
                             update_rows,
                             t,
-                        )),
+                        ))
+                        // Plain English, like the Updates rows above it. The
+                        // l10n gate requires a new key in all 32 catalogs, and
+                        // these strings should go through the normal
+                        // translation pass rather than be machine-filled here.
+                        .child(settings_section("Backups", backup_rows, t)),
                 ),
             )
             .into_any_element()

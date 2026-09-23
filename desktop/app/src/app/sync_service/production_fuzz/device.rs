@@ -52,6 +52,17 @@ impl InFlightSync {
     /// A one-line account of what the run did, for traces.
     pub(super) fn summary(&self) -> String {
         match &self.result {
+            Ok(result) if std::env::var("KNOTQ_DBG_PUSH").is_ok() => format!(
+                "pushed {:?}, applied {} remote update(s), {} pending left, local change {}",
+                result
+                    .pushed
+                    .iter()
+                    .map(|doc| format!("{doc:?}"))
+                    .collect::<Vec<_>>(),
+                result.remote_updates_applied,
+                result.remaining_pending,
+                result.local_workspace_changed,
+            ),
             Ok(result) => format!(
                 "pushed {} doc(s), applied {} remote update(s), {} pending left, local change {}",
                 result.pushed.len(),
@@ -184,9 +195,28 @@ impl DesktopDevice {
         // The reading is taken after the flush inside `projection_divergences`
         // only in effect — that flush is a real mutation whose ids must stand —
         // so flush first, explicitly, and guard only the read that follows.
-        let _ = self.state.crdt_document_states();
+        self.state.flush_pending_crdt();
         let id_stream = knotq_model::deterministic_id_seed();
-        let divergences = self.state.projection_divergences();
+        let mut divergences = self.state.projection_divergences();
+        // For a placement disagreement, say whether two documents both hold the
+        // line (a cross-document duplicate, resolved by lowest scheme id) or
+        // only one does (a plain mismatch). They need completely different
+        // fixes and the message alone cannot tell them apart.
+        if std::env::var("KNOTQ_DBG_DUP").is_ok() {
+            let ids: Vec<knotq_model::ItemId> = divergences
+                .iter()
+                .flat_map(|line| {
+                    line.match_indices("ItemId(")
+                        .filter_map(|(at, _)| line.get(at + 7..at + 43))
+                        .filter_map(|raw| raw.parse().ok())
+                        .collect::<Vec<_>>()
+                })
+                .collect();
+            for item in ids {
+                let holders = self.state.documents_holding_item(item);
+                divergences.push(format!("    [dup] {item:?} live in {holders:?}"));
+            }
+        }
         knotq_model::set_deterministic_id_seed(id_stream);
         divergences
     }
@@ -460,7 +490,12 @@ impl DesktopDevice {
                 self.state.remember_captured_item_edits(&local_item_edits);
                 let local_scheme_edits = capture_local_scheme_edits(&self.state);
                 let local_folder_edits = capture_local_folder_edits(&self.state, &result.workspace);
-                clear_pushed_edits(&mut self.state, &result.pushed, watermark);
+                clear_pushed_edits(
+                    &mut self.state,
+                    &result.pushed,
+                    &result.workspace,
+                    watermark,
+                );
                 if run_changed_workspace(
                     result.remote_updates_applied,
                     result.local_workspace_changed,

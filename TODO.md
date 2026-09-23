@@ -1,11 +1,31 @@
 # Known gaps
 
-**Updated 2026-09-20.** These notes track confirmed data-loss/convergence
+**Updated 2026-09-22.** These notes track confirmed data-loss/convergence
 bugs and deferred release work. Current deploy-blocking status: 0a, 0b, 0c, 0d,
-0e, 0f, 0g, 0h, 0j, 0k, 0l, 0m, 0n, 0o, 0p, 0q, 1, and 2 are fixed and
-verified; 0i (the account-switch exclusion) and 0r (one scheme colour, the last
-CI-depth failure) are open; 3 and 5 remain backend/ops gaps,
+0e, 0f, 0g, 0h, 0j, 0k, 0l, 0m, 0n, 0o, 0p, 0q, 0t, 0u, 1, and 2 are fixed
+and verified; 0i (the account-switch exclusion) is open, and 0r (one scheme colour) now passes but is untraced; 3 and 5 remain backend/ops gaps,
 not sync-convergence bugs. Item 4 remains explicitly deferred undo-history work.
+
+**Where the release-depth gate stands (300 seeds x 200 steps per
+configuration).** Both configurations pass every seed (2026-09-22). Chaos 140
+is fixed (0t), single-account 10290 is fixed (0u), and 220 and 287 — the
+account-switch deletion — were fixed before.
+
+10290 is not new. It fails identically on `472edf1`, measured at the same depth
+in a clean worktree; the claim on that commit that single-account was "green
+across all 300" was wrong. Verifying a gate claim against the actual baseline,
+rather than against the last note about it, is worth the four minutes it costs.
+
+> The release gate is the one to keep green. `release.yml` gates every build
+> job on `needs: [sync-stress, mobile-accounts]`; it is not to be skipped,
+> narrowed or marked `continue-on-error` to get a build out.
+
+Two findings worth not re-deriving: a Daily page bound in the index with no
+`nodes` entry is normal rather than corruption (clients rebuild it through
+`ensure_daily_queue`, so do not rebuild it in `materialize_workspace_inner` —
+that breaks the projection law from the other side), and a carryover's
+displaced item id is derived from `(row, source date)`, so two devices rolling
+the same day mint the same id and the line goes live in two documents.
 
 **Depth matters, and the gate at depth was already red.** The PR gate runs the
 production fuzzer at its default depth; at CI depth
@@ -366,7 +386,239 @@ resolver racing Yrs:
 every pinned scenario — is green.
 
 
-## 0i. A device that has switched accounts still breaks the projection law
+## 0i. [ROOT CAUSE FOUND] Switching accounts can delete the *other* account's data
+
+**Verified 2026-09-21, and it is worse than this entry previously described.**
+The earlier text assumed the loss was a projection-law problem on the switching
+device and stated that "a plain Yjs merge cannot remove an entry the pusher
+never saw". That premise is wrong, and so was the search it directed.
+
+### The mechanism, verified in the code
+
+Three facts compose into data loss:
+
+1. **The same document id exists in every account.** A Daily page's document id
+   is a hash of its *date* alone — `daily_queue_ids` in
+   `shared/model/src/daily_queue.rs` takes only `date.to_string()` — and a
+   scheme's is derived from its scheme id. No account is in the hash. Starter
+   schemes have fixed ids, so every account holds `…101/102/103` too.
+
+2. **The contents alias, not just the ids.**
+   `stable_scheme_population_client_id` (`shared/sync/src/crdt/encoding.rs`)
+   hashes `(document id, content)` — again no account. Two accounts that each
+   hold "Daily 2026-09-14" with the same starter rows therefore hold
+   *byte-identical Yjs structs*: same clientIDs, same clocks.
+
+3. **A re-seed pushes the entire delete set.** `full_snapshot_updates` emits
+   `encode_state_v1`, and `shared/sync/src/crdt/update_capture.rs` says so in
+   its own words: "`encode_diff_v1` attaches the document's **entire** delete
+   set to every delta … full state is emitted deliberately, via `force`/reseed
+   paths".
+
+So when a device switches accounts, it loads the source account's bytes under
+ids the destination also uses, merges the destination's history into them, and
+`queue_account_switch_reseed` pushes the union — **including tombstones the
+device authored on the account it just left**. Those tombstones land on the
+destination's identical structs and delete rows that account's other devices
+still have.
+
+Caught by chaos seeds 281 and 287 as "server state lost item … that no device
+deleted". The fuzz *under-reports* it: the oracle's `destroyed_items` is global
+across accounts, so a plain delete on the source excuses the loss on the
+destination, and only carried-over daily rows are flagged. The real blast radius
+is every fixed-id starter line and every daily row shared by date, both
+directions. Mobile takes the same path.
+
+Two corollaries: `adopt_sync_workspace_identity`'s disjointness guard can never
+fire (every account knows the fixed-id schemes), and the store persists the
+merged two-account history afterwards, so a later diff-fallback push re-sends
+the foreign delete set even if the re-seed is fixed.
+
+### A fix attempt that failed — do not repeat it as-is
+
+Dropping the source account's scheme states before `from_states` and removing
+`queue_account_switch_reseed` took the gate from **7 failing seeds to over
+150**. Content has to follow the user across a switch; the heal path only
+populates schema-less documents, so starting empty loses everything local that
+the destination does not already have. Any fix must keep the *content* and drop
+only the *history*.
+
+### A second fix attempt that failed — and it rules out the obvious shape
+
+This entry used to propose re-seeding with a history-free population rather
+than `encode_state_v1`, on the grounds that it carries the content without the
+tombstones. **That was tried on 2026-09-22 and took the gate from 3 failing
+chaos seeds to 87**, plus 5 in the single-account configuration that had been
+green.
+
+The reason is already written down elsewhere in the crate, in
+`adopt_squashed_document`: a rebuilt document "shares no Yjs history with its
+predecessor, so a merge would double content" — which is why a squash is
+*adopted*, replacing the local document, and never merged. The account-switch
+re-seed is an ordinary push, so the server merges it. A history-free rebuild
+pushed into a merge is therefore the one thing it must never be.
+
+So dropping the history requires the destination to REPLACE rather than merge,
+which means going through the epoch/squash mechanism rather than the pending
+queue — a much larger change than this entry previously implied. The remaining
+candidates:
+
+1. Re-seed through an epoch bump, so the destination adopts instead of merging.
+2. Put the account's workspace id into the document-id hash, so the two
+   accounts cannot address the same document at all. A format change: it needs
+   `storage-json/src/upgrade/`, a captured release fixture, and desktop and
+   mobile shipped together. Note this is *not* needed to stop a server-side
+   collision — `WORKSPACE_OBJECTS.idFromName(workspaceId)` already scopes every
+   document per account — it is only about making the structs stop aliasing.
+3. Scope the population clientID by account, which stops the structs aliasing
+   without moving any document. Fleet-visible via
+   `SCHEME_POPULATION_ENCODING_VERSION`, and the determinism is load-bearing
+   *within* an account, so first-population dedupe has to keep working. The principled alternative is to put the account's workspace
+id into the document-id hash so the two accounts can never address the same
+document — a format change needing `storage-json/src/upgrade/`, a captured
+fixture, and desktop+mobile shipped together.
+
+
+## 0s. [FIXED] A device's first successful sync dropped what it edited before it
+
+**Fixed 2026-09-22.** Production fuzz chaos seed 253: device 0 inserted a line
+at step 19, every sync attempt until step 148 failed, and that first successful
+sync lost the line. Device 0 never switches accounts and the lost id is a
+random v4 — not one of the derived ids that alias across accounts — so this was
+never 0i wearing a different hat, even though the seed runs in the two-account
+configuration.
+
+The cause was the `document_cursors.is_empty()` guard in
+`queue_local_only_documents_before_pull`. A device that has never synced with
+this server skipped the whole pre-pull repair, so content only it held was
+never written into the documents before the pull merged the server's copy over
+them. The post-pull bootstrap could not recover it either: it only repopulates
+documents that are still schema-less, and by then the pull has populated them.
+
+The guard had two real reasons behind it, and only one of them is about the
+index. Writing this device's workspace index before the account's is pulled
+costs the account everything (`offline_device_join.rs`). But most of a
+never-synced device's plain *content* is not its own either — a fresh install's
+starter lines are the same lines the account may have deleted long ago, and
+re-asserting them resurrects them. Letting the whole content half run took the
+gate from 5 failing seeds to **17** for exactly that reason.
+
+Both concerns are satisfied at once by asking which lines the device can prove
+it authored. A starter line's id is fixed and derived, byte-identical on every
+install; a line someone typed gets a random v4 id that exists nowhere else by
+construction. So a first sync now repairs only v4 ids, and leaves the index —
+and every derived id, including a carryover's archived row — alone.
+
+## 0t. [FIXED] An edit made while a post-switch sync is in flight did not survive
+
+**Fixed.** Production fuzz chaos seed 140. Device 0 signs into account 0 at
+step 35. At step 42 its sync fails ("connection dropped"), and *during* that
+run the fuzzer applies `CreateScheme { folder: 0b1b17de, name: "scheme 7911" }`
+— into a folder that the same run's index write has just removed, because that
+folder belongs to the account being left. The next sync, at step 43, lost the
+scheme.
+
+**The mechanism.** A pull materializes from the workspace INDEX document, and
+the index write happens *after* the pull, from the pull's own result. A scheme
+created while a sync is in flight is therefore not in the index the next pull
+materializes from, and that pull drops the whole page. Worse than a visible
+drop: applying the pull also PRUNES the live CRDT document of a scheme the
+merged index neither materializes nor binds (`self.schemes.retain` in
+`crdt/mod.rs`), so the content went with it. That is why the projection law
+never fired — both halves agreed the page was gone.
+
+`retained_loaded_schemes` already rescues this shape, but only for a scheme
+whose `scheme_sync` binding survives in the MERGED index; here the index had
+never heard of the scheme at all.
+
+**The fix** (`sync_service/snapshot.rs`): `restore_unpublished_schemes_dropped_by_pull`
+puts back a scheme the pull subtracted, and only when this device demonstrably
+created it and never published it. Both halves are required:
+
+- the server has no sequence for the document (`pull.remote_latest`), so no
+  other device can ever have seen it, let alone deleted it; and
+- this device still has pending edits for the document.
+
+The second half is not belt-and-braces. `remote_latest` falls back to local
+cursors when a response carries no `known_documents`, and an account switch
+resets those cursors — on its own the first test would read every scheme of the
+account being left as "never published" and resurrect the lot. That is the
+`current.scheme_sync` dead end recorded below, which took the gate from 1
+failing seed to 32.
+
+Because the pull prunes the content document, the body cannot be read back
+afterwards; it is captured *before* the pull. Cloning every scheme's items on
+every sync is the most expensive thing a workspace can be asked to do, so only
+the at-risk set is captured — a document with no pull cursor that still has
+pending edits, which is a freshly created page and almost always nothing at all.
+
+**A Daily page is excluded, and that exclusion is load-bearing.** The first
+version restored one and broke chaos seed 127: a day outside the loaded window
+is deliberately absent from the plain workspace, so putting it back breaks the
+projection law from the other side — the materialized half then holds a page
+the visible half does not. This is the same trap already documented on
+`retained_loaded_schemes` (chaos 108, single-account 10214). The client brings
+the day back from its binding through `ensure_daily_queue` when it needs it.
+
+**Do not simply fall back to `current.scheme_sync` in
+`materialize_workspace_inner`.** Tried: it took the gate from 1 failing seed to
+32 (27 chaos, 5 single-account). `current` is the pre-pull workspace, so it
+still lists schemes the account deleted remotely, and retaining on its binding
+resurrects every one of them.
+
+Measured at release depth (`KNOTQ_FUZZ_SEEDS=300 KNOTQ_FUZZ_STEPS=200`), both
+configurations, against the same depth on `472edf1`:
+
+| | chaos | single-account |
+|---|---|---|
+| `472edf1` (before) | 140 | 10290 |
+| after | green | 10290 |
+
+**Note the baseline.** 10290 fails on `472edf1` too. The note on that commit
+("single-account green across all 300") was wrong, and 10290 is an unrelated
+pre-existing failure — see 0u.
+
+## 0u. [FIXED] A scheme created while a sync was in flight was never published to the account
+
+**Fixed.** Production fuzz single-account seed 10290 — failing on `472edf1` too,
+so it predates 0t. Device 3 creates "scheme 6321" while a sync is in flight
+(step 158). Device 3 keeps it; every other device ignores its content document
+as an orphan with no index entry, and device 3 reports `0 pending left` forever.
+
+**The mechanism, from probes rather than inference.** Device 3's index document
+held client `4019…063` clocks 10–43 that the server never received. The
+in-flight `CreateScheme` WAS queued correctly (op #4 on the index document), but
+the landing threw it away:
+
+1. Landing calls `drop_unbound_pending_crdt_edits` BEFORE it adopts the run's
+   workspace. At that moment the store's workspace named a stale index document
+   (`712ba4a2`, which the server has never heard of) while every CRDT write went
+   to the real one (`a5f399d3`). The identity is only brought back in line by
+   the adoption that follows.
+2. Judged against the store alone, ops #3 and #4 for the real index looked
+   unbound, and were dropped — including the in-flight edit no run had sent.
+3. The adoption then merged those structs into the document, so the edit
+   queued afterwards (#5) was an EMPTY diff. It was pushed and cleared; the
+   structs never left the device.
+
+**The fix** (`WorkspaceStore::drop_unbound_pending_crdt_edits_at_landing`):
+an edit the run never saw (`sequence >= local_edit_watermark`) is kept when the
+workspace the landing is about to adopt binds its document. The watermark was
+already threaded into `clear_pushed_edits` and unused.
+
+**The watermark gate is load-bearing.** The first version kept any edit the
+incoming workspace bound, and broke single-account seed 10208: a device's
+pre-canonical index edits that its run had deliberately discarded (seqs 1–9,
+"0 pending left") came back, were re-sent later as superseded deltas, and a
+Daily line was lost on the server. An edit that WAS in the run keeps the
+store-only rule; the run already decided what to do with it.
+
+**Still worth knowing:** the store's plain workspace naming a different index
+document than its CRDT between landings is itself odd, and is what made this
+possible. It is harmless now that nothing destructive judges by it alone, but it
+is the next thing to look at if a similar shape turns up.
+
+## 0i-b. A device that has switched accounts still breaks the projection law
 
 **Open, and the projection law's one documented exclusion.** The law
 ([the section at the top](#how-this-class-of-bug-is-found-now-the-projection-law))
@@ -692,6 +944,12 @@ whole chaos sweep is green and the single-account sweep fails one seed, against
 
 
 ## 0r. The last CI-depth failure: a Daily page's colour, single-account seed 10105
+
+**2026-09-22: passes.** Seed 10105 is inside the release-depth single-account
+sweep (seeds 10000–10299 at 200 steps), which is green end to end after 0t and
+0u. Nobody has traced WHY it stopped failing, so this stays listed until someone
+does — a fix that arrives as a side effect is worth one replay with the trace
+to confirm it is the same mechanism and not a masked one.
 
 **Open, and the only seed failing the 128×200 sweep.** Not content loss — one
 scheme metadata field.

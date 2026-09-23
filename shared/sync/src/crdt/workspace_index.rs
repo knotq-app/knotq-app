@@ -684,6 +684,89 @@ impl YrsJsonDocument {
                 );
             }
         }
+        // The same report for the Daily Queue bindings. A day's binding is what
+        // makes its page addressable at all: drop it and the page's document
+        // survives on the server with nothing pointing at it, which reads to
+        // every device as the day having been emptied.
+        {
+            let desired: HashSet<&str> = daily_queue_entries
+                .iter()
+                .map(|(date, _)| date.as_str())
+                .collect();
+            let mut removed: Vec<String> = string_map_entries(&daily_queue, &txn)
+                .into_iter()
+                .map(|(date, _)| date)
+                .filter(|date| !desired.contains(date.as_str()))
+                .collect();
+            if !removed.is_empty() {
+                removed.sort();
+                eprintln!(
+                    "sync: workspace index write removes {} daily binding(s): {}",
+                    removed.len(),
+                    removed.join(", ")
+                );
+            }
+            // A binding that is REPOINTED is as destructive as one removed, and
+            // leaves no trace in either report above: the key survives, so
+            // nothing is "removed", but the scheme it used to name is now
+            // unreferenced and its document is an orphan on the server. A day's
+            // scheme id is derived from its date and never legitimately changes,
+            // so any repoint is worth naming.
+            let stored: Vec<(String, String)> = string_map_entries(&daily_queue, &txn);
+            let mut repointed: Vec<String> = stored
+                .iter()
+                .filter_map(|(date, was)| {
+                    daily_queue_entries
+                        .iter()
+                        .find(|(key, _)| key == date)
+                        .filter(|(_, now)| now != was)
+                        .map(|(_, now)| format!("{date}: {was} -> {now}"))
+                })
+                .collect();
+            if !repointed.is_empty() {
+                repointed.sort();
+                eprintln!(
+                    "sync: workspace index write repoints {} daily binding(s): {}",
+                    repointed.len(),
+                    repointed.join(", ")
+                );
+            }
+        }
+        // `nodes` and `daily_queue` are reported above because they are the two
+        // most destructive. They are not the only maps a write can remove from,
+        // and the others are destructive in their own right: without its
+        // `scheme_sync` entry a scheme's document is unaddressable and reads to
+        // every device as an orphan, and without its `node_fields` a page loses
+        // its name, position and colour for the whole account. Report those too,
+        // so the next "a Daily page vanished" investigation names the map.
+        report_map_removals("scheme_sync", &scheme_sync, &txn, &scheme_sync_entries);
+        // A scheme's content document id is derived from the scheme (and a daily
+        // page's from its date), so it must never change. If it does, the
+        // document the index used to name is orphaned on the server with the
+        // scheme's content in it, and every device reads the day as empty —
+        // with no removal anywhere to show for it.
+        {
+            let mut repointed: Vec<String> = string_map_entries(&scheme_sync, &txn)
+                .into_iter()
+                .filter_map(|(scheme, was)| {
+                    scheme_sync_entries
+                        .iter()
+                        .find(|(key, _)| *key == scheme)
+                        .filter(|(_, now)| *now != was)
+                        .map(|(_, now)| format!("{scheme}: {was} -> {now}"))
+                })
+                .collect();
+            if !repointed.is_empty() {
+                repointed.sort();
+                eprintln!(
+                    "sync: workspace index write repoints {} scheme_sync entr(ies): {}",
+                    repointed.len(),
+                    repointed.join(", ")
+                );
+            }
+        }
+        report_map_removals("node_fields", &node_fields, &txn, &node_field_entries);
+        report_map_removals("folder_sync", &folder_sync, &txn, &folder_sync_entries);
         changed |= sync_string_map(&nodes, &mut txn, &node_entries);
         changed |= sync_string_map(&node_fields, &mut txn, &node_field_entries);
         changed |= sync_string_map(&scheme_sync, &mut txn, &scheme_sync_entries);
@@ -714,6 +797,38 @@ impl YrsJsonDocument {
         let before = txn.snapshot();
         txn.apply_update(Update::decode_v1(update)?)?;
         Ok(txn.snapshot() != before)
+    }
+
+    /// The workspace index this replica should hold after an account switch,
+    /// given `remote_state_v1`, the destination account's full index state.
+    ///
+    /// Index entries are removed outright (`sync_string_map` deletes the key),
+    /// so here the removal IS the Yjs tombstone, and a device that carried its
+    /// index into an account and back holds that account's very structs. Its
+    /// tombstones for them — a scheme it archived elsewhere — must not delete
+    /// the entries the destination still has. So the merge is built
+    /// remote-first: a fresh document takes the destination's state, then this
+    /// document's full state with its delete set narrowed to clocks the
+    /// destination does not know (`update_v1_without_deletes_known_to`). A
+    /// struct both sides hold is skipped as already integrated; every struct
+    /// only this device holds carries over with its history intact, so the
+    /// snapshot the switch then pushes merges on the server instead of
+    /// doubling. (A scheme document takes a different route —
+    /// `YrsSchemeDocument::merge_for_account_switch` — because its rows are
+    /// soft-deleted through presence tags rather than tombstones, and its text
+    /// edits must keep crossing whole.)
+    pub(crate) fn remerged_remote_first(&self, remote_state_v1: &[u8]) -> anyhow::Result<Self> {
+        let fresh = Self::for_replica(self.id, self.kind, None);
+        fresh
+            .apply_update_v1(remote_state_v1)
+            .context("adopt the destination account's workspace index")?;
+        let known = fresh.doc.transact().state_vector();
+        let local_only =
+            super::encoding::update_v1_without_deletes_known_to(&self.encode_state_v1(), &known)?;
+        fresh
+            .apply_update_v1(&local_only)
+            .context("re-apply this device's index structs on the destination's")?;
+        Ok(fresh)
     }
 
     /// Whether this document has ever been written or restored, as opposed to
@@ -1270,6 +1385,34 @@ pub(crate) fn string_map_entries(map: &MapRef, txn: &impl ReadTxn) -> Vec<(Strin
 /// Reconcile a string→string map to `desired`: remove keys no longer present and
 /// (re)insert only entries whose value changed, so a single edit yields a single
 /// map-entry delta. Returns whether anything changed.
+/// Report the keys a pending `sync_string_map` write would remove from `map`.
+///
+/// Read-only: the caller still performs the write. See the `nodes` report above
+/// for why a removal in the workspace index is worth naming — the index is the
+/// account's, so a removal here is published to every device.
+fn report_map_removals(
+    label: &str,
+    map: &MapRef,
+    txn: &impl ReadTxn,
+    desired: &[(String, String)],
+) {
+    let kept: HashSet<&str> = desired.iter().map(|(key, _)| key.as_str()).collect();
+    let mut removed: Vec<String> = string_map_entries(map, txn)
+        .into_iter()
+        .map(|(key, _)| key)
+        .filter(|key| !kept.contains(key.as_str()))
+        .collect();
+    if removed.is_empty() {
+        return;
+    }
+    removed.sort();
+    eprintln!(
+        "sync: workspace index write removes {} {label} entr(ies): {}",
+        removed.len(),
+        removed.join(", ")
+    );
+}
+
 pub(crate) fn sync_string_map(
     map: &MapRef,
     txn: &mut TransactionMut,

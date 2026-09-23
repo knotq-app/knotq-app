@@ -349,7 +349,100 @@ impl World {
             base,
             replica,
         ) {
-            Ok(outcome) => View::of(&outcome.workspace),
+            Ok(mut outcome) => {
+                // Bring each bound day into being, the way a real device does.
+                //
+                // A Daily page can be bound in the index — a `daily_queue`
+                // entry and a `scheme_sync` binding — with no entry in the
+                // merged `nodes` map, because a node entry is only ever written
+                // by a device that had the page materialized. Index
+                // materialization alone therefore does not produce the day, and
+                // this audit used to report it as content the account had lost
+                // (single-account seed 10204).
+                //
+                // A real device does not stop there: `ensure_daily_queue` (the
+                // one way a client brings a day into being) rebuilds a day the
+                // index binds but that is not in memory from its CRDT document
+                // before creating anything. Without this the audit is a
+                // *stricter* reader than any real client, and reports losses no
+                // user could see. Deliberately only for days the index already
+                // binds, and only from a document this replica actually holds —
+                // nothing is invented.
+                let unbuilt: Vec<(chrono::NaiveDate, knotq_model::SchemeId)> = outcome
+                    .workspace
+                    .daily_queue
+                    .iter()
+                    .filter(|(_, scheme)| !outcome.workspace.schemes.contains_key(scheme))
+                    .map(|(date, scheme)| (*date, *scheme))
+                    .collect();
+                for (date, scheme_id) in unbuilt {
+                    let Some(items) = crdt.materialized_scheme_items(scheme_id) else {
+                        continue;
+                    };
+                    outcome.workspace.schemes.insert(
+                        scheme_id,
+                        knotq_model::Scheme {
+                            id: scheme_id,
+                            name: knotq_model::daily_queue_scheme_name(date),
+                            color_index: knotq_model::DAILY_QUEUE_COLOR_INDEX,
+                            gsync: false,
+                            source: knotq_model::SchemeSource::default(),
+                            items,
+                        },
+                    );
+                }
+                // The audit is a brand-new device pulling the whole account, so
+                // a document it cannot apply is precisely a document the account
+                // has lost for every future joiner. Never silent.
+                for skipped in &outcome.skipped {
+                    eprintln!(
+                        "audit pull skipped {} ({:?}): {}",
+                        skipped.document, skipped.kind, skipped.reason
+                    );
+                }
+                if std::env::var("KNOTQ_DBG_AUDIT").is_ok() {
+                    let mut daily: Vec<String> = outcome
+                        .workspace
+                        .daily_queue
+                        .iter()
+                        .map(|(date, scheme)| {
+                            let document = outcome
+                                .workspace
+                                .scheme_sync
+                                .get(scheme)
+                                .map(|meta| meta.id.to_string())
+                                .unwrap_or_else(|| "<no scheme_sync>".to_string());
+                            let items = outcome
+                                .workspace
+                                .schemes
+                                .get(scheme)
+                                .map(|scheme| scheme.items.len())
+                                .map(|count| count.to_string())
+                                .unwrap_or_else(|| "<no scheme>".to_string());
+                            let archived = outcome.workspace.recently_deleted.contains(scheme);
+                            let origin = outcome
+                                .workspace
+                                .deleted_scheme_origins
+                                .get(scheme)
+                                .map(|origin| origin.position.to_string())
+                                .unwrap_or_else(|| "-".to_string());
+                            format!(
+                                "{date} -> {scheme} doc={document} items={items} archived={archived} origin={origin}"
+                            )
+                        })
+                        .collect();
+                    daily.sort();
+                    eprintln!(
+                        "AUDIT pulls={} docs={} applied={} schemes={} daily: {}",
+                        outcome.pull_requests,
+                        outcome.remote_documents_received,
+                        outcome.remote_updates_applied,
+                        outcome.workspace.schemes.len(),
+                        daily.join(" | ")
+                    );
+                }
+                View::of(&outcome.workspace)
+            }
             Err(err) => {
                 self.log(format!("server audit pull failed: {err:#}"));
                 self.server_views[account.index].clone()
@@ -745,6 +838,23 @@ fn run_seeds(first_seed: u64, config: impl Fn() -> Config + Sync) {
 /// Keep the production API untouched while making each test's environment a
 /// properly scoped resource.
 fn with_fuzz_test_environment<R>(maintenance_coverage: bool, f: impl FnOnce() -> R) -> R {
+    // Set before anything in this process writes a file, which is why it lives
+    // here rather than in `run_seeds_inner`: the pinned single-seed regressions
+    // call `run_seed` directly, `cargo test` runs them alongside the sweeps, and
+    // `write_atomic` reads the policy exactly once per process. Whichever test
+    // saved first used to decide for everybody, so a full run mostly kept
+    // fsyncing and the sweeps saw none of the speedup.
+    //
+    // Durability costs more than everything else here put together: on macOS
+    // each `sync_all` is `fcntl(F_FULLFSYNC)` — 4.9 ms against 0.1 ms for the
+    // same write — and one simulated sync performs a dozen or more, whose
+    // flush-cache commands serialize in the drive so more workers made it
+    // slower. This model's crashes are `CrashPoint`s: which files had been
+    // written, chosen explicitly, never a killed process. Nothing asserted here
+    // depends on bytes reaching the platter, and writes stay atomic regardless.
+    static DURABILITY: std::sync::Once = std::sync::Once::new();
+    DURABILITY.call_once(|| std::env::set_var("KNOTQ_STORAGE_SKIP_FSYNC", "1"));
+
     static ENV_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
     let _lock = ENV_LOCK
         .get_or_init(|| Mutex::new(()))

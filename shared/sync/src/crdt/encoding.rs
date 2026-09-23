@@ -171,6 +171,54 @@ pub(crate) fn serde_json_string_value(value: &impl Serialize) -> anyhow::Result<
     Ok(value.as_str().unwrap_or_default().to_string())
 }
 
+/// `update_v1` with every delete-set entry that names a struct `known` already
+/// holds removed, and everything else — every struct and every other tombstone
+/// — kept byte for byte.
+///
+/// A full-state update (`encode_state_v1`) carries the document's entire delete
+/// set, and the delete set is the one part of an update that acts on structs the
+/// *receiver* holds rather than on structs the update carries. That is exactly
+/// what must not cross an account boundary: two accounts hold byte-identical
+/// structs for the same derived document id (a Daily page's starter rows, a
+/// fixed-id scheme's lines, anything a device carried across before), so a
+/// tombstone one account authored deletes the other account's live row. A
+/// struct the update *carries* is harmless on its own — one the receiver has is
+/// skipped as already integrated, and one it lacks arrives with its deletion
+/// baked in (`ItemContent::Deleted` / GC blocks self-delete on integration) —
+/// so the structs go through unchanged and only the delete set is narrowed to
+/// clocks past `known`, where the receiver has nothing and a tombstone can only
+/// apply to the structs travelling beside it.
+///
+/// Implemented on the wire encoding: yrs writes the delete set as the tail of a
+/// v1 update, so the tail is re-encoded from the filtered set and everything
+/// before it is kept verbatim.
+pub(crate) fn update_v1_without_deletes_known_to(
+    update_v1: &[u8],
+    known: &StateVector,
+) -> anyhow::Result<Vec<u8>> {
+    use yrs::ID;
+    let update = Update::decode_v1(update_v1)?;
+    let full = update.encode_v1();
+    let delete_set_tail = update.delete_set().encode_v1();
+    anyhow::ensure!(
+        full.ends_with(&delete_set_tail),
+        "yrs update encoding no longer ends with its delete set"
+    );
+    let mut kept = yrs::IdSet::new();
+    for (client, ranges) in update.delete_set().iter() {
+        let known_clock = known.get(client);
+        for range in ranges.iter() {
+            let start = range.start.max(known_clock);
+            if start < range.end {
+                kept.insert(ID::new(*client, start), range.end - start);
+            }
+        }
+    }
+    let mut out = full[..full.len() - delete_set_tail.len()].to_vec();
+    out.extend(kept.encode_v1());
+    Ok(out)
+}
+
 /// True when `update_v1` carries no operations. A no-op Yjs diff is not
 /// zero-length: it encodes as the canonical 2-byte update `[0, 0]` (zero struct
 /// clients, zero delete-set clients). Treating it as a real update queues no-op

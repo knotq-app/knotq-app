@@ -276,12 +276,16 @@ impl KnotQApp {
                                 .px(px(10.0))
                                 .py(px(5.0))
                                 .rounded(px(5.0))
-                                .bg(token_rgba(t.text_highlight))
+                                // The CTA fill, not `text_highlight`. That token
+                                // is the accent for highlighted *text*, and white
+                                // on it fails contrast badly enough that the label
+                                // is hard to read at 12px semibold.
+                                .bg(token_rgba(sync_cta_bg()))
                                 .text_size(px(12.0))
                                 .font_weight(gpui::FontWeight::SEMIBOLD)
                                 .text_color(token_hsla(0xffffffff))
                                 .cursor_pointer()
-                                .hover(|s| s.bg(token_rgba(0xe66f1fff)))
+                                .hover(|s| s.bg(token_rgba(sync_cta_hover_bg())))
                                 .on_click(cx.listener(|this, _: &ClickEvent, _window, cx| {
                                     this.open_community_prompt(cx);
                                 }))
@@ -511,12 +515,12 @@ impl KnotQApp {
                                     .px(px(10.0))
                                     .py(px(5.0))
                                     .rounded(px(5.0))
-                                    .bg(token_rgba(t.text_highlight))
+                                    .bg(token_rgba(sync_cta_bg()))
                                     .text_size(px(12.0))
                                     .font_weight(gpui::FontWeight::SEMIBOLD)
                                     .text_color(token_hsla(0xffffffff))
                                     .cursor_pointer()
-                                    .hover(|s| s.bg(token_rgba(0xe66f1fff)))
+                                    .hover(|s| s.bg(token_rgba(sync_cta_hover_bg())))
                                     .on_click(cx.listener(|this, _: &ClickEvent, _window, cx| {
                                         this.dismiss_notice_modal(cx);
                                     }))

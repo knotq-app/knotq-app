@@ -193,7 +193,7 @@ mod workspace_index;
 use update_capture::{Delta, UpdateCapture};
 
 pub use encoding::stable_client_id;
-pub use scheme_content::YrsSchemeDocument;
+pub use scheme_content::{AccountSwitchMerge, YrsSchemeDocument};
 pub use validation::validate_crdt_update_sequence;
 
 pub(crate) use encoding::{
@@ -303,6 +303,12 @@ pub struct WorkspaceCrdtApplyOutcome {
     pub document_errors: Vec<DocumentApplyError>,
     /// Workspace-level fatal errors: if non-empty the caller must abort the pull.
     pub workspace_errors: Vec<WorkspaceApplyError>,
+    /// For each scheme document merged as an account switch
+    /// ([`WorkspaceCrdtDocuments::apply_remote_updates_for_account_switch`]),
+    /// what each side held live before the merge — the input to
+    /// [`WorkspaceCrdtDocuments::revive_after_account_switch`] once every page
+    /// of the switch's pull has been applied.
+    pub account_switch_merges: HashMap<DocumentId, AccountSwitchMerge>,
 }
 
 impl WorkspaceCrdtApplyOutcome {
@@ -390,6 +396,30 @@ fn deferred_live_document(deferred: &DeferredSchemeDocument) -> anyhow::Result<Y
 pub struct CrdtDocumentPopulation {
     pub live_schemes: usize,
     pub deferred_schemes: usize,
+}
+
+/// Whether `state_v1` decodes to a **workspace-index** document.
+///
+/// A document id carries no kind, so the only way to tell an index apart from a
+/// scheme content document by its persisted bytes is the shape: the index keys
+/// its content under `nodes`, a scheme document under `items_by_id`. Used to
+/// find the workspace document when the plain workspace's identity has moved
+/// but the persisted state is still keyed by an earlier id — see
+/// `workspace_document_state_to_carry` in the desktop sync snapshot.
+pub fn state_is_workspace_index(state: &[u8]) -> bool {
+    let Ok(update) = Update::decode_v1(state) else {
+        return false;
+    };
+    let doc = Doc::new();
+    if doc.transact_mut().apply_update(update).is_err() {
+        return false;
+    }
+    let txn = doc.transact();
+    // Non-empty, not merely present: `get_or_insert_map` on a fresh read would
+    // report every root as existing, and an index with no nodes is nothing to
+    // carry anyway.
+    txn.get_map("nodes")
+        .is_some_and(|nodes| nodes.len(&txn) > 0)
 }
 
 impl WorkspaceCrdtDocuments {
@@ -1197,6 +1227,95 @@ impl WorkspaceCrdtDocuments {
         healed
     }
 
+    /// After every page of an account switch's pull has merged, keep the rows
+    /// the switch would otherwise cost: a row the destination account held
+    /// live that the merged documents now hold live NOWHERE on this device.
+    ///
+    /// The switch carries the user's content across, and a row is content
+    /// whichever side held it. But the two accounts hold byte-identical
+    /// structs for the same derived document ids, so each side's removals
+    /// land on the other's rows: a row this device rolled forward on the
+    /// account it left is removed on its source day here, and a row the
+    /// destination resolved as a cross-document duplicate is removed on the
+    /// day this device carries it on. Either alone is a move; both together
+    /// leave the row dead in every document (chaos seeds 220 and 287), and
+    /// the full-snapshot re-seed then publishes that to every device on the
+    /// destination.
+    ///
+    /// Only a row that is live nowhere is revived — a row this device holds
+    /// live in another document is a move, and reviving it too would make
+    /// it a duplicate that the desktop's placement reconciliation deletes
+    /// again, in a race with any concurrent carryover (reviving every row the
+    /// destination held took the release gate from 3 failing seeds to 25). It
+    /// comes back where this device last held it live, so the move follows
+    /// the user; a row this device never held live comes back where the
+    /// destination had it.
+    ///
+    /// Returns the re-materialized workspace and the documents written.
+    pub fn revive_after_account_switch(
+        &mut self,
+        current: &Workspace,
+        merges: &HashMap<DocumentId, AccountSwitchMerge>,
+    ) -> anyhow::Result<(Workspace, Vec<DocumentId>)> {
+        if merges.is_empty() {
+            return Ok((current.clone(), Vec::new()));
+        }
+        let live_anywhere: HashSet<knotq_model::ItemId> = self
+            .schemes
+            .values()
+            .filter_map(|document| document.scheme_items().ok())
+            .flatten()
+            .map(|item| item.id)
+            .collect();
+        let scheme_by_document = scheme_documents_by_id(current);
+        // Where this device last held each row live, if anywhere.
+        let mut local_placement: HashMap<knotq_model::ItemId, DocumentId> = HashMap::new();
+        for (document, merge) in merges {
+            for id in &merge.local_live {
+                local_placement.entry(*id).or_insert(*document);
+            }
+        }
+        let local_placement = &local_placement;
+        let live_anywhere = &live_anywhere;
+        let mut revive: Vec<(DocumentId, knotq_model::ItemId)> = merges
+            .iter()
+            .flat_map(|(document, merge)| {
+                merge
+                    .destination_live
+                    .iter()
+                    .filter(|id| !live_anywhere.contains(id))
+                    .map(move |id| (local_placement.get(id).copied().unwrap_or(*document), *id))
+            })
+            .collect();
+        revive.sort();
+        revive.dedup();
+        let mut written: Vec<DocumentId> = Vec::new();
+        for (document, id) in revive {
+            let Some(scheme_id) = scheme_by_document.get(&document) else {
+                continue;
+            };
+            let Some(doc) = self.schemes.get(scheme_id) else {
+                continue;
+            };
+            if doc.revive_item(id)? {
+                eprintln!(
+                    "sync: account switch keeps row {id} live on {document}: removed on the \
+                     account this device left, live on the account it joined"
+                );
+                if written.last() != Some(&document) {
+                    written.push(document);
+                }
+            }
+        }
+        if written.is_empty() {
+            return Ok((current.clone(), written));
+        }
+        let workspace = self
+            .materialized_workspace_repair(current, &|_| false)
+            .context("materialize after account-switch revival")?;
+        Ok((workspace, written))
+    }
+
     /// Adopt a squashed (epoch-bumped) scheme document: REPLACE the local CRDT
     /// document with `state` instead of merging (the squashed document shares no
     /// Yjs history with its predecessor, so a merge would double content), then
@@ -1246,6 +1365,33 @@ impl WorkspaceCrdtDocuments {
             _ => None,
         };
 
+        // Adoption REPLACES the local document, so anything this device holds
+        // that the adopted state does not is gone. The rescue above covers
+        // items this device has pending; anything else — a line durable in the
+        // local CRDT but never queued, because a crash took the pending queue
+        // with it — disappears with nothing to say so. Name it: this is the one
+        // place an adoption can cost content.
+        if let (Some(local), Ok(kept_items)) =
+            (self.schemes.get(&scheme_id), adopted.scheme_items())
+        {
+            if let Ok(held) = local.scheme_items() {
+                let kept: HashSet<knotq_model::ItemId> =
+                    kept_items.iter().map(|item| item.id).collect();
+                let dropped: Vec<String> = held
+                    .iter()
+                    .filter(|item| !kept.contains(&item.id))
+                    .map(|item| item.id.to_string())
+                    .collect();
+                if !dropped.is_empty() {
+                    eprintln!(
+                        "sync: adoption of {document} drops {} local item(s) the adopted state                          does not carry (rescued={}): {}",
+                        dropped.len(),
+                        rescue.is_some(),
+                        dropped.join(", ")
+                    );
+                }
+            }
+        }
         // An adopted document replaces whatever we held — including a deferred
         // entry for the same scheme (a squash of an off-window daily). Drop it
         // so `document_states` does not later re-emit the pre-squash bytes.
@@ -1626,12 +1772,33 @@ impl WorkspaceCrdtDocuments {
         current: &Workspace,
         updates: &[StoredCrdtUpdate],
     ) -> WorkspaceCrdtApplyOutcome {
+        self.apply_remote_updates_for_account_switch(current, updates, &HashSet::new())
+    }
+
+    /// [`Self::apply_remote_updates`], except that each document in
+    /// `account_switch` — whose update must be the server's FULL state — is
+    /// merged as the first pull after an account switch: the local documents
+    /// still carry the account being left, under ids the destination uses too,
+    /// and nothing that account removed may reach the destination's identical
+    /// rows. The workspace index is rebuilt from the destination's state with
+    /// the local structs re-applied on top
+    /// ([`YrsJsonDocument::remerged_remote_first`]); a scheme document merges
+    /// as usual and reports what each side held live, for
+    /// [`Self::revive_after_account_switch`] to act on once the whole pull is
+    /// in ([`YrsSchemeDocument::merge_for_account_switch`]).
+    pub fn apply_remote_updates_for_account_switch(
+        &mut self,
+        current: &Workspace,
+        updates: &[StoredCrdtUpdate],
+        account_switch: &HashSet<DocumentId>,
+    ) -> WorkspaceCrdtApplyOutcome {
         let mut outcome = WorkspaceCrdtApplyOutcome {
             workspace: current.clone(),
             applied: 0,
             changed_documents: HashSet::new(),
             document_errors: Vec::new(),
             workspace_errors: Vec::new(),
+            account_switch_merges: HashMap::new(),
         };
 
         let mut workspace_applied = false;
@@ -1652,7 +1819,16 @@ impl WorkspaceCrdtDocuments {
                 continue;
             }
             workspace_update_eligible_for_materialization = true;
-            let apply_result = self.workspace.apply_update_v1(&update.update_v1);
+            let apply_result = if account_switch.contains(&update.document) {
+                self.workspace
+                    .remerged_remote_first(&update.update_v1)
+                    .map(|fresh| {
+                        self.workspace = fresh;
+                        true
+                    })
+            } else {
+                self.workspace.apply_update_v1(&update.update_v1)
+            };
             match apply_result {
                 // Only a merge that actually changed the document counts as
                 // applied. An echo of this replica's own push (the server
@@ -1820,16 +1996,41 @@ impl WorkspaceCrdtDocuments {
             // lands on real history and the normal materialization path can
             // repair any stale scheme file before a later navigation.
             self.hydrate_deferred(scheme_id);
+            // Which live items this document held before the merge. A merge can
+            // only remove one via a delete set, so a removal here is a remote
+            // tombstone landing on local content — the shape that costs a line
+            // nobody deleted. Behind an env var: it materializes the document
+            // twice per update, which the keystroke path cannot afford.
+            let before_merge: Option<HashSet<knotq_model::ItemId>> =
+                std::env::var("KNOTQ_TRACE_MERGE_REMOVALS")
+                    .is_ok()
+                    .then(|| {
+                        self.schemes
+                            .get(&scheme_id)
+                            .and_then(|document| document.scheme_items().ok())
+                            .map(|items| items.iter().map(|item| item.id).collect())
+                            .unwrap_or_default()
+                    });
             // First sight of this content doc: create it from an empty base and adopt
             // the server's structs from the update below. A fresh identity (`None`) — not
             // the stable clientID — keeps it from reusing a `(clientID, clock)` the server
             // may already hold under that clientID from a prior local incarnation.
-            match self
-                .schemes
-                .entry(scheme_id)
-                .or_insert_with(|| YrsSchemeDocument::for_replica(update.document, None))
-                .apply_update_v1(&update.update_v1)
-            {
+            let apply_result = {
+                let doc = self
+                    .schemes
+                    .entry(scheme_id)
+                    .or_insert_with(|| YrsSchemeDocument::for_replica(update.document, None));
+                if account_switch.contains(&update.document) {
+                    doc.merge_for_account_switch(&update.update_v1)
+                        .map(|(changed, merge)| {
+                            outcome.account_switch_merges.insert(update.document, merge);
+                            changed
+                        })
+                } else {
+                    doc.apply_update_v1(&update.update_v1)
+                }
+            };
+            match apply_result {
                 // As with the workspace document above: an echoed no-op merge
                 // must not mark the scheme touched, or the scheme the user is
                 // actively editing gets re-materialized (and the UI reloaded)
@@ -1838,6 +2039,28 @@ impl WorkspaceCrdtDocuments {
                     outcome.applied += 1;
                     touched_schemes.insert(scheme_id);
                     outcome.changed_documents.insert(update.document);
+                    if let Some(before_merge) = before_merge {
+                        let after: HashSet<knotq_model::ItemId> = self
+                            .schemes
+                            .get(&scheme_id)
+                            .and_then(|document| document.scheme_items().ok())
+                            .map(|items| items.iter().map(|item| item.id).collect())
+                            .unwrap_or_default();
+                        let mut removed: Vec<String> = before_merge
+                            .difference(&after)
+                            .map(|item| item.to_string())
+                            .collect();
+                        if !removed.is_empty() {
+                            removed.sort();
+                            eprintln!(
+                                "sync: remote update {} to {} removed {} live item(s): {}",
+                                update.sequence,
+                                update.document,
+                                removed.len(),
+                                removed.join(", ")
+                            );
+                        }
+                    }
                 }
                 Ok(false) => {
                     // A byte-level no-op is usually an echo of this replica's own
@@ -1961,6 +2184,47 @@ impl WorkspaceCrdtDocuments {
         trust_empty_crdt: &dyn Fn(&SchemeId) -> bool,
     ) -> anyhow::Result<(Workspace, HashMap<SchemeId, HashSet<String>>)> {
         self.materialize_workspace_inner(current, false, trust_empty_crdt)
+    }
+
+    /// Every scheme document that holds a live copy of `item`.
+    ///
+    /// An item id is globally unique, so more than one entry means two
+    /// documents both believe they own the line — the cross-document duplicate
+    /// placement that `dedupe_materialized_items` resolves by lowest scheme id.
+    /// Diagnostic: when the visible workspace and the documents disagree about
+    /// where a line lives, this says whether the cause is a duplicate (two
+    /// entries) or a plain mismatch (one entry, in the wrong place).
+    /// This replica's items for `scheme`, from a live document or a deferred
+    /// one, or `None` when it holds neither.
+    ///
+    /// The one way to rebuild a page the workspace index binds but does not
+    /// list as a node — which is how a Daily page reaches a device that has not
+    /// brought that day into being yet (see `ensure_daily_queue` in the desktop
+    /// state layer, which does exactly this before creating anything).
+    pub fn materialized_scheme_items(&self, scheme: SchemeId) -> Option<Vec<Item>> {
+        if let Some(document) = self.schemes.get(&scheme) {
+            return document.scheme_items().ok();
+        }
+        self.deferred
+            .get(&scheme)
+            .and_then(|deferred| deferred_live_document(deferred).ok())
+            .and_then(|document| document.scheme_items().ok())
+    }
+
+    pub fn documents_holding_item(&self, item: knotq_model::ItemId) -> Vec<SchemeId> {
+        let mut holders: Vec<SchemeId> = self
+            .schemes
+            .iter()
+            .filter(|(_, document)| {
+                document
+                    .scheme_items()
+                    .map(|items| items.iter().any(|candidate| candidate.id == item))
+                    .unwrap_or(false)
+            })
+            .map(|(id, _)| *id)
+            .collect();
+        holders.sort();
+        holders
     }
 
     /// Read one live scheme document without applying workspace-wide duplicate
@@ -2103,10 +2367,25 @@ impl WorkspaceCrdtDocuments {
                 // explicitly asks for its CRDT bytes. This keeps an unrelated
                 // remote update from decoding every untouched scheme.
                 let visible = current.schemes.contains_key(&entry.id);
-                if !visible && !hydrate_all_deferred {
+                // Against the INDEX being materialized, not `current`. A device
+                // that does not already hold the day — a fresh join, or the
+                // fuzzer's server audit — has an empty `current.daily_queue`,
+                // so every Daily page read as an ordinary scheme and was
+                // skipped by the `!visible` guard below. The day then did not
+                // exist for that device at all, even though the index bound it
+                // and its document was right there (single-account fuzz seed
+                // 10204: a fresh joiner materializes 7 schemes instead of 8 and
+                // "Daily 2026-09-14" is simply absent).
+                let is_daily = workspace.daily_queue.values().any(|id| id == &entry.id);
+                let current_knows_daily = current.daily_queue.values().any(|id| id == &entry.id);
+                // Skipping an entry means the scheme does not exist in the
+                // result. That is right for an ordinary deferred scheme, whose
+                // plain file is the cheap fallback and is already visible — but
+                // a day this replica has no plain copy of has no fallback, so
+                // the only way to produce it is to decode the document.
+                if !visible && (!is_daily || current_knows_daily) && !hydrate_all_deferred {
                     continue;
                 }
-                let is_daily = current.daily_queue.values().any(|id| id == &entry.id);
                 if visible && !is_daily && !hydrate_all_deferred {
                     if let Some(scheme) = current.schemes.get(&entry.id) {
                         scheme.items.clone()
@@ -2147,6 +2426,48 @@ impl WorkspaceCrdtDocuments {
                     items,
                 },
             );
+        }
+
+        // A Daily page can be bound in the index — a `daily_queue` entry and a
+        // durable `scheme_sync` binding — with no entry in the merged `nodes`
+        // map, and then it materializes into nothing: the binding names it, its
+        // document is often sitting right here, and no map entry was removed,
+        // no update failed and nothing was logged. A replica that already holds
+        // the page recovers it just below from `current.schemes`; one that does
+        // not — a fresh join, or the fuzzer's server audit — had no path at all
+        // (single-account fuzz seed 10204: a fresh joiner materializes 7
+        // schemes instead of 8 and "Daily 2026-09-14" is gone for the account).
+        //
+        // Rebuilding the page here from the binding was tried and is NOT the
+        // fix: a day outside the loaded window is deliberately absent from the
+        // plain workspace, so rebuilding it puts a scheme in the materialized
+        // half that the visible half does not have, and the projection law
+        // breaks the other way (chaos 108, single-account 10214). The bug is
+        // upstream — a day should not reach the index with a binding and no
+        // node entry — so this reports and leaves the page alone.
+        {
+            let missing: Vec<String> = workspace
+                .daily_queue
+                .iter()
+                .filter(|(_, scheme)| !workspace.schemes.contains_key(scheme))
+                .map(|(date, scheme)| {
+                    let document = workspace
+                        .scheme_sync
+                        .get(scheme)
+                        .map(|meta| meta.id.to_string())
+                        .unwrap_or_else(|| "<unbound>".to_string());
+                    let held = self.schemes.contains_key(scheme);
+                    let deferred = self.deferred.contains_key(scheme);
+                    format!("{date} -> {scheme} doc={document} live={held} deferred={deferred}")
+                })
+                .collect();
+            if !missing.is_empty() {
+                eprintln!(
+                    "sync: {} daily binding(s) materialized no scheme: {}",
+                    missing.len(),
+                    missing.join(", ")
+                );
+            }
         }
 
         // A loaded scheme can be absent from the merged `nodes` map while its
