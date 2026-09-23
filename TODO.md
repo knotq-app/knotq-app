@@ -2,14 +2,15 @@
 
 **Updated 2026-09-22.** These notes track confirmed data-loss/convergence
 bugs and deferred release work. Current deploy-blocking status: 0a, 0b, 0c, 0d,
-0e, 0f, 0g, 0h, 0j, 0k, 0l, 0m, 0n, 0o, 0p, 0q, 0t, 0u, 1, and 2 are fixed
+0e, 0f, 0g, 0h, 0j, 0k, 0l, 0m, 0n, 0o, 0p, 0q, 0t, 0u, 0v, 1, and 2 are fixed
 and verified; 0i (the account-switch exclusion) is open, and 0r (one scheme colour) now passes but is untraced; 3 and 5 remain backend/ops gaps,
 not sync-convergence bugs. Item 4 remains explicitly deferred undo-history work.
 
 **Where the release-depth gate stands (300 seeds x 200 steps per
-configuration).** Both configurations pass every seed (2026-09-22). Chaos 140
-is fixed (0t), single-account 10290 is fixed (0u), and 220 and 287 — the
-account-switch deletion — were fixed before.
+configuration).** Both configurations pass every seed, by sweep and by
+one-at-a-time replay (2026-09-23). Chaos 140 (0t), single-account 10290 (0u)
+and chaos 289 (0v) are fixed; 220 and 287 — the account-switch deletion — were
+fixed before. See "The parallel sweep can miss a failing seed" below.
 
 10290 is not new. It fails identically on `472edf1`, measured at the same depth
 in a clean worktree; the claim on that commit that single-account was "green
@@ -617,6 +618,50 @@ store-only rule; the run already decided what to do with it.
 document than its CRDT between landings is itself odd, and is what made this
 possible. It is harmless now that nothing destructive judges by it alone, but it
 is the next thing to look at if a similar shape turns up.
+
+## 0v. [FIXED] Crash recovery populated documents from a base this device never wrote
+
+**Fixed.** Production fuzz chaos seed 289 — it stopped the first v0.57.0 release
+build at the sync gate, and it fails identically on `472edf1`. Two schemes and a
+folder another device created were deleted for the whole account.
+
+1. Device 4's first sync pulls the account, persists the pulled workspace and
+   CRDT (already re-keyed to the account's index identity), then its push
+   drops. The run never lands; the store keeps its own install identity.
+2. The device crashes mid-save. The save marker's base is "whatever the plain
+   files held" — the account's pulled content.
+3. On relaunch the store's index document is unpopulated, so
+   `recover_workspace_save` took the joining-with-local-content branch:
+   populate from `base`, write the plain workspace on top. The account's
+   schemes and folder became a local deletion, pushed at the next sync.
+
+**The fix** (`WorkspaceStore::recover_workspace_save`): a base under a
+different workspace index identity than the plain workspace is still used to
+notice what the plain files changed, but never as a POPULATION base, for the
+index or for a scheme document. Populating from it is what turns someone else's
+content into this device's deletions and reverts.
+
+**Replacing the foreign base outright is the wrong fix** — tried, and it broke
+chaos 190 and 299: recovery then sees no change at all, writes nothing, and the
+documents stay behind the plain files, so the projection law fails on launch.
+
+## The parallel sweep can miss a failing seed
+
+289 failed on the CI runner and on every single-seed replay, but passed in three
+local 300-seed sweeps on identical code. The sweep runs seeds on worker threads
+alongside the other sweep; something those share (not the id stream, which is
+thread-local and reset per seed) changes a seed's outcome. Until that is found,
+treat a green sweep as necessary rather than sufficient: the deterministic
+answer is one replay per seed.
+
+```sh
+BIN=$(ls -t target/release/deps/knotq-* | grep -vE '\.(d|rlib|rmeta)$' | head -1)
+KNOTQ_REPRO_SEED=<n> KNOTQ_FUZZ_STEPS=200 $BIN replay_production_seed --ignored \
+  --exact app::sync_service::production_fuzz::replay_production_seed
+```
+
+As of 0v, all 600 release-depth seeds (chaos 1–300, single-account
+10000–10299) pass that way, one at a time.
 
 ## 0i-b. A device that has switched accounts still breaks the projection law
 

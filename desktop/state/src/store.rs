@@ -254,6 +254,32 @@ impl WorkspaceStore {
         let current = self.workspace.clone();
         let mut changes = WorkspaceCrdtChangeSet::default();
 
+        // The marker's base is "whatever the plain files held before this
+        // save", and it is this device's own previous save only when it
+        // describes the same workspace. A sync run that pulls and then fails to
+        // land persists the PULLED workspace — already re-keyed to the account's
+        // index identity — while the store never adopts it and keeps saving
+        // under its own. A crash in the next save leaves a marker whose base is
+        // the account's content.
+        //
+        // Such a base is still right for noticing WHAT the plain files changed,
+        // so the recovered content is written below as usual. It must never be
+        // a POPULATION base, though: populating an empty document from it and
+        // then writing the plain workspace on top turns every difference into
+        // an edit this device made — the account's schemes and folders become
+        // a deletion pushed to every device (production fuzz chaos seed 289),
+        // and other devices' changes to a scheme both sides hold become a
+        // revert. Nothing this device wrote produced that base, so a document
+        // it populates starts from the plain content alone.
+        let foreign_base = base.sync.id != current.sync.id;
+        if foreign_base {
+            eprintln!(
+                "recovery: save marker's base is workspace index {} but the plain workspace is {}; \
+                 not populating documents from a base this device did not write",
+                base.sync.id, current.sync.id
+            );
+        }
+
         // Bring the visible half in line with the documents FIRST, then put the
         // recovered plain content back on top of it. The order is the whole
         // point: a write of *any* scheme document re-emits the workspace index
@@ -292,7 +318,11 @@ impl WorkspaceStore {
             // Nothing to be additive to: the document holds no population, so
             // this workspace is the only thing that can give it one (a device
             // joining an account with local content — see `app/TODO.md` 2).
-            self.workspace_population_base = Some(base.clone());
+            self.workspace_population_base = Some(if foreign_base {
+                current.clone()
+            } else {
+                base.clone()
+            });
             self.workspace = current.clone();
             changes.workspace = true;
         }
@@ -302,7 +332,7 @@ impl WorkspaceStore {
             if !changed {
                 continue;
             }
-            if self.crdt.scheme_document_is_unpopulated(*scheme_id) {
+            if !foreign_base && self.crdt.scheme_document_is_unpopulated(*scheme_id) {
                 if let Some(previous) = base.schemes.get(scheme_id) {
                     self.population_bases.insert(*scheme_id, previous.clone());
                 }
