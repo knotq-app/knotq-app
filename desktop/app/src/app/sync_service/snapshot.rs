@@ -242,8 +242,7 @@ pub(super) fn sync_snapshot_in(
     // a scheme here that is missing afterwards is one the merge could not
     // account for — the shape that costs a whole page and leaves no removal in
     // any index write to explain it.
-    let schemes_before_pull: std::collections::HashSet<knotq_model::SchemeId> =
-        workspace.schemes.keys().copied().collect();
+    let schemes_before_pull = held_schemes(&workspace, &local_state);
     {
         // A scheme the plain workspace has whose content document this replica
         // does not hold at all. The pull is about to materialize from the
@@ -284,21 +283,13 @@ pub(super) fn sync_snapshot_in(
     let pulled_changes: Vec<knotq_model::DocumentId> =
         pull.changed_documents.iter().copied().collect();
     let mut workspace = pull.workspace;
-    {
-        let mut dropped: Vec<String> = schemes_before_pull
-            .iter()
-            .filter(|id| !workspace.schemes.contains_key(id))
-            .map(|id| id.to_string())
-            .collect();
-        if !dropped.is_empty() {
-            dropped.sort();
-            eprintln!(
-                "sync: the pull dropped {} scheme(s) this device held: {}",
-                dropped.len(),
-                dropped.join(", ")
-            );
-        }
-    }
+    let restored_schemes = restore_unpublished_schemes_dropped_by_pull(
+        &mut workspace,
+        &schemes_before_pull,
+        &crdt_docs,
+        &local_state,
+        &pull.remote_latest,
+    );
     let remote_updates_applied = pull.remote_updates_applied;
     let locally_repaired_documents = pull.locally_repaired_documents;
     let (repaired_identity, repaired_identity_changed) =
@@ -306,16 +297,23 @@ pub(super) fn sync_snapshot_in(
     let repaired_folders = workspace.normalize_one_level_folders();
     let repaired_marker_schemes = workspace.repair_item_markers();
     let repaired_markers = !repaired_marker_schemes.is_empty();
-    let repaired_workspace_changed = repaired_identity || repaired_folders || repaired_markers;
+    let restored_any = !restored_schemes.is_empty();
+    let repaired_workspace_changed =
+        repaired_identity || repaired_folders || repaired_markers || restored_any;
     let repaired_workspace_persist_changed =
-        repaired_identity_changed || repaired_folders || repaired_markers;
+        repaired_identity_changed || repaired_folders || repaired_markers || restored_any;
     if repaired_workspace_changed {
+        // A restored scheme goes in beside the marker repairs: the index write
+        // is what re-adds its node entry, and writing its content back is a
+        // no-op when the body came out of the document it is written to.
+        let mut repaired_scheme_content = repaired_marker_schemes.clone();
+        repaired_scheme_content.extend(restored_schemes.iter().copied());
         queue_repair_crdt_updates(
             &mut local_state,
             &workspace,
             snapshot.replica_id,
             &mut crdt_docs,
-            &repaired_marker_schemes,
+            &repaired_scheme_content,
         )?;
     }
     if account_switched && had_prior_sync_identity {
@@ -626,6 +624,216 @@ fn queue_reidentified_workspace_update(
         update_v1: update.update_v1,
         touched_items: update.touched_items,
     });
+}
+
+/// Enough of a scheme this device holds going into a pull to put it back.
+///
+/// Deliberately not a clone of the pre-pull workspace. The items dominate the
+/// cost of cloning one, and only a scheme that could actually need restoring
+/// carries its body here (see `items`); for every other scheme this is a name,
+/// a binding and a position.
+struct HeldScheme {
+    sync: knotq_model::SyncDocumentMeta,
+    name: String,
+    color_index: u8,
+    gsync: bool,
+    source: knotq_model::SchemeSource,
+    /// Where the folder tree had it, so a restore puts it back rather than
+    /// dropping it at the root.
+    placement: Option<(knotq_model::FolderId, usize)>,
+    archived: bool,
+    /// Whether the Daily Queue binds this scheme to a date.
+    daily: bool,
+    /// The body, captured only for a scheme that could need putting back.
+    ///
+    /// Applying a pull PRUNES the live CRDT document of a scheme the merged
+    /// index neither materializes nor binds, so by the time the rescue below
+    /// runs there is nothing left to read the items out of. They have to be
+    /// taken before the pull — but cloning every scheme's items on every sync
+    /// is the most expensive thing a workspace can be asked to do, so this is
+    /// filled in only for a document the server has never sent us anything for
+    /// that still has local edits waiting. That is a freshly created page and
+    /// almost always nothing at all.
+    items: Option<Vec<knotq_model::Item>>,
+}
+
+fn held_schemes(
+    workspace: &Workspace,
+    local_state: &LocalSyncState,
+) -> std::collections::HashMap<knotq_model::SchemeId, HeldScheme> {
+    let mut placements: std::collections::HashMap<
+        knotq_model::SchemeId,
+        (knotq_model::FolderId, usize),
+    > = std::collections::HashMap::new();
+    for (folder_id, folder) in &workspace.folders {
+        for (position, child) in folder.children.iter().enumerate() {
+            if let knotq_model::NodeRef::Scheme(scheme) = child {
+                placements.insert(*scheme, (*folder_id, position));
+            }
+        }
+    }
+    let archived: std::collections::HashSet<knotq_model::SchemeId> =
+        workspace.recently_deleted.iter().copied().collect();
+    let daily: std::collections::HashSet<knotq_model::SchemeId> =
+        workspace.daily_queue.values().copied().collect();
+    workspace
+        .schemes
+        .iter()
+        .filter_map(|(id, scheme)| {
+            let sync = workspace.scheme_sync.get(id)?.clone();
+            // A cheap superset of the authoritative `remote_latest` test the
+            // restore applies after the pull: a document the server has never
+            // heard of cannot have a pull cursor above zero.
+            let never_pulled = local_state
+                .document_cursors
+                .get(&sync.id)
+                .is_none_or(|cursor| cursor.last_pulled_sequence == 0);
+            let at_risk = never_pulled && local_state.has_pending_for_document(sync.id);
+            Some((
+                *id,
+                HeldScheme {
+                    sync,
+                    name: scheme.name.clone(),
+                    color_index: scheme.color_index,
+                    gsync: scheme.gsync,
+                    source: scheme.source.clone(),
+                    placement: placements.get(id).copied(),
+                    archived: archived.contains(id),
+                    daily: daily.contains(id),
+                    items: at_risk.then(|| scheme.items.clone()),
+                },
+            ))
+        })
+        .collect()
+}
+
+/// Put back a scheme this device created and has never published that the pull
+/// materialized away, and report every other scheme the pull subtracted.
+///
+/// A pull merges; it should not subtract. It materializes from the workspace
+/// INDEX document, and the index write happens *after* the pull, from the
+/// pull's own result — so a scheme created while a sync was in flight is not in
+/// the index the next pull materializes from, and that pull drops the whole
+/// page (production fuzz chaos seed 140, TODO 0t). `retained_loaded_schemes`
+/// in the CRDT layer already rescues this shape, but only for a scheme whose
+/// `scheme_sync` binding survives in the MERGED index; here the index has never
+/// heard of the scheme at all.
+///
+/// The question that separates this from a scheme the account deleted remotely
+/// is "did this device ever publish it?", which the plain workspace cannot
+/// answer and the pull can. Both halves of that are required:
+///
+/// - the server has no sequence for the document (`remote_latest`), so no other
+///   device can ever have seen it, let alone deleted it; and
+/// - this device still has pending edits for the document, so the creation is
+///   demonstrably unpublished local work rather than an old page whose cursors
+///   happen to have been reset.
+///
+/// The second half is not belt-and-braces. `remote_latest` falls back to local
+/// cursors when a response carries no `known_documents`, and an account switch
+/// resets those cursors — on its own, the first test would then read every
+/// scheme of the account being left as "never published" and resurrect the lot.
+/// That is the shape recorded in TODO 0t as taking the gate from 1 failing seed
+/// to 32.
+fn restore_unpublished_schemes_dropped_by_pull(
+    workspace: &mut Workspace,
+    held: &std::collections::HashMap<knotq_model::SchemeId, HeldScheme>,
+    crdt_docs: &WorkspaceCrdtDocuments,
+    local_state: &LocalSyncState,
+    remote_latest: &std::collections::HashMap<knotq_model::DocumentId, u64>,
+) -> std::collections::HashSet<knotq_model::SchemeId> {
+    let mut dropped: Vec<(&knotq_model::SchemeId, &HeldScheme)> = held
+        .iter()
+        .filter(|(id, _)| !workspace.schemes.contains_key(id))
+        .collect();
+    if dropped.is_empty() {
+        return std::collections::HashSet::new();
+    }
+    // A HashMap walk is unordered and this decides where lines land in a
+    // folder's children, so fix an order every replica agrees on.
+    dropped.sort_by_key(|(id, _)| id.to_string());
+
+    let daily_now: std::collections::HashSet<knotq_model::SchemeId> =
+        workspace.daily_queue.values().copied().collect();
+    let mut restored = std::collections::HashSet::new();
+    let mut reported: Vec<String> = Vec::new();
+    for (scheme_id, scheme) in dropped {
+        let published = remote_latest.get(&scheme.sync.id).copied().unwrap_or(0) != 0;
+        let unpushed = local_state.has_pending_for_document(scheme.sync.id);
+        // An archived scheme is detached from the folder tree and its archive
+        // entry is retained by normalization on structural grounds, so putting
+        // one back is a different repair than this. None has been observed;
+        // report it rather than guess.
+        // A Daily page absent from the materialized workspace is not lost and
+        // must not be rebuilt here. A day outside the loaded window is
+        // deliberately left out of the plain workspace, and putting one back
+        // breaks the projection law from the other side — the materialized half
+        // then holds a page the visible half does not (the same trap documented
+        // on `retained_loaded_schemes` for chaos 108 / single-account 10214, and
+        // reached by this rescue on chaos 127). The client brings the day back
+        // from its binding through `ensure_daily_queue` when it needs it.
+        let daily = scheme.daily || daily_now.contains(scheme_id);
+        let restorable = !published && unpushed && !scheme.archived && !daily;
+        let Some(items) = crdt_docs
+            .materialized_scheme_items(*scheme_id)
+            .or_else(|| scheme.items.clone())
+            .filter(|_| restorable)
+        else {
+            reported.push(format!(
+                "{scheme_id} (published={published} unpushed={unpushed} \
+                 archived={} daily={daily})",
+                scheme.archived
+            ));
+            continue;
+        };
+        workspace.schemes.insert(
+            *scheme_id,
+            knotq_model::Scheme {
+                id: *scheme_id,
+                name: scheme.name.clone(),
+                color_index: scheme.color_index,
+                gsync: scheme.gsync,
+                source: scheme.source.clone(),
+                items,
+            },
+        );
+        workspace
+            .scheme_sync
+            .entry(*scheme_id)
+            .or_insert_with(|| scheme.sync.clone());
+        // Put it back where the user had it when that folder survived the pull.
+        // Otherwise leave it unplaced: `normalize_one_level_folders` runs next
+        // and re-homes a scheme the folder tree does not mention under the root,
+        // which is the same choice it makes for every other stranded node.
+        if let Some((folder_id, position)) = scheme.placement {
+            if let Some(folder) = workspace.folders.get_mut(&folder_id) {
+                let child = knotq_model::NodeRef::Scheme(*scheme_id);
+                if !folder.children.contains(&child) {
+                    let position = position.min(folder.children.len());
+                    folder.children.insert(position, child);
+                }
+            }
+        }
+        restored.insert(*scheme_id);
+    }
+
+    if !restored.is_empty() {
+        let mut names: Vec<String> = restored.iter().map(|id| id.to_string()).collect();
+        names.sort();
+        eprintln!(
+            "sync: restored {} unpublished scheme(s) the pull dropped: {}",
+            names.len(),
+            names.join(", ")
+        );
+    }
+    if !reported.is_empty() {
+        eprintln!(
+            "sync: the pull dropped {} scheme(s) this device held: {}",
+            reported.len(),
+            reported.join(", ")
+        );
+    }
+    restored
 }
 
 fn queue_repair_crdt_updates(

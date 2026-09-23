@@ -2,20 +2,25 @@
 
 **Updated 2026-09-22.** These notes track confirmed data-loss/convergence
 bugs and deferred release work. Current deploy-blocking status: 0a, 0b, 0c, 0d,
-0e, 0f, 0g, 0h, 0j, 0k, 0l, 0m, 0n, 0o, 0p, 0q, 1, and 2 are fixed and
-verified; 0i (the account-switch exclusion) and 0r (one scheme colour, the last
-CI-depth failure) are open; 3 and 5 remain backend/ops gaps,
+0e, 0f, 0g, 0h, 0j, 0k, 0l, 0m, 0n, 0o, 0p, 0q, 0t, 1, and 2 are fixed and
+verified; 0u (the last release-depth failure), 0i (the account-switch
+exclusion) and 0r (one scheme colour, the last CI-depth failure) are open; 3 and 5 remain backend/ops gaps,
 not sync-convergence bugs. Item 4 remains explicitly deferred undo-history work.
 
 **Where the release-depth gate stands (300 seeds x 200 steps per
-configuration).** The single-account configuration passes every seed. The chaos
-configuration fails **one: seed 140**, written up as 0t below. 220 and 287 —
-the account-switch deletion — are fixed.
+configuration).** The chaos configuration passes every seed: 140 is fixed (0t),
+as are 220 and 287 — the account-switch deletion. The single-account
+configuration fails **one: seed 10290**, written up as 0u below.
 
-> **RELEASE BLOCKER — seed 140 is the last one.** `release.yml` gates every
+10290 is not new. It fails identically on `472edf1`, measured at the same depth
+in a clean worktree; the claim on that commit that single-account was "green
+across all 300" was wrong. Verifying a gate claim against the actual baseline,
+rather than against the last note about it, is worth the four minutes it costs.
+
+> **RELEASE BLOCKER — seed 10290 is the last one.** `release.yml` gates every
 > build job on `needs: [sync-stress, mobile-accounts]`, and the sync-stress job
-> runs this fuzzer at 300 seeds, so while 140 fails **no `v*` tag can produce an
-> artifact**. That is the gate working as designed; it is not to be skipped,
+> runs this fuzzer at 300 seeds, so while 10290 fails **no `v*` tag can produce
+> an artifact**. That is the gate working as designed; it is not to be skipped,
 > narrowed or marked `continue-on-error` to get a build out.
 
 Two findings worth not re-deriving: a Daily page bound in the index with no
@@ -507,50 +512,106 @@ install; a line someone typed gets a random v4 id that exists nowhere else by
 construction. So a first sync now repairs only v4 ids, and leaves the index —
 and every derived id, including a carryover's archived row — alone.
 
-## 0t. An edit made while a post-switch sync is in flight does not survive
+## 0t. [FIXED] An edit made while a post-switch sync is in flight did not survive
 
-**Open — the last failing seed at release depth.** Production fuzz chaos seed
-140. Device 0 signs into account 0 at step 35. At step 42 its sync fails
-("connection dropped"), and *during* that run the fuzzer applies
-`CreateScheme { folder: 0b1b17de, name: "scheme 7911" }` — into a folder that
-the same run's index write has just removed, because that folder belongs to the
-account being left. The next sync, at step 43, loses the scheme.
+**Fixed.** Production fuzz chaos seed 140. Device 0 signs into account 0 at
+step 35. At step 42 its sync fails ("connection dropped"), and *during* that
+run the fuzzer applies `CreateScheme { folder: 0b1b17de, name: "scheme 7911" }`
+— into a folder that the same run's index write has just removed, because that
+folder belongs to the account being left. The next sync, at step 43, lost the
+scheme.
 
-What is known, from the diagnostics rather than by inference:
+**The mechanism.** A pull materializes from the workspace INDEX document, and
+the index write happens *after* the pull, from the pull's own result. A scheme
+created while a sync is in flight is therefore not in the index the next pull
+materializes from, and that pull drops the whole page. Worse than a visible
+drop: applying the pull also PRUNES the live CRDT document of a scheme the
+merged index neither materializes nor binds (`self.schemes.retain` in
+`crdt/mod.rs`), so the content went with it. That is why the projection law
+never fired — both halves agreed the page was gone.
 
-- The index write at step 43 removes nothing, so the scheme's node entry was
-  never in this device's index document to be removed.
-- The projection law does **not** fire at step 43. That is the useful fact: the
-  plain workspace and the documents still agree afterwards, so the scheme is
-  gone from the CRDT too, not merely rewritten out of the visible half. A fix
-  that only re-homes the scheme in the plain workspace will not hold.
-- `normalize_one_level_folders` re-homes a scheme whose parent folder has gone
-  (0a), so the parentless-scheme path is already handled; this is upstream of
-  that.
+`retained_loaded_schemes` already rescues this shape, but only for a scheme
+whose `scheme_sync` binding survives in the MERGED index; here the index had
+never heard of the scheme at all.
 
-**Established since:** the scheme is in the plain workspace, it HAS a CRDT
-content document, and it is **absent from this device's workspace index
-document**. The pull materializes from the index, so it drops it — the new
-"the pull dropped N scheme(s) this device held" report names it directly. The
-index entry has not been written yet because the index write happens after the
-pull, from the pull's own result.
+**The fix** (`sync_service/snapshot.rs`): `restore_unpublished_schemes_dropped_by_pull`
+puts back a scheme the pull subtracted, and only when this device demonstrably
+created it and never published it. Both halves are required:
 
-`materialize_workspace_inner` already has the rescue for this shape —
-`retained_loaded_schemes`, which keeps a scheme in `current.schemes` that the
-merged `nodes` map has lost — but it requires the MERGED index to still carry
-the scheme's `scheme_sync` binding, and here the index has never heard of the
-scheme at all.
+- the server has no sequence for the document (`pull.remote_latest`), so no
+  other device can ever have seen it, let alone deleted it; and
+- this device still has pending edits for the document.
 
-**Do not simply fall back to `current.scheme_sync` there.** Tried: it took the
-gate from 1 failing seed to 32 (27 chaos, 5 single-account). `current` is the
-pre-pull workspace, so it still lists schemes the account deleted remotely, and
-retaining on its binding resurrects every one of them.
+The second half is not belt-and-braces. `remote_latest` falls back to local
+cursors when a response carries no `known_documents`, and an account switch
+resets those cursors — on its own the first test would read every scheme of the
+account being left as "never published" and resurrect the lot. That is the
+`current.scheme_sync` dead end recorded below, which took the gate from 1
+failing seed to 32.
 
-The distinction the rescue needs is "this device created it and has never
-published it", which is a server-sequence question — `pull.remote_latest` in
-the desktop snapshot has the answer, `materialize_workspace_inner` does not. So
-the narrow fix probably belongs in `sync_snapshot` after the pull, re-adding
-only dropped schemes whose documents the server has never seen.
+Because the pull prunes the content document, the body cannot be read back
+afterwards; it is captured *before* the pull. Cloning every scheme's items on
+every sync is the most expensive thing a workspace can be asked to do, so only
+the at-risk set is captured — a document with no pull cursor that still has
+pending edits, which is a freshly created page and almost always nothing at all.
+
+**A Daily page is excluded, and that exclusion is load-bearing.** The first
+version restored one and broke chaos seed 127: a day outside the loaded window
+is deliberately absent from the plain workspace, so putting it back breaks the
+projection law from the other side — the materialized half then holds a page
+the visible half does not. This is the same trap already documented on
+`retained_loaded_schemes` (chaos 108, single-account 10214). The client brings
+the day back from its binding through `ensure_daily_queue` when it needs it.
+
+**Do not simply fall back to `current.scheme_sync` in
+`materialize_workspace_inner`.** Tried: it took the gate from 1 failing seed to
+32 (27 chaos, 5 single-account). `current` is the pre-pull workspace, so it
+still lists schemes the account deleted remotely, and retaining on its binding
+resurrects every one of them.
+
+Measured at release depth (`KNOTQ_FUZZ_SEEDS=300 KNOTQ_FUZZ_STEPS=200`), both
+configurations, against the same depth on `472edf1`:
+
+| | chaos | single-account |
+|---|---|---|
+| `472edf1` (before) | 140 | 10290 |
+| after | green | 10290 |
+
+**Note the baseline.** 10290 fails on `472edf1` too. The note on that commit
+("single-account green across all 300") was wrong, and 10290 is an unrelated
+pre-existing failure — see 0u.
+
+## 0u. Two devices disagree about a scheme created in a folder another device moved
+
+**Open — the only failing seed at release depth.** Production fuzz
+single-account seed 10290, and it fails identically on `472edf1`, so it predates
+the 0t work and is not a regression from it.
+
+Devices 0 and 3 do not converge. Device 3 holds scheme `86cb032c`
+("scheme 6321") inside folder `56019bfa`, which it has under the root. Device 0
+has moved `56019bfa` under folder `830a06c1`, sees it as empty, and does not
+hold `86cb032c` at all — not its name, colour, parent, source, or body. The
+same divergence is reported a second time as "device 0 and 3 diverged after
+fresh join".
+
+The shape is a concurrent folder move against a scheme created inside that
+folder: the mover's index write describes the folder at its new parent with the
+children it knew about, which do not include the scheme the other device was
+adding at the same time.
+
+**Reproduce:**
+
+```sh
+KNOTQ_REPRO_SEED=10290 KNOTQ_REPRO_PLAIN=1 KNOTQ_FUZZ_STEPS=200 \
+  cargo test --release -p knotq-app replay_production_seed -- --ignored --nocapture
+```
+
+**Where to start:** this is a no-silent-loss failure, not a projection-law one —
+0t's rescue never fires in this seed (`restored` is logged zero times), so the
+scheme is not being dropped by a pull that subtracts. Look instead at how a
+folder move encodes its children into the index document, and whether a move
+publishes a child list that can erase a concurrent sibling insert.
+
 
 ## 0i-b. A device that has switched accounts still breaks the projection law
 
