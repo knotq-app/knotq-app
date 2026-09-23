@@ -22,3 +22,15 @@ backend/
 
 # Local release/build scratch (xcarchives, exported IPAs, dSYMs). Never commit.
 .tmp/
+
+# Release build outputs and signing material, wherever they land. These were
+# committed once (under .tmp/) and had to be rewritten out of main.
+*.xcarchive/
+*.ipa
+*.dSYM/
+*.mobileprovision
+*.p12
+*.p8
+GoogleService-Info.plist
+*.aab
+*.apk
