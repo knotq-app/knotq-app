@@ -3,7 +3,7 @@
 **Updated 2026-09-24.** These notes track confirmed data-loss/convergence
 bugs and deferred release work. Current deploy-blocking status: 0a, 0b, 0c, 0d,
 0e, 0f, 0g, 0h, 0j, 0k, 0l, 0m, 0n, 0o, 0p, 0q, 0t, 0u, 0v, 1, and 2 are fixed
-and verified; 0i (the account-switch exclusion) is open, and 0r (one scheme colour) now passes but is untraced; 3 and 5 remain backend/ops gaps,
+and verified; 0i (the account-switch exclusion) and 0w (the deep gate's 7 Daily-Queue seeds) are open, and 0r (one scheme colour) now passes but is untraced; 3 and 5 remain backend/ops gaps,
 not sync-convergence bugs. Item 4 remains explicitly deferred undo-history work.
 
 **Where the release-depth gate stands (300 seeds x 200 steps per
