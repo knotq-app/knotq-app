@@ -412,21 +412,7 @@ jobs:
         with:
           key: linux-x86_64
 
-      - name: Install system dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y \
-            pkg-config \
-            libdbus-1-dev \
-            libvulkan-dev \
-            libwayland-dev \
-            libxkbcommon-dev \
-            libxkbcommon-x11-dev \
-            libx11-xcb-dev \
-            libxcb-xfixes0-dev \
-            libxcb-shape0-dev \
-            libfontconfig1-dev \
-            libasound2-dev
+      - uses: ./.github/actions/linux-deps
 
       - name: Derive version
         id: version

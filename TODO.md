@@ -1,16 +1,23 @@
 # Known gaps
 
-**Updated 2026-09-22.** These notes track confirmed data-loss/convergence
+**Updated 2026-09-24.** These notes track confirmed data-loss/convergence
 bugs and deferred release work. Current deploy-blocking status: 0a, 0b, 0c, 0d,
 0e, 0f, 0g, 0h, 0j, 0k, 0l, 0m, 0n, 0o, 0p, 0q, 0t, 0u, 0v, 1, and 2 are fixed
-and verified; 0i (the account-switch exclusion) is open, and 0r (one scheme colour) now passes but is untraced; 3 and 5 remain backend/ops gaps,
+and verified; 0i (the account-switch exclusion) and 0w (the deep gate's 7 Daily-Queue seeds) are open, and 0r (one scheme colour) now passes but is untraced; 3 and 5 remain backend/ops gaps,
 not sync-convergence bugs. Item 4 remains explicitly deferred undo-history work.
 
 **Where the release-depth gate stands (300 seeds x 200 steps per
-configuration).** Both configurations pass every seed, by sweep and by
-one-at-a-time replay (2026-09-23). Chaos 140 (0t), single-account 10290 (0u)
-and chaos 289 (0v) are fixed; 220 and 287 — the account-switch deletion — were
-fixed before. See "The parallel sweep can miss a failing seed" below.
+configuration).** Chaos 140 (0t), single-account 10290 (0u) and chaos 289 (0v)
+are fixed; 220 and 287 — the account-switch deletion — were fixed before. See
+"The parallel sweep can miss a failing seed" below.
+
+> **Corrected 2026-09-24.** The sentence that stood here — "both configurations
+> pass every seed, by sweep and by one-at-a-time replay (2026-09-23)" — was
+> wrong. Single-account seed **10175** fails at 200 steps, inside the swept
+> range, and `sync-fuzz.yml` has meanwhile been asking for a depth nobody could
+> see failing because the job could not link. **0w** has the measurements: 7
+> failing seeds at that file's 400 x 300, plus 10175 at 300 x 200, none of them
+> a regression from v0.57.0.
 
 10290 is not new. It fails identically on `472edf1`, measured at the same depth
 in a clean worktree; the claim on that commit that single-account was "green
@@ -644,6 +651,121 @@ content into this device's deletions and reverts.
 **Replacing the foreign base outright is the wrong fix** — tried, and it broke
 chaos 190 and 299: recovery then sees no change at all, writes nothing, and the
 documents stay behind the plain files, so the projection law fails on launch.
+
+## 0w. The nightly deep gate never ran, and at its configured depth it is red
+
+**Found 2026-09-24 while debugging eight consecutive red nightlies.** The red
+was not a sync bug. `sync-fuzz.yml` installed only `pkg-config` and
+`libdbus-1-dev`, but its last step builds `knotq-app`, which links GPUI against
+the X/Wayland stack, so that step never linked:
+
+    rust-lld: error: unable to find library -lxcb
+    rust-lld: error: unable to find library -lxkbcommon
+    rust-lld: error: unable to find library -lxkbcommon-x11
+
+It has failed that way on every run since it was added on 2026-09-15
+(`8f7ad01`); the 09-15 and 09-16 "successes" were 10-second cache-marker skips,
+not runs. Fixed by using `actions/linux-deps` — the definition
+`sync-stress/action.yml` already builds this same crate under. (The WebSocket
+job was separately red 09-17 to 09-19 on a real bug, `offline_device_join`'s
+"the joining device's own scheme was lost"; #39 fixed that on 09-20.)
+
+**So the depth in that file had never executed once.** It is
+`KNOTQ_FUZZ_SEEDS=400 KNOTQ_FUZZ_STEPS=300`, written when the step was added
+and never run. The release-depth gate these notes describe is 300 x 200, so the
+file raises *both* axes. Steps drive simulated midnights (`actions.rs`: "the
+device's day moves on"), so 300 steps reaches materially more day rollovers.
+
+**Measured at 400 x 300, one seed per process: 7 failing seeds of 800.** The
+parallel sweep and the one-at-a-time replay agree exactly here. All 7 fail
+**identically on `7820f3a`**, the commit before v0.57.0's `fe924e9`, so none of
+them is a regression from that work — this is pre-existing backlog that the
+untried depth exposes.
+
+| Seed | Config | 120 | 200 | 300 | What it reports |
+|---|---|---|---|---|---|
+| 194 | chaos | pass | pass | **fail** | settle lost the Daily Queue binding for 2026-09-02 (`bb7c6776…`) |
+| 332 | chaos | **fail** | **fail** | **fail** | step 70: device 3's sync lost item `…0402` in `ba929b98…` "Daily 2026-09-15" that no device deleted |
+| 389 | chaos | pass | **fail** | **fail** | step 155: device 1's workspace has 13 items in `ba929b98…`, its CRDT has 14 |
+| 10054 | single | pass | pass | **fail** | step 274: device 1's sync lost item `88b70256…` in `1d98a5db…` "Daily 2026-09-17" that no device deleted |
+| 10117 | single | pass | pass | **fail** | steps 269/271: device 2, item `…4009` in `1ec12563…` — the document holds the workspace's text applied twice |
+| 10209 | single | pass | pass | **fail** | steps 285/287/290: device 3, `1ec12563…` has 22 items to the CRDT's 21; `473f9fd3…` repeated in the workspace |
+| 10350 | single | — | **fail** | **fail** | step 202: device 3's sync lost item `92b72501…` in `ba929b98…` "renamed 7192" that no device deleted |
+
+Four (194, 10054, 10117, 10209) are inside the swept seed ranges and are
+exposed purely by 200 -> 300 steps. Three (332, 389, 10350) are outside them
+and are exposed by 300 -> 400 seeds; 332 fails even at the default 120.
+
+**Every one of them lands on a Daily Queue page.** `1ec12563…`, `1d98a5db…`,
+`ba929b98…` and `bb7c6776…` are all v8 (derived) ids — including 10350's, which
+the fuzzer had renamed to "scheme 7192" and which still is one. 10209's symptom
+is the one `daily_queue_carryover_command` already names in a comment ("two
+rows with one id in the page, which no document can represent", single-account
+seed 10095): the `previous_ids.contains(&displaced.id)` guard there covers the
+source day already holding the archive id, and these reach the same end state
+by some other route. Start with repeated rollovers of one page, not the landing.
+
+**The 300 x 200 baseline these notes call green is not green either.**
+Single-account seed **10175** fails at 200 steps (and passes at 120 and 300),
+inside the 10000–10299 range the note above says passes "by sweep and by
+one-at-a-time replay". It is not content loss and not a Daily page: devices 0
+and 3 diverge at settle over `70db3d43…`'s name and colour, `2b1646c2…`'s
+source, and root-child ordering. It fails identically on `7820f3a`, so it too
+predates v0.57.0 — the note was wrong, not the code. Measuring the baseline
+instead of trusting the sentence about it is the recurring lesson here.
+
+### 10117's mechanism, confirmed 2026-09-24
+
+`build_item_creation_update` authors an item's creation text under
+`stable_item_creation_client_id(document, item_id, content)` — which hashes the
+**content**. That content key is load-bearing: it is what makes N devices
+creating the same line with the same text dedupe into one copy (seed 10013,
+"three devices carrying the same line over produced it three times over").
+
+When two devices' first write of the same item id carries *different* content,
+they get different clientIDs, so yrs integrates both runs and the Text holds one
+after the other. Device 2 edits the starter Daily line `…4009`
+(`starter.daily.next_one_there`) before its first sync, so its creation seed
+carries "agent 7277…" while another device's carries the original, and the
+merged document holds both. That is the divergence the projection law reports.
+
+Pinned as `concurrent_same_item_creation_with_different_content_doubles_the_text`
+in `shared/sync/src/crdt/tests/merge.rs`, `#[ignore]`d as an open gap. It fails
+in one line, with no fuzz harness:
+
+```text
+merged text = "When you finish a task the next one is right there\
+               agent 7277When you finish a task the next one is right there"
+```
+
+Note that `reconcile_content_shadow` already exists to paper over this, and only
+fires when the actual content is *exactly* the shadow twice — which the edited
+case never is.
+
+**Why it is not fixed here.** Dropping the content key re-breaks 10013, and no
+merge-time rule can help: if two replicas integrate different seed runs there is
+nothing to prefer until both are present. The fix has to be a *convergent
+repair* — every replica independently picks the same surviving run (e.g. from an
+additive per-seed marker in the item map, so the choice is a pure function of
+the document) and removes the rest. That is a wire-format addition and a change
+to the most delicate merge path in the codebase, so it wants its own change
+driven by the fuzzers, not a patch bolted onto the CI fix that exposed it.
+
+**Reproduce (≈2-3s each):**
+
+```sh
+KNOTQ_REPRO_PLAIN=1 KNOTQ_REPRO_SEED=10117 KNOTQ_FUZZ_STEPS=300 \
+  cargo test --release -p knotq-app replay_production_seed -- --ignored --nocapture
+# chaos seeds: drop KNOTQ_REPRO_PLAIN
+```
+
+**Decision still to make.** The link fix alone turns the nightly from "red
+because it cannot build" into "red because it finds eight real seeds". Either
+drain them and keep 400 x 300, or bring the file down to a depth that is
+actually green and raise it deliberately afterwards — which is what the note
+above ("raising the gate's depth is worth doing only once the sweep is green")
+already says, written while this file quietly specified a higher one.
+
 
 ## The parallel sweep can miss a failing seed
 
