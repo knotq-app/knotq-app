@@ -730,6 +730,44 @@ as its inverse, so redo stays coherent. Pinned by
 `inserting_an_id_the_scheme_already_holds_restores_it_in_place`
 (`desktop/commands/tests/item_cmds.rs`). It fixes 10350 as well.
 
+### 194, 389 and 10054: the landing's placement reconcile is gated on a visible change
+
+Traced 2026-09-24 on chaos 389. A line carried from one Daily page to another
+keeps its id, so the move is a tombstone in the source document plus a live
+insert in the destination. `reconcile_item_placements` is what deletes a losing
+cross-document copy, and the landing only calls it when
+`adopted || item_repairs`.
+
+That gate is **circular**: materialization hands a line live in two documents to
+the lowest scheme id, so a remote update that reintroduces a live copy in the
+*other* document changes nothing visible — `adopted` is false precisely because
+the duplicate is hidden. It stays hidden until the visible copy is deleted, and
+then the hidden copy is all that is left. In 389 device 1 carries `…4004` out of
+`ba929b98` at step 102 (verified: right after the carryover the item is live in
+one document only, so the carryover's tombstone is correct), a later landing
+quietly restores a live copy in `ba929b98`, and the delete at step 155 reveals
+it — 13 visible rows against the document's 14. In production this is "a line I
+deleted came back in another scheme".
+
+**The obvious fix does not pay for itself.** Gating on
+`adopted || item_repairs || remote_updates_applied > 0` fixes chaos 194, chaos
+389 and single-account 10054 — and **breaks chaos 48 and 238**, which both begin
+losing a *starter* item from a Daily page (`…0402`, `…4009`; both pass without
+the change, so the loss is the change's). Perf budgets stay green, so cost is
+not the objection. Kept on `spike/landing-placement-reconcile-gate`, unmerged.
+
+**Why both halves are one weakness — start here.** The reconcile deletes "the
+losing copy of a duplicate", and a fixed-id starter item is not a duplicate: two
+devices each seed `…4009` into *their own* Daily document independently, and
+nothing distinguishes that from one line that moved. So running the reconcile
+more often deletes real rows (48, 238, 332), and running it less often lets
+hidden copies resurface (194, 389, 10054). The same blind spot is what doubles
+text in 10117 below. Any real fix has to let a document say whether its copy of
+an id is *this device's seed of a shared skeleton* or *a line that arrived from
+somewhere else* — after which the reconcile can delete only the latter. Until
+then, changing the gate alone just moves the failure between the two classes,
+and the direction that loses content is the worse one.
+
 ### 10117's mechanism, confirmed 2026-09-24
 
 `build_item_creation_update` authors an item's creation text under
@@ -775,15 +813,19 @@ KNOTQ_REPRO_PLAIN=1 KNOTQ_REPRO_SEED=10117 KNOTQ_FUZZ_STEPS=300 \
 # chaos seeds: drop KNOTQ_REPRO_PLAIN
 ```
 
-**Where this stands after 2026-09-24.** 10209 and 10350 are fixed. 10117 is
-root-caused and pinned but deliberately not fixed (see above). 10054 and chaos
-332 look like the same family as 10117: both lose an item with a *fixed starter
-id* from a Daily page (332's is `…0402`, `starter.daily.past.available`), which
-is exactly the id class several devices create independently. 332's violation is
-at step 70, before any device in that seed crosses an account boundary, so it is
-**not** the known account-switch exclusion (0i). Chaos 194 (a lost Daily Queue
-binding at settle) and 389 (the workspace one item short of its own CRDT) are not
-yet triaged.
+**Where this stands after 2026-09-24.** 10209 and 10350 are **fixed** (one row
+per id). 194, 389 and 10054 are traced to the landing's placement-reconcile gate,
+with a patch that fixes them on `spike/landing-placement-reconcile-gate` — not
+merged, because it costs chaos 48 and 238 two lost starter items. 10117 is
+root-caused and pinned. 332 is the same class as 48/238.
+
+So the remaining four (10117, 332, and 48/238 if that gate ever lands) are **one
+weakness wearing three faces**: a fixed-id starter item that several devices seed
+into their own documents independently is indistinguishable from one line that
+moved between documents. That makes the dedupe delete real rows, the gate unable
+to run safely, and the creation seed double its text. 332's violation is at step
+70, before any device in that seed crosses an account boundary, so none of this
+is the known account-switch exclusion (0i).
 
 **Decision still to make.** The link fix alone turns the nightly from "red
 because it cannot build" into "red because it finds real seeds". Either
