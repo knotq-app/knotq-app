@@ -714,6 +714,43 @@ source, and root-child ordering. It fails identically on `7820f3a`, so it too
 predates v0.57.0 — the note was wrong, not the code. Measuring the baseline
 instead of trusting the sentence about it is the recurring lesson here.
 
+### 10117's mechanism, confirmed 2026-09-24
+
+`build_item_creation_update` authors an item's creation text under
+`stable_item_creation_client_id(document, item_id, content)` — which hashes the
+**content**. That content key is load-bearing: it is what makes N devices
+creating the same line with the same text dedupe into one copy (seed 10013,
+"three devices carrying the same line over produced it three times over").
+
+When two devices' first write of the same item id carries *different* content,
+they get different clientIDs, so yrs integrates both runs and the Text holds one
+after the other. Device 2 edits the starter Daily line `…4009`
+(`starter.daily.next_one_there`) before its first sync, so its creation seed
+carries "agent 7277…" while another device's carries the original, and the
+merged document holds both. That is the divergence the projection law reports.
+
+Pinned as `concurrent_same_item_creation_with_different_content_doubles_the_text`
+in `shared/sync/src/crdt/tests/merge.rs`, `#[ignore]`d as an open gap. It fails
+in one line, with no fuzz harness:
+
+```text
+merged text = "When you finish a task the next one is right there\
+               agent 7277When you finish a task the next one is right there"
+```
+
+Note that `reconcile_content_shadow` already exists to paper over this, and only
+fires when the actual content is *exactly* the shadow twice — which the edited
+case never is.
+
+**Why it is not fixed here.** Dropping the content key re-breaks 10013, and no
+merge-time rule can help: if two replicas integrate different seed runs there is
+nothing to prefer until both are present. The fix has to be a *convergent
+repair* — every replica independently picks the same surviving run (e.g. from an
+additive per-seed marker in the item map, so the choice is a pure function of
+the document) and removes the rest. That is a wire-format addition and a change
+to the most delicate merge path in the codebase, so it wants its own change
+driven by the fuzzers, not a patch bolted onto the CI fix that exposed it.
+
 **Reproduce (≈2-3s each):**
 
 ```sh

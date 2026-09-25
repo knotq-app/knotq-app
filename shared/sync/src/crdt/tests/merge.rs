@@ -666,3 +666,49 @@ fn moving_an_item_again_after_undo_survives_a_concurrent_tombstone() {
     assert!(server_source.scheme_items().unwrap().is_empty());
     assert_eq!(server_target.scheme_items().unwrap(), vec![item]);
 }
+
+/// Two devices whose first write of the SAME item id carries DIFFERENT content
+/// leave both texts in the container, concatenated.
+///
+/// `build_item_creation_update` authors the creation text under
+/// `stable_item_creation_client_id(document, item_id, content)`, which hashes the
+/// CONTENT. That is what makes N devices creating the same line with the same
+/// text dedupe into one copy (seed 10013). When the content differs the two
+/// creations get different clientIDs, so yrs integrates both runs and the Text
+/// holds one after the other.
+///
+/// This is the mechanism behind production fuzz single-account seed 10117
+/// (TODO.md 0w): a device edits a starter Daily line before its first sync, so
+/// its creation seed carries the edited text while another device's carries the
+/// original, and the merged document holds `original + edited`.
+///
+/// Ignored because it documents an open gap, not a regression — fixing it needs
+/// a convergent repair (both replicas must pick the same surviving run), and the
+/// content key cannot simply be dropped without re-breaking 10013's dedupe.
+#[test]
+#[ignore = "open gap: TODO.md 0w — concurrent same-item creation with different content doubles the text"]
+fn concurrent_same_item_creation_with_different_content_doubles_the_text() {
+    let document = DocumentId::new();
+    let shared = Item::new("base");
+    let make = |text: &str| {
+        let mut item = shared.clone();
+        item.set_text(text);
+        let mut scheme = Scheme::new("Daily", 0);
+        scheme.items.push(item);
+        YrsSchemeDocument::from_scheme(document, &scheme).unwrap()
+    };
+    let original = "When you finish a task the next one is right there";
+    let edited = "agent 7277When you finish a task the next one is right there";
+    let a = make(original);
+    let b = make(edited);
+
+    let merged = YrsSchemeDocument::new(document);
+    merged.apply_update_v1(&a.encode_state_v1()).unwrap();
+    merged.apply_update_v1(&b.encode_state_v1()).unwrap();
+
+    let text = merged.scheme_items().unwrap()[0].text().to_string();
+    assert!(
+        text == original || text == edited,
+        "one creation seed must survive, got {text:?}"
+    );
+}
