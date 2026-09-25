@@ -676,7 +676,13 @@ and never run. The release-depth gate these notes describe is 300 x 200, so the
 file raises *both* axes. Steps drive simulated midnights (`actions.rs`: "the
 device's day moves on"), so 300 steps reaches materially more day rollovers.
 
-**Measured at 400 x 300, one seed per process: 7 failing seeds of 800.** The
+**Measured on `c5164b0` at 400 x 300, one seed per process: 5 failing seeds of
+800** — `10054`, `10117` (single-account) and `194`, `332`, `389` (chaos). That is
+down from the 7 first measured here; `10209` and `10350` are fixed. The unmerged
+`spike/landing-placement-reconcile-gate` would take it to 4 (`10117`, `332`, plus
+`48` and `238` surfaced), which is why the count quoted for the spike differs.
+
+**The original 7, for the record.** The
 parallel sweep and the one-at-a-time replay agree exactly here. All 7 fail
 **identically on `7820f3a`**, the commit before v0.57.0's `fe924e9`, so none of
 them is a regression from that work — this is pre-existing backlog that the

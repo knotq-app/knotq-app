@@ -768,3 +768,43 @@ fn item_skeleton_structs_must_not_alias_across_documents() {
         "A's tombstone must not reach B's row"
     );
 }
+
+/// `merge_updates_chunked` must be byte-identical to a flat
+/// `yrs::merge_updates_v1`, not merely equivalent.
+///
+/// The merged update's encoding is pinned (`item_creation_encoding_is_pinned`),
+/// and two devices building the same scheme must produce the same bytes or the
+/// deterministic item skeletons stop deduping. The chunking is only safe because
+/// the merge is associative; this is what says so out loud.
+#[test]
+fn chunked_update_merge_is_byte_identical_to_a_flat_merge() {
+    let document = DocumentId::new();
+    let content = vec![knotq_model::Inline::Text {
+        text: "lorem ipsum dolor sit amet".to_string(),
+    }];
+    // Comfortably past the 256 chunk size, so the recursion runs more than one
+    // level rather than falling through to the flat path.
+    let skeletons: Vec<Vec<u8>> = (0..1_000)
+        .map(|i| {
+            crate::crdt::scheme_content::build_item_creation_update(
+                document,
+                &format!("item-{i}"),
+                &content,
+            )
+            .unwrap()
+        })
+        .collect();
+
+    let flat = yrs::merge_updates_v1(&skeletons).unwrap();
+    let chunked = crate::crdt::update_capture::merge_updates_chunked(&skeletons).unwrap();
+    assert_eq!(chunked, flat, "chunked merge changed the encoded bytes");
+
+    // Degenerate counts must still behave.
+    assert!(crate::crdt::update_capture::merge_updates_chunked(&[])
+        .unwrap()
+        .is_empty());
+    assert_eq!(
+        crate::crdt::update_capture::merge_updates_chunked(&skeletons[..1]).unwrap(),
+        skeletons[0]
+    );
+}

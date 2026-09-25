@@ -183,16 +183,30 @@ fn sync_snapshot_ms(state: &mut AppState, workspace: &Workspace) -> f64 {
 /// a fudge factor, and it duly flaked on a Linux runner.
 #[test]
 fn crdt_build_stays_linear_in_item_count() {
-    let spread = build_ms(4, 1_000).max(0.001);
-    let concentrated = build_ms(1, 4_000);
+    let spread = build_ms(8, 1_000).max(0.001);
+    let concentrated = build_ms(1, 8_000);
 
-    // Equal item counts, so a linear build makes these equal; 3x absorbs the
-    // per-scheme overhead the spread side pays four times over. The quadratic
-    // this replaced made the concentrated side ~4x slower.
+    // Equal item counts, so a linear build makes these equal; the headroom
+    // absorbs the per-scheme overhead the spread side pays eight times over.
+    //
+    // The sizes matter as much as the bound. This compared 4x1,000 against
+    // 1x4,000 under a 3x bound, and at that size the quadratic N-way skeleton
+    // merge it was meant to catch only cost 1.86x — so it would have passed
+    // with the regression present. Measured both ways, min of 3 runs:
+    //
+    //        shape                 chunked   flat (quadratic)
+    //        4x1,000 vs 1x4,000      1.15      1.86
+    //        8x1,000 vs 1x8,000      1.33      3.35
+    //        16x1,000 vs 1x16,000    1.64      7.79
+    //
+    // 8,000 items under a 2x bound passes at 1.33 and catches the flat merge at
+    // 3.35, both with ~1.6x of margin, for about two seconds of runtime. Verified
+    // by reverting `merge_updates_chunked` and watching this fail. TIGHTEN as
+    // that work continues, never loosen.
     assert!(
-        concentrated < spread * 3.0,
-        "CRDT build is superlinear in scheme size: {spread:.1}ms for 4 schemes of 1,000 \
-         items vs {concentrated:.1}ms for 1 scheme of 4,000 (same 4,000 items, \
+        concentrated < spread * 2.0,
+        "CRDT build is superlinear in scheme size: {spread:.1}ms for 8 schemes of 1,000 \
+         items vs {concentrated:.1}ms for 1 scheme of 8,000 (same 8,000 items, \
          {:.1}x the time)",
         concentrated / spread
     );
