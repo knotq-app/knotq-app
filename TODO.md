@@ -950,6 +950,27 @@ at step 70 device 3's workspace says the row is in `2b1646c2` while device 0's
 says `ba929b98`, and by step 78 device 0's says it is in *no scheme at all*. That
 is the bug to fix; the oracle reports are downstream of it.
 
+Two more measurements, so the next attempt does not repeat them:
+
+- **It is not the loaded window.** The obvious explanation — placement is resolved
+  over each device's *materialized* schemes, and devices page in different days
+  (`dedupe_materialized_items`' own comment says off-window Daily pages do not
+  participate) — is wrong here. At step 70 devices 0 and 3 both have 09-14, 09-15
+  **and** 09-16 loaded and still disagree.
+- **Nothing is lost at the account level.** Replaying the per-push add/remove
+  ledger for the whole run, the row's final state is always some document
+  (332 → `ea4f07d4`, 48 → `cbf12972`, 238 → `6eff952f`). The momentary "in no
+  document" points are within-step artifacts: a push's REMOVE from the source is
+  ordered before its ADD to the destination. A *device* can still show the row
+  nowhere for a while (332, device 0, step 78), which is user-visible on its own.
+
+Since each device has the row live in exactly one document and different devices
+pick different ones, their documents hold mutually inconsistent tombstone sets,
+and each landing re-asserts the pusher's visible placement back into its own
+documents. `reconcile_item_placements` is what would correct the visible copy —
+which is why the gate above is implicated — but its winner (lowest scheme id) is
+computed per device, so widening the gate alone does not make the fleet agree.
+
 332 is the one remaining seed with no mechanism yet; 48 and 238 are the same
 shape but only appear if that gate lands. 332's violation is at step 70, before
 any device in that seed crosses an account boundary, so it is not the known
