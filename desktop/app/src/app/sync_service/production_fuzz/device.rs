@@ -496,6 +496,7 @@ impl DesktopDevice {
                     &result.workspace,
                     watermark,
                 );
+                let remote_applied = result.remote_updates_applied > 0;
                 if run_changed_workspace(
                     result.remote_updates_applied,
                     result.local_workspace_changed,
@@ -513,8 +514,11 @@ impl DesktopDevice {
                             &mut self.state,
                             &std::collections::HashSet::new(),
                         );
-                    let _placement_reconciled =
-                        (adopted || item_repairs) && self.state.reconcile_item_placements();
+                    // See the production gate in `tasks.rs`: a remote update can
+                    // reintroduce a live copy in another document without changing
+                    // anything visible, because materialization hides it.
+                    let _placement_reconciled = (adopted || item_repairs || remote_applied)
+                        && self.state.reconcile_item_placements();
                     reassert_local_scheme_edits(&mut self.state, local_scheme_edits);
                     reassert_local_folder_edits(&mut self.state, local_folder_edits);
                 }

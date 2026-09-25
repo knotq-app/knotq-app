@@ -440,6 +440,7 @@ async fn run_sync_attempt(
                 app.sync_offline = false;
                 app.sync_server_rejecting = false;
                 app.last_synced_at = Some(Utc::now());
+                let remote_applied = remote_updates_applied > 0;
                 if super::landing::run_changed_workspace(
                     remote_updates_applied,
                     local_workspace_changed,
@@ -478,7 +479,19 @@ async fn run_sync_attempt(
                     // seed 52). Skipped only for a landing that moved nothing,
                     // which is most of them while typing (the pusher's own
                     // document echoing back) and cannot have broken anything.
-                    let placement_reconciled = (adopted || item_repairs)
+                    //
+                    // `adopted` is not enough on its own, and the reason is
+                    // circular: materialization hands a line live in two
+                    // documents to the lowest scheme id, so a remote update that
+                    // reintroduces a live copy in the *other* document changes
+                    // nothing visible — `adopted` is false precisely because the
+                    // duplicate is hidden. It stays hidden until the visible copy
+                    // is deleted, and then the hidden one is all that is left:
+                    // the line the user deleted is back, in a scheme they did not
+                    // put it in (production fuzz chaos seed 389, where the
+                    // carryover's own tombstone is undone this way). Any landing
+                    // that applied a remote update has to ask.
+                    let placement_reconciled = (adopted || item_repairs || remote_applied)
                         && super::landing::reconcile_item_placements(&mut app.state);
                     let workspace_changed = adopted
                         | item_repairs
