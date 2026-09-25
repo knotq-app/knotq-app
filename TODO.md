@@ -689,8 +689,8 @@ untried depth exposes.
 | 389 | chaos | pass | **fail** | **fail** | step 155: device 1's workspace has 13 items in `ba929b98…`, its CRDT has 14 |
 | 10054 | single | pass | pass | **fail** | step 274: device 1's sync lost item `88b70256…` in `1d98a5db…` "Daily 2026-09-17" that no device deleted |
 | 10117 | single | pass | pass | **fail** | steps 269/271: device 2, item `…4009` in `1ec12563…` — the document holds the workspace's text applied twice |
-| 10209 | single | pass | pass | **fail** | steps 285/287/290: device 3, `1ec12563…` has 22 items to the CRDT's 21; `473f9fd3…` repeated in the workspace |
-| 10350 | single | — | **fail** | **fail** | step 202: device 3's sync lost item `92b72501…` in `ba929b98…` "renamed 7192" that no device deleted |
+| 10209 | single | pass | pass | **FIXED** | steps 285/287/290: device 3, `1ec12563…` has 22 items to the CRDT's 21; `473f9fd3…` repeated in the workspace |
+| 10350 | single | — | **FIXED** | **FIXED** | step 202: device 3's sync lost item `92b72501…` in `ba929b98…` "renamed 7192" that no device deleted |
 
 Four (194, 10054, 10117, 10209) are inside the swept seed ranges and are
 exposed purely by 200 -> 300 steps. Three (332, 389, 10350) are outside them
@@ -713,6 +713,74 @@ and 3 diverge at settle over `70db3d43…`'s name and colour, `2b1646c2…`'s
 source, and root-child ordering. It fails identically on `7820f3a`, so it too
 predates v0.57.0 — the note was wrong, not the code. Measuring the baseline
 instead of trusting the sentence about it is the recurring lesson here.
+
+### 10209 and 10350: fixed 2026-09-24 — a scheme held two rows with one id
+
+An `items_by_id` map has one entry per id, so a scheme whose plain copy holds an
+id twice has no CRDT representation at all: the halves disagree from that moment
+on. `insert_item` in `desktop/commands/src/apply/item.rs` inserted
+unconditionally, and the case that reached it was **an undo landing after a sync
+had already restored the row** — 10209: device 3 deletes a Daily row at step 228,
+a later sync re-materializes it, and the undo at step 285 adds a second copy
+(22 rows against the document's 21 from then on). That is TODO item 4 (undo not
+surviving a sync) turning into corruption rather than just a stale undo.
+
+The insert now restores the row's value in place and returns the displaced value
+as its inverse, so redo stays coherent. Pinned by
+`inserting_an_id_the_scheme_already_holds_restores_it_in_place`
+(`desktop/commands/tests/item_cmds.rs`). It fixes 10350 as well.
+
+### 194, 389 and 10054: the landing's placement reconcile is gated on a visible change
+
+Traced 2026-09-24 on chaos 389. A line carried from one Daily page to another
+keeps its id, so the move is a tombstone in the source document plus a live
+insert in the destination. `reconcile_item_placements` is what deletes a losing
+cross-document copy, and the landing only calls it when
+`adopted || item_repairs`.
+
+That gate is **circular**: materialization hands a line live in two documents to
+the lowest scheme id, so a remote update that reintroduces a live copy in the
+*other* document changes nothing visible — `adopted` is false precisely because
+the duplicate is hidden. It stays hidden until the visible copy is deleted, and
+then the hidden copy is all that is left. In 389 device 1 carries `…4004` out of
+`ba929b98` at step 102 (verified: right after the carryover the item is live in
+one document only, so the carryover's tombstone is correct), a later landing
+quietly restores a live copy in `ba929b98`, and the delete at step 155 reveals
+it — 13 visible rows against the document's 14. In production this is "a line I
+deleted came back in another scheme".
+
+**The obvious fix does not pay for itself.** Gating on
+`adopted || item_repairs || remote_updates_applied > 0` fixes chaos 194, chaos
+389 and single-account 10054 — and **breaks chaos 48 and 238**, which both begin
+losing a *starter* item from a Daily page (`…0402`, `…4009`; both pass without
+the change, so the loss is the change's). Perf budgets stay green, so cost is
+not the objection. Kept on `spike/landing-placement-reconcile-gate`, unmerged.
+
+**What the trade-off means, and what is NOT yet known.** Widening the gate
+makes `reconcile_item_placements` run on landings it used to skip, and that
+reconcile *deletes* what it judges to be the losing copy of a cross-document
+duplicate. In 48 and 238 it deletes a row nothing deleted. So the reconcile's
+"losing copy" judgement is wrong in at least some cases the old gate simply never
+showed it — but **why** is unverified, and two plausible-looking explanations are
+already ruled out:
+
+- *Not* devices installing on different days and seeding the same fixed starter
+  ids into different day pages: every fuzz device installs with
+  `today = 2026-09-15` (`World::today`), so the starter ids land in the same
+  documents on all of them.
+- *Not* item `…0402` being live in two documents around 332's loss: probing
+  `documents_holding_item` on every projection reading for the whole seed reports
+  **no** multi-document holder at any step.
+
+So do not start from "a fixed starter id is live in two day documents". 332's
+loss is observed in *server* state by the attribution oracle (the
+`18446744073709551615` pseudo-device), not as a projection divergence on any
+device, so the next step is to watch the server's copy of `ba929b98` across
+device 3's pushes around step 70 rather than the devices' own documents.
+
+The gate and the reconcile's delete decision are coupled, so the gate cannot be
+widened until that decision is trustworthy — and the direction that loses content
+is the worse of the two failure classes.
 
 ### 10117's mechanism, confirmed 2026-09-24
 
@@ -759,8 +827,20 @@ KNOTQ_REPRO_PLAIN=1 KNOTQ_REPRO_SEED=10117 KNOTQ_FUZZ_STEPS=300 \
 # chaos seeds: drop KNOTQ_REPRO_PLAIN
 ```
 
+**Where this stands after 2026-09-24.** 10209 and 10350 are **fixed** (one row
+per id). 194, 389 and 10054 are traced to the landing's placement-reconcile gate,
+with a patch that fixes them on `spike/landing-placement-reconcile-gate` — not
+merged, because it costs chaos 48 and 238 two lost starter items. 10117 is
+root-caused and pinned. 332 is the same class as 48/238.
+
+332 is the one remaining seed with no mechanism yet; 48 and 238 are the same
+shape but only appear if that gate lands. 332's violation is at step 70, before
+any device in that seed crosses an account boundary, so it is not the known
+account-switch exclusion (0i), and two hypotheses for it are already disproved
+(see the gate section above — read those before re-deriving them).
+
 **Decision still to make.** The link fix alone turns the nightly from "red
-because it cannot build" into "red because it finds eight real seeds". Either
+because it cannot build" into "red because it finds real seeds". Either
 drain them and keep 400 x 300, or bring the file down to a depth that is
 actually green and raise it deliberately afterwards — which is what the note
 above ("raising the gate's depth is worth doing only once the sweep is green")
