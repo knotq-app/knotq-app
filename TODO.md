@@ -749,12 +749,33 @@ quietly restores a live copy in `ba929b98`, and the delete at step 155 reveals
 it — 13 visible rows against the document's 14. In production this is "a line I
 deleted came back in another scheme".
 
-**The obvious fix does not pay for itself.** Gating on
+**The obvious fix, and a correction about what it costs.** Gating on
 `adopted || item_repairs || remote_updates_applied > 0` fixes chaos 194, chaos
-389 and single-account 10054 — and **breaks chaos 48 and 238**, which both begin
-losing a *starter* item from a Daily page (`…0402`, `…4009`; both pass without
-the change, so the loss is the change's). Perf budgets stay green, so cost is
-not the objection. Kept on `spike/landing-placement-reconcile-gate`, unmerged.
+389 and single-account 10054. Perf budgets stay green. It also makes chaos 48 and
+238 report "sync lost item …0402 / …4009 that no device deleted", and that was
+first written up here as the change losing content. **That was wrong**, and the
+same misreading as 332's: the oracle's wording is about a *passive placement
+change*, not a deletion.
+
+Measured per push (does applying it to the server's base add or remove the item
+from each document):
+
+- Under the spike, every REMOVE in 48 and 238 is paired with an ADD **in the same
+  step**. The row is never absent from the account.
+- On unmodified `main`, where **both seeds pass**, the same item performs the same
+  cross-document moves — 48's transitions are identical (steps 81, 126, 203, 220,
+  235), 238's roll-forward lands at step 205.
+
+So the oscillation **pre-exists on main and simply is not reported there**. The
+spike does not create it; it changes the trajectory enough that the attribution
+oracle observes one of the transitions. Nothing is lost either way.
+
+The honest trade is therefore: the spike fixes three genuine projection-law
+divergences (what the user sees vs. what their own documents hold) and converts
+two *hidden* placement bugs into visible ones. It still leaves the nightly red —
+red on 48/238 instead of 194/389/10054 — so it does not get the gate green on its
+own. Kept on `spike/landing-placement-reconcile-gate`; the reason not to merge it
+is now "it does not finish the job", not "it loses data".
 
 **What the trade-off means, and what is NOT yet known.** Widening the gate
 makes `reconcile_item_placements` run on landings it used to skip, and that
@@ -918,9 +939,16 @@ KNOTQ_REPRO_PLAIN=1 KNOTQ_REPRO_SEED=10117 KNOTQ_FUZZ_STEPS=300 \
 
 **Where this stands after 2026-09-24.** 10209 and 10350 are **fixed** (one row
 per id). 194, 389 and 10054 are traced to the landing's placement-reconcile gate,
-with a patch that fixes them on `spike/landing-placement-reconcile-gate` — not
-merged, because it costs chaos 48 and 238 two lost starter items. 10117 is
-root-caused and pinned. 332 is the same class as 48/238.
+with a patch on `spike/landing-placement-reconcile-gate` that fixes them and
+surfaces two pre-existing oscillations (48, 238) rather than causing them — see
+the correction below. 10117 is root-caused and pinned. 332, 48 and 238 are all
+the same thing: **a row's placement never converges across devices, and each push
+publishes the pusher's own view.**
+
+The one number worth carrying forward: in 332 the devices disagree permanently —
+at step 70 device 3's workspace says the row is in `2b1646c2` while device 0's
+says `ba929b98`, and by step 78 device 0's says it is in *no scheme at all*. That
+is the bug to fix; the oracle reports are downstream of it.
 
 332 is the one remaining seed with no mechanism yet; 48 and 238 are the same
 shape but only appear if that gate lands. 332's violation is at step 70, before
