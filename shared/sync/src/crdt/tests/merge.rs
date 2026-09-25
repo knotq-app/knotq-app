@@ -712,3 +712,59 @@ fn concurrent_same_item_creation_with_different_content_doubles_the_text() {
         "one creation seed must survive, got {text:?}"
     );
 }
+
+/// An item skeleton's struct identity does not include its document, so the same
+/// item id in two scheme documents occupies the IDENTICAL `(clientID, clock)`
+/// range — and a tombstone for one scheme's copy deletes the other scheme's.
+///
+/// `stable_item_seed_client_id` hashes the item id alone. Every other derived
+/// identity in `crdt::encoding` namespaces by document —
+/// `stable_item_creation_client_id` and `stable_scheme_population_client_id`
+/// both hash the `DocumentId` — so this reads as an oversight rather than a
+/// choice. `build_item_skeleton_update` then builds the skeleton on a fresh
+/// document, so the clocks start at 0 identically too.
+///
+/// One item id legitimately lives in two scheme documents whenever a line moves
+/// between schemes: the move is a tombstone in the source plus a live insert in
+/// the destination, and a Daily Queue carryover does it on its own. That makes
+/// this reachable by any path that lets one document's delete set meet another's
+/// structs — a base rebuild, an epoch squash, a server compaction, a reseed.
+///
+/// This is the same shape as the cross-*account* struct aliasing that was fixed
+/// by re-identifying the workspace document; the cross-*document* half is still
+/// open. Suspected behind the "sync lost item X that no device deleted" class
+/// (chaos 332, and 48/238 under the wider reconcile gate) — TODO.md 0w — but the
+/// production path that merges the two has NOT been demonstrated, only the
+/// aliasing itself.
+///
+/// Ignored because the fix changes struct identity: existing documents hold
+/// skeletons under the old clientID, so a new build authoring a different one
+/// creates a second container for the same item. That needs a pinned encoding
+/// bump and a migration decision, not a patch.
+#[test]
+#[ignore = "open gap: TODO.md 0w — item skeleton structs alias across documents"]
+fn item_skeleton_structs_must_not_alias_across_documents() {
+    let doc_a = DocumentId::new();
+    let doc_b = DocumentId::new();
+    let item = Item::new("shared id, two schemes");
+
+    let mut scheme_a = Scheme::new("Daily 09-14", 0);
+    scheme_a.items.push(item.clone());
+    let a = YrsSchemeDocument::from_scheme(doc_a, &scheme_a).unwrap();
+
+    let mut scheme_b = Scheme::new("Daily 09-15", 0);
+    scheme_b.items.push(item.clone());
+    let b = YrsSchemeDocument::from_scheme(doc_b, &scheme_b).unwrap();
+
+    // Delete the row in A only.
+    a.replace_scheme(&Scheme::new("Daily 09-14", 0)).unwrap();
+    assert!(a.scheme_items().unwrap().is_empty(), "A's row is gone");
+
+    let before = b.scheme_items().unwrap().len();
+    b.apply_update_v1(&a.encode_state_v1()).unwrap();
+    assert_eq!(
+        b.scheme_items().unwrap().len(),
+        before,
+        "A's tombstone must not reach B's row"
+    );
+}
