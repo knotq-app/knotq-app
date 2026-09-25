@@ -775,8 +775,70 @@ already ruled out:
 So do not start from "a fixed starter id is live in two day documents". 332's
 loss is observed in *server* state by the attribution oracle (the
 `18446744073709551615` pseudo-device), not as a projection divergence on any
-device, so the next step is to watch the server's copy of `ba929b98` across
-device 3's pushes around step 70 rather than the devices' own documents.
+device.
+
+### Item skeleton structs alias across documents — found 2026-09-24
+
+Following 332 to the server gave a much sharper lead. At step 53 **device 0**
+moves item `…0402` from `2b1646c2` (Daily 09-14) into `ba929b98` (Daily 09-15).
+At step 70 **device 3** — which never held that row in `ba929b98` — pushes, and
+the server loses it. A delta cannot remove content its author never saw, so the
+two documents must share struct identity. They do:
+
+`stable_item_seed_client_id` hashes the **item id alone**. Every other derived
+identity in `crdt::encoding` namespaces by document
+(`stable_item_creation_client_id`, `stable_scheme_population_client_id` both hash
+the `DocumentId`), so this looks like an oversight. `build_item_skeleton_update`
+then builds the skeleton on a fresh document, so the clocks start at 0 as well —
+the same item id in two scheme documents occupies the **identical
+`(clientID, clock)` range**.
+
+Pinned as `item_skeleton_structs_must_not_alias_across_documents`
+(`shared/sync/src/crdt/tests/merge.rs`, `#[ignore]`d). Delete the row in one
+document, merge that document's state into the other, and the other's row goes
+too:
+
+```text
+B items before=1 after=0
+```
+
+One id legitimately lives in two scheme documents whenever a line moves between
+schemes — a carryover does it unprompted — so this is reachable by anything that
+lets one document's delete set meet another's structs: a base rebuild, an epoch
+squash, a server compaction (332 has one at step 47), a reseed. It is the same
+shape as the cross-*account* struct aliasing already fixed by re-identifying the
+workspace document; the cross-*document* half is still open.
+
+**The aliasing is exercised in the real run, not just synthetically.** Probing
+every push in 332 for item `…0402`'s seed clientID (`7747370098865841`) — the
+daily document ids are `ea4f07d4` for 09-14 and `f9bc2620` for 09-15 — shows
+**both** day documents pushing structs under that one clientID, from **step 27**
+onward. That is well before device 0's move at step 53, so the two documents hold
+the same struct identity independently; the move is not what creates it.
+
+**Honest limits.** The aliasing is proven, and its presence in two documents'
+real pushes is proven. That it is what *deletes* the row at step 70 is still not:
+the step-69/70 push does include `f9bc2620`, but without inserted structs for
+that clientID. `client_ranges` reports an update's *inserted* ranges only, not its
+delete set, so "no structs" is consistent with "carries a delete over that
+client's range" — which is the hypothesis — but does not demonstrate it.
+
+**The one measurement that would close this:** decode the delete set of the
+`f9bc2620` update in device 3's step-70 push and show it covers
+`(7747370098865841, 0..n)`. `client_ranges` cannot; `missing_ranges` in
+`shared/sync/src/testing.rs` already reasons about "a delete the server never
+received" and is the place to extend. Also disproved along the way: item `…0402` is never live in two
+documents on any device at any step in 332 (probed across all devices, all 300
+steps), so the dedupe-picks-the-wrong-copy story is not it either.
+
+**Why it is not fixed here.** Adding the document to the skeleton's clientID
+changes struct identity. Existing documents on users' disks hold skeletons under
+the old id, so a new build authoring a different one creates a *second* container
+for the same item — precisely what the deterministic skeleton exists to prevent —
+and older clients would keep writing the old one. That is an incompatible format
+change: it needs an encoding-version bump (`ITEM_CREATION_ENCODING_VERSION` and
+`scheme_population_encoding_is_pinned` are the existing precedent), a migration,
+and a decision about mixed fleets. Not something to bolt on.
 
 The gate and the reconcile's delete decision are coupled, so the gate cannot be
 widened until that decision is trustworthy — and the direction that loses content
