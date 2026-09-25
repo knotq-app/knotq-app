@@ -756,17 +756,31 @@ losing a *starter* item from a Daily page (`…0402`, `…4009`; both pass witho
 the change, so the loss is the change's). Perf budgets stay green, so cost is
 not the objection. Kept on `spike/landing-placement-reconcile-gate`, unmerged.
 
-**Why both halves are one weakness — start here.** The reconcile deletes "the
-losing copy of a duplicate", and a fixed-id starter item is not a duplicate: two
-devices each seed `…4009` into *their own* Daily document independently, and
-nothing distinguishes that from one line that moved. So running the reconcile
-more often deletes real rows (48, 238, 332), and running it less often lets
-hidden copies resurface (194, 389, 10054). The same blind spot is what doubles
-text in 10117 below. Any real fix has to let a document say whether its copy of
-an id is *this device's seed of a shared skeleton* or *a line that arrived from
-somewhere else* — after which the reconcile can delete only the latter. Until
-then, changing the gate alone just moves the failure between the two classes,
-and the direction that loses content is the worse one.
+**What the trade-off means, and what is NOT yet known.** Widening the gate
+makes `reconcile_item_placements` run on landings it used to skip, and that
+reconcile *deletes* what it judges to be the losing copy of a cross-document
+duplicate. In 48 and 238 it deletes a row nothing deleted. So the reconcile's
+"losing copy" judgement is wrong in at least some cases the old gate simply never
+showed it — but **why** is unverified, and two plausible-looking explanations are
+already ruled out:
+
+- *Not* devices installing on different days and seeding the same fixed starter
+  ids into different day pages: every fuzz device installs with
+  `today = 2026-09-15` (`World::today`), so the starter ids land in the same
+  documents on all of them.
+- *Not* item `…0402` being live in two documents around 332's loss: probing
+  `documents_holding_item` on every projection reading for the whole seed reports
+  **no** multi-document holder at any step.
+
+So do not start from "a fixed starter id is live in two day documents". 332's
+loss is observed in *server* state by the attribution oracle (the
+`18446744073709551615` pseudo-device), not as a projection divergence on any
+device, so the next step is to watch the server's copy of `ba929b98` across
+device 3's pushes around step 70 rather than the devices' own documents.
+
+The gate and the reconcile's delete decision are coupled, so the gate cannot be
+widened until that decision is trustworthy — and the direction that loses content
+is the worse of the two failure classes.
 
 ### 10117's mechanism, confirmed 2026-09-24
 
@@ -819,13 +833,11 @@ with a patch that fixes them on `spike/landing-placement-reconcile-gate` — not
 merged, because it costs chaos 48 and 238 two lost starter items. 10117 is
 root-caused and pinned. 332 is the same class as 48/238.
 
-So the remaining four (10117, 332, and 48/238 if that gate ever lands) are **one
-weakness wearing three faces**: a fixed-id starter item that several devices seed
-into their own documents independently is indistinguishable from one line that
-moved between documents. That makes the dedupe delete real rows, the gate unable
-to run safely, and the creation seed double its text. 332's violation is at step
-70, before any device in that seed crosses an account boundary, so none of this
-is the known account-switch exclusion (0i).
+332 is the one remaining seed with no mechanism yet; 48 and 238 are the same
+shape but only appear if that gate lands. 332's violation is at step 70, before
+any device in that seed crosses an account boundary, so it is not the known
+account-switch exclusion (0i), and two hypotheses for it are already disproved
+(see the gate section above — read those before re-deriving them).
 
 **Decision still to make.** The link fix alone turns the nightly from "red
 because it cannot build" into "red because it finds real seeds". Either
