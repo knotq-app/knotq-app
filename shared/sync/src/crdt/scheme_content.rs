@@ -244,7 +244,10 @@ impl YrsSchemeDocument {
             .iter()
             .map(|(item_id, content)| build_item_creation_update(self.id, item_id, content))
             .collect::<anyhow::Result<Vec<_>>>()?;
-        let merged = yrs::merge_updates_v1(&skeletons)?;
+        // Quadratic in the number of updates if handed to `merge_updates_v1` in
+        // one N-way call — which is what building a whole scheme does. See
+        // `merge_updates_chunked`.
+        let merged = super::update_capture::merge_updates_chunked(&skeletons)?;
         self.doc
             .transact_mut()
             .apply_update(Update::decode_v1(&merged)?)?;
