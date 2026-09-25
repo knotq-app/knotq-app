@@ -809,9 +809,25 @@ squash, a server compaction (332 has one at step 47), a reseed. It is the same
 shape as the cross-*account* struct aliasing already fixed by re-identifying the
 workspace document; the cross-*document* half is still open.
 
-**Honest limits.** The aliasing is proven. That 332's push is the path which
-merges the two is *not* — it is the strongest available explanation, not a
-demonstrated one. Also disproved along the way: item `…0402` is never live in two
+**The aliasing is exercised in the real run, not just synthetically.** Probing
+every push in 332 for item `…0402`'s seed clientID (`7747370098865841`) — the
+daily document ids are `ea4f07d4` for 09-14 and `f9bc2620` for 09-15 — shows
+**both** day documents pushing structs under that one clientID, from **step 27**
+onward. That is well before device 0's move at step 53, so the two documents hold
+the same struct identity independently; the move is not what creates it.
+
+**Honest limits.** The aliasing is proven, and its presence in two documents'
+real pushes is proven. That it is what *deletes* the row at step 70 is still not:
+the step-69/70 push does include `f9bc2620`, but without inserted structs for
+that clientID. `client_ranges` reports an update's *inserted* ranges only, not its
+delete set, so "no structs" is consistent with "carries a delete over that
+client's range" — which is the hypothesis — but does not demonstrate it.
+
+**The one measurement that would close this:** decode the delete set of the
+`f9bc2620` update in device 3's step-70 push and show it covers
+`(7747370098865841, 0..n)`. `client_ranges` cannot; `missing_ranges` in
+`shared/sync/src/testing.rs` already reasons about "a delete the server never
+received" and is the place to extend. Also disproved along the way: item `…0402` is never live in two
 documents on any device at any step in 332 (probed across all devices, all 300
 steps), so the dedupe-picks-the-wrong-copy story is not it either.
 
