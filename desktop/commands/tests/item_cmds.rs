@@ -385,3 +385,46 @@ fn un_completing_a_recurring_occurrence_leaves_no_husk_behind() {
         "a round trip through done and back must not be observable"
     );
 }
+
+/// A scheme must never end up holding two rows with one id: an `items_by_id` map
+/// has one entry per id, so the plain workspace and the CRDT would disagree from
+/// that point on and every later projection check would report it.
+///
+/// The case that reaches this is an undo landing after a sync already restored
+/// the row (production fuzz single-account seed 10209, TODO.md 0w). The insert
+/// restores the row's value in place and hands back the value it displaced, so
+/// redo stays coherent.
+#[test]
+fn inserting_an_id_the_scheme_already_holds_restores_it_in_place() {
+    let mut workspace = Workspace::new();
+    let scheme_id = create_root_scheme(&mut workspace);
+    let original = Item::new("restored by sync");
+    let item_id = original.id;
+    workspace
+        .apply(Command::InsertItem {
+            scheme: scheme_id,
+            position: 0,
+            item: original,
+        })
+        .unwrap();
+
+    let mut undone = Item::new("what the undo carried");
+    undone.id = item_id;
+    let receipt = workspace
+        .apply(Command::InsertItem {
+            scheme: scheme_id,
+            position: 0,
+            item: undone,
+        })
+        .unwrap();
+
+    let items = &workspace.schemes[&scheme_id].items;
+    assert_eq!(items.len(), 1, "no second row for the same id");
+    assert_eq!(items[0].text(), "what the undo carried");
+
+    // Redo path: the inverse puts back exactly what was displaced, still one row.
+    workspace.apply(receipt.inverse).unwrap();
+    let items = &workspace.schemes[&scheme_id].items;
+    assert_eq!(items.len(), 1, "the inverse does not add a row either");
+    assert_eq!(items[0].text(), "restored by sync");
+}

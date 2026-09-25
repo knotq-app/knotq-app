@@ -82,6 +82,29 @@ fn insert_item(
     }
     item.enforce_marker_constraints();
     let id = item.id;
+    // A scheme holding two rows with one id has no CRDT representation — an
+    // `items_by_id` map has one entry per id — so the plain workspace and the
+    // document disagree from that point on, and every later projection check
+    // reports it. Restore the row's value in place instead of adding a second
+    // copy.
+    //
+    // The case that reaches here is an undo landing after a sync already put the
+    // row back (production fuzz single-account seed 10209: device 3 deletes a
+    // Daily row at step 228, a later sync re-materializes it, and the undo at
+    // step 285 inserted it again). The row the undo wanted restored is already
+    // present, so restoring its value is what the user asked for; the inverse
+    // becomes the value we displaced, which keeps redo coherent.
+    if let Some(existing) = scheme_obj.item_index(id) {
+        let displaced = scheme_obj.items[existing].clone();
+        scheme_obj.items[existing] = item;
+        return Ok(CommandReceipt {
+            inverse: Command::ReplaceItem {
+                scheme,
+                item: displaced,
+            },
+            touched: ChangeSet::default().touched_scheme(scheme),
+        });
+    }
     scheme_obj.items.insert(position, item);
     Ok(CommandReceipt {
         inverse: Command::DeleteItem { scheme, item: id },
