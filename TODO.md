@@ -823,11 +823,38 @@ that clientID. `client_ranges` reports an update's *inserted* ranges only, not i
 delete set, so "no structs" is consistent with "carries a delete over that
 client's range" — which is the hypothesis — but does not demonstrate it.
 
-**The one measurement that would close this:** decode the delete set of the
-`f9bc2620` update in device 3's step-70 push and show it covers
-`(7747370098865841, 0..n)`. `client_ranges` cannot; `missing_ranges` in
-`shared/sync/src/testing.rs` already reasons about "a delete the server never
-received" and is the place to extend. Also disproved along the way: item `…0402` is never live in two
+**That measurement was taken, and it says the aliasing is NOT 332's cause.**
+Probing every push for whether applying it to the server's base adds or removes
+`…0402` from each document gives a **placement oscillation**, not a deletion
+(`ea4f07d4` = Daily 09-14, `f9bc2620` = Daily 09-15):
+
+| step | device | effect |
+|---|---|---|
+| 8 | — | ADDS to 09-14 (the starter seed) |
+| 27 | — | REMOVES from 09-14, ADDS to 09-15 (the roll-forward) |
+| 54 | device 1 | **ADDS back to 09-14** |
+| 55 | device 0 | REMOVES from 09-15 |
+| 58 | device 3 | ADDS to 09-14 again |
+| 87 | — | REMOVES from 09-14, ADDS to 09-15 |
+| 166 | — | REMOVES from 09-15 |
+
+No push at step 70 removes the row from any document, and the row is never
+absent from the account — it is in 09-14 the whole time the oracle calls it lost.
+So **332 is not "an item was deleted"; it is "an item's placement ping-pongs
+between two Daily documents across devices' pushes"**, and the step-70 report is
+one transition of that oscillation seen by the attribution oracle.
+
+Devices 1 and 3 still hold 09-14's pre-roll-forward view — they never saw the
+step-27 carryover — and their pushes put the row back there. A plain Yjs
+re-insert cannot beat a tombstone, so the resurrection is going through something
+that re-marks presence: the `resurrect:` presence tags in `read_stored_item`, the
+"an ordinary scheme write preserves raw-only copies on purpose" rule, or the
+`moved_edits` reassert (whose own comment warns about exactly this ping-pong
+shape: "two devices each re-assert their retained snapshot on every landing").
+**That is where to look next** — not at the skeleton aliasing.
+
+The aliasing in the section above is still real and still worth fixing on its own
+merits; it is simply not what 332 is. Also disproved along the way: item `…0402` is never live in two
 documents on any device at any step in 332 (probed across all devices, all 300
 steps), so the dedupe-picks-the-wrong-copy story is not it either.
 
