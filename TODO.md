@@ -689,8 +689,8 @@ untried depth exposes.
 | 389 | chaos | pass | **fail** | **fail** | step 155: device 1's workspace has 13 items in `ba929b98…`, its CRDT has 14 |
 | 10054 | single | pass | pass | **fail** | step 274: device 1's sync lost item `88b70256…` in `1d98a5db…` "Daily 2026-09-17" that no device deleted |
 | 10117 | single | pass | pass | **fail** | steps 269/271: device 2, item `…4009` in `1ec12563…` — the document holds the workspace's text applied twice |
-| 10209 | single | pass | pass | **fail** | steps 285/287/290: device 3, `1ec12563…` has 22 items to the CRDT's 21; `473f9fd3…` repeated in the workspace |
-| 10350 | single | — | **fail** | **fail** | step 202: device 3's sync lost item `92b72501…` in `ba929b98…` "renamed 7192" that no device deleted |
+| 10209 | single | pass | pass | **FIXED** | steps 285/287/290: device 3, `1ec12563…` has 22 items to the CRDT's 21; `473f9fd3…` repeated in the workspace |
+| 10350 | single | — | **FIXED** | **FIXED** | step 202: device 3's sync lost item `92b72501…` in `ba929b98…` "renamed 7192" that no device deleted |
 
 Four (194, 10054, 10117, 10209) are inside the swept seed ranges and are
 exposed purely by 200 -> 300 steps. Three (332, 389, 10350) are outside them
@@ -713,6 +713,22 @@ and 3 diverge at settle over `70db3d43…`'s name and colour, `2b1646c2…`'s
 source, and root-child ordering. It fails identically on `7820f3a`, so it too
 predates v0.57.0 — the note was wrong, not the code. Measuring the baseline
 instead of trusting the sentence about it is the recurring lesson here.
+
+### 10209 and 10350: fixed 2026-09-24 — a scheme held two rows with one id
+
+An `items_by_id` map has one entry per id, so a scheme whose plain copy holds an
+id twice has no CRDT representation at all: the halves disagree from that moment
+on. `insert_item` in `desktop/commands/src/apply/item.rs` inserted
+unconditionally, and the case that reached it was **an undo landing after a sync
+had already restored the row** — 10209: device 3 deletes a Daily row at step 228,
+a later sync re-materializes it, and the undo at step 285 adds a second copy
+(22 rows against the document's 21 from then on). That is TODO item 4 (undo not
+surviving a sync) turning into corruption rather than just a stale undo.
+
+The insert now restores the row's value in place and returns the displaced value
+as its inverse, so redo stays coherent. Pinned by
+`inserting_an_id_the_scheme_already_holds_restores_it_in_place`
+(`desktop/commands/tests/item_cmds.rs`). It fixes 10350 as well.
 
 ### 10117's mechanism, confirmed 2026-09-24
 
@@ -759,8 +775,18 @@ KNOTQ_REPRO_PLAIN=1 KNOTQ_REPRO_SEED=10117 KNOTQ_FUZZ_STEPS=300 \
 # chaos seeds: drop KNOTQ_REPRO_PLAIN
 ```
 
+**Where this stands after 2026-09-24.** 10209 and 10350 are fixed. 10117 is
+root-caused and pinned but deliberately not fixed (see above). 10054 and chaos
+332 look like the same family as 10117: both lose an item with a *fixed starter
+id* from a Daily page (332's is `…0402`, `starter.daily.past.available`), which
+is exactly the id class several devices create independently. 332's violation is
+at step 70, before any device in that seed crosses an account boundary, so it is
+**not** the known account-switch exclusion (0i). Chaos 194 (a lost Daily Queue
+binding at settle) and 389 (the workspace one item short of its own CRDT) are not
+yet triaged.
+
 **Decision still to make.** The link fix alone turns the nightly from "red
-because it cannot build" into "red because it finds eight real seeds". Either
+because it cannot build" into "red because it finds real seeds". Either
 drain them and keep 400 x 300, or bring the file down to a depth that is
 actually green and raise it deliberately afterwards — which is what the note
 above ("raising the gate's depth is worth doing only once the sweep is green")
