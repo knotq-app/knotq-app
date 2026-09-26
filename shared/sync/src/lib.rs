@@ -6,6 +6,7 @@ mod documents;
 mod engine;
 mod fractional;
 mod local_state;
+pub mod parallel;
 mod persisted_state;
 pub mod projection;
 #[doc(hidden)]

@@ -1,6 +1,7 @@
 mod cal_index;
 mod crdt_state;
 mod diagnostics;
+mod durability;
 mod export_markdown;
 mod files;
 mod mcp;
@@ -25,6 +26,7 @@ pub use crdt_state::{
     crdt_state_dir, crdt_state_path, load_crdt_state, save_crdt_state, save_crdt_state_incremental,
 };
 pub use diagnostics::append_diagnostic_line;
+pub use durability::with_durability_batch;
 pub use export_markdown::export_workspace_to_markdown;
 pub use files::{
     edit_timing_enabled, load_daily_queue_scheme, load_daily_queue_schemes_for_calendar_range,

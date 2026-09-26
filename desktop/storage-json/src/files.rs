@@ -135,15 +135,38 @@ pub fn edit_timing_enabled() -> bool {
 }
 
 pub fn save_workspace(path: &Path, workspace: &Workspace) -> Result<()> {
+    // A full save rewrites every scheme file. One durability barrier for the
+    // set, not one per file — see `crate::durability`.
+    crate::durability::with_durability_batch(|| save_workspace_inner(path, workspace))
+}
+
+fn save_workspace_inner(path: &Path, workspace: &Workspace) -> Result<()> {
     let timing = edit_timing_enabled();
     let t0 = std::time::Instant::now();
     let _guard = lock_workspace_save();
     let (base_dir, workspace) = prepare_workspace_save(path, workspace)?;
     let t1 = std::time::Instant::now();
-    for scheme in workspace.schemes.values() {
-        write_scheme_file(&base_dir, &workspace, scheme)
-            .with_context(|| format!("write scheme {}", scheme.id))?;
-    }
+    // Independent files, each dominated by a syscall: on a first sync this
+    // writes every scheme the account has. `try_for_each` stays serial below
+    // its threshold, so an ordinary save is unchanged.
+    let batch = crate::durability::current();
+    knotq_sync::parallel::try_for_each(
+        workspace
+            .schemes
+            .values()
+            .map(|scheme| {
+                let base_dir = &base_dir;
+                let workspace = &workspace;
+                let batch = &batch;
+                move || {
+                    crate::durability::join(batch, || {
+                        write_scheme_file(base_dir, workspace, scheme)
+                            .with_context(|| format!("write scheme {}", scheme.id))
+                    })
+                }
+            })
+            .collect(),
+    )?;
     prune_removed_scheme_files(&base_dir, &workspace)?;
     let t2 = std::time::Instant::now();
 
@@ -170,6 +193,16 @@ pub fn save_workspace(path: &Path, workspace: &Workspace) -> Result<()> {
 /// Save only the specified dirty schemes and the workspace index.
 /// Skips the daily backup for speed; full saves also rewrite every scheme file.
 pub fn save_workspace_incremental(
+    path: &Path,
+    workspace: &Workspace,
+    dirty_scheme_ids: &HashSet<SchemeId>,
+) -> Result<()> {
+    crate::durability::with_durability_batch(|| {
+        save_workspace_incremental_inner(path, workspace, dirty_scheme_ids)
+    })
+}
+
+fn save_workspace_incremental_inner(
     path: &Path,
     workspace: &Workspace,
     dirty_scheme_ids: &HashSet<SchemeId>,
@@ -411,8 +444,16 @@ pub(crate) fn write_atomic(path: &Path, contents: &[u8]) -> Result<()> {
         // crash or I/O stall can land the rename ahead of the data and leave
         // a zero-length "complete" file behind.
         if durable_writes() {
-            file.sync_all()
-                .with_context(|| format!("sync {}", tmp.display()))?;
+            if crate::durability::batching() {
+                // Inside a bulk save: move the bytes to the device now and let
+                // the batch's single `F_FULLFSYNC` flush the device cache once
+                // for every file it wrote. See `crate::durability`.
+                crate::durability::flush_to_device(&file)
+                    .with_context(|| format!("flush {}", tmp.display()))?;
+            } else {
+                file.sync_all()
+                    .with_context(|| format!("sync {}", tmp.display()))?;
+            }
         }
         fs::rename(&tmp, path).with_context(|| format!("rename {}", path.display()))?;
         // `sync_all` above makes the replacement file durable, but a rename is
@@ -423,7 +464,11 @@ pub(crate) fn write_atomic(path: &Path, contents: &[u8]) -> Result<()> {
         // default there, while every Unix target we ship (macOS, Linux, iOS)
         // gets the stronger guarantee.
         if durable_writes() {
-            sync_parent_directory(path)?;
+            if crate::durability::batching() {
+                crate::durability::record(path);
+            } else {
+                sync_parent_directory(path)?;
+            }
         }
         Ok(())
     })();
@@ -452,7 +497,7 @@ pub(crate) fn write_atomic(path: &Path, contents: &[u8]) -> Result<()> {
 /// traded, and only in a process that has opted in by environment variable.
 ///
 /// Read once: a save path must not change behaviour partway through a run.
-fn durable_writes() -> bool {
+pub(crate) fn durable_writes() -> bool {
     static DURABLE: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
     *DURABLE
         .get_or_init(|| !std::env::var("KNOTQ_STORAGE_SKIP_FSYNC").is_ok_and(|value| value == "1"))
