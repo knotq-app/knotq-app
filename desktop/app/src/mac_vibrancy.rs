@@ -12,40 +12,16 @@
 //! Finder's sidebar is `NSVisualEffectMaterialSidebar` blending *behind* the
 //! window, untouched. So the app asks GPUI only for transparency and installs
 //! that view itself, underneath everything GPUI draws.
+//!
+//! Every call here is public AppKit. There is no supported way to blur harder
+//! than a material does — `NSVisualEffectView` exposes no radius, and each
+//! material carries the one Apple chose — so the material *is* the control, and
+//! `KNOTQ_SIDEBAR_MATERIAL` picks among them.
 
 use objc::runtime::{Object, BOOL, YES};
 use objc::{class, msg_send, sel, sel_impl};
 
 type Id = *mut Object;
-
-// The window server's own backdrop blur, and the one thing here that is not
-// public API. `NSVisualEffectView` gives no control over its blur radius — each
-// material has the one Apple chose — so this is the only way to blur harder
-// than a material does.
-//
-// Off by default. The shipping look is the public `NSVisualEffectView` alone;
-// this stays reachable through `KNOTQ_SIDEBAR_BLUR` for anyone who wants more
-// blur than Apple's materials give, and carries the cost that goes with a
-// private symbol: undocumented, free to change under us, and not something Mac
-// App Store review would pass. GPUI already links it for the macOS 11 path, so
-// the symbol is in the binary either way; what is optional is calling it.
-#[link(name = "CoreGraphics", kind = "framework")]
-unsafe extern "C" {
-    fn CGSMainConnectionID() -> Id;
-    fn CGSSetWindowBackgroundBlurRadius(connection_id: Id, window_id: i64, radius: i64) -> i32;
-}
-
-/// Extra blur radius applied to the window's backdrop, on top of the material.
-/// Zero means the public material alone.
-const DEFAULT_BLUR_RADIUS: i64 = 0;
-
-fn blur_radius() -> i64 {
-    std::env::var("KNOTQ_SIDEBAR_BLUR")
-        .ok()
-        .and_then(|value| value.trim().parse::<i64>().ok())
-        .unwrap_or(DEFAULT_BLUR_RADIUS)
-        .clamp(0, 200)
-}
 
 /// `NSVisualEffectMaterial` values. `Sidebar` is what Finder, Mail and Notes
 /// use, and is the default. The others are here because how see-through a
@@ -142,14 +118,6 @@ unsafe fn install_in_window(window: Id) {
         positioned: NS_WINDOW_BELOW
         relativeTo: std::ptr::null_mut::<Object>()
     ];
-
-    // Opt-in only: the material frosts the backdrop on its own, and this blurs
-    // whatever still reads through it.
-    let radius = blur_radius();
-    if radius > 0 {
-        let window_number: i64 = msg_send![window, windowNumber];
-        CGSSetWindowBackgroundBlurRadius(CGSMainConnectionID(), window_number, radius);
-    }
 }
 
 /// Point the effect view's material at KnotQ's theme rather than the system's.
@@ -246,27 +214,6 @@ unsafe fn first_effect_subview(content_view: Id) -> Option<Id> {
         }
     }
     None
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn the_blur_radius_is_always_one_the_window_server_will_take() {
-        for value in ["", "lots", "-5", "99999", "0", "48"] {
-            // SAFETY: single-threaded test, and nothing else reads this while
-            // it runs.
-            unsafe { std::env::set_var("KNOTQ_SIDEBAR_BLUR", value) };
-            let radius = blur_radius();
-            assert!((0..=200).contains(&radius), "{value:?} gave {radius}");
-        }
-        // The default must be off: the private call is opt-in, and an unset
-        // variable is not opting in.
-        unsafe { std::env::remove_var("KNOTQ_SIDEBAR_BLUR") };
-        assert_eq!(blur_radius(), 0);
-        assert_eq!(DEFAULT_BLUR_RADIUS, 0);
-    }
 }
 
 /// `NSRect`, which `objc` does not define for us.
