@@ -12,12 +12,12 @@ pub(super) fn special_row(
         .id(SharedString::new_static(label))
         .flex()
         .items_center()
-        .gap(px(NAV_ICON_GAP))
+        .gap(px(nav_icon_gap()))
         .w_full()
-        .h(px(NAV_ROW_HEIGHT))
-        .pl(px(NAV_ROW_INDENT_BASE))
+        .h(px(nav_row_height()))
+        .pl(px(nav_row_indent_base()))
         .pr(px(4.0))
-        .rounded(px(3.0))
+        .rounded(px(nav_row_radius()))
         .cursor_pointer()
         .when(selected, move |s| s.bg(token_rgba(t.row_selected)))
         .when(!selected && !context_menu_open, move |s| {
@@ -65,7 +65,8 @@ pub(super) fn empty_folder_placeholder(
     depth: usize,
     t: Theme,
 ) -> gpui::AnyElement {
-    let indent = NAV_ROW_INDENT_BASE + depth as f32 * 9.0 + NAV_ICON_SLOT + NAV_ICON_GAP;
+    let indent =
+        nav_row_indent_base() + depth as f32 * nav_indent_step() + NAV_ICON_SLOT + nav_icon_gap();
     div()
         .id(SharedString::from(format!(
             "empty-folder-row-{}",
@@ -75,10 +76,10 @@ pub(super) fn empty_folder_placeholder(
         .items_center()
         .w_full()
         .min_w_0()
-        .h(px(NAV_ROW_HEIGHT))
+        .h(px(nav_row_height()))
         .pl(px(indent))
         .pr(px(4.0))
-        .rounded(px(5.0))
+        .rounded(px(nav_row_radius()))
         .text_size(px(12.0))
         .text_color(token_hsla(t.text_muted))
         .child(
@@ -122,7 +123,7 @@ pub(super) fn inline_rename_input(
         .child(
             div()
                 .w_full()
-                .h(px(NAV_ROW_HEIGHT))
+                .h(px(nav_row_height()))
                 .flex()
                 .items_center()
                 .child(input),
@@ -158,7 +159,7 @@ pub(super) fn footer_button(
         .id(SharedString::new_static(id))
         .flex_1()
         .h(px(24.0))
-        .rounded(px(5.0))
+        .rounded(px(nav_row_radius()))
         .bg(token_rgba(t.button_bg))
         .cursor_pointer()
         .hover(move |s| s.bg(token_rgba(t.button_hover)))

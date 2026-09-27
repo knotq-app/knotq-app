@@ -3149,6 +3149,7 @@ dependencies = [
  "knotq-sync",
  "knotq-theme",
  "knotq-ui",
+ "objc",
  "rand 0.8.6",
  "serde",
  "serde_json",

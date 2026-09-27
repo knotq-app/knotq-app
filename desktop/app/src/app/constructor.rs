@@ -180,6 +180,7 @@ impl KnotQApp {
             cal_scroll_initialized: false,
             rename_node: None,
             trash_expanded: false,
+            sidebar_resize: None,
             pending_delete: None,
             notice_modal: None,
             community_prompt_visible: false,

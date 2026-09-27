@@ -85,6 +85,7 @@ pub struct AppState {
     pub daily_queue_loaded_calendar_months: HashSet<(i32, u32)>,
     pub window_size: Option<SavedWindowSize>,
     pub window_position: Option<SavedWindowPosition>,
+    pub sidebar_width: Option<f32>,
 }
 
 impl AppState {
@@ -152,6 +153,7 @@ impl AppState {
             daily_queue_loaded_calendar_months: daily_queue.loaded_calendar_months,
             window_size: settings.window_size,
             window_position: settings.window_position,
+            sidebar_width: settings.sidebar_width,
         }
     }
 

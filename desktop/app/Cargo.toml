@@ -52,6 +52,19 @@ knotq-ui = { workspace = true }
 # the workspace's existing rustls (via ureq), avoiding a second TLS stack.
 tungstenite = { version = "0.23", features = ["rustls-tls-webpki-roots"], optional = true }
 
+# The Apple-sidebar draft installs its own `NSVisualEffectView` so the sidebar
+# can use Finder's `sidebar` material. GPUI's own `Blurred` appearance picks a
+# colorless `selection` material and strips the backdrop layers, which leaves a
+# transparent window rather than a blurred one.
+[target.'cfg(target_os = "macos")'.dependencies]
+objc = "0.2"
+
+[lints.rust]
+# `objc` 0.2's `msg_send!` and `class!` expand to `cfg(feature = "cargo-clippy")`.
+# Declaring it expected silences those without blanket-allowing the lint, which
+# still catches a real typo in one of this crate's own feature names.
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(feature, values("cargo-clippy"))'] }
+
 [features]
 # `accounts` gates sign-in / network sync / billing / subscription functionality.
 # It is enabled in shipped desktop builds. Local CRDT/sync metadata remains

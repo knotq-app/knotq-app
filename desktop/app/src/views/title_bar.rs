@@ -64,7 +64,11 @@ impl KnotQApp {
             TITLE_TEXT_W
         };
 
-        let left_pad = if cfg!(target_os = "macos") {
+        // A full-height sidebar owns the top-left corner, traffic lights and
+        // all, and the title bar starts to the right of it — so it must not
+        // reserve that space a second time.
+        let sidebar_owns_traffic_lights = crate::views::sidebar::full_height_column();
+        let left_pad = if cfg!(target_os = "macos") && !sidebar_owns_traffic_lights {
             MACOS_TRAFFIC_LIGHT_PAD
         } else {
             TITLE_EDGE_PAD
@@ -198,7 +202,11 @@ impl KnotQApp {
         }
 
         let search_control = self.render_title_bar_search(window, t, cx);
-        let sync_control = self.render_title_bar_sync_control(t, cx);
+        // In the vibrant look the sidebar carries the sync control, so it sits
+        // on the blurred surface rather than on the opaque title bar.
+        let sync_control = (!crate::views::sidebar::full_height_column())
+            .then(|| self.render_title_bar_sync_control(t, cx))
+            .flatten();
         let update_control = self.render_title_bar_update_control(t, cx);
 
         base.child(

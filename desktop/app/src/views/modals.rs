@@ -16,7 +16,6 @@ use crate::views::{sync_cta_bg, sync_cta_hover_bg};
 // ── Onboarding spotlight steps ───────────────────────────────────────────
 
 // Layout constants (mirrored from main.rs).
-const NAVIGATOR_W: f32 = 166.0;
 const LEFT_PANEL_GAP: f32 = 8.0;
 const UPCOMING_W: f32 = 258.0;
 const TITLE_BAR_H: f32 = 38.0;
@@ -90,14 +89,22 @@ enum CardSide {
     Center,
 }
 
-fn step_spotlight(step: usize, vw: f32, vh: f32) -> (SpotlightRect, CardSide) {
+fn step_spotlight(step: usize, vw: f32, vh: f32, sidebar_w: f32) -> (SpotlightRect, CardSide) {
     let target = STEPS
         .get(step)
         .map(|step| step.target)
         .unwrap_or(OnboardingTarget::Welcome);
-    let upcoming_x = NAVIGATOR_W + LEFT_PANEL_GAP;
+    // Both the sidebar's width and whether the upcoming list starts beside it
+    // or at the window edge depend on which sidebar look is active.
+    let navigator_w = sidebar_w;
+    let gap = if crate::views::sidebar::full_height_column() {
+        0.0
+    } else {
+        LEFT_PANEL_GAP
+    };
+    let upcoming_x = navigator_w + gap;
     let upcoming_w = UPCOMING_W;
-    let main_x = NAVIGATOR_W + LEFT_PANEL_GAP + UPCOMING_W + 1.0;
+    let main_x = navigator_w + gap + UPCOMING_W + 1.0;
     let main_w = (vw - main_x).max(100.0);
     let body_y = TITLE_BAR_H;
     let body_h = (vh - TITLE_BAR_H).max(100.0);
@@ -660,7 +667,7 @@ impl KnotQApp {
 
         let vw = f32::from(window.viewport_size().width);
         let vh = f32::from(window.viewport_size().height);
-        let (spot, card_side) = step_spotlight(step_index, vw, vh);
+        let (spot, card_side) = step_spotlight(step_index, vw, vh, self.sidebar_width());
 
         // Build the scrim as 4 rectangles around the spotlight cutout.
         let scrim_top = div()

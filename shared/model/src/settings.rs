@@ -118,6 +118,11 @@ pub struct AppSettings {
     pub window_size: Option<SavedWindowSize>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub window_position: Option<SavedWindowPosition>,
+    /// Width the user dragged the navigator sidebar to, in logical pixels.
+    /// `None` means the look's own default. Device-local, like the window
+    /// bounds above: never workspace content, never synced.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sidebar_width: Option<f32>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub google_accounts: Vec<GoogleOAuthAccount>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -156,6 +161,7 @@ impl Default for AppSettings {
             scheduled_notification_ids: Vec::new(),
             window_size: None,
             window_position: None,
+            sidebar_width: None,
             google_accounts: Vec::new(),
             sync_account: None,
             language: None,

@@ -223,7 +223,7 @@ pub(super) fn render_drop_insertion_zone(
     t: Theme,
     cx: &mut Context<KnotQApp>,
 ) -> gpui::AnyElement {
-    let indent = 8.0 + depth as f32 * 9.0;
+    let indent = nav_row_indent_base() + 4.0 + depth as f32 * nav_indent_step();
     let line_color = token_rgba(t.caret_color);
     div()
         .id(SharedString::from(format!(
@@ -283,7 +283,7 @@ pub(super) fn render_scheme_drop_indicator(
     group: SharedString,
     t: Theme,
 ) -> gpui::AnyElement {
-    let indent = 8.0 + depth as f32 * 9.0;
+    let indent = nav_row_indent_base() + 4.0 + depth as f32 * nav_indent_step();
     let line_color = token_rgba(t.caret_color);
     div()
         .id(SharedString::from(format!(
