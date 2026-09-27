@@ -2565,11 +2565,9 @@ impl WorkspaceCrdtDocuments {
                     return None;
                 }
                 if visible && !is_daily && !hydrate_all_deferred {
-                    if let Some(scheme) = current.schemes.get(&entry.id) {
-                        scheme.items.clone()
-                    } else {
-                        return None;
-                    }
+                    // No plain copy either: nothing to fall back to, so the
+                    // entry is skipped exactly as an invisible one would be.
+                    current.schemes.get(&entry.id)?.items.clone()
                 } else {
                     match deferred_live_document(&self.deferred[&entry.id])
                         .and_then(|doc| doc.scheme_items())
