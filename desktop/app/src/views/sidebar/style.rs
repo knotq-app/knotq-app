@@ -61,10 +61,10 @@ pub(super) fn content_top_inset() -> f32 {
 // Row metrics.
 //
 // The classic values are the shipping sidebar's and must not move. The vibrant
-// ones are Finder's: a taller row, a wider selection pill inset from both
-// edges, a deeper indent per level, and a bit more room around the glyph. A
-// vibrant sidebar owns the whole window edge, so it can afford the space; the
-// classic card cannot.
+// ones give the extra width a full-window column can afford — a selection pill
+// inset from both edges, a slightly deeper indent per level, a little more room
+// around the glyph. The row height stays put: it is what sets the rhythm of the
+// list, and Finder's rows are not taller than KnotQ's.
 // ---------------------------------------------------------------------------
 
 fn pick(classic: f32, vibrant: f32) -> f32 {
@@ -81,7 +81,7 @@ pub(crate) fn navigator_width() -> f32 {
 }
 
 pub(super) fn nav_row_height() -> f32 {
-    pick(26.0, 28.0)
+    26.0
 }
 
 /// Leading padding of a row's content, before any nesting.
@@ -91,7 +91,7 @@ pub(super) fn nav_row_indent_base() -> f32 {
 
 /// How much one level of nesting shifts a row.
 pub(super) fn nav_indent_step() -> f32 {
-    pick(9.0, 13.0)
+    pick(9.0, 11.0)
 }
 
 pub(super) fn nav_icon_gap() -> f32 {
@@ -111,7 +111,7 @@ pub(super) fn sidebar_side_padding() -> f32 {
 
 /// Gap between the pinned group (Calendar, Daily, Archive) and the tree.
 pub(super) fn group_gap() -> f32 {
-    pick(6.0, 10.0)
+    pick(6.0, 7.0)
 }
 
 #[cfg(test)]

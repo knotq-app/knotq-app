@@ -14,7 +14,7 @@ use gpui::Hsla;
 /// surface, and that material is the whole point. This keeps a little, only
 /// enough to carry the theme's hue into the sidebar — KnotQ's themes are not
 /// all grey — without flattening the blur back out.
-const VIBRANCY_TINT_ALPHA: f32 = 0.22;
+const VIBRANCY_TINT_ALPHA: f32 = 0.12;
 
 /// Is the window drawing a blurred backdrop behind the sidebar? GPUI implements
 /// `WindowBackgroundAppearance::Blurred` natively on macOS with a real

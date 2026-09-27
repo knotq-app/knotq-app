@@ -159,11 +159,26 @@ impl KnotQApp {
 
     fn render_sidebar_footer(&mut self, cx: &mut Context<Self>) -> gpui::AnyElement {
         let t = self.theme();
+        // The vibrant sidebar takes the sync control off the title bar, where it
+        // would sit on an opaque surface, and puts it here on the blur.
+        let sync_control = full_height_column()
+            .then(|| self.render_title_bar_sync_control(t, cx))
+            .flatten();
         div()
             .px(px(2.0))
             .pt(px(4.0))
             .pb(px(2.0))
             .flex()
+            .flex_col()
+            .gap(px(6.0))
+            .children(sync_control.map(|control| {
+                div()
+                    .w_full()
+                    .flex()
+                    .justify_center()
+                    .child(control)
+                    .into_any_element()
+            }))
             .child(footer_button(
                 "sidebar-new-menu",
                 knotq_l10n::t("sidebar.footer.new"),

@@ -24,7 +24,7 @@ pub(crate) enum SyncIndicator {
 }
 
 impl KnotQApp {
-    pub(super) fn render_title_bar_sync_control(
+    pub(crate) fn render_title_bar_sync_control(
         &self,
         t: Theme,
         cx: &mut Context<Self>,

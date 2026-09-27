@@ -202,7 +202,11 @@ impl KnotQApp {
         }
 
         let search_control = self.render_title_bar_search(window, t, cx);
-        let sync_control = self.render_title_bar_sync_control(t, cx);
+        // In the vibrant look the sidebar carries the sync control, so it sits
+        // on the blurred surface rather than on the opaque title bar.
+        let sync_control = (!crate::views::sidebar::full_height_column())
+            .then(|| self.render_title_bar_sync_control(t, cx))
+            .flatten();
         let update_control = self.render_title_bar_update_control(t, cx);
 
         base.child(
