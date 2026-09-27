@@ -89,14 +89,14 @@ enum CardSide {
     Center,
 }
 
-fn step_spotlight(step: usize, vw: f32, vh: f32) -> (SpotlightRect, CardSide) {
+fn step_spotlight(step: usize, vw: f32, vh: f32, sidebar_w: f32) -> (SpotlightRect, CardSide) {
     let target = STEPS
         .get(step)
         .map(|step| step.target)
         .unwrap_or(OnboardingTarget::Welcome);
     // Both the sidebar's width and whether the upcoming list starts beside it
     // or at the window edge depend on which sidebar look is active.
-    let navigator_w = crate::views::sidebar::navigator_width();
+    let navigator_w = sidebar_w;
     let gap = if crate::views::sidebar::full_height_column() {
         0.0
     } else {
@@ -667,7 +667,7 @@ impl KnotQApp {
 
         let vw = f32::from(window.viewport_size().width);
         let vh = f32::from(window.viewport_size().height);
-        let (spot, card_side) = step_spotlight(step_index, vw, vh);
+        let (spot, card_side) = step_spotlight(step_index, vw, vh, self.sidebar_width());
 
         // Build the scrim as 4 rectangles around the spotlight cutout.
         let scrim_top = div()

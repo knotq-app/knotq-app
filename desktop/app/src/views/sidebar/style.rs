@@ -86,9 +86,46 @@ fn pick(classic: f32, vibrant: f32) -> f32 {
     }
 }
 
-/// Width of the navigator column.
-pub(crate) fn navigator_width() -> f32 {
-    pick(166.0, 196.0)
+/// Default width of the navigator column, before the user drags it.
+pub(crate) fn default_navigator_width() -> f32 {
+    pick(166.0, 184.0)
+}
+
+/// How far the column can be dragged. The lower bound is where a nested scheme
+/// name starts truncating to nothing; the upper is where the sidebar starts
+/// crowding the panes it exists to navigate.
+pub(crate) const MIN_NAVIGATOR_WIDTH: f32 = 150.0;
+pub(crate) const MAX_NAVIGATOR_WIDTH: f32 = 340.0;
+
+/// Width of the strip along the sidebar's trailing edge that resizes it.
+pub(crate) const RESIZE_HANDLE_WIDTH: f32 = 6.0;
+
+/// The width to draw, given whatever the settings file holds.
+///
+/// Clamped rather than trusted: the saved value can come from the other look,
+/// from a hand-edited settings file, or from a build with different bounds, and
+/// none of those should be able to produce a sidebar the user cannot fix.
+pub(crate) fn effective_width(saved: Option<f32>) -> f32 {
+    saved
+        .filter(|width| width.is_finite())
+        .unwrap_or_else(default_navigator_width)
+        .clamp(MIN_NAVIGATOR_WIDTH, MAX_NAVIGATOR_WIDTH)
+}
+
+/// Where a drag that started at `start_width` and has moved `delta` puts the
+/// edge. Computed from the gesture's origin, not from the previous frame, so a
+/// pointer dragged past a bound and back returns to exactly where it left.
+pub(crate) fn resized_width(start_width: f32, delta: f32) -> f32 {
+    (start_width + delta)
+        .clamp(MIN_NAVIGATOR_WIDTH, MAX_NAVIGATOR_WIDTH)
+        .round()
+}
+
+/// Can the user drag this sidebar's edge? Only the full-height column: the
+/// classic card is positioned inside the left panel by absolute offsets that
+/// assume its width, and this draft does not disturb the shipping look.
+pub(crate) fn resizable() -> bool {
+    full_height_column()
 }
 
 pub(super) fn nav_row_height() -> f32 {
@@ -128,6 +165,27 @@ pub(super) fn group_gap() -> f32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_saved_width_is_clamped_not_trusted() {
+        assert_eq!(effective_width(None), default_navigator_width());
+        assert_eq!(effective_width(Some(f32::NAN)), default_navigator_width());
+        assert_eq!(effective_width(Some(0.0)), MIN_NAVIGATOR_WIDTH);
+        assert_eq!(effective_width(Some(10_000.0)), MAX_NAVIGATOR_WIDTH);
+        assert_eq!(effective_width(Some(200.0)), 200.0);
+    }
+
+    #[test]
+    fn a_drag_past_a_bound_and_back_returns_where_it_left() {
+        let start = 200.0;
+        // Out past the minimum...
+        assert_eq!(resized_width(start, -400.0), MIN_NAVIGATOR_WIDTH);
+        // ...and back to the origin, which must be the original width again
+        // rather than the bound plus the return travel.
+        assert_eq!(resized_width(start, 0.0), start);
+        assert_eq!(resized_width(start, 400.0), MAX_NAVIGATOR_WIDTH);
+        assert_eq!(resized_width(start, 20.4), 220.0);
+    }
 
     #[test]
     fn only_an_explicit_opt_in_selects_the_draft() {

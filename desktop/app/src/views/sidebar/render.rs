@@ -16,7 +16,7 @@ impl KnotQApp {
         let container = div()
             .flex()
             .flex_col()
-            .w(px(navigator_width()))
+            .w(px(self.sidebar_width()))
             .h_full()
             .flex_shrink_0()
             // A full-height sidebar puts a band here instead of padding: the
@@ -137,8 +137,49 @@ impl KnotQApp {
                 .flex_shrink_0()
                 .flex()
                 .items_center()
+                // Pinned to the trailing edge, not stacked against the traffic
+                // lights: the lights are a fixed-width cluster at the leading
+                // edge and anything crowding them reads as part of them.
+                .justify_end()
                 .pl(px(traffic_light_clearance()))
                 .children(sync_control)
+                .into_any_element(),
+        )
+    }
+
+    /// The strip along the sidebar's trailing edge that drags it wider or
+    /// narrower. It sits over the sidebar's own right border rather than taking
+    /// layout width of its own, so the sidebar's content box is unaffected.
+    pub(crate) fn render_sidebar_resize_handle(
+        &mut self,
+        cx: &mut Context<Self>,
+    ) -> Option<gpui::AnyElement> {
+        if !resizable() {
+            return None;
+        }
+        let t = self.theme();
+        let dragging = self.sidebar_resize.is_some();
+        Some(
+            div()
+                .id("sidebar-resize-handle")
+                .absolute()
+                .top_0()
+                .bottom_0()
+                .right(px(-RESIZE_HANDLE_WIDTH / 2.0))
+                .w(px(RESIZE_HANDLE_WIDTH))
+                .cursor(gpui::CursorStyle::ResizeLeftRight)
+                .when(dragging, |handle| handle.bg(token_rgba(t.border_overlay)))
+                .when(!dragging, |handle| {
+                    handle.hover(move |h| h.bg(token_rgba(t.border_overlay)))
+                })
+                .on_mouse_down(
+                    MouseButton::Left,
+                    cx.listener(|this, event: &MouseDownEvent, _window, cx| {
+                        cx.stop_propagation();
+                        this.begin_sidebar_resize(f32::from(event.position.x));
+                        cx.notify();
+                    }),
+                )
                 .into_any_element(),
         )
     }

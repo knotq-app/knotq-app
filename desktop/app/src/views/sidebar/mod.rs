@@ -65,7 +65,9 @@ use self::style::{
     content_top_inset, group_gap, is_vibrant, nav_icon_gap, nav_indent_step, nav_row_height,
     nav_row_indent_base, nav_row_radius, sidebar_side_padding, traffic_light_clearance,
 };
-pub(crate) use self::style::{full_height_column, navigator_width};
+pub(crate) use self::style::{
+    effective_width, full_height_column, resizable, resized_width, RESIZE_HANDLE_WIDTH,
+};
 pub(crate) use self::tree::SidebarNavigatorCache;
 pub(crate) use self::vibrant::window_vibrancy_available;
 use self::vibrant::*;

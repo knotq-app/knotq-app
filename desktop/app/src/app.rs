@@ -609,6 +609,10 @@ pub struct KnotQApp {
     pub cal_scroll_initialized: bool,
     pub rename_node: Option<RenameNodeState>,
     pub trash_expanded: bool,
+    /// Set while the sidebar's trailing edge is being dragged. Holds where the
+    /// drag started so the new width follows the pointer exactly, rather than
+    /// accumulating rounding from frame to frame.
+    pub sidebar_resize: Option<SidebarResize>,
     pub pending_delete: Option<DeleteConfirmation>,
     pub notice_modal: Option<NoticeModal>,
     /// One-time, non-blocking invitation to share feedback in the KnotQ Discord.
@@ -777,6 +781,13 @@ pub struct KnotQApp {
     #[cfg(feature = "accounts")]
     pub onboarding_phase: OnboardingPhase,
     pub onboarding_page: usize,
+}
+
+/// An in-progress drag of the sidebar's trailing edge.
+#[derive(Clone, Copy, Debug)]
+pub struct SidebarResize {
+    pub pointer_x: f32,
+    pub start_width: f32,
 }
 
 impl Deref for KnotQApp {

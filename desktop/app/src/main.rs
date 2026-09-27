@@ -165,20 +165,24 @@ impl Render for KnotQApp {
         // stays a card floating inside the panel it shares with the upcoming
         // list.
         let sidebar_is_column = knotq_sidebar::full_height_column();
+        let sidebar_w = self.sidebar_width();
         let mut sidebar = Some(sidebar.into_any_element());
 
+        let resize_handle = self.render_sidebar_resize_handle(cx);
         let sidebar_column = sidebar_is_column.then(|| {
             div()
+                .relative()
                 .h_full()
                 .flex_shrink_0()
                 .children(sidebar.take())
+                .children(resize_handle)
                 .into_any_element()
         });
 
         let left_panel_w = if sidebar_is_column {
             UPCOMING_W
         } else {
-            knotq_sidebar::navigator_width() + LEFT_PANEL_GAP + UPCOMING_W
+            sidebar_w + LEFT_PANEL_GAP + UPCOMING_W
         };
         let left_panel = div()
             .relative()
@@ -194,7 +198,7 @@ impl Render for KnotQApp {
                     .left(px(if sidebar_is_column {
                         0.0
                     } else {
-                        knotq_sidebar::navigator_width() + LEFT_PANEL_GAP
+                        sidebar_w + LEFT_PANEL_GAP
                     }))
                     .right_0()
                     .overflow_hidden()
@@ -210,12 +214,7 @@ impl Render for KnotQApp {
                     .into_any_element()
             }));
 
-        let reserved_left = left_panel_w
-            + if sidebar_is_column {
-                knotq_sidebar::navigator_width()
-            } else {
-                0.0
-            };
+        let reserved_left = left_panel_w + if sidebar_is_column { sidebar_w } else { 0.0 };
         let main_available_w =
             (f32::from(window.viewport_size().width) - (reserved_left + 1.0)).max(0.0);
 
@@ -295,6 +294,12 @@ impl Render for KnotQApp {
             .text_color(token_hsla(t.text_primary))
             .font_family(FONT_UI)
             .on_mouse_move(cx.listener(|this, event: &MouseMoveEvent, _window, cx| {
+                // A sidebar resize owns the pointer until the button comes up,
+                // so it is handled before anything else looks at the move —
+                // including the calendar's own drag bookkeeping.
+                if this.update_sidebar_resize(f32::from(event.position.x), cx) {
+                    return;
+                }
                 if !event.dragging() {
                     this.clear_calendar_pointer_state(cx);
                 }
@@ -302,12 +307,14 @@ impl Render for KnotQApp {
             .on_mouse_up(
                 MouseButton::Left,
                 cx.listener(|this, _event: &MouseUpEvent, _window, cx| {
+                    this.end_sidebar_resize();
                     this.clear_calendar_pointer_state(cx);
                 }),
             )
             .on_mouse_up_out(
                 MouseButton::Left,
                 cx.listener(|this, _event: &MouseUpEvent, _window, cx| {
+                    this.end_sidebar_resize();
                     this.clear_calendar_pointer_state(cx);
                 }),
             )

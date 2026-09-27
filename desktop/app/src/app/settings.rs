@@ -253,6 +253,42 @@ impl KnotQApp {
         }
     }
 
+    /// The navigator's current width: what the user dragged it to, or the
+    /// look's default. Always clamped, so a settings file carrying a width from
+    /// another look (or a hand-edited one) cannot produce an unusable sidebar.
+    pub fn sidebar_width(&self) -> f32 {
+        crate::views::sidebar::effective_width(self.sidebar_width)
+    }
+
+    pub fn begin_sidebar_resize(&mut self, pointer_x: f32) {
+        self.sidebar_resize = Some(crate::app::SidebarResize {
+            pointer_x,
+            start_width: self.sidebar_width(),
+        });
+    }
+
+    /// Follow the pointer. Deliberately does not save: a drag is one gesture,
+    /// and writing settings.json on every mouse-move frame would be absurd.
+    pub fn update_sidebar_resize(&mut self, pointer_x: f32, cx: &mut Context<Self>) -> bool {
+        let Some(resize) = self.sidebar_resize else {
+            return false;
+        };
+        let width =
+            crate::views::sidebar::resized_width(resize.start_width, pointer_x - resize.pointer_x);
+        if self.sidebar_width != Some(width) {
+            self.sidebar_width = Some(width);
+            cx.notify();
+        }
+        true
+    }
+
+    /// End of the gesture: this is where the width reaches disk.
+    pub fn end_sidebar_resize(&mut self) {
+        if self.sidebar_resize.take().is_some() {
+            self.save_app_settings();
+        }
+    }
+
     pub(crate) fn save_app_settings(&self) {
         let settings = AppSettings {
             replica_id: self.settings.replica_id,
@@ -268,6 +304,7 @@ impl KnotQApp {
             scheduled_notification_ids: self.scheduled_notification_ids.clone(),
             window_size: self.window_size,
             window_position: self.window_position,
+            sidebar_width: self.sidebar_width,
             google_accounts: self.settings.google_accounts.clone(),
             sync_account: self.settings.sync_account.clone(),
             language: self.settings.language.clone(),
