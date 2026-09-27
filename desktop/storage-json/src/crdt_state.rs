@@ -140,7 +140,17 @@ pub(crate) fn load_single_blob(path: &Path) -> Result<HashMap<DocumentId, Vec<u8
 
 /// Generic over the byte container so the caller can hand over the shared states
 /// from the CRDT documents' encode cache rather than a copy of all of them.
-pub fn save_crdt_state<B: AsRef<[u8]>>(
+pub fn save_crdt_state<B: AsRef<[u8]> + Sync>(
+    workspace_path: &Path,
+    states: &HashMap<DocumentId, B>,
+) -> Result<()> {
+    // One document file per workspace document: a first sync writes all of
+    // them, so the durability barrier belongs to the set. See
+    // `crate::durability`.
+    crate::durability::with_durability_batch(|| save_crdt_state_inner(workspace_path, states))
+}
+
+fn save_crdt_state_inner<B: AsRef<[u8]> + Sync>(
     workspace_path: &Path,
     states: &HashMap<DocumentId, B>,
 ) -> Result<()> {
@@ -148,14 +158,25 @@ pub fn save_crdt_state<B: AsRef<[u8]>>(
     fs::create_dir_all(&dir).with_context(|| format!("create {}", dir.display()))?;
 
     let mut written: HashSet<String> = HashSet::with_capacity(states.len());
+    let batch = crate::durability::current();
+    let mut jobs: Vec<_> = Vec::with_capacity(states.len());
     for (document, bytes) in states {
         let name = document_file_name(*document);
-        // Unchanged documents — every document but the edited one, normally —
-        // cost a read that the page cache serves, instead of a write and two
-        // fsyncs.
-        crate::files::write_atomic_if_changed(&dir.join(&name), bytes.as_ref())?;
+        let path = dir.join(&name);
         written.insert(name);
+        let batch = &batch;
+        jobs.push(move || {
+            crate::durability::join(batch, || {
+                // Unchanged documents — every document but the edited one,
+                // normally — cost a read that the page cache serves, instead
+                // of a write and two fsyncs.
+                crate::files::write_atomic_if_changed(&path, bytes.as_ref())
+            })
+        });
     }
+    // A first sync writes one file per document in the account; they are
+    // independent, so hand them to the idle cores (serial below the threshold).
+    knotq_sync::parallel::try_for_each(jobs)?;
 
     // A save that carries no documents at all is not a workspace that has none —
     // every workspace has at least its own document. It means the caller's CRDT

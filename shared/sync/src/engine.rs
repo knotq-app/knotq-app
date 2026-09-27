@@ -1203,75 +1203,94 @@ fn queue_local_only_documents_before_pull(
     // live copy still must not be rewritten as a deletion.
     let mut crdt_only_items: HashMap<knotq_model::SchemeId, Vec<knotq_model::Item>> =
         HashMap::new();
-    for (scheme_id, local) in &workspace.schemes {
-        let Some(crdt_items) = crdt_docs.raw_scheme_items(*scheme_id).ok().flatten() else {
-            continue;
-        };
-        if local.items == crdt_items
+    // Every scheme's CRDT document is decoded here, on EVERY pull, to compare
+    // against its plain copy — the single most expensive thing a caught-up sync
+    // does once the documents are live (36 ms per pull on a 170-scheme account,
+    // and a cold start's handoff runs it twice). The body is a pure per-scheme
+    // read that produces one independent entry, so run it across the idle cores.
+    let schemes: Vec<(&knotq_model::SchemeId, &knotq_model::Scheme)> =
+        workspace.schemes.iter().collect();
+    type LocalAheadEntry = (
+        knotq_model::SchemeId,
+        HashSet<String>,
+        Option<Vec<knotq_model::Item>>,
+    );
+    let compared: Vec<Option<LocalAheadEntry>> =
+        crate::parallel::map_ordered(&schemes, |(scheme_id, local)| {
+            let scheme_id: &knotq_model::SchemeId = scheme_id;
+            let crdt_items = crdt_docs.raw_scheme_items(*scheme_id).ok().flatten()?;
+            if local.items == crdt_items
             // An empty plain scheme is the known stale-file shape: a failed
             // materialization/save can clear the UI snapshot while the
             // durable CRDT still has content. Never turn that into a
             // deletion; the normal materialization pass restores it.
             || (local.items.is_empty() && !crdt_items.is_empty())
-        {
-            continue;
-        }
-        let crdt_by_id: HashMap<String, &knotq_model::Item> = crdt_items
-            .iter()
-            .map(|item| (item.id.to_string(), item))
-            .collect();
-        let local_ids: HashSet<String> =
-            local.items.iter().map(|item| item.id.to_string()).collect();
-        let ahead: HashSet<String> = local
-            .items
-            .iter()
-            .filter(|item| {
-                crdt_by_id
-                    .get(&item.id.to_string())
-                    .is_none_or(|crdt_item| **crdt_item != **item)
-            })
-            .map(|item| item.id.to_string())
-            .collect();
-        // Lines the CRDT has and the plain copy does not are NOT treated as
-        // local deletions. "Plain lacks it" is ambiguous — the user deleted
-        // it, these files are simply behind the durable CRDT, or materialization
-        // kept the same id in another scheme. Reading it as a deletion made the
-        // repair tombstone lines nobody deleted, and an account switch then
-        // carried those tombstones into the destination account, where every
-        // device lost them (production fuzz seed 6: five lines across four
-        // schemes). A real deletion reaches the CRDT through the edit's own
-        // flush, not through this repair.
-        let missing_from_plain: Vec<_> = crdt_items
-            .iter()
-            .filter(|item| !local_ids.contains(&item.id.to_string()))
-            .cloned()
-            .collect();
-        if !missing_from_plain.is_empty() && !first_sync_with_this_server {
+            {
+                return None;
+            }
+            let crdt_by_id: HashMap<String, &knotq_model::Item> = crdt_items
+                .iter()
+                .map(|item| (item.id.to_string(), item))
+                .collect();
+            let local_ids: HashSet<String> =
+                local.items.iter().map(|item| item.id.to_string()).collect();
+            let ahead: HashSet<String> = local
+                .items
+                .iter()
+                .filter(|item| {
+                    crdt_by_id
+                        .get(&item.id.to_string())
+                        .is_none_or(|crdt_item| **crdt_item != **item)
+                })
+                .map(|item| item.id.to_string())
+                .collect();
+            // Lines the CRDT has and the plain copy does not are NOT treated as
+            // local deletions. "Plain lacks it" is ambiguous — the user deleted
+            // it, these files are simply behind the durable CRDT, or materialization
+            // kept the same id in another scheme. Reading it as a deletion made the
+            // repair tombstone lines nobody deleted, and an account switch then
+            // carried those tombstones into the destination account, where every
+            // device lost them (production fuzz seed 6: five lines across four
+            // schemes). A real deletion reaches the CRDT through the edit's own
+            // flush, not through this repair.
+            let missing_from_plain: Vec<_> = crdt_items
+                .iter()
+                .filter(|item| !local_ids.contains(&item.id.to_string()))
+                .cloned()
+                .collect();
             // Preserve the complete raw scheme snapshot while reconciling. The
             // materialized workspace may intentionally omit a duplicate copy,
             // but replace_scheme would otherwise turn that omission into a
             // destructive tombstone.
-            crdt_only_items.insert(*scheme_id, crdt_items);
+            let carried_crdt_items = (!missing_from_plain.is_empty()
+                && !first_sync_with_this_server)
+                .then_some(crdt_items);
+            // On a first sync, only lines this device can prove it authored: a
+            // random (v4) id. A derived id is generated — starter content, a
+            // carryover's archived row — and may be something the account deleted
+            // before this device ever reached it.
+            let ahead: HashSet<String> = if first_sync_with_this_server {
+                ahead
+                    .into_iter()
+                    .filter(|item| {
+                        item.parse::<knotq_model::ItemId>()
+                            .is_ok_and(|id| id.0.get_version_num() == 4)
+                    })
+                    .collect()
+            } else {
+                ahead
+            };
+            let carries_crdt_only = carried_crdt_items.is_some();
+            if !ahead.is_empty() || carries_crdt_only {
+                return Some((*scheme_id, ahead, carried_crdt_items));
+            }
+            None
+        });
+    for (scheme_id, ahead, carried_crdt_items) in compared.into_iter().flatten() {
+        if let Some(items) = carried_crdt_items {
+            crdt_only_items.insert(scheme_id, items);
         }
-        // On a first sync, only lines this device can prove it authored: a
-        // random (v4) id. A derived id is generated — starter content, a
-        // carryover's archived row — and may be something the account deleted
-        // before this device ever reached it.
-        let ahead: HashSet<String> = if first_sync_with_this_server {
-            ahead
-                .into_iter()
-                .filter(|item| {
-                    item.parse::<knotq_model::ItemId>()
-                        .is_ok_and(|id| id.0.get_version_num() == 4)
-                })
-                .collect()
-        } else {
-            ahead
-        };
-        let carries_crdt_only = !missing_from_plain.is_empty() && !first_sync_with_this_server;
-        if !ahead.is_empty() || carries_crdt_only {
-            local_ahead_items.insert(*scheme_id, ahead);
-        }
+        local_ahead_items.insert(scheme_id, ahead);
     }
     let content_mismatch_schemes: HashSet<knotq_model::SchemeId> =
         local_ahead_items.keys().copied().collect();

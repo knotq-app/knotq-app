@@ -3366,6 +3366,7 @@ dependencies = [
  "knotq-model",
  "knotq-storage",
  "knotq-sync",
+ "libc",
  "quick-xml 0.39.4",
  "serde",
  "serde_json",

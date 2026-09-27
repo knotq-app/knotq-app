@@ -343,6 +343,41 @@ impl WorkspaceCrdtApplyOutcome {
     }
 }
 
+/// One scheme's slice of an account-switch merge: where its updates sat in the
+/// incoming order, which scheme it is, its document, and the updates aimed at
+/// it. Spelled out because the inline tuple is four unrelated types deep and
+/// says nothing at the use site.
+type SchemeMergeTarget<'a> = (
+    usize,
+    SchemeId,
+    &'a mut YrsSchemeDocument,
+    &'a [&'a StoredCrdtUpdate],
+);
+
+/// What merging one scheme's remote updates did, gathered per scheme so the
+/// merges can run concurrently and be folded into the shared outcome after.
+struct SchemeMergeOutcome {
+    scheme_id: SchemeId,
+    applied: usize,
+    touched: bool,
+    changed_documents: Vec<DocumentId>,
+    account_switch_merges: Vec<(DocumentId, crate::AccountSwitchMerge)>,
+    errors: Vec<(DocumentId, String, anyhow::Error)>,
+}
+
+impl SchemeMergeOutcome {
+    fn new(scheme_id: SchemeId) -> Self {
+        Self {
+            scheme_id,
+            applied: 0,
+            touched: false,
+            changed_documents: Vec::new(),
+            account_switch_merges: Vec::new(),
+            errors: Vec::new(),
+        }
+    }
+}
+
 pub struct WorkspaceCrdtDocuments {
     workspace: YrsJsonDocument,
     schemes: HashMap<SchemeId, YrsSchemeDocument>,
@@ -1014,6 +1049,64 @@ impl WorkspaceCrdtDocuments {
     /// zero (or for every document during an account reseed), not for documents
     /// that already have a server base. Keeping this filter here makes the routine
     /// sync cost proportional to missing bases instead of total workspace size.
+    /// Take `source`'s scheme documents for schemes this store holds no state
+    /// for at all — neither live nor deferred — and return the document ids
+    /// moved.
+    ///
+    /// Applying a full snapshot to a freshly created empty Yjs document yields
+    /// exactly the document the snapshot was taken from, so for a document this
+    /// replica has never seen, "encode it out of `source`, decode it back into
+    /// an empty document here" is a round trip with no effect. On a first sync
+    /// every scheme in the account is new to this device, which makes that
+    /// round trip the entire merge: it measured 44 ms of encoding plus ~90 ms
+    /// of decoding on a 170-scheme account, to reproduce documents that were
+    /// already sitting in `source`.
+    ///
+    /// Moving the document is also identity-preserving in the way that matters:
+    /// documents are always constructed under a fresh random authoring clientID
+    /// (see [`from_states`](Self::from_states)), the restored structs keep their
+    /// own, and `source` is discarded by the caller — so no `(clientID, clock)`
+    /// is ever shared between two live documents.
+    ///
+    /// Only documents in `limit_to` are considered, and a scheme this store
+    /// already holds is never touched: its local content has to be unioned with
+    /// the remote state, which is an ordinary merge. The workspace index is
+    /// therefore always left to the caller.
+    pub fn adopt_absent_scheme_documents(
+        &mut self,
+        source: &mut Self,
+        limit_to: &HashSet<DocumentId>,
+    ) -> HashSet<DocumentId> {
+        let mut adopted = HashSet::new();
+        let absent: Vec<SchemeId> = source
+            .schemes
+            .keys()
+            .chain(source.deferred.keys())
+            .filter(|scheme| {
+                !self.schemes.contains_key(scheme) && !self.deferred.contains_key(scheme)
+            })
+            .copied()
+            .collect();
+        for scheme in absent {
+            if let Some(document) = source.schemes.get(&scheme) {
+                if !limit_to.contains(&document.id) {
+                    continue;
+                }
+                let document = source.schemes.remove(&scheme).expect("just looked it up");
+                adopted.insert(document.id);
+                self.schemes.insert(scheme, document);
+            } else if let Some(document) = source.deferred.get(&scheme) {
+                if !limit_to.contains(&document.document) {
+                    continue;
+                }
+                let document = source.deferred.remove(&scheme).expect("just looked it up");
+                adopted.insert(document.document);
+                self.deferred.insert(scheme, document);
+            }
+        }
+        adopted
+    }
+
     pub fn full_snapshot_updates_for_documents(
         &self,
         documents: &HashSet<DocumentId>,
@@ -1767,6 +1860,108 @@ impl WorkspaceCrdtDocuments {
         outcome
     }
 
+    /// Merge one remote update into one scheme's document, recording what it
+    /// did in `merged`.
+    ///
+    /// Split out of [`apply_remote_updates_for_account_switch`] so the merge of
+    /// each independent scheme document can run concurrently: everything here
+    /// touches only `doc` and reads the already-merged workspace index. The
+    /// behaviour is the original loop body, unchanged.
+    fn merge_one_scheme_update(
+        doc: &mut YrsSchemeDocument,
+        update: &StoredCrdtUpdate,
+        account_switch: &HashSet<DocumentId>,
+        merged_workspace: &Workspace,
+        merged: &mut SchemeMergeOutcome,
+    ) {
+        let scheme_id = merged.scheme_id;
+        // Which live items this document held before the merge. A merge can
+        // only remove one via a delete set, so a removal here is a remote
+        // tombstone landing on local content — the shape that costs a line
+        // nobody deleted. Behind an env var: it materializes the document
+        // twice per update, which the keystroke path cannot afford.
+        let before_merge: Option<HashSet<knotq_model::ItemId>> =
+            std::env::var("KNOTQ_TRACE_MERGE_REMOVALS")
+                .is_ok()
+                .then(|| {
+                    doc.scheme_items()
+                        .ok()
+                        .map(|items| items.iter().map(|item| item.id).collect())
+                        .unwrap_or_default()
+                });
+        let apply_result = if account_switch.contains(&update.document) {
+            doc.merge_for_account_switch(&update.update_v1)
+                .map(|(changed, merge)| {
+                    merged.account_switch_merges.push((update.document, merge));
+                    changed
+                })
+        } else {
+            doc.apply_update_v1(&update.update_v1)
+        };
+        match apply_result {
+            // As with the workspace document above: an echoed no-op merge
+            // must not mark the scheme touched, or the scheme the user is
+            // actively editing gets re-materialized (and the UI reloaded)
+            // on every round-trip of their own keystrokes.
+            Ok(true) => {
+                merged.applied += 1;
+                merged.touched = true;
+                merged.changed_documents.push(update.document);
+                if let Some(before_merge) = before_merge {
+                    let after: HashSet<knotq_model::ItemId> = doc
+                        .scheme_items()
+                        .ok()
+                        .map(|items| items.iter().map(|item| item.id).collect())
+                        .unwrap_or_default();
+                    let mut removed: Vec<String> = before_merge
+                        .difference(&after)
+                        .map(|item| item.to_string())
+                        .collect();
+                    if !removed.is_empty() {
+                        removed.sort();
+                        eprintln!(
+                            "sync: remote update {} to {} removed {} live item(s): {}",
+                            update.sequence,
+                            update.document,
+                            removed.len(),
+                            removed.join(", ")
+                        );
+                    }
+                }
+            }
+            Ok(false) => {
+                // A byte-level no-op is usually an echo of this replica's own
+                // push. It can also be the first update pulled after concurrent
+                // text edits resolved differently from the optimistic plaintext
+                // still held by the UI. In that case the CRDT already contains
+                // the server result, so applying the update changes no structs,
+                // but skipping materialization would leave the visible workspace
+                // permanently stale. Compare before opting out: true echoes stay
+                // cheap and do not disturb active editing.
+                let visible_items = merged_workspace
+                    .schemes
+                    .get(&scheme_id)
+                    .map(|scheme| &scheme.items);
+                let crdt_items = doc.scheme_items().ok();
+                if matches!(
+                    (visible_items, crdt_items.as_ref()),
+                    (Some(visible), Some(authoritative))
+                        if visible.as_slice() != authoritative.as_slice()
+                ) {
+                    merged.touched = true;
+                    merged.changed_documents.push(update.document);
+                }
+            }
+            Err(err) => {
+                merged.errors.push((
+                    update.document,
+                    format!("scheme update {}", update.sequence),
+                    err,
+                ));
+            }
+        }
+    }
+
     pub fn apply_remote_updates(
         &mut self,
         current: &Workspace,
@@ -1972,6 +2167,12 @@ impl WorkspaceCrdtDocuments {
         let mut touched_schemes: HashSet<SchemeId> = HashSet::new();
         // Track schemes that had a per-document error (to exclude from validation).
         let mut errored_schemes: HashSet<SchemeId> = HashSet::new();
+        // Resolve every update to its scheme first, in order, so the unknown-
+        // document errors below are reported exactly as they were before the
+        // merge itself became concurrent. Updates for one scheme stay in their
+        // original relative order; different schemes are independent documents.
+        let mut work: Vec<(SchemeId, Vec<&StoredCrdtUpdate>)> = Vec::new();
+        let mut work_index: HashMap<SchemeId, usize> = HashMap::new();
         for update in updates
             .iter()
             .filter(|update| update.kind == SyncDocumentKind::Scheme)
@@ -1991,118 +2192,87 @@ impl WorkspaceCrdtDocuments {
                 );
                 continue;
             };
-            // A remote update targeting an off-window/visible deferred scheme:
-            // decode its durable bytes into a live document first, so the merge
-            // lands on real history and the normal materialization path can
-            // repair any stale scheme file before a later navigation.
-            self.hydrate_deferred(scheme_id);
-            // Which live items this document held before the merge. A merge can
-            // only remove one via a delete set, so a removal here is a remote
-            // tombstone landing on local content — the shape that costs a line
-            // nobody deleted. Behind an env var: it materializes the document
-            // twice per update, which the keystroke path cannot afford.
-            let before_merge: Option<HashSet<knotq_model::ItemId>> =
-                std::env::var("KNOTQ_TRACE_MERGE_REMOVALS")
-                    .is_ok()
-                    .then(|| {
-                        self.schemes
-                            .get(&scheme_id)
-                            .and_then(|document| document.scheme_items().ok())
-                            .map(|items| items.iter().map(|item| item.id).collect())
-                            .unwrap_or_default()
-                    });
+            match work_index.get(&scheme_id) {
+                Some(index) => work[*index].1.push(update),
+                None => {
+                    work_index.insert(scheme_id, work.len());
+                    work.push((scheme_id, vec![update]));
+                }
+            }
+        }
+        // A remote update targeting an off-window/visible deferred scheme:
+        // decode its durable bytes into a live document first, so the merge
+        // lands on real history and the normal materialization path can
+        // repair any stale scheme file before a later navigation. Done here,
+        // before the concurrent pass, because it restructures the maps.
+        for (scheme_id, updates) in &work {
+            self.hydrate_deferred(*scheme_id);
             // First sight of this content doc: create it from an empty base and adopt
             // the server's structs from the update below. A fresh identity (`None`) — not
             // the stable clientID — keeps it from reusing a `(clientID, clock)` the server
             // may already hold under that clientID from a prior local incarnation.
-            let apply_result = {
-                let doc = self
-                    .schemes
-                    .entry(scheme_id)
-                    .or_insert_with(|| YrsSchemeDocument::for_replica(update.document, None));
-                if account_switch.contains(&update.document) {
-                    doc.merge_for_account_switch(&update.update_v1)
-                        .map(|(changed, merge)| {
-                            outcome.account_switch_merges.insert(update.document, merge);
-                            changed
-                        })
-                } else {
-                    doc.apply_update_v1(&update.update_v1)
-                }
-            };
-            match apply_result {
-                // As with the workspace document above: an echoed no-op merge
-                // must not mark the scheme touched, or the scheme the user is
-                // actively editing gets re-materialized (and the UI reloaded)
-                // on every round-trip of their own keystrokes.
-                Ok(true) => {
-                    outcome.applied += 1;
-                    touched_schemes.insert(scheme_id);
-                    outcome.changed_documents.insert(update.document);
-                    if let Some(before_merge) = before_merge {
-                        let after: HashSet<knotq_model::ItemId> = self
-                            .schemes
-                            .get(&scheme_id)
-                            .and_then(|document| document.scheme_items().ok())
-                            .map(|items| items.iter().map(|item| item.id).collect())
-                            .unwrap_or_default();
-                        let mut removed: Vec<String> = before_merge
-                            .difference(&after)
-                            .map(|item| item.to_string())
-                            .collect();
-                        if !removed.is_empty() {
-                            removed.sort();
-                            eprintln!(
-                                "sync: remote update {} to {} removed {} live item(s): {}",
-                                update.sequence,
-                                update.document,
-                                removed.len(),
-                                removed.join(", ")
-                            );
-                        }
-                    }
-                }
-                Ok(false) => {
-                    // A byte-level no-op is usually an echo of this replica's own
-                    // push. It can also be the first update pulled after concurrent
-                    // text edits resolved differently from the optimistic plaintext
-                    // still held by the UI. In that case the CRDT already contains
-                    // the server result, so applying the update changes no structs,
-                    // but skipping materialization would leave the visible workspace
-                    // permanently stale. Compare before opting out: true echoes stay
-                    // cheap and do not disturb active editing.
-                    let visible_items = outcome
-                        .workspace
-                        .schemes
-                        .get(&scheme_id)
-                        .map(|scheme| &scheme.items);
-                    let crdt_items = self
-                        .schemes
-                        .get(&scheme_id)
-                        .and_then(|document| document.scheme_items().ok());
-                    if matches!(
-                        (visible_items, crdt_items.as_ref()),
-                        (Some(visible), Some(authoritative))
-                            if visible.as_slice() != authoritative.as_slice()
-                    ) {
-                        touched_schemes.insert(scheme_id);
-                        outcome.changed_documents.insert(update.document);
-                    }
-                }
-                Err(err) => {
-                    let doc_id = update.document;
-                    outcome.push_document_error(
-                        doc_id,
-                        SyncDocumentKind::Scheme,
-                        false,
-                        format!("scheme update {}", update.sequence),
-                        err,
-                    );
-                    errored_schemes.insert(scheme_id);
-                }
-            }
+            let document = updates[0].document;
+            self.schemes
+                .entry(*scheme_id)
+                .or_insert_with(|| YrsSchemeDocument::for_replica(document, None));
         }
 
+        // The merge proper. Each scheme is its own Yjs document, so decoding and
+        // integrating one says nothing about any other — and on a first sync
+        // this is every document in the account, the single most expensive
+        // phase there is. Take a disjoint `&mut` per scheme and spread them over
+        // the idle cores; below the threshold `map_ordered_mut` stays serial, so
+        // an ordinary one-scheme edit runs exactly as before.
+        let mut targets: Vec<SchemeMergeTarget<'_>> = self
+            .schemes
+            .iter_mut()
+            .filter_map(|(scheme_id, doc)| {
+                let index = *work_index.get(scheme_id)?;
+                Some((index, *scheme_id, doc, work[index].1.as_slice()))
+            })
+            .collect();
+        // `self.schemes` is a HashMap, so iterating it gives a per-process
+        // random order. Restore the order the updates arrived in, so the
+        // per-document errors below are recorded in the same sequence they were
+        // before the merge became concurrent and a fuzz seed stays reproducible.
+        targets.sort_unstable_by_key(|(index, ..)| *index);
+        let merged_workspace = &outcome.workspace;
+        let merges: Vec<SchemeMergeOutcome> =
+            crate::parallel::map_ordered_mut(&mut targets, |(_, scheme_id, doc, updates)| {
+                let mut merged = SchemeMergeOutcome::new(*scheme_id);
+                for update in updates.iter() {
+                    Self::merge_one_scheme_update(
+                        doc,
+                        update,
+                        account_switch,
+                        merged_workspace,
+                        &mut merged,
+                    );
+                }
+                merged
+            });
+        drop(targets);
+        for merged in merges {
+            let scheme_id = merged.scheme_id;
+            outcome.applied += merged.applied;
+            if merged.touched {
+                touched_schemes.insert(scheme_id);
+            }
+            outcome.changed_documents.extend(merged.changed_documents);
+            outcome
+                .account_switch_merges
+                .extend(merged.account_switch_merges);
+            for (document, context, error) in merged.errors {
+                outcome.push_document_error(
+                    document,
+                    SyncDocumentKind::Scheme,
+                    false,
+                    context,
+                    error,
+                );
+                errored_schemes.insert(scheme_id);
+            }
+        }
         for scheme_id in &touched_schemes {
             if errored_schemes.contains(scheme_id) {
                 continue; // already recorded an error for this scheme
@@ -2160,7 +2330,7 @@ impl WorkspaceCrdtDocuments {
     pub fn materialized_workspace_repair(
         &self,
         current: &Workspace,
-        trust_empty_crdt: &dyn Fn(&SchemeId) -> bool,
+        trust_empty_crdt: &(dyn Fn(&SchemeId) -> bool + Sync),
     ) -> anyhow::Result<Workspace> {
         Ok(self
             .materialize_workspace_inner(current, false, trust_empty_crdt)?
@@ -2181,7 +2351,7 @@ impl WorkspaceCrdtDocuments {
     pub fn materialized_workspace_with_hidden_copies(
         &self,
         current: &Workspace,
-        trust_empty_crdt: &dyn Fn(&SchemeId) -> bool,
+        trust_empty_crdt: &(dyn Fn(&SchemeId) -> bool + Sync),
     ) -> anyhow::Result<(Workspace, HashMap<SchemeId, HashSet<String>>)> {
         self.materialize_workspace_inner(current, false, trust_empty_crdt)
     }
@@ -2266,7 +2436,7 @@ impl WorkspaceCrdtDocuments {
         &self,
         current: &Workspace,
         hydrate_all_deferred: bool,
-        trust_empty_crdt: &dyn Fn(&SchemeId) -> bool,
+        trust_empty_crdt: &(dyn Fn(&SchemeId) -> bool + Sync),
     ) -> anyhow::Result<(Workspace, HashMap<SchemeId, HashSet<String>>)> {
         // A workspace document that was never seeded (a fresh device before its
         // first pull, or one whose local CRDT state is empty) describes nothing.
@@ -2323,7 +2493,15 @@ impl WorkspaceCrdtDocuments {
         // filter only keeps dailies out of the folder tree, not out of this
         // list). So name/colour/source always come from the index here; the
         // only question per entry is where its items come from.
-        for entry in snapshot.schemes {
+        // Per entry the body below reads only `self`, `current` and the merged
+        // index, and writes one independent `workspace.schemes` key — so it is
+        // order-independent, and on a bulk restore it is the phase that decodes
+        // every scheme document. Run it across the idle cores (serially below
+        // the threshold, so an ordinary edit is untouched). See
+        // `crate::parallel`.
+        let daily_queue_schemes: HashSet<SchemeId> =
+            workspace.daily_queue.values().copied().collect();
+        let materialized = crate::parallel::map_ordered(&snapshot.schemes, |entry| {
             // The document is authoritative: derive items from it whenever this
             // replica has one, and fall back to `current` only when it does not.
             //
@@ -2376,7 +2554,7 @@ impl WorkspaceCrdtDocuments {
                 // and its document was right there (single-account fuzz seed
                 // 10204: a fresh joiner materializes 7 schemes instead of 8 and
                 // "Daily 2026-09-14" is simply absent).
-                let is_daily = workspace.daily_queue.values().any(|id| id == &entry.id);
+                let is_daily = daily_queue_schemes.contains(&entry.id);
                 let current_knows_daily = current.daily_queue.values().any(|id| id == &entry.id);
                 // Skipping an entry means the scheme does not exist in the
                 // result. That is right for an ordinary deferred scheme, whose
@@ -2384,14 +2562,12 @@ impl WorkspaceCrdtDocuments {
                 // a day this replica has no plain copy of has no fallback, so
                 // the only way to produce it is to decode the document.
                 if !visible && (!is_daily || current_knows_daily) && !hydrate_all_deferred {
-                    continue;
+                    return None;
                 }
                 if visible && !is_daily && !hydrate_all_deferred {
-                    if let Some(scheme) = current.schemes.get(&entry.id) {
-                        scheme.items.clone()
-                    } else {
-                        continue;
-                    }
+                    // No plain copy either: nothing to fall back to, so the
+                    // entry is skipped exactly as an invisible one would be.
+                    current.schemes.get(&entry.id)?.items.clone()
                 } else {
                     match deferred_live_document(&self.deferred[&entry.id])
                         .and_then(|doc| doc.scheme_items())
@@ -2405,7 +2581,7 @@ impl WorkspaceCrdtDocuments {
                             );
                             match current.schemes.get(&entry.id) {
                                 Some(scheme) => scheme.items.clone(),
-                                None => continue,
+                                None => return None,
                             }
                         }
                     }
@@ -2415,17 +2591,17 @@ impl WorkspaceCrdtDocuments {
             } else {
                 Vec::new()
             };
-            workspace.schemes.insert(
-                entry.id,
-                Scheme {
-                    id: entry.id,
-                    name: entry.name,
-                    color_index: entry.color_index,
-                    gsync: entry.gsync,
-                    source: preserve_local_calendar_sync_token(current, entry.id, entry.source),
-                    items,
-                },
-            );
+            Some(Scheme {
+                id: entry.id,
+                name: entry.name.clone(),
+                color_index: entry.color_index,
+                gsync: entry.gsync,
+                source: preserve_local_calendar_sync_token(current, entry.id, entry.source.clone()),
+                items,
+            })
+        });
+        for scheme in materialized.into_iter().flatten() {
+            workspace.schemes.insert(scheme.id, scheme);
         }
 
         // A Daily page can be bound in the index — a `daily_queue` entry and a
@@ -2527,7 +2703,6 @@ impl WorkspaceCrdtDocuments {
         // a lazy/off-window Daily page is intentionally absent and must not be
         // interpreted as a deletion or placement decision.
         let hidden_copies = dedupe_materialized_items(&mut workspace);
-
         workspace.ensure_sync_metadata();
         Ok((workspace, hidden_copies))
     }
