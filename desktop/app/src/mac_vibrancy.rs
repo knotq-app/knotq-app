@@ -32,7 +32,7 @@ unsafe extern "C" {
 }
 
 /// Extra blur radius applied to the window's backdrop, on top of the material.
-const DEFAULT_BLUR_RADIUS: i64 = 36;
+const DEFAULT_BLUR_RADIUS: i64 = 30;
 
 fn blur_radius() -> i64 {
     std::env::var("KNOTQ_SIDEBAR_BLUR")
