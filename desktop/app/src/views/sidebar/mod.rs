@@ -19,10 +19,7 @@ pub(super) const ZED_FOLDER_ICON: &str = "icons/zed-folder.svg";
 pub(super) const ZED_FOLDER_OPEN_ICON: &str = "icons/zed-folder-open.svg";
 pub(super) const DELETE_ICON: &str = "icons/delete.svg";
 pub(super) const CLOUD_OFF_ICON: &str = "icons/cloud-off.svg";
-pub(super) const NAV_ROW_INDENT_BASE: f32 = 4.0;
 pub(super) const NAV_ICON_SLOT: f32 = 12.0;
-pub(super) const NAV_ICON_GAP: f32 = 7.0;
-pub(super) const NAV_ROW_HEIGHT: f32 = 26.0;
 pub(super) const NAV_DROP_ZONE_HEIGHT: f32 = 3.0;
 pub(super) const ARCHIVE_MAX_VISIBLE_ROWS: f32 = 8.0;
 pub(super) const SCHEME_SQUARE_SIZE: f32 = 9.0;
@@ -64,7 +61,11 @@ mod vibrant;
 
 use self::components::*;
 use self::drag::*;
-use self::style::is_vibrant;
+use self::style::{
+    content_top_inset, group_gap, is_vibrant, nav_icon_gap, nav_indent_step, nav_row_height,
+    nav_row_indent_base, nav_row_radius, sidebar_side_padding,
+};
+pub(crate) use self::style::{full_height_column, navigator_width};
 pub(crate) use self::tree::SidebarNavigatorCache;
 pub(crate) use self::vibrant::window_vibrancy_available;
 use self::vibrant::*;

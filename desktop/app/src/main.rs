@@ -3,6 +3,8 @@
 mod app;
 mod assets;
 mod frame_log;
+#[cfg(target_os = "macos")]
+mod mac_vibrancy;
 mod notifications;
 mod theme_gpui;
 mod views;
@@ -53,7 +55,6 @@ actions!(
     ]
 );
 
-const NAVIGATOR_W: f32 = 166.0;
 const LEFT_PANEL_GAP: f32 = 8.0;
 const UPCOMING_W: f32 = 258.0;
 impl Render for KnotQApp {
@@ -158,39 +159,65 @@ impl Render for KnotQApp {
         let sidebar = self.render_sidebar(window, cx);
         let upcoming = self.render_upcoming(cx);
         let panel_bg = token_hsla(t.bg_app);
-        // Under vibrancy the panel must not paint the strip its sidebar card
-        // floats on — an opaque fill there would sit between the card and the
-        // window's blur. The upcoming list keeps its own opaque background.
-        let vibrant = knotq_sidebar::window_vibrancy_available();
+        // A vibrant sidebar owns the window's left edge outright, so it leaves
+        // the left panel and becomes a column of the body row — which is what
+        // lets the blur run up through the title bar band. The classic sidebar
+        // stays a card floating inside the panel it shares with the upcoming
+        // list.
+        let sidebar_is_column = knotq_sidebar::full_height_column();
+        let mut sidebar = Some(sidebar.into_any_element());
+
+        let sidebar_column = sidebar_is_column.then(|| {
+            div()
+                .h_full()
+                .flex_shrink_0()
+                .children(sidebar.take())
+                .into_any_element()
+        });
+
+        let left_panel_w = if sidebar_is_column {
+            UPCOMING_W
+        } else {
+            knotq_sidebar::navigator_width() + LEFT_PANEL_GAP + UPCOMING_W
+        };
         let left_panel = div()
             .relative()
-            .w(px(NAVIGATOR_W + LEFT_PANEL_GAP + UPCOMING_W))
+            .w(px(left_panel_w))
             .h_full()
             .flex_shrink_0()
-            .when(!vibrant, |panel| panel.bg(panel_bg))
+            .bg(panel_bg)
             .child(
                 div()
                     .absolute()
                     .top_0()
                     .bottom_0()
-                    .left(px(NAVIGATOR_W + LEFT_PANEL_GAP))
+                    .left(px(if sidebar_is_column {
+                        0.0
+                    } else {
+                        knotq_sidebar::navigator_width() + LEFT_PANEL_GAP
+                    }))
                     .right_0()
                     .overflow_hidden()
-                    .when(vibrant, |upcoming| upcoming.bg(panel_bg))
                     .child(upcoming),
             )
-            .child(
+            .children(sidebar.take().map(|sidebar| {
                 div()
                     .absolute()
                     .top(px(8.0))
                     .bottom(px(8.0))
                     .left(px(8.0))
-                    .child(sidebar),
-            );
+                    .child(sidebar)
+                    .into_any_element()
+            }));
 
-        let main_available_w = (f32::from(window.viewport_size().width)
-            - (NAVIGATOR_W + LEFT_PANEL_GAP + UPCOMING_W + 1.0))
-            .max(0.0);
+        let reserved_left = left_panel_w
+            + if sidebar_is_column {
+                knotq_sidebar::navigator_width()
+            } else {
+                0.0
+            };
+        let main_available_w =
+            (f32::from(window.viewport_size().width) - (reserved_left + 1.0)).max(0.0);
 
         let main: gpui::AnyElement = match view {
             View::Union => self
@@ -201,151 +228,182 @@ impl Render for KnotQApp {
             View::Settings => self.render_settings(cx),
         };
 
-        let mut root =
+        let content_row = div()
+            .flex()
+            .flex_1()
+            .min_h_0()
+            .child(left_panel)
+            .child(
+                div()
+                    .w(px(1.0))
+                    .h_full()
+                    .flex_shrink_0()
+                    .bg(token_rgba(if t.is_dark {
+                        0xffffff08
+                    } else {
+                        t.divider_tiny
+                    })),
+            )
+            .child(div().flex().flex_1().min_w_0().child(main));
+
+        let body: gpui::AnyElement = if sidebar_is_column {
             div()
-                .key_context("KnotQApp")
-                .track_focus(&self.editor_focus_handle)
-                .relative()
                 .flex()
-                .flex_col()
-                .w_full()
-                .h_full()
-                .when(!vibrant, |root| root.bg(token_hsla(t.bg_app)))
-                .text_color(token_hsla(t.text_primary))
-                .font_family(FONT_UI)
-                .on_mouse_move(cx.listener(|this, event: &MouseMoveEvent, _window, cx| {
-                    if !event.dragging() {
-                        this.clear_calendar_pointer_state(cx);
-                    }
-                }))
-                .on_mouse_up(
-                    MouseButton::Left,
-                    cx.listener(|this, _event: &MouseUpEvent, _window, cx| {
-                        this.clear_calendar_pointer_state(cx);
-                    }),
-                )
-                .on_mouse_up_out(
-                    MouseButton::Left,
-                    cx.listener(|this, _event: &MouseUpEvent, _window, cx| {
-                        this.clear_calendar_pointer_state(cx);
-                    }),
-                )
-                .on_action(cx.listener(|this, _: &OpenSettingsView, window, cx| {
-                    this.open_settings(cx);
-                    this.focus_app_root(window);
-                    cx.notify();
-                }))
-                .on_action(cx.listener(|this, _: &OpenCalendarView, window, cx| {
-                    this.open_union();
-                    this.focus_app_root(window);
-                    cx.notify();
-                }))
-                .on_action(cx.listener(|this, _: &OpenDailyQueueView, window, cx| {
-                    this.open_daily_queue(cx);
-                    this.focus_current_editor(window, cx);
-                    cx.notify();
-                }))
-                .on_action(cx.listener(|_, _: &ToggleFullscreen, window, _cx| {
-                    window.toggle_fullscreen();
-                }))
-                .on_action(cx.listener(|this, _: &NewItem, window, cx| {
-                    if this.search_open {
-                        this.close_search(window, cx);
-                    }
-                    this.sidebar_context_menu = None;
-                    let parent = this.new_item_parent_folder();
-                    this.open_new_node_prompt(parent, app::NewNodeKind::Scheme, window, cx);
-                }))
-                .on_action(cx.listener(|this, _: &NewFolder, window, cx| {
-                    if this.search_open {
-                        this.close_search(window, cx);
-                    }
-                    this.sidebar_context_menu = None;
-                    let parent = this.new_item_parent_folder();
-                    this.open_new_node_prompt(parent, app::NewNodeKind::Folder, window, cx);
-                }))
-                .on_action(
-                    cx.listener(|this, _: &ExportWorkspaceMarkdown, _window, cx| {
-                        this.export_workspace_to_markdown(cx);
-                    }),
-                )
-                .on_action(cx.listener(|this, _: &NavWeekPrev, _window, cx| {
-                    this.shift_calendar_period(-1);
-                    cx.notify();
-                }))
-                .on_action(cx.listener(|this, _: &NavWeekNext, _window, cx| {
-                    this.shift_calendar_period(1);
-                    cx.notify();
-                }))
-                .on_action(cx.listener(|this, _: &AppUndo, _window, cx| {
-                    this.undo(cx);
-                }))
-                .on_action(cx.listener(|this, _: &AppRedo, _window, cx| {
-                    this.redo(cx);
-                }))
-                .on_action(cx.listener(|this, _: &RenameSelectedNode, window, cx| {
-                    this.start_renaming_current_scheme(window, cx);
-                }))
-                .on_action(cx.listener(|this, _: &ToggleSearch, window, cx| {
-                    this.open_search(window, cx);
-                }))
-                .on_action(cx.listener(|this, _: &CloseSearch, window, cx| {
-                    this.cancel_current_action(window, cx);
-                }))
-                .on_action(cx.listener(|this, _: &SubmitEventPopup, window, cx| {
-                    if this.rename_node.is_some() {
-                        this.finish_renaming_node(true, window, cx);
-                        return;
-                    }
-                    if this.date_popover.is_some() {
-                        cx.propagate();
-                        return;
-                    }
-                    if this.event_popup.is_some() {
-                        this.close_event_popup(cx);
-                        this.focus_app_root(window);
-                        cx.notify();
-                        return;
-                    }
-                    cx.propagate();
-                }))
-                .on_action(cx.listener(|this, _: &MoveDown, _window, cx| {
-                    this.select_next_search_result(cx);
-                }))
-                .on_action(cx.listener(|this, _: &IndentInline, _window, cx| {
-                    this.select_next_search_result(cx);
-                }))
-                .on_action(cx.listener(|this, _: &MoveUp, _window, cx| {
-                    this.select_previous_search_result(cx);
-                }))
-                .on_action(cx.listener(|this, _: &OutdentInline, _window, cx| {
-                    this.select_previous_search_result(cx);
-                }))
-                .children(app_menu_bar)
-                .child(title_bar)
+                .flex_1()
+                .min_h_0()
+                .children(sidebar_column)
                 .child(
+                    // Everything right of the sidebar is opaque. The root and
+                    // the component root both paint nothing under vibrancy, so
+                    // this is what keeps the blur to the sidebar alone — and
+                    // why the title bar lives in here rather than above.
                     div()
                         .flex()
+                        .flex_col()
                         .flex_1()
-                        .min_h_0()
-                        .child(left_panel)
-                        .child(div().w(px(1.0)).h_full().flex_shrink_0().bg(token_rgba(
-                            if t.is_dark {
-                                0xffffff08
-                            } else {
-                                t.divider_tiny
-                            },
-                        )))
-                        // With no root fill, the main pane supplies its own.
-                        .child(
-                            div()
-                                .flex()
-                                .flex_1()
-                                .min_w_0()
-                                .when(vibrant, |pane| pane.bg(token_hsla(t.bg_app)))
-                                .child(main),
-                        ),
-                );
+                        .min_w_0()
+                        .bg(token_hsla(t.bg_app))
+                        .child(title_bar)
+                        .child(content_row),
+                )
+                .into_any_element()
+        } else {
+            div()
+                .flex()
+                .flex_col()
+                .flex_1()
+                .min_h_0()
+                .child(title_bar)
+                .child(content_row)
+                .into_any_element()
+        };
+
+        let mut root = div()
+            .key_context("KnotQApp")
+            .track_focus(&self.editor_focus_handle)
+            .relative()
+            .flex()
+            .flex_col()
+            .w_full()
+            .h_full()
+            // A vibrant window leaves its own background unpainted, or
+            // the sidebar's tint composites over an opaque fill and the
+            // blur behind it never shows.
+            .when(!knotq_sidebar::window_vibrancy_available(), |root| {
+                root.bg(token_hsla(t.bg_app))
+            })
+            .text_color(token_hsla(t.text_primary))
+            .font_family(FONT_UI)
+            .on_mouse_move(cx.listener(|this, event: &MouseMoveEvent, _window, cx| {
+                if !event.dragging() {
+                    this.clear_calendar_pointer_state(cx);
+                }
+            }))
+            .on_mouse_up(
+                MouseButton::Left,
+                cx.listener(|this, _event: &MouseUpEvent, _window, cx| {
+                    this.clear_calendar_pointer_state(cx);
+                }),
+            )
+            .on_mouse_up_out(
+                MouseButton::Left,
+                cx.listener(|this, _event: &MouseUpEvent, _window, cx| {
+                    this.clear_calendar_pointer_state(cx);
+                }),
+            )
+            .on_action(cx.listener(|this, _: &OpenSettingsView, window, cx| {
+                this.open_settings(cx);
+                this.focus_app_root(window);
+                cx.notify();
+            }))
+            .on_action(cx.listener(|this, _: &OpenCalendarView, window, cx| {
+                this.open_union();
+                this.focus_app_root(window);
+                cx.notify();
+            }))
+            .on_action(cx.listener(|this, _: &OpenDailyQueueView, window, cx| {
+                this.open_daily_queue(cx);
+                this.focus_current_editor(window, cx);
+                cx.notify();
+            }))
+            .on_action(cx.listener(|_, _: &ToggleFullscreen, window, _cx| {
+                window.toggle_fullscreen();
+            }))
+            .on_action(cx.listener(|this, _: &NewItem, window, cx| {
+                if this.search_open {
+                    this.close_search(window, cx);
+                }
+                this.sidebar_context_menu = None;
+                let parent = this.new_item_parent_folder();
+                this.open_new_node_prompt(parent, app::NewNodeKind::Scheme, window, cx);
+            }))
+            .on_action(cx.listener(|this, _: &NewFolder, window, cx| {
+                if this.search_open {
+                    this.close_search(window, cx);
+                }
+                this.sidebar_context_menu = None;
+                let parent = this.new_item_parent_folder();
+                this.open_new_node_prompt(parent, app::NewNodeKind::Folder, window, cx);
+            }))
+            .on_action(
+                cx.listener(|this, _: &ExportWorkspaceMarkdown, _window, cx| {
+                    this.export_workspace_to_markdown(cx);
+                }),
+            )
+            .on_action(cx.listener(|this, _: &NavWeekPrev, _window, cx| {
+                this.shift_calendar_period(-1);
+                cx.notify();
+            }))
+            .on_action(cx.listener(|this, _: &NavWeekNext, _window, cx| {
+                this.shift_calendar_period(1);
+                cx.notify();
+            }))
+            .on_action(cx.listener(|this, _: &AppUndo, _window, cx| {
+                this.undo(cx);
+            }))
+            .on_action(cx.listener(|this, _: &AppRedo, _window, cx| {
+                this.redo(cx);
+            }))
+            .on_action(cx.listener(|this, _: &RenameSelectedNode, window, cx| {
+                this.start_renaming_current_scheme(window, cx);
+            }))
+            .on_action(cx.listener(|this, _: &ToggleSearch, window, cx| {
+                this.open_search(window, cx);
+            }))
+            .on_action(cx.listener(|this, _: &CloseSearch, window, cx| {
+                this.cancel_current_action(window, cx);
+            }))
+            .on_action(cx.listener(|this, _: &SubmitEventPopup, window, cx| {
+                if this.rename_node.is_some() {
+                    this.finish_renaming_node(true, window, cx);
+                    return;
+                }
+                if this.date_popover.is_some() {
+                    cx.propagate();
+                    return;
+                }
+                if this.event_popup.is_some() {
+                    this.close_event_popup(cx);
+                    this.focus_app_root(window);
+                    cx.notify();
+                    return;
+                }
+                cx.propagate();
+            }))
+            .on_action(cx.listener(|this, _: &MoveDown, _window, cx| {
+                this.select_next_search_result(cx);
+            }))
+            .on_action(cx.listener(|this, _: &IndentInline, _window, cx| {
+                this.select_next_search_result(cx);
+            }))
+            .on_action(cx.listener(|this, _: &MoveUp, _window, cx| {
+                this.select_previous_search_result(cx);
+            }))
+            .on_action(cx.listener(|this, _: &OutdentInline, _window, cx| {
+                this.select_previous_search_result(cx);
+            }))
+            .children(app_menu_bar)
+            .child(body);
 
         if let Some(popover) = self.render_date_popover(window, cx) {
             root = root.child(popover);
@@ -443,7 +501,11 @@ fn titlebar_options() -> TitlebarOptions {
 /// it shows.
 fn window_background_appearance() -> WindowBackgroundAppearance {
     if knotq_sidebar::window_vibrancy_available() {
-        WindowBackgroundAppearance::Blurred
+        // `Transparent`, not `Blurred`: this only asks GPUI to stop painting an
+        // opaque window. The blur itself comes from the `NSVisualEffectView`
+        // `mac_vibrancy` installs, because GPUI's own one uses a material that
+        // is not the sidebar's and removes its backdrop layers. See that module.
+        WindowBackgroundAppearance::Transparent
     } else {
         WindowBackgroundAppearance::Opaque
     }
@@ -458,6 +520,13 @@ fn window_decorations() -> Option<WindowDecorations> {
 }
 
 fn sync_component_theme(t: Theme, cx: &mut App) {
+    // The vibrancy material is light or dark by `NSAppearance`, so it has to be
+    // told which theme KnotQ is on rather than which theme macOS is on.
+    #[cfg(target_os = "macos")]
+    if crate::views::sidebar::window_vibrancy_available() {
+        crate::mac_vibrancy::set_vibrancy_appearance(t.is_dark);
+    }
+
     let theme = gpui_component::Theme::global_mut(cx);
     theme.mode = if t.is_dark {
         gpui_component::ThemeMode::Dark
@@ -467,7 +536,15 @@ fn sync_component_theme(t: Theme, cx: &mut App) {
     theme.colors.caret = token_hsla(t.text_highlight);
     theme.colors.foreground = token_hsla(t.text_primary);
     theme.colors.muted_foreground = token_hsla(t.text_muted);
-    theme.colors.background = token_hsla(t.bg_app);
+    // `gpui_component::Root` wraps the whole app in `div().bg(theme.background)`,
+    // so this fill sits *under* everything KnotQ draws — including the sidebar.
+    // Leaving it opaque is enough on its own to hide the window's blur, however
+    // translucent the sidebar's own fill is.
+    theme.colors.background = if crate::views::sidebar::window_vibrancy_available() {
+        gpui::transparent_black()
+    } else {
+        token_hsla(t.bg_app)
+    };
     theme.colors.popover = token_hsla(t.bg_modal);
     theme.colors.popover_foreground = token_hsla(t.text_primary);
     theme.colors.input = token_hsla(t.border_soft);
@@ -635,6 +712,11 @@ fn main() {
                 cx.new(|cx| Root::new(app, window, cx))
             })
             .unwrap();
+
+            #[cfg(target_os = "macos")]
+            if knotq_sidebar::window_vibrancy_available() {
+                crate::mac_vibrancy::install_sidebar_vibrancy();
+            }
 
             cx.on_window_closed(|cx| {
                 if should_quit_after_window_closed(cx.windows().len()) {

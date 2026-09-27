@@ -2,7 +2,7 @@ use super::*;
 
 pub(super) fn special_row(
     label: &'static str,
-    mark: RowMark,
+    square_color: u32,
     selected: bool,
     t: Theme,
     context_menu_open: bool,
@@ -12,21 +12,19 @@ pub(super) fn special_row(
         .id(SharedString::new_static(label))
         .flex()
         .items_center()
-        .gap(px(NAV_ICON_GAP))
+        .gap(px(nav_icon_gap()))
         .w_full()
-        .h(px(NAV_ROW_HEIGHT))
-        .pl(px(NAV_ROW_INDENT_BASE))
+        .h(px(nav_row_height()))
+        .pl(px(nav_row_indent_base()))
         .pr(px(4.0))
-        .rounded(px(3.0))
+        .rounded(px(nav_row_radius()))
         .cursor_pointer()
-        .when(selected, move |s| s.bg(row_selected_fill(t)))
+        .when(selected, move |s| s.bg(token_rgba(t.row_selected)))
         .when(!selected && !context_menu_open, move |s| {
-            s.hover(move |h| h.bg(row_hover_fill(t)))
+            s.hover(move |h| h.bg(token_rgba(t.row_hover)))
         })
         .on_click(on_click)
-        .child(nav_icon_slot(if is_vibrant() {
-            glyph(mark.icon, mark.tint)
-        } else {
+        .child(nav_icon_slot(
             div()
                 .relative()
                 .left(px(1.0))
@@ -34,9 +32,9 @@ pub(super) fn special_row(
                 .h(px(SCHEME_SQUARE_SIZE))
                 .rounded(px(2.0))
                 .flex_shrink_0()
-                .bg(token_rgba(mark.square))
-                .into_any_element()
-        }))
+                .bg(token_rgba(square_color))
+                .into_any_element(),
+        ))
         .child(
             div()
                 .flex_1()
@@ -49,34 +47,6 @@ pub(super) fn special_row(
                 .text_color(token_hsla(t.text_primary))
                 .child(label),
         )
-}
-
-/// The two fills every row shares, so one call site decides how hard a row
-/// reads and both looks stay in step.
-pub(super) fn row_selected_fill(t: Theme) -> gpui::Rgba {
-    if is_vibrant() {
-        selected_fill(t)
-    } else {
-        token_rgba(t.row_selected)
-    }
-}
-
-pub(super) fn row_hover_fill(t: Theme) -> gpui::Rgba {
-    if is_vibrant() {
-        hover_fill(t)
-    } else {
-        token_rgba(t.row_hover)
-    }
-}
-
-/// A folder's leading mark: Finder's solid accent folder in the vibrant look,
-/// the open/closed outline pair in the classic one.
-pub(super) fn folder_mark(expanded: bool, t: Theme) -> gpui::AnyElement {
-    if is_vibrant() {
-        folder_glyph(t)
-    } else {
-        zed_folder_icon(expanded, t).into_any_element()
-    }
 }
 
 pub(super) fn zed_folder_icon(expanded: bool, t: Theme) -> Icon {
@@ -95,7 +65,8 @@ pub(super) fn empty_folder_placeholder(
     depth: usize,
     t: Theme,
 ) -> gpui::AnyElement {
-    let indent = NAV_ROW_INDENT_BASE + depth as f32 * 9.0 + NAV_ICON_SLOT + NAV_ICON_GAP;
+    let indent =
+        nav_row_indent_base() + depth as f32 * nav_indent_step() + NAV_ICON_SLOT + nav_icon_gap();
     div()
         .id(SharedString::from(format!(
             "empty-folder-row-{}",
@@ -105,10 +76,10 @@ pub(super) fn empty_folder_placeholder(
         .items_center()
         .w_full()
         .min_w_0()
-        .h(px(NAV_ROW_HEIGHT))
+        .h(px(nav_row_height()))
         .pl(px(indent))
         .pr(px(4.0))
-        .rounded(px(5.0))
+        .rounded(px(nav_row_radius()))
         .text_size(px(12.0))
         .text_color(token_hsla(t.text_muted))
         .child(
@@ -152,7 +123,7 @@ pub(super) fn inline_rename_input(
         .child(
             div()
                 .w_full()
-                .h(px(NAV_ROW_HEIGHT))
+                .h(px(nav_row_height()))
                 .flex()
                 .items_center()
                 .child(input),
@@ -188,7 +159,7 @@ pub(super) fn footer_button(
         .id(SharedString::new_static(id))
         .flex_1()
         .h(px(24.0))
-        .rounded(px(5.0))
+        .rounded(px(nav_row_radius()))
         .bg(token_rgba(t.button_bg))
         .cursor_pointer()
         .hover(move |s| s.bg(token_rgba(t.button_hover)))

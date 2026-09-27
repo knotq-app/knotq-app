@@ -4,10 +4,3 @@ Folder icons are adapted from Zed's project icons:
 The copied SVGs replace hard-coded black fills/strokes with `currentColor` so GPUI can tint them with the active sidebar theme. The open-folder asset keeps the same 16px outline style but uses a lighter custom open state instead of Zed's filled wedge.
 
 Other SVGs in this directory are small outline app icons using the same `currentColor` convention so GPUI `IconName` references resolve from the app asset bundle.
-
-The `*-fill.svg` set (`calendar-fill`, `checklist-fill`, `folder-fill`,
-`trash-fill`), `chevron-right` and `sidebar-toggle` back the Apple-style
-sidebar draft (`KNOTQ_SIDEBAR_STYLE=apple`). They are solid rather than outline
-so a row's leading glyph reads as an SF Symbol would. GPUI renders an SVG as a
-single-color alpha mask, so `opacity` inside one of these files is a lighter
-shade of the tint, not a second color.

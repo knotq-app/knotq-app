@@ -31,7 +31,9 @@ impl NavigatorRow {
     pub(super) fn height(self) -> f32 {
         match self {
             Self::DropZone { .. } => NAV_DROP_ZONE_HEIGHT,
-            Self::EmptyFolder { .. } | Self::Folder { .. } | Self::Scheme { .. } => NAV_ROW_HEIGHT,
+            Self::EmptyFolder { .. } | Self::Folder { .. } | Self::Scheme { .. } => {
+                nav_row_height()
+            }
         }
     }
 }
@@ -169,7 +171,7 @@ impl KnotQApp {
                     cx,
                 )
                 .map(|(row, _)| row)
-                .unwrap_or_else(|| div().h(px(NAV_ROW_HEIGHT)).into_any_element()),
+                .unwrap_or_else(|| div().h(px(nav_row_height())).into_any_element()),
             NavigatorRow::Scheme {
                 scheme_id,
                 parent,
@@ -187,7 +189,7 @@ impl KnotQApp {
                     self.sidebar_context_menu.is_some(),
                     cx,
                 )
-                .unwrap_or_else(|| div().h(px(NAV_ROW_HEIGHT)).into_any_element()),
+                .unwrap_or_else(|| div().h(px(nav_row_height())).into_any_element()),
         }
     }
 

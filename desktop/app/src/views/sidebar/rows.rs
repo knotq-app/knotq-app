@@ -27,7 +27,7 @@ impl KnotQApp {
         if folder.id == self.workspace.root {
             return None;
         }
-        let pl_val = NAV_ROW_INDENT_BASE + depth as f32 * 9.0;
+        let pl_val = nav_row_indent_base() + depth as f32 * nav_indent_step();
         let folder_id = folder.id;
         let folder_name = folder.name.clone();
         let folder_expanded = folder.expanded;
@@ -56,19 +56,19 @@ impl KnotQApp {
             .relative()
             .flex()
             .items_center()
-            .gap(px(NAV_ICON_GAP))
+            .gap(px(nav_icon_gap()))
             .w_full()
             .min_w_0()
-            .min_h(px(NAV_ROW_HEIGHT))
-            .when(!has_rename_error, |s| s.h(px(NAV_ROW_HEIGHT)))
+            .min_h(px(nav_row_height()))
+            .when(!has_rename_error, |s| s.h(px(nav_row_height())))
             .when(has_rename_error, |s| s.items_start().py(px(3.0)))
             .pl(px(pl_val))
             .pr(px(4.0))
-            .rounded(px(5.0))
+            .rounded(px(nav_row_radius()))
             .border_1()
             .border_color(token_rgba(0x00000000))
             .when(!context_menu_open, move |s| {
-                s.hover(move |h| h.bg(row_hover_fill(t)))
+                s.hover(move |h| h.bg(token_rgba(t.row_hover)))
             })
             .drag_over::<NavigatorDragInfo>(move |s, drag, _w, _cx| {
                 if navigator_drop_target_accepts(drag, folder_id, folder_drop_position) {
@@ -112,8 +112,10 @@ impl KnotQApp {
                     .flex()
                     .items_center()
                     .when(has_rename_error, |s| s.items_start())
-                    .gap(px(NAV_ICON_GAP))
-                    .child(nav_icon_slot(folder_mark(folder_expanded, t)));
+                    .gap(px(nav_icon_gap()))
+                    .child(nav_icon_slot(
+                        zed_folder_icon(folder_expanded, t).into_any_element(),
+                    ));
                 if let Some((input, error)) = rename {
                     base.child(inline_rename_input(input, error, t))
                         .into_any_element()
@@ -179,7 +181,7 @@ impl KnotQApp {
             )
         };
         let is_sel = is_scheme_view && selected_id == Some(sid);
-        let pl_s = NAV_ROW_INDENT_BASE + depth as f32 * 9.0;
+        let pl_s = nav_row_indent_base() + depth as f32 * nav_indent_step();
         let square = scheme_square_color(color_index, t.is_dark);
         let scheme_group = SharedString::from(format!("scheme-row-{scheme_id}"));
         let rename = self
@@ -210,15 +212,15 @@ impl KnotQApp {
                 .relative()
                 .flex()
                 .items_center()
-                .gap(px(NAV_ICON_GAP))
+                .gap(px(nav_icon_gap()))
                 .w_full()
                 .min_w_0()
-                .min_h(px(NAV_ROW_HEIGHT))
-                .when(!has_rename_error, |s| s.h(px(NAV_ROW_HEIGHT)))
+                .min_h(px(nav_row_height()))
+                .when(!has_rename_error, |s| s.h(px(nav_row_height())))
                 .when(has_rename_error, |s| s.items_start().py(px(3.0)))
                 .pl(px(pl_s))
                 .pr(px(4.0))
-                .rounded(px(5.0))
+                .rounded(px(nav_row_radius()))
                 .border_1()
                 .border_color(token_rgba(if is_sel {
                     if is_renaming {
@@ -230,9 +232,9 @@ impl KnotQApp {
                     0x00000000
                 }))
                 .cursor_pointer()
-                .when(is_sel, move |s| s.bg(row_selected_fill(t)))
+                .when(is_sel, move |s| s.bg(token_rgba(t.row_selected)))
                 .when(!is_sel && !context_menu_open, move |s| {
-                    s.hover(move |h| h.bg(row_hover_fill(t)))
+                    s.hover(move |h| h.bg(token_rgba(t.row_hover)))
                 })
                 .drag_over::<NavigatorDragInfo>(move |s, _drag, _w, _cx| s)
                 .can_drop(move |dragged, _w, _cx| {
@@ -269,17 +271,15 @@ impl KnotQApp {
                         .flex()
                         .items_center()
                         .when(has_rename_error, |s| s.items_start())
-                        .gap(px(NAV_ICON_GAP))
-                        .child(nav_icon_slot(if is_vibrant() {
-                            scheme_glyph(square)
-                        } else {
+                        .gap(px(nav_icon_gap()))
+                        .child(nav_icon_slot(
                             div()
                                 .w(px(SCHEME_SQUARE_SIZE))
                                 .h(px(SCHEME_SQUARE_SIZE))
                                 .rounded(px(2.0))
                                 .bg(square)
-                                .into_any_element()
-                        }));
+                                .into_any_element(),
+                        ));
                     if let Some((input, error)) = rename {
                         base.child(inline_rename_input(input, error, t))
                             .into_any_element()

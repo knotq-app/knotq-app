@@ -127,7 +127,7 @@ impl KnotQApp {
                 s.child(
                     div()
                         .id("archive-scroll")
-                        .max_h(px(NAV_ROW_HEIGHT * ARCHIVE_MAX_VISIBLE_ROWS))
+                        .max_h(px(nav_row_height() * ARCHIVE_MAX_VISIBLE_ROWS))
                         .overflow_y_scroll()
                         .children(rows),
                 )
@@ -214,15 +214,15 @@ fn trash_header_row(
         .id("sidebar-trash")
         .flex()
         .items_center()
-        .gap(px(NAV_ICON_GAP))
+        .gap(px(nav_icon_gap()))
         .w_full()
-        .h(px(NAV_ROW_HEIGHT))
-        .pl(px(NAV_ROW_INDENT_BASE))
+        .h(px(nav_row_height()))
+        .pl(px(nav_row_indent_base()))
         .pr(px(4.0))
-        .rounded(px(3.0))
+        .rounded(px(nav_row_radius()))
         .cursor_pointer()
         .when(!context_menu_open, move |s| {
-            s.hover(move |h| h.bg(row_hover_fill(t)))
+            s.hover(move |h| h.bg(token_rgba(t.row_hover)))
         })
         .on_click(on_click)
         .on_mouse_down(
@@ -233,9 +233,7 @@ fn trash_header_row(
                 this.open_sidebar_context_menu(SidebarContextTarget::Archive, event.position, cx);
             }),
         )
-        .child(nav_icon_slot(if is_vibrant() {
-            glyph(TRASH_FILL_ICON, accent(t))
-        } else {
+        .child(nav_icon_slot(
             Icon::empty()
                 .path(DELETE_ICON)
                 .with_size(px(11.5))
@@ -244,8 +242,8 @@ fn trash_header_row(
                 } else {
                     t.text_dim
                 }))
-                .into_any_element()
-        }))
+                .into_any_element(),
+        ))
         .child(
             div()
                 .flex_1()
@@ -272,7 +270,7 @@ fn trash_folder_row(args: TrashFolderRowArgs, cx: &mut Context<KnotQApp>) -> gpu
         t,
         context_menu_open,
     } = args;
-    let pl = NAV_ROW_INDENT_BASE + depth as f32 * 9.0;
+    let pl = nav_row_indent_base() + depth as f32 * nav_indent_step();
     let drag_info = NavigatorDragInfo {
         node: NodeRef::Folder(folder_id),
         kind: NavigatorNodeKind::Folder,
@@ -287,15 +285,15 @@ fn trash_folder_row(args: TrashFolderRowArgs, cx: &mut Context<KnotQApp>) -> gpu
         )))
         .flex()
         .items_center()
-        .gap(px(NAV_ICON_GAP))
+        .gap(px(nav_icon_gap()))
         .w_full()
         .min_w_0()
-        .h(px(NAV_ROW_HEIGHT))
+        .h(px(nav_row_height()))
         .pl(px(pl))
         .pr(px(4.0))
-        .rounded(px(5.0))
+        .rounded(px(nav_row_radius()))
         .when(!context_menu_open, move |s| {
-            s.hover(move |h| h.bg(row_hover_fill(t)))
+            s.hover(move |h| h.bg(token_rgba(t.row_hover)))
         })
         .when(top_level, |s| {
             s.on_drag(drag_info, |drag, _position: Point<Pixels>, _w, cx| {
@@ -327,13 +325,15 @@ fn trash_folder_row(args: TrashFolderRowArgs, cx: &mut Context<KnotQApp>) -> gpu
                 .h_full()
                 .flex()
                 .items_center()
-                .gap(px(NAV_ICON_GAP))
+                .gap(px(nav_icon_gap()))
                 .cursor_pointer()
                 .on_click(cx.listener(move |this, _ev: &ClickEvent, _window, cx| {
                     this.toggle_folder(folder_id, cx);
                     cx.notify();
                 }))
-                .child(nav_icon_slot(folder_mark(expanded, t)))
+                .child(nav_icon_slot(
+                    zed_folder_icon(expanded, t).into_any_element(),
+                ))
                 .child(
                     div()
                         .flex_1()
@@ -375,15 +375,15 @@ fn trash_scheme_row(args: TrashSchemeRowArgs, cx: &mut Context<KnotQApp>) -> gpu
         .id(id)
         .flex()
         .items_center()
-        .gap(px(NAV_ICON_GAP))
+        .gap(px(nav_icon_gap()))
         .w_full()
         .min_w_0()
-        .h(px(NAV_ROW_HEIGHT))
-        .pl(px(NAV_ROW_INDENT_BASE + depth as f32 * 9.0))
+        .h(px(nav_row_height()))
+        .pl(px(nav_row_indent_base() + depth as f32 * nav_indent_step()))
         .pr(px(4.0))
-        .rounded(px(5.0))
+        .rounded(px(nav_row_radius()))
         .when(!context_menu_open, move |s| {
-            s.hover(move |h| h.bg(row_hover_fill(t)))
+            s.hover(move |h| h.bg(token_rgba(t.row_hover)))
         })
         .when(standalone, |s| {
             s.on_drag(drag_info, |drag, _position: Point<Pixels>, _w, cx| {
@@ -405,16 +405,14 @@ fn trash_scheme_row(args: TrashSchemeRowArgs, cx: &mut Context<KnotQApp>) -> gpu
                 }),
             )
         })
-        .child(nav_icon_slot(if is_vibrant() {
-            scheme_glyph(square)
-        } else {
+        .child(nav_icon_slot(
             div()
                 .w(px(SCHEME_SQUARE_SIZE))
                 .h(px(SCHEME_SQUARE_SIZE))
                 .rounded(px(2.0))
                 .bg(square)
-                .into_any_element()
-        }))
+                .into_any_element(),
+        ))
         .child(
             div()
                 .flex_1()
@@ -432,17 +430,17 @@ fn trash_scheme_row(args: TrashSchemeRowArgs, cx: &mut Context<KnotQApp>) -> gpu
 }
 
 fn empty_trash_placeholder(t: Theme) -> gpui::AnyElement {
-    let indent = NAV_ROW_INDENT_BASE + 9.0 + NAV_ICON_SLOT + NAV_ICON_GAP;
+    let indent = nav_row_indent_base() + nav_indent_step() + NAV_ICON_SLOT + nav_icon_gap();
     div()
         .id("empty-trash-row")
         .flex()
         .items_center()
         .w_full()
         .min_w_0()
-        .h(px(NAV_ROW_HEIGHT))
+        .h(px(nav_row_height()))
         .pl(px(indent))
         .pr(px(4.0))
-        .rounded(px(5.0))
+        .rounded(px(nav_row_radius()))
         .text_size(px(12.0))
         .text_color(token_hsla(t.text_muted))
         .child(

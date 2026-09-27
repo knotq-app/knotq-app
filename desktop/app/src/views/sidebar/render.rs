@@ -13,22 +13,36 @@ impl KnotQApp {
 
         let tree = self.render_sidebar_tree(cx);
 
-        div()
+        let container = div()
             .flex()
             .flex_col()
-            .w(px(166.0))
+            .w(px(navigator_width()))
             .h_full()
             .flex_shrink_0()
-            .pt(px(10.0))
-            .px(px(8.0))
+            .pt(px(content_top_inset()))
+            .px(px(sidebar_side_padding()))
             .pb(px(8.0))
-            // The one structural difference in the vibrant look: the card's
-            // fill goes translucent so the window's blur reads through it.
-            .bg(sidebar_surface(t))
-            .border_1()
-            .border_color(token_rgba(t.border_overlay))
-            .rounded(px(13.0))
-            .shadow_md()
+            // The card's fill goes translucent so the window's blur reads
+            // through it.
+            .bg(sidebar_surface(t));
+
+        // Finder and Mail run the sidebar to the window's edges and give it no
+        // chrome of its own: a border or a shadow would be drawn *inside* the
+        // vibrancy and read as a lit seam across it. The classic sidebar keeps
+        // being a card floating inside the left panel.
+        let container = if full_height_column() {
+            container
+                .border_r_1()
+                .border_color(token_rgba(t.divider_faint))
+        } else {
+            container
+                .border_1()
+                .border_color(token_rgba(t.border_overlay))
+                .rounded(px(13.0))
+                .shadow_md()
+        };
+
+        container
             .on_mouse_down(
                 MouseButton::Right,
                 cx.listener(|this, event: &MouseDownEvent, window, cx| {
@@ -46,17 +60,13 @@ impl KnotQApp {
                     .flex()
                     .flex_col()
                     .gap(px(1.0))
-                    .mb(px(6.0))
+                    .mb(px(group_gap()))
                     .child(special_row(
                         knotq_l10n::t("sidebar.calendar_label"),
-                        RowMark {
-                            icon: CALENDAR_FILL_ICON,
-                            square: if t.is_dark {
-                                0xffffffff
-                            } else {
-                                t.text_primary
-                            },
-                            tint: accent(t),
+                        if t.is_dark {
+                            0xffffffff
+                        } else {
+                            t.text_primary
                         },
                         is_union,
                         t,
@@ -69,11 +79,7 @@ impl KnotQApp {
                     ))
                     .child(special_row(
                         DAILY_QUEUE_TITLE,
-                        RowMark {
-                            icon: CHECKLIST_FILL_ICON,
-                            square: daily_queue_marker_color(t.is_dark),
-                            tint: accent(t),
-                        },
+                        daily_queue_marker_color(t.is_dark),
                         is_daily_queue,
                         t,
                         context_menu_open,
@@ -90,7 +96,7 @@ impl KnotQApp {
                     .h(px(1.0))
                     .bg(token_rgba(t.divider))
                     .mx(px(3.0))
-                    .mb(px(8.0)),
+                    .mb(px(group_gap())),
             )
             .child(
                 div()
@@ -105,7 +111,7 @@ impl KnotQApp {
     }
 
     fn render_sidebar_tree(&mut self, cx: &mut Context<Self>) -> gpui::AnyElement {
-        // Inline rename errors make a row taller than NAV_ROW_HEIGHT. Keep the
+        // Inline rename errors make a row taller than nav_row_height(). Keep the
         // recursive renderer while renaming so the input can measure naturally;
         // the normal navigator has exact fixed sizes and can be virtualized.
         if self.rename_node.is_some() {

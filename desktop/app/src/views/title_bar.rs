@@ -64,7 +64,11 @@ impl KnotQApp {
             TITLE_TEXT_W
         };
 
-        let left_pad = if cfg!(target_os = "macos") {
+        // A full-height sidebar owns the top-left corner, traffic lights and
+        // all, and the title bar starts to the right of it — so it must not
+        // reserve that space a second time.
+        let sidebar_owns_traffic_lights = crate::views::sidebar::full_height_column();
+        let left_pad = if cfg!(target_os = "macos") && !sidebar_owns_traffic_lights {
             MACOS_TRAFFIC_LIGHT_PAD
         } else {
             TITLE_EDGE_PAD
