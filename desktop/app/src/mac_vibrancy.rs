@@ -18,13 +18,17 @@ use objc::{class, msg_send, sel, sel_impl};
 
 type Id = *mut Object;
 
-// The window server's own backdrop blur. `NSVisualEffectView` gives no control
-// over its blur radius — each material has the one Apple chose — so this is the
-// only lever for "blur it more", and it is a private API. Apple ships it in
-// Terminal.app and GPUI already links it for the macOS 11 path, but it is
-// undocumented, it can change, and it would not survive Mac App Store review.
-// It is therefore opt-out: `KNOTQ_SIDEBAR_BLUR=0` turns it off and leaves only
-// the public material.
+// The window server's own backdrop blur, and the one thing here that is not
+// public API. `NSVisualEffectView` gives no control over its blur radius — each
+// material has the one Apple chose — so this is the only way to blur harder
+// than a material does.
+//
+// Off by default. The shipping look is the public `NSVisualEffectView` alone;
+// this stays reachable through `KNOTQ_SIDEBAR_BLUR` for anyone who wants more
+// blur than Apple's materials give, and carries the cost that goes with a
+// private symbol: undocumented, free to change under us, and not something Mac
+// App Store review would pass. GPUI already links it for the macOS 11 path, so
+// the symbol is in the binary either way; what is optional is calling it.
 #[link(name = "CoreGraphics", kind = "framework")]
 unsafe extern "C" {
     fn CGSMainConnectionID() -> Id;
@@ -32,7 +36,8 @@ unsafe extern "C" {
 }
 
 /// Extra blur radius applied to the window's backdrop, on top of the material.
-const DEFAULT_BLUR_RADIUS: i64 = 34;
+/// Zero means the public material alone.
+const DEFAULT_BLUR_RADIUS: i64 = 0;
 
 fn blur_radius() -> i64 {
     std::env::var("KNOTQ_SIDEBAR_BLUR")
@@ -43,11 +48,10 @@ fn blur_radius() -> i64 {
 }
 
 /// `NSVisualEffectMaterial` values. `Sidebar` is what Finder, Mail and Notes
-/// use and is the reason this module exists; the others are here because how
-/// see-through a sidebar should be is a judgement call, and swapping the
-/// material is the honest way to make it more so — laying on less tint only
-/// reaches the material's own opacity, and going past it means less blur, not
-/// more.
+/// use, and is the default. The others are here because how see-through a
+/// sidebar should be is a judgement call: the material is the only public
+/// control over it, since `NSVisualEffectView` exposes no blur radius — each
+/// material carries the one Apple chose.
 const MATERIAL_SIDEBAR: i64 = 7;
 const MATERIAL_UNDER_WINDOW_BACKGROUND: i64 = 21;
 const MATERIAL_HUD_WINDOW: i64 = 13;
@@ -55,20 +59,19 @@ const MATERIAL_POPOVER: i64 = 6;
 const MATERIAL_MENU: i64 = 5;
 const MATERIAL_WINDOW_BACKGROUND: i64 = 12;
 
-/// Which material to use, from `KNOTQ_SIDEBAR_MATERIAL`. Defaults to the most
-/// see-through of them; `sidebar` is Finder's exactly.
+/// Which material to use, from `KNOTQ_SIDEBAR_MATERIAL`. Defaults to Finder's.
 fn material() -> i64 {
     match std::env::var("KNOTQ_SIDEBAR_MATERIAL")
         .unwrap_or_default()
         .to_ascii_lowercase()
         .as_str()
     {
-        "sidebar" => MATERIAL_SIDEBAR,
+        "under-window" => MATERIAL_UNDER_WINDOW_BACKGROUND,
         "hud" => MATERIAL_HUD_WINDOW,
         "popover" => MATERIAL_POPOVER,
         "menu" => MATERIAL_MENU,
         "window" => MATERIAL_WINDOW_BACKGROUND,
-        _ => MATERIAL_UNDER_WINDOW_BACKGROUND,
+        _ => MATERIAL_SIDEBAR,
     }
 }
 /// `NSVisualEffectBlendingModeBehindWindow`: sample what is behind the window,
@@ -140,8 +143,8 @@ unsafe fn install_in_window(window: Id) {
         relativeTo: std::ptr::null_mut::<Object>()
     ];
 
-    // The material frosts most of the backdrop; this blurs whatever still
-    // reads through it, which is what "more blur" actually means here.
+    // Opt-in only: the material frosts the backdrop on its own, and this blurs
+    // whatever still reads through it.
     let radius = blur_radius();
     if radius > 0 {
         let window_number: i64 = msg_send![window, windowNumber];
@@ -258,12 +261,11 @@ mod tests {
             let radius = blur_radius();
             assert!((0..=200).contains(&radius), "{value:?} gave {radius}");
         }
-        // Explicit zero must mean off, not "fall back to the default" — it is
-        // the only way to drop the private API.
-        unsafe { std::env::set_var("KNOTQ_SIDEBAR_BLUR", "0") };
-        assert_eq!(blur_radius(), 0);
+        // The default must be off: the private call is opt-in, and an unset
+        // variable is not opting in.
         unsafe { std::env::remove_var("KNOTQ_SIDEBAR_BLUR") };
-        assert_eq!(blur_radius(), DEFAULT_BLUR_RADIUS);
+        assert_eq!(blur_radius(), 0);
+        assert_eq!(DEFAULT_BLUR_RADIUS, 0);
     }
 }
 
