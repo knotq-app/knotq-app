@@ -105,9 +105,12 @@ pub fn with_durability_batch<T>(body: impl FnOnce() -> Result<T>) -> Result<T> {
     let result = body();
     let finished = ACTIVE.with(|active| {
         let mut active = active.borrow_mut();
-        let Some((_, depth)) = active.as_mut() else {
-            return None;
-        };
+        let (_, depth) = active.as_mut()?;
+        // A nested scope leaves the batch to the one that opened it, so the
+        // whole nest commits as one barrier. The depth itself is decremented by
+        // `Scope::drop` below — not here, or a nested scope would count down
+        // twice and the outer one would commit a batch that is still being
+        // written to.
         if *depth > 1 {
             return None;
         }

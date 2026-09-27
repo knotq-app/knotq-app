@@ -343,6 +343,17 @@ impl WorkspaceCrdtApplyOutcome {
     }
 }
 
+/// One scheme's slice of an account-switch merge: where its updates sat in the
+/// incoming order, which scheme it is, its document, and the updates aimed at
+/// it. Spelled out because the inline tuple is four unrelated types deep and
+/// says nothing at the use site.
+type SchemeMergeTarget<'a> = (
+    usize,
+    SchemeId,
+    &'a mut YrsSchemeDocument,
+    &'a [&'a StoredCrdtUpdate],
+);
+
 /// What merging one scheme's remote updates did, gathered per scheme so the
 /// merges can run concurrently and be folded into the shared outcome after.
 struct SchemeMergeOutcome {
@@ -2212,14 +2223,14 @@ impl WorkspaceCrdtDocuments {
         // phase there is. Take a disjoint `&mut` per scheme and spread them over
         // the idle cores; below the threshold `map_ordered_mut` stays serial, so
         // an ordinary one-scheme edit runs exactly as before.
-        let mut targets: Vec<(usize, SchemeId, &mut YrsSchemeDocument, &[&StoredCrdtUpdate])> =
-            self.schemes
-                .iter_mut()
-                .filter_map(|(scheme_id, doc)| {
-                    let index = *work_index.get(scheme_id)?;
-                    Some((index, *scheme_id, doc, work[index].1.as_slice()))
-                })
-                .collect();
+        let mut targets: Vec<SchemeMergeTarget<'_>> = self
+            .schemes
+            .iter_mut()
+            .filter_map(|(scheme_id, doc)| {
+                let index = *work_index.get(scheme_id)?;
+                Some((index, *scheme_id, doc, work[index].1.as_slice()))
+            })
+            .collect();
         // `self.schemes` is a HashMap, so iterating it gives a per-process
         // random order. Restore the order the updates arrived in, so the
         // per-document errors below are recorded in the same sequence they were
