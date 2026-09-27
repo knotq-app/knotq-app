@@ -18,9 +18,35 @@ use objc::{class, msg_send, sel, sel_impl};
 
 type Id = *mut Object;
 
-/// `NSVisualEffectMaterialSidebar` — the material Finder, Mail and Notes use
-/// for the sidebar, and the reason this exists at all.
+/// `NSVisualEffectMaterial` values. `Sidebar` is what Finder, Mail and Notes
+/// use and is the reason this module exists; the others are here because how
+/// see-through a sidebar should be is a judgement call, and swapping the
+/// material is the honest way to make it more so — laying on less tint only
+/// reaches the material's own opacity, and going past it means less blur, not
+/// more.
 const MATERIAL_SIDEBAR: i64 = 7;
+const MATERIAL_UNDER_WINDOW_BACKGROUND: i64 = 21;
+const MATERIAL_HUD_WINDOW: i64 = 13;
+const MATERIAL_POPOVER: i64 = 6;
+const MATERIAL_MENU: i64 = 5;
+const MATERIAL_WINDOW_BACKGROUND: i64 = 12;
+
+/// Which material to use, from `KNOTQ_SIDEBAR_MATERIAL`. Defaults to the most
+/// see-through of them; `sidebar` is Finder's exactly.
+fn material() -> i64 {
+    match std::env::var("KNOTQ_SIDEBAR_MATERIAL")
+        .unwrap_or_default()
+        .to_ascii_lowercase()
+        .as_str()
+    {
+        "sidebar" => MATERIAL_SIDEBAR,
+        "hud" => MATERIAL_HUD_WINDOW,
+        "popover" => MATERIAL_POPOVER,
+        "menu" => MATERIAL_MENU,
+        "window" => MATERIAL_WINDOW_BACKGROUND,
+        _ => MATERIAL_UNDER_WINDOW_BACKGROUND,
+    }
+}
 /// `NSVisualEffectBlendingModeBehindWindow`: sample what is behind the window,
 /// not what the app drew underneath.
 const BLENDING_BEHIND_WINDOW: i64 = 0;
@@ -76,7 +102,7 @@ unsafe fn install_in_window(window: Id) {
     if effect.is_null() {
         return;
     }
-    let _: () = msg_send![effect, setMaterial: MATERIAL_SIDEBAR];
+    let _: () = msg_send![effect, setMaterial: material()];
     let _: () = msg_send![effect, setBlendingMode: BLENDING_BEHIND_WINDOW];
     let _: () = msg_send![effect, setState: STATE_ACTIVE];
     let _: () = msg_send![

@@ -10,11 +10,11 @@ use gpui::Hsla;
 
 /// How much of the theme's own sidebar color is laid over the vibrancy.
 ///
-/// Finder lays on none: the `sidebar` material already gives a legible frosted
-/// surface, and that material is the whole point. This keeps a little, only
-/// enough to carry the theme's hue into the sidebar — KnotQ's themes are not
-/// all grey — without flattening the blur back out.
-const VIBRANCY_TINT_ALPHA: f32 = 0.12;
+/// Zero, like Finder: the `sidebar` material is already a legible frosted
+/// surface, and every bit of tint laid over it is blur traded away. The knob
+/// stays because KnotQ's themes are not all grey and a future one may want its
+/// hue back — but the default is to let the material do the work.
+const VIBRANCY_TINT_ALPHA: f32 = 0.0;
 
 /// Is the window drawing a blurred backdrop behind the sidebar? GPUI implements
 /// `WindowBackgroundAppearance::Blurred` natively on macOS with a real

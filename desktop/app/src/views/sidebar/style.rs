@@ -44,8 +44,9 @@ pub(crate) fn full_height_column() -> bool {
     is_vibrant()
 }
 
-/// Vertical room above the first row. A full-height sidebar runs underneath the
-/// traffic lights, so it has to clear them.
+/// Height of the band above the first row. A full-height sidebar runs
+/// underneath the title bar, so this is the strip the traffic lights sit in —
+/// and, beside them, the sync control.
 pub(super) fn content_top_inset() -> f32 {
     if !full_height_column() {
         return 10.0;
@@ -54,6 +55,16 @@ pub(super) fn content_top_inset() -> f32 {
         44.0
     } else {
         14.0
+    }
+}
+
+/// How far into that band the traffic lights reach, measured from the sidebar's
+/// content box. Anything placed in the band starts after this.
+pub(super) fn traffic_light_clearance() -> f32 {
+    if cfg!(target_os = "macos") && full_height_column() {
+        (72.0 - sidebar_side_padding()).max(0.0)
+    } else {
+        0.0
     }
 }
 

@@ -19,7 +19,13 @@ impl KnotQApp {
             .w(px(navigator_width()))
             .h_full()
             .flex_shrink_0()
-            .pt(px(content_top_inset()))
+            // A full-height sidebar puts a band here instead of padding: the
+            // traffic lights sit in it, and so does the sync control.
+            .pt(px(if full_height_column() {
+                0.0
+            } else {
+                content_top_inset()
+            }))
             .px(px(sidebar_side_padding()))
             .pb(px(8.0))
             // The card's fill goes translucent so the window's blur reads
@@ -43,6 +49,7 @@ impl KnotQApp {
         };
 
         container
+            .children(self.render_sidebar_title_band(t, cx))
             .on_mouse_down(
                 MouseButton::Right,
                 cx.listener(|this, event: &MouseDownEvent, window, cx| {
@@ -110,6 +117,32 @@ impl KnotQApp {
             .child(self.render_sidebar_footer(cx))
     }
 
+    /// The strip the sidebar reserves above its first row when it runs the full
+    /// height of the window. The traffic lights are drawn into its left end by
+    /// the system; the sync control takes the space beside them, so it sits on
+    /// the blur rather than stranded on the opaque title bar to the right.
+    fn render_sidebar_title_band(
+        &mut self,
+        t: Theme,
+        cx: &mut Context<Self>,
+    ) -> Option<gpui::AnyElement> {
+        if !full_height_column() {
+            return None;
+        }
+        let sync_control = self.render_title_bar_sync_control(t, cx);
+        Some(
+            div()
+                .w_full()
+                .h(px(content_top_inset()))
+                .flex_shrink_0()
+                .flex()
+                .items_center()
+                .pl(px(traffic_light_clearance()))
+                .children(sync_control)
+                .into_any_element(),
+        )
+    }
+
     fn render_sidebar_tree(&mut self, cx: &mut Context<Self>) -> gpui::AnyElement {
         // Inline rename errors make a row taller than nav_row_height(). Keep the
         // recursive renderer while renaming so the input can measure naturally;
@@ -159,26 +192,11 @@ impl KnotQApp {
 
     fn render_sidebar_footer(&mut self, cx: &mut Context<Self>) -> gpui::AnyElement {
         let t = self.theme();
-        // The vibrant sidebar takes the sync control off the title bar, where it
-        // would sit on an opaque surface, and puts it here on the blur.
-        let sync_control = full_height_column()
-            .then(|| self.render_title_bar_sync_control(t, cx))
-            .flatten();
         div()
             .px(px(2.0))
             .pt(px(4.0))
             .pb(px(2.0))
             .flex()
-            .flex_col()
-            .gap(px(6.0))
-            .children(sync_control.map(|control| {
-                div()
-                    .w_full()
-                    .flex()
-                    .justify_center()
-                    .child(control)
-                    .into_any_element()
-            }))
             .child(footer_button(
                 "sidebar-new-menu",
                 knotq_l10n::t("sidebar.footer.new"),
