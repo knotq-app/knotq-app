@@ -26,11 +26,12 @@ fn vibrancy_tint_alpha() -> f32 {
         .unwrap_or(DEFAULT_VIBRANCY_TINT_ALPHA)
 }
 
-/// Is the window drawing a blurred backdrop behind the sidebar? GPUI implements
-/// `WindowBackgroundAppearance::Blurred` natively on macOS with a real
-/// `NSVisualEffectView`; every other platform keeps an opaque sidebar.
+/// Is the window drawing a blurred backdrop behind the sidebar? True exactly
+/// when the vibrant look is active, which `sidebar_style` already restricts to
+/// macOS — the effect is an `NSVisualEffectView` and has no equivalent
+/// elsewhere.
 pub(crate) fn window_vibrancy_available() -> bool {
-    cfg!(target_os = "macos") && is_vibrant()
+    is_vibrant()
 }
 
 /// The sidebar card's fill. Over vibrancy this is a tint, not a background: the

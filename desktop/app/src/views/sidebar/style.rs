@@ -18,16 +18,29 @@ pub(crate) enum SidebarStyle {
 
 /// Read once: the look is chosen at launch and never changes for the process,
 /// so the row renderers can treat it as a constant.
+///
+/// macOS only, and refused rather than half-applied elsewhere. The whole point
+/// of the look is the window's vibrancy, which is an `NSVisualEffectView`;
+/// without it the rest — a chromeless full-height column that runs under the
+/// title bar and owns the traffic-light corner — is a layout built around an
+/// effect that is not there, on platforms whose window decorations do not work
+/// that way.
 pub(crate) fn sidebar_style() -> SidebarStyle {
     static STYLE: OnceLock<SidebarStyle> = OnceLock::new();
-    *STYLE.get_or_init(|| match std::env::var("KNOTQ_SIDEBAR_STYLE") {
-        // `apple` is the name this draft was asked for; keep it as an alias.
-        Ok(value)
-            if value.eq_ignore_ascii_case("vibrant") || value.eq_ignore_ascii_case("apple") =>
-        {
-            SidebarStyle::Vibrant
+    *STYLE.get_or_init(|| {
+        if !cfg!(target_os = "macos") {
+            return SidebarStyle::Classic;
         }
-        _ => SidebarStyle::Classic,
+        match std::env::var("KNOTQ_SIDEBAR_STYLE") {
+            // `apple` is the name this draft was asked for; keep it as an
+            // alias.
+            Ok(value)
+                if value.eq_ignore_ascii_case("vibrant") || value.eq_ignore_ascii_case("apple") =>
+            {
+                SidebarStyle::Vibrant
+            }
+            _ => SidebarStyle::Classic,
+        }
     })
 }
 
@@ -51,17 +64,13 @@ pub(super) fn content_top_inset() -> f32 {
     if !full_height_column() {
         return 10.0;
     }
-    if cfg!(target_os = "macos") {
-        44.0
-    } else {
-        14.0
-    }
+    44.0
 }
 
 /// How far into that band the traffic lights reach, measured from the sidebar's
 /// content box. Anything placed in the band starts after this.
 pub(super) fn traffic_light_clearance() -> f32 {
-    if cfg!(target_os = "macos") && full_height_column() {
+    if full_height_column() {
         (72.0 - sidebar_side_padding()).max(0.0)
     } else {
         0.0
@@ -188,18 +197,22 @@ mod tests {
     }
 
     #[test]
-    fn only_an_explicit_opt_in_selects_the_draft() {
+    fn only_an_explicit_opt_in_on_macos_selects_the_draft() {
         // The default build must be untouched: an unset or unrecognized value
-        // is the shipping sidebar, not a half-applied draft.
-        assert_eq!(
-            sidebar_style(),
-            if std::env::var("KNOTQ_SIDEBAR_STYLE")
-                .is_ok_and(|v| v.eq_ignore_ascii_case("vibrant") || v.eq_ignore_ascii_case("apple"))
-            {
-                SidebarStyle::Vibrant
-            } else {
-                SidebarStyle::Classic
-            }
-        );
+        // is the shipping sidebar, not a half-applied draft. And off macOS the
+        // opt-in does nothing at all, because the effect it is built around
+        // does not exist there.
+        let opted_in = std::env::var("KNOTQ_SIDEBAR_STYLE")
+            .is_ok_and(|v| v.eq_ignore_ascii_case("vibrant") || v.eq_ignore_ascii_case("apple"));
+        let expected = if opted_in && cfg!(target_os = "macos") {
+            SidebarStyle::Vibrant
+        } else {
+            SidebarStyle::Classic
+        };
+        assert_eq!(sidebar_style(), expected);
+        if !cfg!(target_os = "macos") {
+            assert!(!full_height_column());
+            assert!(!resizable());
+        }
     }
 }
