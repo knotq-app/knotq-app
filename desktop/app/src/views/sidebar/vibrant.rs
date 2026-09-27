@@ -10,11 +10,21 @@ use gpui::Hsla;
 
 /// How much of the theme's own sidebar color is laid over the vibrancy.
 ///
-/// Zero, like Finder: the `sidebar` material is already a legible frosted
-/// surface, and every bit of tint laid over it is blur traded away. The knob
-/// stays because KnotQ's themes are not all grey and a future one may want its
-/// hue back — but the default is to let the material do the work.
-const VIBRANCY_TINT_ALPHA: f32 = 0.0;
+/// The material alone is grey, and KnotQ's themes are not: without a tint the
+/// sidebar stops belonging to the theme the rest of the window is painted in.
+/// This is the balance point — enough of `bg_sidebar` to carry the hue, little
+/// enough that the blur behind it still reads. `KNOTQ_SIDEBAR_TINT` overrides
+/// it with a 0..1 alpha, since where that balance sits is a matter of taste.
+const DEFAULT_VIBRANCY_TINT_ALPHA: f32 = 0.34;
+
+fn vibrancy_tint_alpha() -> f32 {
+    std::env::var("KNOTQ_SIDEBAR_TINT")
+        .ok()
+        .and_then(|value| value.trim().parse::<f32>().ok())
+        .filter(|alpha| alpha.is_finite())
+        .map(|alpha| alpha.clamp(0.0, 1.0))
+        .unwrap_or(DEFAULT_VIBRANCY_TINT_ALPHA)
+}
 
 /// Is the window drawing a blurred backdrop behind the sidebar? GPUI implements
 /// `WindowBackgroundAppearance::Blurred` natively on macOS with a real
@@ -29,7 +39,7 @@ pub(crate) fn window_vibrancy_available() -> bool {
 pub(super) fn sidebar_surface(t: Theme) -> Hsla {
     let mut color = token_hsla(t.bg_sidebar);
     if window_vibrancy_available() {
-        color.a = VIBRANCY_TINT_ALPHA;
+        color.a = vibrancy_tint_alpha();
     }
     color
 }
@@ -37,6 +47,24 @@ pub(super) fn sidebar_surface(t: Theme) -> Hsla {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_tint_alpha_is_always_a_usable_alpha() {
+        // Whatever the environment says, this ends up as a color's alpha, so a
+        // typo, a negative, or an infinity must not reach the renderer.
+        for value in ["", "nope", "-3", "9", "inf", "NaN", "0.5"] {
+            // SAFETY: single-threaded test, and the variable is read nowhere
+            // else while this runs.
+            unsafe { std::env::set_var("KNOTQ_SIDEBAR_TINT", value) };
+            let alpha = vibrancy_tint_alpha();
+            assert!(
+                (0.0..=1.0).contains(&alpha),
+                "{value:?} produced alpha {alpha}"
+            );
+        }
+        unsafe { std::env::remove_var("KNOTQ_SIDEBAR_TINT") };
+        assert_eq!(vibrancy_tint_alpha(), DEFAULT_VIBRANCY_TINT_ALPHA);
+    }
 
     #[test]
     fn the_tint_is_only_translucent_where_a_blur_backs_it() {
