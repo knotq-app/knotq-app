@@ -222,7 +222,7 @@ fn trash_header_row(
         .rounded(px(3.0))
         .cursor_pointer()
         .when(!context_menu_open, move |s| {
-            s.hover(move |h| h.bg(token_rgba(t.row_hover)))
+            s.hover(move |h| h.bg(row_hover_fill(t)))
         })
         .on_click(on_click)
         .on_mouse_down(
@@ -233,7 +233,9 @@ fn trash_header_row(
                 this.open_sidebar_context_menu(SidebarContextTarget::Archive, event.position, cx);
             }),
         )
-        .child(nav_icon_slot(
+        .child(nav_icon_slot(if is_vibrant() {
+            glyph(TRASH_FILL_ICON, accent(t))
+        } else {
             Icon::empty()
                 .path(DELETE_ICON)
                 .with_size(px(11.5))
@@ -242,8 +244,8 @@ fn trash_header_row(
                 } else {
                     t.text_dim
                 }))
-                .into_any_element(),
-        ))
+                .into_any_element()
+        }))
         .child(
             div()
                 .flex_1()
@@ -293,7 +295,7 @@ fn trash_folder_row(args: TrashFolderRowArgs, cx: &mut Context<KnotQApp>) -> gpu
         .pr(px(4.0))
         .rounded(px(5.0))
         .when(!context_menu_open, move |s| {
-            s.hover(move |h| h.bg(token_rgba(t.row_hover)))
+            s.hover(move |h| h.bg(row_hover_fill(t)))
         })
         .when(top_level, |s| {
             s.on_drag(drag_info, |drag, _position: Point<Pixels>, _w, cx| {
@@ -331,9 +333,7 @@ fn trash_folder_row(args: TrashFolderRowArgs, cx: &mut Context<KnotQApp>) -> gpu
                     this.toggle_folder(folder_id, cx);
                     cx.notify();
                 }))
-                .child(nav_icon_slot(
-                    zed_folder_icon(expanded, t).into_any_element(),
-                ))
+                .child(nav_icon_slot(folder_mark(expanded, t)))
                 .child(
                     div()
                         .flex_1()
@@ -383,7 +383,7 @@ fn trash_scheme_row(args: TrashSchemeRowArgs, cx: &mut Context<KnotQApp>) -> gpu
         .pr(px(4.0))
         .rounded(px(5.0))
         .when(!context_menu_open, move |s| {
-            s.hover(move |h| h.bg(token_rgba(t.row_hover)))
+            s.hover(move |h| h.bg(row_hover_fill(t)))
         })
         .when(standalone, |s| {
             s.on_drag(drag_info, |drag, _position: Point<Pixels>, _w, cx| {
@@ -405,14 +405,16 @@ fn trash_scheme_row(args: TrashSchemeRowArgs, cx: &mut Context<KnotQApp>) -> gpu
                 }),
             )
         })
-        .child(nav_icon_slot(
+        .child(nav_icon_slot(if is_vibrant() {
+            scheme_glyph(square)
+        } else {
             div()
                 .w(px(SCHEME_SQUARE_SIZE))
                 .h(px(SCHEME_SQUARE_SIZE))
                 .rounded(px(2.0))
                 .bg(square)
-                .into_any_element(),
-        ))
+                .into_any_element()
+        }))
         .child(
             div()
                 .flex_1()

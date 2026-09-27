@@ -7,6 +7,8 @@ mod notifications;
 mod theme_gpui;
 mod views;
 
+use crate::views::sidebar as knotq_sidebar;
+
 use std::borrow::Cow;
 
 use chrono::{Duration as ChronoDuration, Utc};
@@ -14,7 +16,7 @@ use gpui::prelude::*;
 use gpui::{
     actions, div, px, App, Application, Context, InteractiveElement, IntoElement, KeyBinding, Menu,
     MenuItem, MouseButton, MouseMoveEvent, MouseUpEvent, OsAction, Render, TitlebarOptions, Window,
-    WindowBounds, WindowDecorations, WindowOptions,
+    WindowBackgroundAppearance, WindowBounds, WindowDecorations, WindowOptions,
 };
 use gpui_component::{
     input::{IndentInline, MoveDown, MoveUp, OutdentInline},
@@ -156,12 +158,16 @@ impl Render for KnotQApp {
         let sidebar = self.render_sidebar(window, cx);
         let upcoming = self.render_upcoming(cx);
         let panel_bg = token_hsla(t.bg_app);
+        // Under vibrancy the panel must not paint the strip its sidebar card
+        // floats on — an opaque fill there would sit between the card and the
+        // window's blur. The upcoming list keeps its own opaque background.
+        let vibrant = knotq_sidebar::window_vibrancy_available();
         let left_panel = div()
             .relative()
             .w(px(NAVIGATOR_W + LEFT_PANEL_GAP + UPCOMING_W))
             .h_full()
             .flex_shrink_0()
-            .bg(panel_bg)
+            .when(!vibrant, |panel| panel.bg(panel_bg))
             .child(
                 div()
                     .absolute()
@@ -170,6 +176,7 @@ impl Render for KnotQApp {
                     .left(px(NAVIGATOR_W + LEFT_PANEL_GAP))
                     .right_0()
                     .overflow_hidden()
+                    .when(vibrant, |upcoming| upcoming.bg(panel_bg))
                     .child(upcoming),
             )
             .child(
@@ -203,7 +210,7 @@ impl Render for KnotQApp {
                 .flex_col()
                 .w_full()
                 .h_full()
-                .bg(token_hsla(t.bg_app))
+                .when(!vibrant, |root| root.bg(token_hsla(t.bg_app)))
                 .text_color(token_hsla(t.text_primary))
                 .font_family(FONT_UI)
                 .on_mouse_move(cx.listener(|this, event: &MouseMoveEvent, _window, cx| {
@@ -329,7 +336,15 @@ impl Render for KnotQApp {
                                 t.divider_tiny
                             },
                         )))
-                        .child(main),
+                        // With no root fill, the main pane supplies its own.
+                        .child(
+                            div()
+                                .flex()
+                                .flex_1()
+                                .min_w_0()
+                                .when(vibrant, |pane| pane.bg(token_hsla(t.bg_app)))
+                                .child(main),
+                        ),
                 );
 
         if let Some(popover) = self.render_date_popover(window, cx) {
@@ -418,6 +433,19 @@ fn titlebar_options() -> TitlebarOptions {
             appears_transparent: false,
             traffic_light_position: None,
         }
+    }
+}
+
+/// The vibrant sidebar draft asks the window for a blurred backdrop. On macOS
+/// GPUI implements that natively — it hangs a real `NSVisualEffectView` behind
+/// the content view — so this is the platform blur, not something drawn in the
+/// app. Only the sidebar leaves its fill translucent, so that is the only place
+/// it shows.
+fn window_background_appearance() -> WindowBackgroundAppearance {
+    if knotq_sidebar::window_vibrancy_available() {
+        WindowBackgroundAppearance::Blurred
+    } else {
+        WindowBackgroundAppearance::Opaque
     }
 }
 
@@ -592,6 +620,7 @@ fn main() {
                 window_bounds: Some(WindowBounds::Windowed(initial_bounds)),
                 window_min_size: Some(gpui::size(px(MIN_WINDOW_WIDTH), px(MIN_WINDOW_HEIGHT))),
                 window_decorations: window_decorations(),
+                window_background: window_background_appearance(),
                 ..Default::default()
             };
 

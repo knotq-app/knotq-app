@@ -2,7 +2,7 @@ use super::*;
 
 pub(super) fn special_row(
     label: &'static str,
-    square_color: u32,
+    mark: RowMark,
     selected: bool,
     t: Theme,
     context_menu_open: bool,
@@ -19,12 +19,14 @@ pub(super) fn special_row(
         .pr(px(4.0))
         .rounded(px(3.0))
         .cursor_pointer()
-        .when(selected, move |s| s.bg(token_rgba(t.row_selected)))
+        .when(selected, move |s| s.bg(row_selected_fill(t)))
         .when(!selected && !context_menu_open, move |s| {
-            s.hover(move |h| h.bg(token_rgba(t.row_hover)))
+            s.hover(move |h| h.bg(row_hover_fill(t)))
         })
         .on_click(on_click)
-        .child(nav_icon_slot(
+        .child(nav_icon_slot(if is_vibrant() {
+            glyph(mark.icon, mark.tint)
+        } else {
             div()
                 .relative()
                 .left(px(1.0))
@@ -32,9 +34,9 @@ pub(super) fn special_row(
                 .h(px(SCHEME_SQUARE_SIZE))
                 .rounded(px(2.0))
                 .flex_shrink_0()
-                .bg(token_rgba(square_color))
-                .into_any_element(),
-        ))
+                .bg(token_rgba(mark.square))
+                .into_any_element()
+        }))
         .child(
             div()
                 .flex_1()
@@ -47,6 +49,34 @@ pub(super) fn special_row(
                 .text_color(token_hsla(t.text_primary))
                 .child(label),
         )
+}
+
+/// The two fills every row shares, so one call site decides how hard a row
+/// reads and both looks stay in step.
+pub(super) fn row_selected_fill(t: Theme) -> gpui::Rgba {
+    if is_vibrant() {
+        selected_fill(t)
+    } else {
+        token_rgba(t.row_selected)
+    }
+}
+
+pub(super) fn row_hover_fill(t: Theme) -> gpui::Rgba {
+    if is_vibrant() {
+        hover_fill(t)
+    } else {
+        token_rgba(t.row_hover)
+    }
+}
+
+/// A folder's leading mark: Finder's solid accent folder in the vibrant look,
+/// the open/closed outline pair in the classic one.
+pub(super) fn folder_mark(expanded: bool, t: Theme) -> gpui::AnyElement {
+    if is_vibrant() {
+        folder_glyph(t)
+    } else {
+        zed_folder_icon(expanded, t).into_any_element()
+    }
 }
 
 pub(super) fn zed_folder_icon(expanded: bool, t: Theme) -> Icon {

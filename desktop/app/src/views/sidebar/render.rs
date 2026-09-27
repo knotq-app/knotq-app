@@ -22,7 +22,9 @@ impl KnotQApp {
             .pt(px(10.0))
             .px(px(8.0))
             .pb(px(8.0))
-            .bg(token_hsla(t.bg_sidebar))
+            // The one structural difference in the vibrant look: the card's
+            // fill goes translucent so the window's blur reads through it.
+            .bg(sidebar_surface(t))
             .border_1()
             .border_color(token_rgba(t.border_overlay))
             .rounded(px(13.0))
@@ -47,10 +49,14 @@ impl KnotQApp {
                     .mb(px(6.0))
                     .child(special_row(
                         knotq_l10n::t("sidebar.calendar_label"),
-                        if t.is_dark {
-                            0xffffffff
-                        } else {
-                            t.text_primary
+                        RowMark {
+                            icon: CALENDAR_FILL_ICON,
+                            square: if t.is_dark {
+                                0xffffffff
+                            } else {
+                                t.text_primary
+                            },
+                            tint: accent(t),
                         },
                         is_union,
                         t,
@@ -63,7 +69,11 @@ impl KnotQApp {
                     ))
                     .child(special_row(
                         DAILY_QUEUE_TITLE,
-                        daily_queue_marker_color(t.is_dark),
+                        RowMark {
+                            icon: CHECKLIST_FILL_ICON,
+                            square: daily_queue_marker_color(t.is_dark),
+                            tint: accent(t),
+                        },
                         is_daily_queue,
                         t,
                         context_menu_open,

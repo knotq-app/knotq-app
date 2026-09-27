@@ -57,10 +57,15 @@ mod context_menu;
 mod drag;
 mod render;
 mod rows;
+mod style;
 mod trash;
 mod tree;
+mod vibrant;
 
 use self::components::*;
 use self::drag::*;
+use self::style::is_vibrant;
 pub(crate) use self::tree::SidebarNavigatorCache;
+pub(crate) use self::vibrant::window_vibrancy_available;
+use self::vibrant::*;
 use crate::views::FOLDER_ICON_SIZE;

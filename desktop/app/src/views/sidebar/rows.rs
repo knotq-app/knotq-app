@@ -68,7 +68,7 @@ impl KnotQApp {
             .border_1()
             .border_color(token_rgba(0x00000000))
             .when(!context_menu_open, move |s| {
-                s.hover(move |h| h.bg(token_rgba(t.row_hover)))
+                s.hover(move |h| h.bg(row_hover_fill(t)))
             })
             .drag_over::<NavigatorDragInfo>(move |s, drag, _w, _cx| {
                 if navigator_drop_target_accepts(drag, folder_id, folder_drop_position) {
@@ -113,9 +113,7 @@ impl KnotQApp {
                     .items_center()
                     .when(has_rename_error, |s| s.items_start())
                     .gap(px(NAV_ICON_GAP))
-                    .child(nav_icon_slot(
-                        zed_folder_icon(folder_expanded, t).into_any_element(),
-                    ));
+                    .child(nav_icon_slot(folder_mark(folder_expanded, t)));
                 if let Some((input, error)) = rename {
                     base.child(inline_rename_input(input, error, t))
                         .into_any_element()
@@ -232,9 +230,9 @@ impl KnotQApp {
                     0x00000000
                 }))
                 .cursor_pointer()
-                .when(is_sel, move |s| s.bg(token_rgba(t.row_selected)))
+                .when(is_sel, move |s| s.bg(row_selected_fill(t)))
                 .when(!is_sel && !context_menu_open, move |s| {
-                    s.hover(move |h| h.bg(token_rgba(t.row_hover)))
+                    s.hover(move |h| h.bg(row_hover_fill(t)))
                 })
                 .drag_over::<NavigatorDragInfo>(move |s, _drag, _w, _cx| s)
                 .can_drop(move |dragged, _w, _cx| {
@@ -272,14 +270,16 @@ impl KnotQApp {
                         .items_center()
                         .when(has_rename_error, |s| s.items_start())
                         .gap(px(NAV_ICON_GAP))
-                        .child(nav_icon_slot(
+                        .child(nav_icon_slot(if is_vibrant() {
+                            scheme_glyph(square)
+                        } else {
                             div()
                                 .w(px(SCHEME_SQUARE_SIZE))
                                 .h(px(SCHEME_SQUARE_SIZE))
                                 .rounded(px(2.0))
                                 .bg(square)
-                                .into_any_element(),
-                        ));
+                                .into_any_element()
+                        }));
                     if let Some((input, error)) = rename {
                         base.child(inline_rename_input(input, error, t))
                             .into_any_element()
