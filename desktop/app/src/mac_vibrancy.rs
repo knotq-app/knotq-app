@@ -18,6 +18,30 @@ use objc::{class, msg_send, sel, sel_impl};
 
 type Id = *mut Object;
 
+// The window server's own backdrop blur. `NSVisualEffectView` gives no control
+// over its blur radius — each material has the one Apple chose — so this is the
+// only lever for "blur it more", and it is a private API. Apple ships it in
+// Terminal.app and GPUI already links it for the macOS 11 path, but it is
+// undocumented, it can change, and it would not survive Mac App Store review.
+// It is therefore opt-out: `KNOTQ_SIDEBAR_BLUR=0` turns it off and leaves only
+// the public material.
+#[link(name = "CoreGraphics", kind = "framework")]
+unsafe extern "C" {
+    fn CGSMainConnectionID() -> Id;
+    fn CGSSetWindowBackgroundBlurRadius(connection_id: Id, window_id: i64, radius: i64) -> i32;
+}
+
+/// Extra blur radius applied to the window's backdrop, on top of the material.
+const DEFAULT_BLUR_RADIUS: i64 = 36;
+
+fn blur_radius() -> i64 {
+    std::env::var("KNOTQ_SIDEBAR_BLUR")
+        .ok()
+        .and_then(|value| value.trim().parse::<i64>().ok())
+        .unwrap_or(DEFAULT_BLUR_RADIUS)
+        .clamp(0, 200)
+}
+
 /// `NSVisualEffectMaterial` values. `Sidebar` is what Finder, Mail and Notes
 /// use and is the reason this module exists; the others are here because how
 /// see-through a sidebar should be is a judgement call, and swapping the
@@ -115,6 +139,14 @@ unsafe fn install_in_window(window: Id) {
         positioned: NS_WINDOW_BELOW
         relativeTo: std::ptr::null_mut::<Object>()
     ];
+
+    // The material frosts most of the backdrop; this blurs whatever still
+    // reads through it, which is what "more blur" actually means here.
+    let radius = blur_radius();
+    if radius > 0 {
+        let window_number: i64 = msg_send![window, windowNumber];
+        CGSSetWindowBackgroundBlurRadius(CGSMainConnectionID(), window_number, radius);
+    }
 }
 
 /// Point the effect view's material at KnotQ's theme rather than the system's.
@@ -211,6 +243,28 @@ unsafe fn first_effect_subview(content_view: Id) -> Option<Id> {
         }
     }
     None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_blur_radius_is_always_one_the_window_server_will_take() {
+        for value in ["", "lots", "-5", "99999", "0", "48"] {
+            // SAFETY: single-threaded test, and nothing else reads this while
+            // it runs.
+            unsafe { std::env::set_var("KNOTQ_SIDEBAR_BLUR", value) };
+            let radius = blur_radius();
+            assert!((0..=200).contains(&radius), "{value:?} gave {radius}");
+        }
+        // Explicit zero must mean off, not "fall back to the default" — it is
+        // the only way to drop the private API.
+        unsafe { std::env::set_var("KNOTQ_SIDEBAR_BLUR", "0") };
+        assert_eq!(blur_radius(), 0);
+        unsafe { std::env::remove_var("KNOTQ_SIDEBAR_BLUR") };
+        assert_eq!(blur_radius(), DEFAULT_BLUR_RADIUS);
+    }
 }
 
 /// `NSRect`, which `objc` does not define for us.

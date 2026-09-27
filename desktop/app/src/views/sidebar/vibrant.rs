@@ -15,7 +15,7 @@ use gpui::Hsla;
 /// This is the balance point — enough of `bg_sidebar` to carry the hue, little
 /// enough that the blur behind it still reads. `KNOTQ_SIDEBAR_TINT` overrides
 /// it with a 0..1 alpha, since where that balance sits is a matter of taste.
-const DEFAULT_VIBRANCY_TINT_ALPHA: f32 = 0.34;
+const DEFAULT_VIBRANCY_TINT_ALPHA: f32 = 0.29;
 
 fn vibrancy_tint_alpha() -> f32 {
     std::env::var("KNOTQ_SIDEBAR_TINT")
