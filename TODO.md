@@ -755,6 +755,41 @@ otherwise steps over. Note that two of the three diverged fields — `70db3d43�
 name and colour — are touched by no reassertion at all, which is what a trajectory
 effect would look like.
 
+**Where the divergence actually lives, measured at the field level.** Device 3 is
+the stale side, and the reassertions both run on device 0, so they cannot be what
+makes device 3 stale. Instrumenting the per-field merge in `workspace_index.rs`
+for `70db3d43…` and correlating each reading with the step log:
+
+- Immediately after device 3's last sync, its own `node_fields` still hold
+  `("color_index", "9")`, `("name", "scheme 2379")` and `("position", …)` from
+  creation, while the account's readings hold `16`, `"renamed 4275"` and
+  `position 5`. Both sides are `field_schema=Some(1)`, so the legacy-payload
+  escape hatch is not involved.
+- Device 3 created that scheme at step 37, before its own first sync at step 57.
+  Devices 2 and 1 changed the colour at step 71 and the name at step 137.
+- Device 3 ends with an empty pending queue, so those creation-time writes are
+  writes to the same Yjs map keys that the account never received and that win
+  locally. Not a read-side shadow: an unpublished write.
+
+**Two more hypotheses ruled out.** Neither of these is the cause:
+
+- *Not* `field_schema` being absent on device 3's entry — it is `Some(1)` on both
+  sides, so the "older build wrote this, keep its payload" branch never fires.
+- *Not* the population base being lost by the relaunch device 3 performs at step
+  41, before its first sync. That looked compelling — every capture site is gated
+  on `workspace_document_is_unpopulated()`, so a relaunch after the first save
+  cannot re-capture, and `reidentify_workspace_document`'s own comment says it
+  "only rebinds the document without touching the wrong-hashed population
+  inside". But instrumenting `workspace_population_base` shows it is
+  `base_present=true` at **every** canonicalization in the run, device 3's
+  included. The repopulate branch is being taken, not the plain re-key.
+
+So the question narrows to: device 3 reaches `repopulate_workspace_canonically`
+with a base, and still ends up holding index-field writes the account never sees.
+That is the machinery TODO 1 describes, failing with all its inputs apparently
+present — which is a different and more specific starting point than "the three
+population call sites must agree".
+
 **One fix tried and rejected:** capturing the scheme edits *after*
 `clear_pushed_edits` rather than before, so only unpushed operations are
 reasserted. 10175 still fails — which also rules out the "already acknowledged,
