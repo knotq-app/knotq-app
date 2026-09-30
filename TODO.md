@@ -784,11 +784,49 @@ for `70db3d43…` and correlating each reading with the step log:
   `base_present=true` at **every** canonicalization in the run, device 3's
   included. The repopulate branch is being taken, not the plain re-key.
 
-So the question narrows to: device 3 reaches `repopulate_workspace_canonically`
-with a base, and still ends up holding index-field writes the account never sees.
-That is the machinery TODO 1 describes, failing with all its inputs apparently
-present — which is a different and more specific starting point than "the three
-population call sites must agree".
+**Root cause, measured.** `repopulate_workspace_canonically` rebuilds the document,
+and whether that rebuild ever reaches the account depends *only* on
+`index_changed` — the comment beside it says why: there is no "before" left inside
+the freshly built document, so the incremental flush finds no delta and the
+explicit full-snapshot queue is the only publication path.
+
+`index_changed` is `workspace_document_differs(&canonical_base, &workspace)` —
+whether this device edited **on top of its own pre-sync base**. Content that was
+already in the base, such as a scheme the device created before its first sync,
+makes it `false`. Instrumenting the queue at device 3's canonicalization (step
+195) prints `index_changed=false full_updates=1 -> NOT PUBLISHED`: a usable
+snapshot is discarded. Device 3's `node_fields` writes then stay local forever,
+win against the account's later values on that device alone, and leave an empty
+pending queue, so no wedge or projection check can see it.
+
+**The obvious fix is wrong, measured at release depth.** Publishing whenever the
+repopulated document has state (dropping the `index_changed` gate) makes 10175
+pass and **breaks two other seeds**: chaos 148 with three violations, and
+single-account 10192. Like-for-like on the same machine, same command, same
+depth:
+
+| | 300 x 200, `production_fuzz` |
+|---|---|
+| unmodified | 30 passed, 1 failed (10175 only) |
+| publish always | 29 passed, 2 failed (148, 10192) |
+
+That local baseline matters: it is identical to CI's, which is worth knowing given
+10175 itself fails on macOS at the v0.57.0 tag while CI's Linux run passed it. The
+comparison here is macOS against macOS.
+
+Why it breaks them is presumably the thing `index_changed` was guarding — a device
+that has not seen the account's deletions publishing a full snapshot can
+reintroduce what the account dropped, which is the shape of `0a`. So the two
+comments in that function are not simply contradictory: a full snapshot does merge
+rather than replace, and merging is exactly how deleted content comes back.
+
+**Next approach, untried:** the mirror image. When `index_changed == false` there
+is no local index edit worth keeping, so instead of repopulating from this
+device's base — which is what leaves the unpublishable writes — adopt the
+account's document wholesale for the index. Bypassing the merge path entirely
+(forcing `replace_workspace_from_sync_result`) already makes 10175 pass, which is
+the same effect reached with a blunter instrument, so the direction has some
+support. It is resurrection-safe by construction, because nothing local is sent.
 
 **One fix tried and rejected:** capturing the scheme edits *after*
 `clear_pushed_edits` rather than before, so only unpushed operations are
