@@ -828,6 +828,34 @@ account's document wholesale for the index. Bypassing the merge path entirely
 the same effect reached with a blunter instrument, so the direction has some
 support. It is resurrection-safe by construction, because nothing local is sent.
 
+**...and that next approach is wrong too, by inspection.** `index_changed == false`
+does not mean "this device has nothing the account needs". It means "this device
+made no edit *on top of* its base" — and the base itself can be the offline
+content that has to reach the account. A fresh install that created schemes before
+its first sync has `index_changed == false` and still must publish. Adopting the
+account's index wholesale there would drop exactly what these currently-passing
+scenarios exist to protect: `new_install_with_offline_edits_joins_the_account`,
+`join_variant_empty_workspace_with_offline_edits`,
+`join_variant_starter_already_on_the_account_identity_with_offline_edits` and
+`starter_lines_edited_before_the_first_sync_join_the_account_once`. Do not run it
+expecting a green sweep.
+
+What separates 10175 from those cases is not a document-level property at all. In
+10175 the account **already holds the node entry**, with newer field values, and
+the device's writes are stale duplicates of keys the account has moved on from. In
+the join variants the account holds nothing for those entries. So the decision is
+per key, not per document: publish the device's index writes for entries the
+account does not have, and let the account win for entries it does.
+
+That is what the `node_fields` per-field merge would already do if the device's
+pre-canonical writes were *comparable* to the account's — they are not, because
+they were authored under an identity the account never saw, so they are concurrent
+and win locally by clientID. Which lands back on TODO 1's deterministic population
+identity: the repopulation has to be authored so that it loses to the account's
+real writes on any key the account already holds. That is the fix that has been
+attempted twice and reverted twice, and the measurements above are the sharpest
+statement so far of *why* it is needed — not a new, smaller alternative to it.
+
 **One fix tried and rejected:** capturing the scheme edits *after*
 `clear_pushed_edits` rather than before, so only unpushed operations are
 reasserted. 10175 still fails — which also rules out the "already acknowledged,
