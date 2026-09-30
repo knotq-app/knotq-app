@@ -856,6 +856,27 @@ real writes on any key the account already holds. That is the fix that has been
 attempted twice and reverted twice, and the measurements above are the sharpest
 statement so far of *why* it is needed — not a new, smaller alternative to it.
 
+**Per-key filtering does not rescue it either, and the reason names what is
+missing.** The tempting narrow version is: when repopulating, omit the keys the
+account's incoming state already holds, so the account wins there, and publish only
+the keys it lacks. Two dead ends:
+
+- Moving the *publish gate* to "does this device hold index content the account
+  lacks" (comparing against `sync_workspace` instead of `canonical_base`) makes
+  `index_changed` true for any device that has not yet merged the account, which is
+  publish-always — already measured above as 29/2.
+- Filtering inside `repopulate_canonically` instead loses real work. A device that
+  renamed an *existing* account scheme while offline, before its first sync, has
+  written a key the account also holds; dropping it to let the account win discards
+  that rename. Content loss, not divergence.
+
+Separating those two cases needs per-field provenance — "did this device *change*
+this field offline" versus "did it merely carry the field out of its own
+population" — and a pre-sync device records nothing of the kind. Which is exactly
+the gap a deterministic, content-derived population identity closes: it makes the
+population itself recognisable, so a real edit on top of it is distinguishable from
+the population's own writes. There is no shortcut around that property.
+
 **One fix tried and rejected:** capturing the scheme edits *after*
 `clear_pushed_edits` rather than before, so only unpushed operations are
 reasserted. 10175 still fails — which also rules out the "already acknowledged,
