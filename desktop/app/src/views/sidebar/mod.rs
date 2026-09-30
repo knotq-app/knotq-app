@@ -69,6 +69,6 @@ pub(crate) use self::style::{
     effective_width, full_height_column, resizable, resized_width, RESIZE_HANDLE_WIDTH,
 };
 pub(crate) use self::tree::SidebarNavigatorCache;
-pub(crate) use self::vibrant::window_vibrancy_available;
 use self::vibrant::*;
+pub(crate) use self::vibrant::{note_window_vibrancy_failed, window_vibrancy_available};
 use crate::views::FOLDER_ICON_SIZE;

@@ -709,20 +709,38 @@ fn main() {
             };
 
             crate::notifications::configure_notification_handling();
-            cx.open_window(opts, |window, cx| {
-                let app = cx.new(KnotQApp::new);
-                window.on_window_should_close(cx, move |_window, cx| {
-                    cx.quit();
-                    true
-                });
-                app.update(cx, |app, _cx| app.focus_app_root(window));
-                cx.new(|cx| Root::new(app, window, cx))
-            })
-            .unwrap();
+            let window_handle = cx
+                .open_window(opts, |window, cx| {
+                    let app = cx.new(KnotQApp::new);
+                    window.on_window_should_close(cx, move |_window, cx| {
+                        cx.quit();
+                        true
+                    });
+                    app.update(cx, |app, _cx| app.focus_app_root(window));
+                    cx.new(|cx| Root::new(app, window, cx))
+                })
+                .unwrap();
 
             #[cfg(target_os = "macos")]
-            if knotq_sidebar::window_vibrancy_available() {
-                crate::mac_vibrancy::install_sidebar_vibrancy();
+            if knotq_sidebar::window_vibrancy_available()
+                && !crate::mac_vibrancy::install_sidebar_vibrancy()
+            {
+                // The window is already transparent by now — that was decided
+                // in `window_background_appearance` before this could run,
+                // because GPUI paints the first frame during `open_window`. With
+                // no effect view behind it the user would be looking through the
+                // app at their desktop, so put the window back and fall the
+                // sidebar down to the classic look. Both the root fill and the
+                // full-height layout follow `window_vibrancy_available`, so the
+                // next render corrects itself.
+                eprintln!(
+                    "knotq: could not install the sidebar's vibrancy effect; \
+                     using the classic sidebar for this session"
+                );
+                knotq_sidebar::note_window_vibrancy_failed();
+                let _ = window_handle.update(cx, |_root, window, _cx| {
+                    window.set_background_appearance(WindowBackgroundAppearance::Opaque);
+                });
             }
 
             cx.on_window_closed(|cx| {
