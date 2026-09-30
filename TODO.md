@@ -720,6 +720,45 @@ source, and root-child ordering. It fails identically on `7820f3a`, so it too
 predates v0.57.0 — the note was wrong, not the code. Measuring the baseline
 instead of trusting the sentence about it is the recurring lesson here.
 
+**Root cause found 2026-09-30: `reassert_local_scheme_edits` publishes nothing.**
+Measured, not inferred — the seed replays in about three seconds, so each of these
+is a direct observation:
+
+- Disabling `reassert_local_scheme_edits` alone makes 10175 **pass**. Nothing
+  else changed.
+- Exactly two scheme reassertions happen in the whole run, both on **device 0**:
+  `SetSchemeGsync { 2b1646c2…, on: true }` during an in-flight landing at step
+  100, and `SetSchemeGsync { ba929b98…, on: false }` at step 200. The first is one
+  of the diverged fields — `2b1646c2…`'s `SchemeSource` reads
+  `[{"kind":"local"},true]` on device 0 against `false` on device 3.
+- **Both reassertions add zero pending CRDT edits.** Summing `crdt_updates` over
+  every pending operation immediately before and after each one gives a delta of
+  0. The local CRDT document already held the value being reasserted, so the
+  landing had changed only the *plain* workspace.
+
+So the reassert makes the plain workspace agree with this device's own stale
+document rather than with the account, and queues nothing to publish that
+decision. Device 0 keeps `true` in its document and its view, the account and
+device 3 keep `false`, device 0's pending queue is empty, and no later pull
+disturbs any of it — a silent permanent divergence with no wedge to notice it by.
+The per-step projection check never fires precisely because the view and the
+document *do* agree; it is the account they disagree with.
+
+**One fix tried and rejected:** capturing the scheme edits *after*
+`clear_pushed_edits` rather than before, so only unpushed operations are
+reasserted. 10175 still fails — which also rules out the "already acknowledged,
+account resolved otherwise" reading, because the operation driving the reassert
+is genuinely unpushed.
+
+That leaves the real question: when a device's own document holds a field value
+the account resolved against, what is supposed to bring the account's value into
+that document? The reassert sits downstream of that gap rather than causing it,
+and `adopt_sync_workspace`'s merge path is where to look. Do not "fix" this by
+making the reassert write harder — publishing an unpublished local decision would
+drag the account onto a value the CRDT had already resolved away, which is the
+second-conflict-resolver mistake recorded elsewhere in this file.
+
+
 ### 10209 and 10350: fixed 2026-09-24 — a scheme held two rows with one id
 
 An `items_by_id` map has one entry per id, so a scheme whose plain copy holds an
