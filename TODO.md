@@ -731,18 +731,29 @@ is a direct observation:
   100, and `SetSchemeGsync { ba929b98…, on: false }` at step 200. The first is one
   of the diverged fields — `2b1646c2…`'s `SchemeSource` reads
   `[{"kind":"local"},true]` on device 0 against `false` on device 3.
-- **Both reassertions add zero pending CRDT edits.** Summing `crdt_updates` over
-  every pending operation immediately before and after each one gives a delta of
-  0. The local CRDT document already held the value being reasserted, so the
-  landing had changed only the *plain* workspace.
+- Bypassing the landing's merge path — forcing `adopt_sync_workspace` to take
+  `replace_workspace_from_sync_result` even when local edits happened in the
+  in-flight window — **also makes 10175 pass**. So the merge preserving a local
+  index-field value is part of the same story.
+- The run reports **no projection divergence at all**, so device 0's view and its
+  own documents agree throughout. It is the *account* they end up disagreeing
+  with: device 0 settles on `true`, the account and device 3 on `false`, and no
+  device is left wedged.
 
-So the reassert makes the plain workspace agree with this device's own stale
-document rather than with the account, and queues nothing to publish that
-decision. Device 0 keeps `true` in its document and its view, the account and
-device 3 keep `false`, device 0's pending queue is empty, and no later pull
-disturbs any of it — a silent permanent divergence with no wedge to notice it by.
-The per-step projection check never fires precisely because the view and the
-document *do* agree; it is the account they disagree with.
+**A wrong turn worth recording, so nobody repeats it.** The first reading here
+was that the reassert "publishes nothing": summing `crdt_updates` across pending
+operations gives a delta of 0 across both reassertions. That is a measurement
+artifact — the store defers CRDT encoding, so `crdt_updates` is empty until a
+flush. `unsynced_edit_count`, which counts deferred work, goes 1→2 and 0→1 across
+the same two calls. The reassert's decision *is* queued for push.
+
+Which means causation is still open. Both switches above change the outcome, but
+neither has been shown to be the thing that is *wrong*, and "disabling X makes the
+seed pass" is exactly the evidence that misled the 48/238 write-up below: a change
+can perturb the trajectory enough for the oracle to observe a transition it
+otherwise steps over. Note that two of the three diverged fields — `70db3d43…`'s
+name and colour — are touched by no reassertion at all, which is what a trajectory
+effect would look like.
 
 **One fix tried and rejected:** capturing the scheme edits *after*
 `clear_pushed_edits` rather than before, so only unpushed operations are
