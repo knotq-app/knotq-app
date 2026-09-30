@@ -1,12 +1,15 @@
 //! Which sidebar look to draw.
 //!
-//! `Classic` is the shipping sidebar. `Vibrant` is the macOS draft: the *same*
-//! sidebar — same width, same rows, same indents, same place — but the window
-//! carries a real `NSVisualEffectView` behind it, the sidebar's fill turns
-//! translucent so that blur shows through, and each row leads with a filled
-//! glyph in the system accent instead of a flat color square.
+//! `Vibrant` is the sidebar on macOS: the *same* sidebar — same rows, same
+//! indents, same marks, same place — but the window carries a real
+//! `NSVisualEffectView` behind it and the sidebar's fill turns translucent so
+//! that blur shows through. `Classic` is the sidebar everywhere else, and the
+//! opt-out on macOS for anyone whose machine does not render the effect well.
 //!
-//! Nothing about the geometry differs between the two, on purpose.
+//! The row *contents* are identical between the two, on purpose. What differs
+//! is the frame around them: a vibrant sidebar owns the window's whole left
+//! edge, title-bar band included, because the blur is a property of the window
+//! (see `full_height_column`).
 
 use std::sync::OnceLock;
 
@@ -19,12 +22,18 @@ pub(crate) enum SidebarStyle {
 /// Read once: the look is chosen at launch and never changes for the process,
 /// so the row renderers can treat it as a constant.
 ///
-/// macOS only, and refused rather than half-applied elsewhere. The whole point
-/// of the look is the window's vibrancy, which is an `NSVisualEffectView`;
-/// without it the rest — a chromeless full-height column that runs under the
-/// title bar and owns the traffic-light corner — is a layout built around an
-/// effect that is not there, on platforms whose window decorations do not work
-/// that way.
+/// Vibrant is the default on macOS and unavailable everywhere else — refused
+/// rather than half-applied. The whole point of the look is the window's
+/// vibrancy, which is an `NSVisualEffectView`; without it the rest — a
+/// chromeless full-height column that runs under the title bar and owns the
+/// traffic-light corner — is a layout built around an effect that is not there,
+/// on platforms whose window decorations do not work that way.
+///
+/// `KNOTQ_SIDEBAR_STYLE=classic` opts back out. That escape hatch is the reason
+/// this reads the environment at all now that vibrant is the default: someone
+/// whose machine renders the material badly needs a way back that is not
+/// "install the previous version". An unrecognised value is ignored rather than
+/// treated as an opt-out, so a typo does not silently hand back the old look.
 pub(crate) fn sidebar_style() -> SidebarStyle {
     static STYLE: OnceLock<SidebarStyle> = OnceLock::new();
     *STYLE.get_or_init(|| {
@@ -32,14 +41,14 @@ pub(crate) fn sidebar_style() -> SidebarStyle {
             return SidebarStyle::Classic;
         }
         match std::env::var("KNOTQ_SIDEBAR_STYLE") {
-            // `apple` is the name this draft was asked for; keep it as an
-            // alias.
             Ok(value)
-                if value.eq_ignore_ascii_case("vibrant") || value.eq_ignore_ascii_case("apple") =>
+                if value.eq_ignore_ascii_case("classic")
+                    || value.eq_ignore_ascii_case("plain")
+                    || value.eq_ignore_ascii_case("legacy") =>
             {
-                SidebarStyle::Vibrant
+                SidebarStyle::Classic
             }
-            _ => SidebarStyle::Classic,
+            _ => SidebarStyle::Vibrant,
         }
     })
 }
@@ -53,8 +62,12 @@ pub(crate) fn is_vibrant() -> bool {
 /// the blur is a property of the *window*, so a sidebar that stops below the
 /// title bar leaves an opaque strip across the top of it, and a sidebar inset
 /// as a card draws a lit border right through the middle of the effect.
+///
+/// Keyed off the *effective* vibrancy, not `is_vibrant()`: if the effect view
+/// failed to install there is no blur to run under the title bar, so the layout
+/// reverts with the fill rather than leaving a chromeless column over nothing.
 pub(crate) fn full_height_column() -> bool {
-    is_vibrant()
+    super::vibrant::window_vibrancy_available()
 }
 
 /// Height of the band above the first row. A full-height sidebar runs
@@ -197,14 +210,16 @@ mod tests {
     }
 
     #[test]
-    fn only_an_explicit_opt_in_on_macos_selects_the_draft() {
-        // The default build must be untouched: an unset or unrecognized value
-        // is the shipping sidebar, not a half-applied draft. And off macOS the
-        // opt-in does nothing at all, because the effect it is built around
-        // does not exist there.
-        let opted_in = std::env::var("KNOTQ_SIDEBAR_STYLE")
-            .is_ok_and(|v| v.eq_ignore_ascii_case("vibrant") || v.eq_ignore_ascii_case("apple"));
-        let expected = if opted_in && cfg!(target_os = "macos") {
+    fn macos_gets_the_vibrant_sidebar_unless_it_opts_out() {
+        // Vibrant is the macOS default; `classic` is the way back. Off macOS the
+        // look is unavailable whatever the environment says, because the effect
+        // it is built around does not exist there.
+        let opted_out = std::env::var("KNOTQ_SIDEBAR_STYLE").is_ok_and(|v| {
+            v.eq_ignore_ascii_case("classic")
+                || v.eq_ignore_ascii_case("plain")
+                || v.eq_ignore_ascii_case("legacy")
+        });
+        let expected = if cfg!(target_os = "macos") && !opted_out {
             SidebarStyle::Vibrant
         } else {
             SidebarStyle::Classic
@@ -213,6 +228,22 @@ mod tests {
         if !cfg!(target_os = "macos") {
             assert!(!full_height_column());
             assert!(!resizable());
+        }
+    }
+
+    #[test]
+    fn a_typo_does_not_hand_back_the_old_sidebar() {
+        // An unrecognized value must not read as an opt-out: that would make
+        // `KNOTQ_SIDEBAR_STYLE=clasic` silently ship the look we replaced, and
+        // the person who set it would never know why nothing changed. Only the
+        // three spellings the opt-out documents count.
+        for value in ["", "vibrant", "apple", "clasic", "off", "0", "true"] {
+            assert!(
+                !(value.eq_ignore_ascii_case("classic")
+                    || value.eq_ignore_ascii_case("plain")
+                    || value.eq_ignore_ascii_case("legacy")),
+                "{value:?} would be read as an opt-out"
+            );
         }
     }
 }

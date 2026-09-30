@@ -7,6 +7,7 @@
 
 use super::*;
 use gpui::Hsla;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 /// How much of the theme's own sidebar color is laid over the vibrancy.
 ///
@@ -26,12 +27,30 @@ fn vibrancy_tint_alpha() -> f32 {
         .unwrap_or(DEFAULT_VIBRANCY_TINT_ALPHA)
 }
 
-/// Is the window drawing a blurred backdrop behind the sidebar? True exactly
-/// when the vibrant look is active, which `sidebar_style` already restricts to
-/// macOS — the effect is an `NSVisualEffectView` and has no equivalent
-/// elsewhere.
+/// Set to false if installing the `NSVisualEffectView` did not take.
+///
+/// This exists because the vibrant look makes the *window* transparent and
+/// leaves the blur to AppKit. Under an opt-in that trade was safe: if the effect
+/// view were missing you had asked for the experiment. As the macOS default it
+/// is not — a failed install would leave every user looking straight through
+/// the app at their desktop. So the transparency is conditional on the effect
+/// actually being there, and this is how the installer says it is not.
+static VIBRANCY_ACTIVE: AtomicBool = AtomicBool::new(true);
+
+/// Called by `mac_vibrancy` when no window got an effect view. Reverts the
+/// window, the sidebar fill *and* the full-height layout to the classic look,
+/// since that layout is built around an effect that is not there.
+#[cfg(target_os = "macos")]
+pub(crate) fn note_window_vibrancy_failed() {
+    VIBRANCY_ACTIVE.store(false, Ordering::Relaxed);
+}
+
+/// Is the window drawing a blurred backdrop behind the sidebar? True when the
+/// vibrant look is active — which `sidebar_style` restricts to macOS, the
+/// effect being an `NSVisualEffectView` with no equivalent elsewhere — and the
+/// effect view actually installed.
 pub(crate) fn window_vibrancy_available() -> bool {
-    is_vibrant()
+    is_vibrant() && VIBRANCY_ACTIVE.load(Ordering::Relaxed)
 }
 
 /// The sidebar card's fill. Over vibrancy this is a tint, not a background: the

@@ -61,49 +61,65 @@ const NS_VIEW_HEIGHT_SIZABLE: u64 = 16;
 /// `NSWindowBelow`, so the effect view sits under GPUI's rendering layer.
 const NS_WINDOW_BELOW: i64 = -1;
 
-/// Install the effect view behind every window the app currently has.
+/// Install the effect view behind every window the app currently has, and
+/// report whether any window ended up with one.
 ///
-/// Called once after the window opens. It is a no-op if it cannot find a window
-/// or already installed one, so a second call is harmless and a failure costs
-/// nothing but the blur.
-pub fn install_sidebar_vibrancy() {
+/// Called once after the window opens. A second call is harmless: a window that
+/// already has an effect view is left alone and still counts as installed.
+///
+/// The caller needs the return value, not a best effort. A failure used to cost
+/// nothing but the blur, back when the look was opt-in; now that it is the macOS
+/// default it costs the whole window, because the vibrant look has already made
+/// that window transparent by the time this runs — so "no effect view" means
+/// "see-through app", and the only safe response is to put the window back.
+///
+/// Every early return below is a shape AppKit should never hand us for an open
+/// window. Reporting them is what turns a future break into a diagnosable
+/// fallback rather than an invisible window.
+#[must_use]
+pub fn install_sidebar_vibrancy() -> bool {
     unsafe {
         let app: Id = msg_send![class!(NSApplication), sharedApplication];
         if app.is_null() {
-            return;
+            return false;
         }
         let windows: Id = msg_send![app, windows];
         if windows.is_null() {
-            return;
+            return false;
         }
         let count: usize = msg_send![windows, count];
+        let mut installed_in_any = false;
         for index in 0..count {
             let window: Id = msg_send![windows, objectAtIndex: index];
             if window.is_null() {
                 continue;
             }
-            install_in_window(window);
+            installed_in_any |= install_in_window(window);
         }
+        installed_in_any
     }
 }
 
-unsafe fn install_in_window(window: Id) {
+/// Returns whether the window has an effect view when this returns.
+unsafe fn install_in_window(window: Id) -> bool {
     let content_view: Id = msg_send![window, contentView];
     if content_view.is_null() {
-        return;
+        return false;
     }
     if first_effect_subview(content_view).is_some() {
-        // GPUI's own blurred view, or a previous call's. Re-configuring it is
-        // pointless: GPUI's subclass overrides `updateLayer` to strip exactly
-        // the layers the blur needs, so it has to be replaced, not tuned.
-        return;
+        // Already vibrant, from an earlier call — nothing to do, and reporting
+        // it as installed is correct. This cannot be GPUI's own blurred view:
+        // `window_background_appearance` asks only for `Transparent`, never
+        // `Blurred`, precisely because GPUI's subclass overrides `updateLayer`
+        // to strip the layers the blur needs.
+        return true;
     }
 
     let bounds: Bounds = msg_send![content_view, bounds];
     let effect: Id = msg_send![class!(NSVisualEffectView), alloc];
     let effect: Id = msg_send![effect, initWithFrame: bounds];
     if effect.is_null() {
-        return;
+        return false;
     }
     let _: () = msg_send![effect, setMaterial: material()];
     let _: () = msg_send![effect, setBlendingMode: BLENDING_BEHIND_WINDOW];
@@ -118,6 +134,7 @@ unsafe fn install_in_window(window: Id) {
         positioned: NS_WINDOW_BELOW
         relativeTo: std::ptr::null_mut::<Object>()
     ];
+    true
 }
 
 /// Point the effect view's material at KnotQ's theme rather than the system's.

@@ -506,6 +506,38 @@ fn titlebar_options() -> TitlebarOptions {
 /// the content view — so this is the platform blur, not something drawn in the
 /// app. Only the sidebar leaves its fill translucent, so that is the only place
 /// it shows.
+/// Install the sidebar's vibrancy effect, and fall the whole look back to
+/// classic if it did not take.
+///
+/// The window is already transparent by the time this runs — that was decided in
+/// [`window_background_appearance`], because GPUI paints the first frame during
+/// `open_window`. So with no effect view behind it the user would be looking
+/// through the app at their desktop. Putting the window back is the only safe
+/// response; the sidebar fill and the full-height layout both follow
+/// `window_vibrancy_available`, so the next render corrects itself.
+#[cfg(target_os = "macos")]
+fn install_window_vibrancy_or_fall_back(handle: &gpui::WindowHandle<Root>, cx: &mut App) {
+    if !knotq_sidebar::window_vibrancy_available() {
+        return;
+    }
+    if crate::mac_vibrancy::install_sidebar_vibrancy() {
+        return;
+    }
+    eprintln!(
+        "knotq: could not install the sidebar's vibrancy effect; \
+         using the classic sidebar for this session"
+    );
+    knotq_sidebar::note_window_vibrancy_failed();
+    let _ = handle.update(cx, |_root, window, _cx| {
+        window.set_background_appearance(WindowBackgroundAppearance::Opaque);
+    });
+}
+
+/// The vibrant sidebar is macOS-only (see `sidebar::style`), so there is no
+/// effect view to install and the window was never made transparent.
+#[cfg(not(target_os = "macos"))]
+fn install_window_vibrancy_or_fall_back(_handle: &gpui::WindowHandle<Root>, _cx: &mut App) {}
+
 fn window_background_appearance() -> WindowBackgroundAppearance {
     if knotq_sidebar::window_vibrancy_available() {
         // `Transparent`, not `Blurred`: this only asks GPUI to stop painting an
@@ -709,21 +741,19 @@ fn main() {
             };
 
             crate::notifications::configure_notification_handling();
-            cx.open_window(opts, |window, cx| {
-                let app = cx.new(KnotQApp::new);
-                window.on_window_should_close(cx, move |_window, cx| {
-                    cx.quit();
-                    true
-                });
-                app.update(cx, |app, _cx| app.focus_app_root(window));
-                cx.new(|cx| Root::new(app, window, cx))
-            })
-            .unwrap();
+            let window_handle = cx
+                .open_window(opts, |window, cx| {
+                    let app = cx.new(KnotQApp::new);
+                    window.on_window_should_close(cx, move |_window, cx| {
+                        cx.quit();
+                        true
+                    });
+                    app.update(cx, |app, _cx| app.focus_app_root(window));
+                    cx.new(|cx| Root::new(app, window, cx))
+                })
+                .unwrap();
 
-            #[cfg(target_os = "macos")]
-            if knotq_sidebar::window_vibrancy_available() {
-                crate::mac_vibrancy::install_sidebar_vibrancy();
-            }
+            install_window_vibrancy_or_fall_back(&window_handle, cx);
 
             cx.on_window_closed(|cx| {
                 if should_quit_after_window_closed(cx.windows().len()) {

@@ -69,6 +69,8 @@ pub(crate) use self::style::{
     effective_width, full_height_column, resizable, resized_width, RESIZE_HANDLE_WIDTH,
 };
 pub(crate) use self::tree::SidebarNavigatorCache;
+#[cfg(target_os = "macos")]
+pub(crate) use self::vibrant::note_window_vibrancy_failed;
 pub(crate) use self::vibrant::window_vibrancy_available;
 use self::vibrant::*;
 use crate::views::FOLDER_ICON_SIZE;
