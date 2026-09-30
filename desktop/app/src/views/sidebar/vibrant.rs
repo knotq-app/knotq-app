@@ -40,6 +40,7 @@ static VIBRANCY_ACTIVE: AtomicBool = AtomicBool::new(true);
 /// Called by `mac_vibrancy` when no window got an effect view. Reverts the
 /// window, the sidebar fill *and* the full-height layout to the classic look,
 /// since that layout is built around an effect that is not there.
+#[cfg(target_os = "macos")]
 pub(crate) fn note_window_vibrancy_failed() {
     VIBRANCY_ACTIVE.store(false, Ordering::Relaxed);
 }
