@@ -912,6 +912,30 @@ that has to be made is per-field — did this device *change* this field, or mer
 carry it out of its own population — and that is the provenance a pre-sync device
 does not record.
 
+**A fourth attempt, and the structural reason all four fail.** Tried: replace the
+content diff with a flag — "has an index-touching command been applied since the
+base was captured" — on the theory that the diff was only ever standing in for
+that question, and is confounded because the base doubles as the population
+source. 10175 still fails, and the trace says why: device 3 relaunches *again* at
+step 155, so the store is rebuilt and the flag starts false, and between 155 and
+its canonicalization at 195 it issues only item commands (`open a day`, `move line
+to scheme`, `marker`, `set date`) — never an index-touching one. Nothing triggers
+publication.
+
+That is the structural point behind all four falsified attempts. **The unpublished
+index content predates the current store instance.** A relaunch rebuilds from
+disk, where the plain workspace holds it and the index document does not, and
+nothing available *within that session* can distinguish "content this device owes
+the account" from "content the account already has". Not a content diff against
+the base (the base contains it), not a diff against the account (over-publishes:
+10106, 10192), not an edited-since flag (no edit follows), not publishing
+unconditionally (resurrects what the account deleted: 148, 10192).
+
+The missing information is on disk, not in the session: which of this device's
+index writes have ever been published. That is the provenance a deterministic,
+content-derived population identity encodes, and it is why TODO 1 keeps being the
+answer no matter which direction this is approached from.
+
 **One fix tried and rejected:** capturing the scheme edits *after*
 `clear_pushed_edits` rather than before, so only unpushed operations are
 reasserted. 10175 still fails — which also rules out the "already acknowledged,
