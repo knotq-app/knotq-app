@@ -877,6 +877,41 @@ the gap a deterministic, content-derived population identity closes: it makes th
 population itself recognisable, so a real edit on top of it is distinguishable from
 the population's own writes. There is no shortcut around that property.
 
+**Where the polluted base comes from, measured.** At device 3's canonicalization:
+
+    base:    schemes=6 70db=["scheme 2379/9"]
+    current: schemes=6 70db=["scheme 2379/9"]   index_changed=false
+
+The base already holds the scheme device 3 created, so the comparison is content
+against itself. Instrumenting both re-capture sites shows neither fires — the base
+comes from `WorkspaceStore::new`, which captures it whenever the index document is
+unpopulated. After a **relaunch** that is the entire on-disk workspace, already
+containing content this device never published.
+
+So `workspace_population_base` does double duty and the two uses conflict: it is
+the population source for the rebuild (must hold the content) and the change
+detector for `index_changed` (would need to be the pre-edit state). A relaunch
+before the first sync is where they collide.
+
+**Three fixes tried, all rejected by the gate at 300 x 200.** Baseline on this
+machine is 30 passed / 1 failed with 10175 the only failing seed:
+
+| change | result |
+|---|---|
+| publish whenever the rebuilt document has state | 29/2 — chaos 148, single 10192 |
+| `index_changed` compares against the account instead of the device's base | 30/1 but **two** failing seeds: 10106, 10192 |
+| capture the base after `clear_pushed_edits` | 10175 unchanged |
+
+The second is the interesting one: it is not publish-always — it keeps a real gate,
+just pointed at "does this differ from the account" — and it still over-publishes.
+With the first, that **brackets the problem from both sides**: any *document-level*
+test either under-publishes (10175 keeps its stale fields) or over-publishes
+(10106/10192/148 start diverging). Which is where the per-key analysis above
+arrived from the other direction, now with measurements behind it. The distinction
+that has to be made is per-field — did this device *change* this field, or merely
+carry it out of its own population — and that is the provenance a pre-sync device
+does not record.
+
 **One fix tried and rejected:** capturing the scheme edits *after*
 `clear_pushed_edits` rather than before, so only unpushed operations are
 reasserted. 10175 still fails — which also rules out the "already acknowledged,
