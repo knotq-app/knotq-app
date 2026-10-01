@@ -720,6 +720,237 @@ source, and root-child ordering. It fails identically on `7820f3a`, so it too
 predates v0.57.0 — the note was wrong, not the code. Measuring the baseline
 instead of trusting the sentence about it is the recurring lesson here.
 
+**Root cause found 2026-09-30: `reassert_local_scheme_edits` publishes nothing.**
+Measured, not inferred — the seed replays in about three seconds, so each of these
+is a direct observation:
+
+- Disabling `reassert_local_scheme_edits` alone makes 10175 **pass**. Nothing
+  else changed.
+- Exactly two scheme reassertions happen in the whole run, both on **device 0**:
+  `SetSchemeGsync { 2b1646c2…, on: true }` during an in-flight landing at step
+  100, and `SetSchemeGsync { ba929b98…, on: false }` at step 200. The first is one
+  of the diverged fields — `2b1646c2…`'s `SchemeSource` reads
+  `[{"kind":"local"},true]` on device 0 against `false` on device 3.
+- Bypassing the landing's merge path — forcing `adopt_sync_workspace` to take
+  `replace_workspace_from_sync_result` even when local edits happened in the
+  in-flight window — **also makes 10175 pass**. So the merge preserving a local
+  index-field value is part of the same story.
+- The run reports **no projection divergence at all**, so device 0's view and its
+  own documents agree throughout. It is the *account* they end up disagreeing
+  with: device 0 settles on `true`, the account and device 3 on `false`, and no
+  device is left wedged.
+
+**A wrong turn worth recording, so nobody repeats it.** The first reading here
+was that the reassert "publishes nothing": summing `crdt_updates` across pending
+operations gives a delta of 0 across both reassertions. That is a measurement
+artifact — the store defers CRDT encoding, so `crdt_updates` is empty until a
+flush. `unsynced_edit_count`, which counts deferred work, goes 1→2 and 0→1 across
+the same two calls. The reassert's decision *is* queued for push.
+
+Which means causation is still open. Both switches above change the outcome, but
+neither has been shown to be the thing that is *wrong*, and "disabling X makes the
+seed pass" is exactly the evidence that misled the 48/238 write-up below: a change
+can perturb the trajectory enough for the oracle to observe a transition it
+otherwise steps over. Note that two of the three diverged fields — `70db3d43…`'s
+name and colour — are touched by no reassertion at all, which is what a trajectory
+effect would look like.
+
+**Where the divergence actually lives, measured at the field level.** Device 3 is
+the stale side, and the reassertions both run on device 0, so they cannot be what
+makes device 3 stale. Instrumenting the per-field merge in `workspace_index.rs`
+for `70db3d43…` and correlating each reading with the step log:
+
+- Immediately after device 3's last sync, its own `node_fields` still hold
+  `("color_index", "9")`, `("name", "scheme 2379")` and `("position", …)` from
+  creation, while the account's readings hold `16`, `"renamed 4275"` and
+  `position 5`. Both sides are `field_schema=Some(1)`, so the legacy-payload
+  escape hatch is not involved.
+- Device 3 created that scheme at step 37, before its own first sync at step 57.
+  Devices 2 and 1 changed the colour at step 71 and the name at step 137.
+- Device 3 ends with an empty pending queue, so those creation-time writes are
+  writes to the same Yjs map keys that the account never received and that win
+  locally. Not a read-side shadow: an unpublished write.
+
+**Two more hypotheses ruled out.** Neither of these is the cause:
+
+- *Not* `field_schema` being absent on device 3's entry — it is `Some(1)` on both
+  sides, so the "older build wrote this, keep its payload" branch never fires.
+- *Not* the population base being lost by the relaunch device 3 performs at step
+  41, before its first sync. That looked compelling — every capture site is gated
+  on `workspace_document_is_unpopulated()`, so a relaunch after the first save
+  cannot re-capture, and `reidentify_workspace_document`'s own comment says it
+  "only rebinds the document without touching the wrong-hashed population
+  inside". But instrumenting `workspace_population_base` shows it is
+  `base_present=true` at **every** canonicalization in the run, device 3's
+  included. The repopulate branch is being taken, not the plain re-key.
+
+**Root cause, measured.** `repopulate_workspace_canonically` rebuilds the document,
+and whether that rebuild ever reaches the account depends *only* on
+`index_changed` — the comment beside it says why: there is no "before" left inside
+the freshly built document, so the incremental flush finds no delta and the
+explicit full-snapshot queue is the only publication path.
+
+`index_changed` is `workspace_document_differs(&canonical_base, &workspace)` —
+whether this device edited **on top of its own pre-sync base**. Content that was
+already in the base, such as a scheme the device created before its first sync,
+makes it `false`. Instrumenting the queue at device 3's canonicalization (step
+195) prints `index_changed=false full_updates=1 -> NOT PUBLISHED`: a usable
+snapshot is discarded. Device 3's `node_fields` writes then stay local forever,
+win against the account's later values on that device alone, and leave an empty
+pending queue, so no wedge or projection check can see it.
+
+**The obvious fix is wrong, measured at release depth.** Publishing whenever the
+repopulated document has state (dropping the `index_changed` gate) makes 10175
+pass and **breaks two other seeds**: chaos 148 with three violations, and
+single-account 10192. Like-for-like on the same machine, same command, same
+depth:
+
+| | 300 x 200, `production_fuzz` |
+|---|---|
+| unmodified | 30 passed, 1 failed (10175 only) |
+| publish always | 29 passed, 2 failed (148, 10192) |
+
+That local baseline matters: it is identical to CI's, which is worth knowing given
+10175 itself fails on macOS at the v0.57.0 tag while CI's Linux run passed it. The
+comparison here is macOS against macOS.
+
+Why it breaks them is presumably the thing `index_changed` was guarding — a device
+that has not seen the account's deletions publishing a full snapshot can
+reintroduce what the account dropped, which is the shape of `0a`. So the two
+comments in that function are not simply contradictory: a full snapshot does merge
+rather than replace, and merging is exactly how deleted content comes back.
+
+**Next approach, untried:** the mirror image. When `index_changed == false` there
+is no local index edit worth keeping, so instead of repopulating from this
+device's base — which is what leaves the unpublishable writes — adopt the
+account's document wholesale for the index. Bypassing the merge path entirely
+(forcing `replace_workspace_from_sync_result`) already makes 10175 pass, which is
+the same effect reached with a blunter instrument, so the direction has some
+support. It is resurrection-safe by construction, because nothing local is sent.
+
+**...and that next approach is wrong too, by inspection.** `index_changed == false`
+does not mean "this device has nothing the account needs". It means "this device
+made no edit *on top of* its base" — and the base itself can be the offline
+content that has to reach the account. A fresh install that created schemes before
+its first sync has `index_changed == false` and still must publish. Adopting the
+account's index wholesale there would drop exactly what these currently-passing
+scenarios exist to protect: `new_install_with_offline_edits_joins_the_account`,
+`join_variant_empty_workspace_with_offline_edits`,
+`join_variant_starter_already_on_the_account_identity_with_offline_edits` and
+`starter_lines_edited_before_the_first_sync_join_the_account_once`. Do not run it
+expecting a green sweep.
+
+What separates 10175 from those cases is not a document-level property at all. In
+10175 the account **already holds the node entry**, with newer field values, and
+the device's writes are stale duplicates of keys the account has moved on from. In
+the join variants the account holds nothing for those entries. So the decision is
+per key, not per document: publish the device's index writes for entries the
+account does not have, and let the account win for entries it does.
+
+That is what the `node_fields` per-field merge would already do if the device's
+pre-canonical writes were *comparable* to the account's — they are not, because
+they were authored under an identity the account never saw, so they are concurrent
+and win locally by clientID. Which lands back on TODO 1's deterministic population
+identity: the repopulation has to be authored so that it loses to the account's
+real writes on any key the account already holds. That is the fix that has been
+attempted twice and reverted twice, and the measurements above are the sharpest
+statement so far of *why* it is needed — not a new, smaller alternative to it.
+
+**Per-key filtering does not rescue it either, and the reason names what is
+missing.** The tempting narrow version is: when repopulating, omit the keys the
+account's incoming state already holds, so the account wins there, and publish only
+the keys it lacks. Two dead ends:
+
+- Moving the *publish gate* to "does this device hold index content the account
+  lacks" (comparing against `sync_workspace` instead of `canonical_base`) makes
+  `index_changed` true for any device that has not yet merged the account, which is
+  publish-always — already measured above as 29/2.
+- Filtering inside `repopulate_canonically` instead loses real work. A device that
+  renamed an *existing* account scheme while offline, before its first sync, has
+  written a key the account also holds; dropping it to let the account win discards
+  that rename. Content loss, not divergence.
+
+Separating those two cases needs per-field provenance — "did this device *change*
+this field offline" versus "did it merely carry the field out of its own
+population" — and a pre-sync device records nothing of the kind. Which is exactly
+the gap a deterministic, content-derived population identity closes: it makes the
+population itself recognisable, so a real edit on top of it is distinguishable from
+the population's own writes. There is no shortcut around that property.
+
+**Where the polluted base comes from, measured.** At device 3's canonicalization:
+
+    base:    schemes=6 70db=["scheme 2379/9"]
+    current: schemes=6 70db=["scheme 2379/9"]   index_changed=false
+
+The base already holds the scheme device 3 created, so the comparison is content
+against itself. Instrumenting both re-capture sites shows neither fires — the base
+comes from `WorkspaceStore::new`, which captures it whenever the index document is
+unpopulated. After a **relaunch** that is the entire on-disk workspace, already
+containing content this device never published.
+
+So `workspace_population_base` does double duty and the two uses conflict: it is
+the population source for the rebuild (must hold the content) and the change
+detector for `index_changed` (would need to be the pre-edit state). A relaunch
+before the first sync is where they collide.
+
+**Three fixes tried, all rejected by the gate at 300 x 200.** Baseline on this
+machine is 30 passed / 1 failed with 10175 the only failing seed:
+
+| change | result |
+|---|---|
+| publish whenever the rebuilt document has state | 29/2 — chaos 148, single 10192 |
+| `index_changed` compares against the account instead of the device's base | 30/1 but **two** failing seeds: 10106, 10192 |
+| capture the base after `clear_pushed_edits` | 10175 unchanged |
+
+The second is the interesting one: it is not publish-always — it keeps a real gate,
+just pointed at "does this differ from the account" — and it still over-publishes.
+With the first, that **brackets the problem from both sides**: any *document-level*
+test either under-publishes (10175 keeps its stale fields) or over-publishes
+(10106/10192/148 start diverging). Which is where the per-key analysis above
+arrived from the other direction, now with measurements behind it. The distinction
+that has to be made is per-field — did this device *change* this field, or merely
+carry it out of its own population — and that is the provenance a pre-sync device
+does not record.
+
+**A fourth attempt, and the structural reason all four fail.** Tried: replace the
+content diff with a flag — "has an index-touching command been applied since the
+base was captured" — on the theory that the diff was only ever standing in for
+that question, and is confounded because the base doubles as the population
+source. 10175 still fails, and the trace says why: device 3 relaunches *again* at
+step 155, so the store is rebuilt and the flag starts false, and between 155 and
+its canonicalization at 195 it issues only item commands (`open a day`, `move line
+to scheme`, `marker`, `set date`) — never an index-touching one. Nothing triggers
+publication.
+
+That is the structural point behind all four falsified attempts. **The unpublished
+index content predates the current store instance.** A relaunch rebuilds from
+disk, where the plain workspace holds it and the index document does not, and
+nothing available *within that session* can distinguish "content this device owes
+the account" from "content the account already has". Not a content diff against
+the base (the base contains it), not a diff against the account (over-publishes:
+10106, 10192), not an edited-since flag (no edit follows), not publishing
+unconditionally (resurrects what the account deleted: 148, 10192).
+
+The missing information is on disk, not in the session: which of this device's
+index writes have ever been published. That is the provenance a deterministic,
+content-derived population identity encodes, and it is why TODO 1 keeps being the
+answer no matter which direction this is approached from.
+
+**One fix tried and rejected:** capturing the scheme edits *after*
+`clear_pushed_edits` rather than before, so only unpushed operations are
+reasserted. 10175 still fails — which also rules out the "already acknowledged,
+account resolved otherwise" reading, because the operation driving the reassert
+is genuinely unpushed.
+
+That leaves the real question: when a device's own document holds a field value
+the account resolved against, what is supposed to bring the account's value into
+that document? The reassert sits downstream of that gap rather than causing it,
+and `adopt_sync_workspace`'s merge path is where to look. Do not "fix" this by
+making the reassert write harder — publishing an unpublished local decision would
+drag the account onto a value the CRDT had already resolved away, which is the
+second-conflict-resolver mistake recorded elsewhere in this file.
+
+
 ### 10209 and 10350: fixed 2026-09-24 — a scheme held two rows with one id
 
 An `items_by_id` map has one entry per id, so a scheme whose plain copy holds an
