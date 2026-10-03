@@ -375,7 +375,8 @@ pub(super) fn update_status_row(
             cx,
             |this, cx| this.download_available_update(cx),
         ),
-        AutoUpdateUiStatus::Downloading { version } => {
+        AutoUpdateUiStatus::Downloading { version, .. }
+        | AutoUpdateUiStatus::Installing { version } => {
             settings_message(format!("Updating KnotQ {version}..."), false, t)
         }
         AutoUpdateUiStatus::Ready { update } => {

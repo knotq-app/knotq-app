@@ -15,6 +15,8 @@ mod search;
 #[cfg(feature = "accounts")]
 mod sync_control;
 mod update_control;
+#[cfg(test)]
+pub(crate) use update_control::{title_bar_update_state, TitleUpdateState};
 mod window_controls;
 
 const TITLE_CONTENT_W: f32 = 430.0;
