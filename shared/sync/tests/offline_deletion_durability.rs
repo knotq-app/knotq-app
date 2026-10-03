@@ -1,3 +1,10 @@
+//! The *unmarked* journal-loss cases here — the queue is gone, the cursors are
+//! intact, so nothing marks the device for recovery — are carried by the
+//! integrity re-offer in `batch_pull_and_apply`, which is deliberately gated on
+//! this device owing nothing else. Read that note before touching the gate: an
+//! unbounded re-offer livelocks `ws_account_hopping_fuzz_converges` into a wedge,
+//! and removing it altogether costs chaos 34 and 66 as well as these four.
+//!
 //! One property, many interruptions: **a deletion made while a device cannot
 //! reach the server survives whatever happens before its next successful sync.**
 //!

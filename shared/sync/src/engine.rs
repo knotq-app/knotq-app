@@ -1105,24 +1105,56 @@ fn batch_pull_and_apply_with_integrity_documents_inner(
     } else {
         Vec::new()
     };
-    // An integrity mismatch is the server stating that its copy of a document
-    // and ours disagree. Merging its state above fixed our half; this fixes
-    // the other one. Without it the repair is one-directional — the server's
-    // view always wins — and anything this device holds that the server does
-    // not is either destroyed (when the mismatch is resolved by replacing the
-    // document) or stranded forever (when it is resolved by merging, as it now
-    // is). Both are reachable with an intact CRDT and an empty pending queue,
-    // which is what a lost sync journal leaves behind, and the second is what
-    // the 2026-10-01 field report described: a deletion the device kept and
-    // never managed to tell anyone about.
+    // An integrity mismatch is the server stating that its copy of a document and
+    // ours disagree. Merging its state above fixed our half; this fixes the other
+    // one. Without it the repair is one-directional — anything this device holds
+    // that the server does not is stranded forever, which is the 2026-10-01 field
+    // report: a deletion the device kept and never managed to tell anyone about.
     //
-    // A full snapshot is the right payload *here*, where the set is only the
-    // handful of documents the server explicitly named: the queue that would
-    // have carried a delta is precisely what is missing, and a snapshot merges
-    // into any base, so it can only add to the server's state.
-    if !integrity_repair_documents.is_empty() {
+    // ONLY WHEN THIS DEVICE OWES NOTHING ELSE, and that condition is the whole
+    // reason this is safe. Re-offering is a full snapshot per named document, so
+    // doing it while a queue is already backed up grows the queue faster than the
+    // push can drain it; the server answers `rate_limit.exceeded`, the next proof
+    // still disagrees, and it re-offers again. Measured against a real backend:
+    // `ws_account_hopping_fuzz_converges` livelocks exactly that way
+    // ("re-offering 11 document(s)" without end, then "a device on account 0 has
+    // stuck pending (wedge)"), and skipping only the documents that already have a
+    // queued edit is not enough — 11 becomes 6 and it still wedges.
+    //
+    // An empty queue is also precisely when the repair is NEEDED: the queue that
+    // would have carried a delta is what a lost sync journal is missing. Dropping
+    // the re-offer altogether was measured too — chaos 34 and 66 then lose content,
+    // and four `offline_deletion_durability` cases fail.
+    //
+    // The empty queue alone does NOT terminate, though: the device drains,
+    // re-offers, the next proof disagrees again, and round it goes. So each
+    // document is re-offered at most once per mismatch episode, recorded durably
+    // in `integrity_reoffered` and cleared the moment the server reports nothing
+    // mismatched. That bounds it by construction instead of by hope. If the one
+    // attempt is lost, the content stays stranded until the next episode — which
+    // is the lesser of the two failures, because the alternative is a device that
+    // syncs nothing at all.
+    //
+    // A full snapshot is the right payload here, where the set is only the handful
+    // of documents the server explicitly named, and a snapshot merges into any
+    // base, so it can only add to the server's state.
+    if integrity_repair_documents.is_empty() {
+        // The server reports nothing mismatched, so whatever was re-offered has
+        // served its purpose (or there was never anything to re-offer). Forget it,
+        // which is what makes this "once per mismatch episode" rather than "once
+        // ever" — a genuine mismatch years from now still gets one attempt.
+        local_state.integrity_reoffered.clear();
+    } else if local_state.pending.is_empty() {
+        let documents: HashSet<DocumentId> = integrity_repair_documents
+            .iter()
+            .copied()
+            .filter(|document| !local_state.integrity_reoffered.contains(document))
+            .collect();
+        local_state
+            .integrity_reoffered
+            .extend(integrity_repair_documents.iter().copied());
         let updates = crdt_docs
-            .full_snapshot_updates_for_documents(&integrity_repair_documents)
+            .full_snapshot_updates_for_documents(&documents)
             .updates;
         if !updates.is_empty() {
             eprintln!(

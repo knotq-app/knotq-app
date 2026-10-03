@@ -1665,6 +1665,38 @@ the change. The second is the guard that matters: the easy way to "fix" this is
 to stop re-expressing anything, and a line the user really did type in that same
 scheme must still reach the account.
 
+### The re-offer needs a termination bound, and only the WebSocket suite found it
+
+Added 2026-10-03, after the fix above was already measured green by the whole
+per-seed census. The integrity re-offer is a full snapshot per named document, and
+nothing stopped it repeating: the device re-offers, the server's next proof still
+disagrees, so it re-offers again. Against a real backend
+(`run-sync-stress.sh --fuzz`, which no amount of in-memory fuzzing substitutes for)
+`ws_account_hopping_fuzz_converges` livelocks on it — "re-offering 11 document(s)"
+without end, the server answering `rate_limit.exceeded`, and finally "a device on
+account 0 has stuck pending (wedge)". `origin/main` passes that suite, so it was a
+regression this work introduced, and a WEDGE at that.
+
+Three bounds measured, in order:
+
+| Bound | `ws_account_hopping` | census |
+|---|---|---|
+| skip documents that already have a queued edit | still wedges (11 → 6) | — |
+| drop the re-offer entirely | green | **chaos 34 and 66 lose content**, 4 `offline_deletion_durability` cases fail |
+| **once per document per mismatch episode** (`integrity_reoffered`, cleared when the server reports nothing mismatched) | **green** | **clean** |
+
+Only the third terminates *by construction* rather than by hope. "Only when the
+queue is empty" sounds like it should be enough — and it is the condition that
+makes the repair useful, since a lost journal is exactly an empty queue — but the
+device drains, re-offers, disagrees again, and round it goes; measured, it still
+wedges.
+
+**The lesson for the gate: the in-memory census and the real-transport suite find
+different classes.** A change can be green across 1200 seeds and still wedge a
+device against wrangler, because what livelocks is the interaction with a server
+that rate-limits and recomputes proofs. Run both before claiming a sync change is
+safe.
+
 ## 0B. [FIXED] The re-identification rescue replaced a real workspace index with an empty document
 
 Found 2026-10-03 by tracing journal-loss seed 20223, the only journal-loss seed

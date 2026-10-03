@@ -245,6 +245,13 @@ pub struct LocalSyncState {
     /// this recovery proof does not require decoding the whole workspace.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub sync_in_progress: bool,
+    /// Documents this device has already re-offered to the server after it
+    /// reported an integrity mismatch, so a mismatch that does not clear cannot
+    /// make the device re-offer forever. Cleared the moment the server stops
+    /// reporting any mismatch at all, so this is "once per mismatch episode"
+    /// rather than "once ever". See the re-offer in `batch_pull_and_apply`.
+    #[serde(default, skip_serializing_if = "HashSet::is_empty")]
+    pub integrity_reoffered: HashSet<DocumentId>,
     /// A damaged sync-state journal was recovered as a default state. The CRDT
     /// documents are still authoritative, but cursor/queue history is not, so
     /// the next sync must re-express durable local tombstones before adopting
