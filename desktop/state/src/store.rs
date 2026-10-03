@@ -1212,6 +1212,30 @@ impl WorkspaceStore {
     /// (visible) one beside the account's root. Re-root them exactly as the sync
     /// run canonicalized its own snapshot, and record the repair like any index
     /// edit so the server is re-rooted too.
+    ///
+    /// **A real defect lives here, and the obvious one-line fix for it is WRONG —
+    /// do not re-apply it.** `self.workspace.id` is read back *after* the replay
+    /// above, and a replayed pre-sign-in index edit rewrites `meta.id` /
+    /// `meta.sync` in the document (Yjs resolves a map key by last writer), so it
+    /// can be this device's local, pre-sign-in `WorkspaceId` rather than the
+    /// account's. Canonicalizing to that derives a fresh index document id from a
+    /// LOCAL `WorkspaceId` (`sync.id = DocumentId(workspace_id.0)`) and re-roots
+    /// the index onto a folder no other device has — so the device saves a
+    /// `workspace.json` naming an index document that exists nowhere, while the
+    /// account's real index sits on disk under the canonical id, and every later
+    /// launch builds the index EMPTY. Measured on journal-loss seed 20223.
+    ///
+    /// Passing the account's canonical id instead (captured before the replay)
+    /// does fix the identity, and **wedges chaos seed 178**: it makes this call
+    /// re-key `id`/`sync.id`, which queues index edits *here*, after
+    /// `remap_pending_workspace_document` has already run — so five unpushed
+    /// `PersonalWorkspace` edits stay addressed to the stray document and the
+    /// device never drains its queue ("still has 5 unpushed edit(s) after
+    /// settling"). Re-keying the plain workspace is only half of it; the
+    /// document's content and the edits addressed to it have to move with it,
+    /// which is what `adopt_sync_workspace_identity` does on the merge path.
+    /// Pinned as an `#[ignore]`d test in
+    /// `desktop/state/tests/sign_in_keeps_the_account_identity.rs`.
     fn reroot_pre_sign_in_edits(&mut self) {
         let workspace_id = self.workspace.id;
         let (repair_needed, _) = self
@@ -1866,14 +1890,33 @@ fn crdt_change_set_for_command(command: &Command) -> WorkspaceCrdtChangeSet {
     // retain the source delete because their insert is in another scheme.
     let mut inserted_items: HashMap<SchemeId, HashSet<String>> = HashMap::new();
     collect_inserted_item_ids(command, &mut inserted_items);
-    for (scheme, inserted) in inserted_items {
-        if let Some(deleted) = deleted_items.get_mut(&scheme) {
+    for (scheme, inserted) in &inserted_items {
+        if let Some(deleted) = deleted_items.get_mut(scheme) {
             deleted.retain(|item| !inserted.contains(item));
         }
     }
     deleted_items.retain(|_, items| !items.is_empty());
+    // A CROSS-SCHEME move changes which document owns a line, and the workspace
+    // index is how every other device learns that the destination page exists at
+    // all — its node entry, and for a Daily page its queue binding. A move that
+    // does not touch the index leaves the destination unpublished, so the next
+    // pull materializes the account's index over it and the page, its lines and
+    // its binding go (chaos 194 loses the binding for a day that held a line;
+    // single-account 10054 loses the row itself).
+    //
+    // `Command::crdt_documents` reports `workspace: false` for the batch, because
+    // a move adds no scheme and removes none — true of the document SET, and the
+    // wrong question. What matters is that the index's description of where lines
+    // live has changed.
+    let moves_a_line_between_schemes = inserted_items.iter().any(|(destination, inserted)| {
+        inserted.iter().any(|item| {
+            deleted_items
+                .iter()
+                .any(|(source, items)| source != destination && items.contains(item))
+        })
+    });
     WorkspaceCrdtChangeSet {
-        workspace: documents.workspace,
+        workspace: documents.workspace || moves_a_line_between_schemes,
         schemes: documents.schemes.into_iter().collect(),
         deleted_items,
     }
