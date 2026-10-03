@@ -560,12 +560,29 @@ impl TestDevice {
                 .children
                 .retain(|child| *child != NodeRef::Scheme(scheme_id));
         }
-        // Step 2: remove from recently_deleted (archive membership) but retain
-        // the permanent-delete origin. That origin is the CRDT tombstone that
-        // prevents a stale replica from reintroducing the scheme.
+        // Step 2: remove from recently_deleted (archive membership) and RECORD
+        // the permanent-delete origin. That origin is the evidence the id was
+        // destroyed — `PermanentlyDeleteScheme` writes it for exactly that
+        // reason, and the workspace-index writer reads it to tell a real
+        // deletion apart from a scheme a device merely cannot see. Without it
+        // this helper modelled a state the app never produces, and every test
+        // about permanent deletes was checking the wrong thing.
+        let root = self.workspace.root;
+        let origin = self
+            .workspace
+            .deleted_scheme_origins
+            .get(&scheme_id)
+            .copied();
         self.workspace
             .recently_deleted
             .retain(|id| *id != scheme_id);
+        self.workspace.deleted_scheme_origins.insert(
+            scheme_id,
+            knotq_model::DeletedSchemeOrigin {
+                position: knotq_model::PERMANENT_DELETE_TOMBSTONE_POSITION,
+                folder: origin.map(|origin| origin.folder).unwrap_or(root),
+            },
+        );
         // Step 3: remove the scheme itself — this triggers scheme_sync cleanup in
         // ensure_sync_metadata on the next sync.
         self.workspace.schemes.remove(&scheme_id);
@@ -602,16 +619,33 @@ impl TestDevice {
             }
         }
         // Remove archive state for folder and contained schemes.
+        let root = self.workspace.root;
         for fid in &all_folders {
             self.workspace
                 .recently_deleted_folders
                 .retain(|id| id != fid);
-            self.workspace.deleted_folder_origins.remove(fid);
+            // The tombstone, not the absence, is what says "destroyed" —
+            // `PermanentlyDeleteFolder` records one per folder in the subtree.
+            let origin = self.workspace.deleted_folder_origins.get(fid).copied();
+            self.workspace.deleted_folder_origins.insert(
+                *fid,
+                knotq_model::DeletedFolderOrigin {
+                    position: knotq_model::PERMANENT_DELETE_TOMBSTONE_POSITION,
+                    parent: origin.map(|origin| origin.parent).unwrap_or(root),
+                },
+            );
             self.workspace.folders.remove(fid);
         }
         for sid in &all_schemes {
             self.workspace.recently_deleted.retain(|id| id != sid);
-            self.workspace.deleted_scheme_origins.remove(sid);
+            let origin = self.workspace.deleted_scheme_origins.get(sid).copied();
+            self.workspace.deleted_scheme_origins.insert(
+                *sid,
+                knotq_model::DeletedSchemeOrigin {
+                    position: knotq_model::PERMANENT_DELETE_TOMBSTONE_POSITION,
+                    folder: origin.map(|origin| origin.folder).unwrap_or(root),
+                },
+            );
             self.workspace.schemes.remove(sid);
         }
         self.record_changes(WorkspaceCrdtChangeSet::default().workspace());

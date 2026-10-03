@@ -540,13 +540,26 @@ fn batch_pull_and_apply_with_integrity_documents_inner(
         // merged — a merge would double every item's text. Only documents with
         // an existing cursor qualify; a first-ever pull merges into an empty
         // local document, which is already an exact copy.
+        //
+        // An integrity mismatch is NOT that case and must not be bucketed with
+        // it. The epoch is unchanged there, so the two states still share Yjs
+        // history and a merge is exact: it takes whatever the server has that
+        // this device lacks while keeping whatever this device has that the
+        // server lacks, which is what "our hashes differ" means in the first
+        // place. Replacing instead resolved every mismatch in the server's
+        // favour, and the only thing standing between a user's unsent work and
+        // that replacement was a pending-queue entry — so a device whose
+        // journal was lost had its offline edits deleted by the repair meant to
+        // protect it (reported 2026-10-01: an offline deletion came back on
+        // every device). The merge below is also self-correcting: this device
+        // then pushes its local-only delta, the server merges it, and the next
+        // integrity proof agrees. See `offline_deletion_durability.rs`.
         let needs_adoption = |doc: &PulledCrdtDocument| {
             doc.kind == SyncDocumentKind::Scheme
-                && (integrity_repair_documents.contains(&doc.document)
-                    || local_state
-                        .document_cursors
-                        .get(&doc.document)
-                        .is_some_and(|cursor| cursor.epoch != doc.epoch))
+                && local_state
+                    .document_cursors
+                    .get(&doc.document)
+                    .is_some_and(|cursor| cursor.epoch != doc.epoch)
         };
         let (adoptions, merges): (Vec<&PulledCrdtDocument>, Vec<&PulledCrdtDocument>) = response
             .documents
@@ -1019,6 +1032,55 @@ fn batch_pull_and_apply_with_integrity_documents_inner(
                     .collect();
                 let mut touched = ahead.clone();
                 touched.extend(raw_ids.into_iter().filter(|id| !remote_ids.contains(id)));
+                // ...but never a row the pull has just told us is gone and that
+                // this device has no evidence of having edited.
+                //
+                // `ahead` is computed BEFORE the pull. A row can be in it for two
+                // very different reasons, and this is the only place that can
+                // still tell them apart:
+                //
+                //   - this device's document held the row LIVE with a different
+                //     value, i.e. a real local edit that has not been flushed.
+                //     Edit versus a concurrent remote delete resolves toward
+                //     keeping the content, deliberately, and
+                //     `persistence_boundary_fuzz_converges` pins it.
+                //   - this device's document had NO entry for the row at all, so
+                //     the only reason it is here is that the plain copy lists it.
+                //     The plain files are a projection of the documents and lag
+                //     every pull, so that is no evidence of an edit — and if the
+                //     pull now carries a removal for the id, the account knows the
+                //     row and has deleted or moved it. Re-expressing it is a
+                //     resurrection.
+                //
+                // Chaos 332 is the second case: device 1 carries line `…0402`
+                // from Daily 09-14 to 09-15 at step 9; device 0, whose 09-14
+                // document holds no entry for it, pulls that removal at step 45
+                // and this repair puts the row back on 09-14. The fleet then
+                // disagrees about which day owns it, the other devices tombstone
+                // the 09-15 copy device 0's later move re-created, and the
+                // account ends up holding it on neither day — reported at step 70
+                // as an item no device deleted.
+                let absent_before_pull = repair
+                    .local_absent_items
+                    .get(scheme_id)
+                    .cloned()
+                    .unwrap_or_default();
+                if !absent_before_pull.is_empty() {
+                    let removed_by_pull = crdt_docs
+                        .raw_scheme_entry_summary(*scheme_id)
+                        .ok()
+                        .flatten()
+                        .map(|summary| summary.tombstoned)
+                        .unwrap_or_default();
+                    let resurrecting: HashSet<&String> = absent_before_pull
+                        .iter()
+                        .filter(|id| removed_by_pull.contains(*id))
+                        .collect();
+                    if !resurrecting.is_empty() {
+                        touched.retain(|id| !resurrecting.contains(id));
+                        local_items.retain(|item| !resurrecting.contains(&item.id.to_string()));
+                    }
+                }
                 let merged = crate::crdt::merge_items_for_adoption(
                     &local_items,
                     remote.items.clone(),
@@ -1043,6 +1105,74 @@ fn batch_pull_and_apply_with_integrity_documents_inner(
     } else {
         Vec::new()
     };
+    // An integrity mismatch is the server stating that its copy of a document
+    // and ours disagree. Merging its state above fixed our half; this fixes
+    // the other one. Without it the repair is one-directional — the server's
+    // view always wins — and anything this device holds that the server does
+    // not is either destroyed (when the mismatch is resolved by replacing the
+    // document) or stranded forever (when it is resolved by merging, as it now
+    // is). Both are reachable with an intact CRDT and an empty pending queue,
+    // which is what a lost sync journal leaves behind, and the second is what
+    // the 2026-10-01 field report described: a deletion the device kept and
+    // never managed to tell anyone about.
+    //
+    // A full snapshot is the right payload *here*, where the set is only the
+    // handful of documents the server explicitly named: the queue that would
+    // have carried a delta is precisely what is missing, and a snapshot merges
+    // into any base, so it can only add to the server's state.
+    if !integrity_repair_documents.is_empty() {
+        let updates = crdt_docs
+            .full_snapshot_updates_for_documents(&integrity_repair_documents)
+            .updates;
+        if !updates.is_empty() {
+            eprintln!(
+                "knotq sync: re-offering {} document(s) the server reported as mismatched",
+                updates.len()
+            );
+            queue_crdt_updates(local_state, &workspace, replica_id, updates);
+        }
+    }
+
+    // WHAT IS STILL MISSING, and why it is not patched here.
+    //
+    // What a device owes the server ought to be a function of durable state.
+    // It is not: the obligation lives only in `local_state.pending`, and
+    // nothing records what the server holds in CRDT terms
+    // (`DocumentSyncCursor` carries sequence numbers and an epoch, never a
+    // state vector). Lose that queue and the obligation is unrecoverable,
+    // degrading to "I owe nothing" — the lossy direction. The block above
+    // recovers it for every document the server's integrity proof names, which
+    // is the reachable majority. What it cannot reach is a document this device
+    // has NO CURSOR for, because the proof's scope is documents whose cursor
+    // has advanced.
+    //
+    // Re-offering those was tried, twice, and both attempts were wrong in a way
+    // worth recording so nobody tries a third time from the same angle:
+    //
+    //  - As a full snapshot of every such document: production fuzz seed 20082
+    //    went from passing to losing an archived folder. Too loud.
+    //  - As an exact `diff(local, server_state_vector)`: chaos seed 11 then
+    //    lost starter item `…2009` from scheme `…0102`. Both ids are DERIVED,
+    //    so they are byte-identical on every account and every fresh install —
+    //    the device was pushing its own pre-join starter tombstones onto rows
+    //    the account holds live (`starter_content_join.rs`,
+    //    `offline_device_join.rs`).
+    //
+    // The second failure is the real lesson: **"this device has no cursor" is
+    // overloaded**. It means a first join, a lost journal, or an account
+    // switch, and those three need opposite handling — re-assert nothing,
+    // re-assert everything, defer to the switch reseed. An account switch is
+    // distinguishable (`needs_full_reseed`). A first join is NOT, because
+    // `canonicalize_personal_sync_identity` derives `workspace.sync.id` from
+    // the account id at sign-in, before any sync has happened, so a device
+    // that has synced for months and lost its journal looks exactly like one
+    // that just signed in.
+    //
+    // Telling them apart needs a witness written only after a run's cursors
+    // land, stored outside the journal so it survives the journal's loss.
+    // There is none today. See TODO 0y; until it exists, this gap stays open
+    // rather than being closed by a heuristic that costs other people's data.
+
     let remote_latest = authoritative_remote_latest.unwrap_or_else(|| {
         local_state
             .document_cursors
@@ -1050,6 +1180,7 @@ fn batch_pull_and_apply_with_integrity_documents_inner(
             .map(|cursor| (cursor.document, cursor.last_pulled_sequence))
             .collect()
     });
+
     Ok(PullOutcome {
         workspace,
         remote_updates_applied,
@@ -1075,6 +1206,10 @@ struct LocalPrePullRepair {
     /// the items that were ahead: added, changed or deleted locally. Only
     /// these are re-expressed after the pull.
     local_ahead_items: HashMap<knotq_model::SchemeId, HashSet<String>>,
+    /// Per scheme, the rows the plain copy held that this device's document had
+    /// no entry for at all. See the post-pull repair for why the distinction
+    /// between "edited" and "merely present in the plain copy" matters.
+    local_absent_items: HashMap<knotq_model::SchemeId, HashSet<String>>,
 }
 
 /// Say what the pre-pull repair decided. Behind an env var: it runs on every
@@ -1108,18 +1243,15 @@ fn queue_local_only_documents_before_pull(
     // and an unseeded CRDT (`fresh_install_join.rs`). The repair below is for a
     // seeded CRDT that fell behind the plain files.
     if !crdt_docs.workspace_is_seeded() {
-        trace_pre_pull_repair("skipped: workspace document not seeded yet");
+        trace_pre_pull_repair(&format!(
+            "skipped: workspace document not seeded yet (doc={} state_bytes={} cursors={} schemes={})",
+            crdt_docs.workspace_document_id(),
+            crdt_docs.workspace_state_len(),
+            local_state.document_cursors.len(),
+            workspace.schemes.len(),
+        ));
         return None;
     }
-    // The repair is for a CRDT that already synced with this server and then
-    // fell behind the plain files. A device that has never synced with this
-    // server — no pull or push cursor at all — has nothing for its plain files to
-    // be ahead of: its offline history reaches the account through the
-    // re-identified workspace snapshot and the post-pull bootstrap, like any
-    // first sign-in. Running the repair first instead writes the pre-sign-in
-    // workspace index — local root, local identity — over the account's, and the
-    // account loses everything (`offline_device_join.rs`). A first sign-in does
-    // not trip `needs_full_reseed`: there is no previous account to reset from.
     // The repair is for a CRDT that already synced with this server and then
     // fell behind the plain files. A device that has never synced with this
     // server — no pull or push cursor at all — has nothing for its plain files to
@@ -1156,9 +1288,50 @@ fn queue_local_only_documents_before_pull(
     // random v4 id that exists nowhere else by construction. So on a first
     // sync, repair only the ids that cannot be starter content, and leave the
     // index alone entirely.
+    // **A real and field-plausible defect lives in this one line, and the obvious
+    // fix for it was measured and is WORSE — read before changing it.**
+    //
+    // "Has a cursor" is not "has ever synced with this server". A brand-new
+    // install whose FIRST run fails partway still leaves cursors behind, so its
+    // next run no longer looks like a first sync and the suppression below — the
+    // only thing stopping a fresh install publishing its own PRE-SIGN-IN index
+    // over the account's — is gone. `sync_string_map` then makes every folder and
+    // scheme the account holds that this device has not yet pulled a deletion for
+    // everyone. Chaos seed 38 is exactly that: three of the account's folders
+    // removed at the first successful sync after a dropped connection. "Signed in
+    // on a flaky network" is the whole reproduction, so this is reachable in the
+    // field, not just under the fuzzer. See TODO.md 0D.
+    //
+    // Asking the right question instead — the workspace document's own pull cursor
+    // is above zero once the server has actually sent this device the account's
+    // index —
+    //
+    //     let has_pulled_the_accounts_index = local_state
+    //         .document_cursors
+    //         .get(&crdt_docs.workspace_document_id())
+    //         .is_some_and(|cursor| cursor.last_pulled_sequence > 0);
+    //
+    // fixes chaos 38, keeps chaos 253 (the seed that needs this repair to RUN)
+    // green, and takes the 1200-seed census from one failing seed to three:
+    // chaos 109 **wedges** (an index edit that never drains — the same shape as
+    // "Attempt A" under §2), and chaos 142 and 269 lose content the account held.
+    // Suppressing for longer is not free: the repair is what publishes a device's
+    // own index content, and with it withheld the queue behind it has nowhere to
+    // go.
+    //
+    // A correct fix needs the index writer to stop publishing absence as deletion
+    // (§2) so that a fresh joiner's index write cannot subtract in the first
+    // place. Until then this line is knowingly wrong in the direction recorded
+    // above. Do not "fix" it alone.
     let first_sync_with_this_server = local_state.document_cursors.is_empty();
+    let recover_local_tombstones = local_state.needs_storage_recovery();
     if first_sync_with_this_server {
-        trace_pre_pull_repair("first sync: index repair suppressed, authored lines only");
+        trace_pre_pull_repair(
+            "first sync (no pulled account index yet): index repair suppressed, authored lines only",
+        );
+    }
+    if recover_local_tombstones {
+        trace_pre_pull_repair("sync-state recovery: durable tombstones will be re-expressed");
     }
     let known_documents = crdt_docs.known_document_ids();
     let mut missing_schemes = workspace
@@ -1214,17 +1387,30 @@ fn queue_local_only_documents_before_pull(
         knotq_model::SchemeId,
         HashSet<String>,
         Option<Vec<knotq_model::Item>>,
+        HashSet<String>,
+        HashSet<String>,
     );
     let compared: Vec<Option<LocalAheadEntry>> =
         crate::parallel::map_ordered(&schemes, |(scheme_id, local)| {
             let scheme_id: &knotq_model::SchemeId = scheme_id;
-            let crdt_items = crdt_docs.raw_scheme_items(*scheme_id).ok().flatten()?;
-            if local.items == crdt_items
+            // One decode for all three answers: this closure runs for every
+            // scheme on every pull, and each accessor used to decode the whole
+            // document again.
+            let summary = crdt_docs
+                .raw_scheme_entry_summary(*scheme_id)
+                .ok()
+                .flatten()?;
+            let crdt_items = summary.items;
+            let deleted_items = summary.deleted;
+            let tombstoned_items = summary.tombstoned;
+            if (local.items == crdt_items
+                && !(recover_local_tombstones && !deleted_items.is_empty()))
             // An empty plain scheme is the known stale-file shape: a failed
             // materialization/save can clear the UI snapshot while the
             // durable CRDT still has content. Never turn that into a
             // deletion; the normal materialization pass restores it.
             || (local.items.is_empty() && !crdt_items.is_empty())
+                && !(recover_local_tombstones && !deleted_items.is_empty())
             {
                 return None;
             }
@@ -1243,6 +1429,19 @@ fn queue_local_only_documents_before_pull(
                         .is_none_or(|crdt_item| **crdt_item != **item)
                 })
                 .map(|item| item.id.to_string())
+                .collect();
+            // Rows the document has no entry for AT ALL — not a tombstone, no
+            // entry. They are "ahead" only because the plain copy lists them,
+            // which is the weakest possible evidence of a local edit: the plain
+            // files are a projection of the documents, so a row can be there
+            // because a materialization of some OTHER document put it there. The
+            // post-pull repair needs to tell these apart from a row whose live
+            // entry this device really did edit, so pass the distinction along.
+            let absent_from_document: HashSet<String> = local
+                .items
+                .iter()
+                .map(|item| item.id.to_string())
+                .filter(|id| !crdt_by_id.contains_key(id) && !tombstoned_items.contains(id))
                 .collect();
             // Lines the CRDT has and the plain copy does not are NOT treated as
             // local deletions. "Plain lacks it" is ambiguous — the user deleted
@@ -1281,14 +1480,31 @@ fn queue_local_only_documents_before_pull(
                 ahead
             };
             let carries_crdt_only = carried_crdt_items.is_some();
-            if !ahead.is_empty() || carries_crdt_only {
-                return Some((*scheme_id, ahead, carried_crdt_items));
+            if !ahead.is_empty()
+                || carries_crdt_only
+                || (recover_local_tombstones && !deleted_items.is_empty())
+            {
+                return Some((
+                    *scheme_id,
+                    ahead,
+                    carried_crdt_items,
+                    deleted_items,
+                    absent_from_document,
+                ));
             }
             None
         });
-    for (scheme_id, ahead, carried_crdt_items) in compared.into_iter().flatten() {
+    let mut local_deleted_items: HashMap<knotq_model::SchemeId, HashSet<String>> = HashMap::new();
+    let mut local_absent_items: HashMap<knotq_model::SchemeId, HashSet<String>> = HashMap::new();
+    for (scheme_id, ahead, carried_crdt_items, deleted_items, absent) in
+        compared.into_iter().flatten()
+    {
+        local_absent_items.insert(scheme_id, absent);
         if let Some(items) = carried_crdt_items {
             crdt_only_items.insert(scheme_id, items);
+        }
+        if !deleted_items.is_empty() {
+            local_deleted_items.insert(scheme_id, deleted_items);
         }
         local_ahead_items.insert(scheme_id, ahead);
     }
@@ -1324,6 +1540,7 @@ fn queue_local_only_documents_before_pull(
         workspace: rewrites_index,
         ..WorkspaceCrdtChangeSet::default()
     };
+    changeset.deleted_items = local_deleted_items.clone();
     changeset
         .schemes
         .extend(missing_schemes.iter().map(|(scheme_id, _)| *scheme_id));
@@ -1371,6 +1588,12 @@ fn queue_local_only_documents_before_pull(
         .iter()
         .map(|(_, document)| *document)
         .collect();
+    full_documents.extend(
+        local_deleted_items
+            .keys()
+            .filter_map(|scheme_id| workspace.scheme_sync.get(scheme_id))
+            .map(|metadata| metadata.id),
+    );
     if changeset.workspace {
         full_documents.insert(workspace.sync.id);
     }
@@ -1394,6 +1617,7 @@ fn queue_local_only_documents_before_pull(
         changeset,
         documents,
         local_ahead_items,
+        local_absent_items,
     })
 }
 

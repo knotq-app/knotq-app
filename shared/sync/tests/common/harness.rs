@@ -488,6 +488,26 @@ impl Harness {
     /// Arm a one-shot `crdt_schema_invalid` rejection on the test server so the
     /// next push call deterministically exercises the engine's self-heal path.
     /// Panics on an HTTP harness (fault injection is only available in-memory).
+    /// Drop one scheme's persisted CRDT state on a device and rebuild, as a
+    /// relaunch does when that one state file is unreadable.
+    pub fn lose_crdt_state_for_scheme(&mut self, key: DeviceKey, scheme: SchemeId) {
+        let document = self.device(key).scheme_document_id(scheme);
+        self.device_mut_for_surgery(key)
+            .lose_crdt_state_for_document(document);
+    }
+
+    /// See [`TestDevice::drop_item_from_crdt_only`].
+    pub fn drop_item_from_crdt_only(&mut self, key: DeviceKey, scheme: SchemeId, item: ItemId) {
+        self.device_mut_for_surgery(key)
+            .drop_item_from_crdt_only(scheme, item);
+    }
+
+    /// See [`TestDevice::drop_scheme_from_plain_only`].
+    pub fn drop_scheme_from_plain_only(&mut self, key: DeviceKey, scheme: SchemeId) {
+        self.device_mut_for_surgery(key)
+            .drop_scheme_from_plain_only(scheme);
+    }
+
     pub fn reject_next_push_with_schema_invalid(&self) {
         self.require_in_memory_server()
             .reject_next_push_with_schema_invalid();

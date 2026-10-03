@@ -176,6 +176,85 @@ impl TestDevice {
         // local_state is kept as-is.
     }
 
+    /// Drop one document's persisted CRDT state and rebuild the store from what
+    /// is left, as a relaunch does after that document's state file came back
+    /// unreadable. `load_from_dir` isolates per-file failures, so the rest of
+    /// the device survives — and the document is rebuilt from the plain
+    /// workspace, which is where a tombstone can go missing.
+    pub fn lose_crdt_state_for_document(&mut self, document: DocumentId) {
+        self.crdt_states.remove(&document);
+        self.store_crdt = WorkspaceCrdtDocuments::from_states(
+            &self.workspace,
+            self.replica_id,
+            &self.crdt_states,
+        )
+        .expect("rebuild store_crdt after losing one document's state");
+    }
+
+    /// Leave the row in the plain workspace but give its scheme a CRDT document
+    /// that has no entry for it at all — not a tombstone, no entry. That is the
+    /// state a device reaches when one scheme's CRDT state file comes back
+    /// unreadable and the document is repopulated from a plain copy written at a
+    /// different time, and it is what makes the row count as "locally ahead" at
+    /// the next pull.
+    pub fn drop_item_from_crdt_only(&mut self, scheme: SchemeId, item: ItemId) {
+        let document = self.scheme_document_id(scheme);
+        let items = &mut self
+            .workspace
+            .schemes
+            .get_mut(&scheme)
+            .expect("unknown scheme")
+            .items;
+        let index = items
+            .iter()
+            .position(|entry| entry.id == item)
+            .expect("the plain copy does not hold that item");
+        let removed = items.remove(index);
+        self.crdt_states.remove(&document);
+        self.store_crdt = WorkspaceCrdtDocuments::from_states(
+            &self.workspace,
+            self.replica_id,
+            &self.crdt_states,
+        )
+        .expect("repopulate the scheme document without the row");
+        self.crdt_states = self.store_crdt.document_states();
+        self.workspace
+            .schemes
+            .get_mut(&scheme)
+            .expect("unknown scheme")
+            .items
+            .insert(index, removed);
+    }
+
+    /// Drop a scheme from the plain workspace and its sync metadata, leaving its
+    /// CRDT document in place and recording NO deletion tombstone.
+    ///
+    /// This is the state a device reaches when a pull drops a scheme it held —
+    /// `restore_unpublished_schemes_dropped_by_pull` reports exactly this case
+    /// ("the pull dropped N scheme(s) this device held") and deliberately
+    /// declines to rebuild a published one. The device is then holding a partial
+    /// view of the account, and the question this models is what its next
+    /// workspace-index write does with the part it no longer has.
+    pub fn drop_scheme_from_plain_only(&mut self, scheme: SchemeId) {
+        self.workspace.schemes.remove(&scheme);
+        self.workspace.scheme_sync.remove(&scheme);
+        for folder in self.workspace.folders.values_mut() {
+            folder
+                .children
+                .retain(|child| *child != NodeRef::Scheme(scheme));
+        }
+    }
+
+    /// What this device's own CRDT document says the scheme contains, as
+    /// opposed to what its plain workspace says. The two must agree (the
+    /// projection law); a test that damages one half reads both.
+    pub fn crdt_scheme_item_texts(&self, scheme: SchemeId) -> Vec<String> {
+        self.store_crdt
+            .materialized_scheme_items(scheme)
+            .map(|items| items.iter().map(|item| item.text()).collect())
+            .unwrap_or_default()
+    }
+
     // --- pending-queue inspection ----------------------------------------------
 
     /// Number of edits currently in the outbound pending queue.

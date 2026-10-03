@@ -34,3 +34,6 @@ backend/
 GoogleService-Info.plist
 *.aab
 *.apk
+
+# Local wrangler dev state (miniflare sqlite), never source.
+.wrangler/

@@ -824,9 +824,19 @@ impl Attribution {
             }
         }
         for (date, scheme) in &before.daily {
+            // Say how much the day held. A binding is what makes a page
+            // reachable from the calendar at all, so losing one that held lines
+            // is a different severity from losing an empty day that paging the
+            // calendar back auto-created, and the message has to separate them.
+            let held = before
+                .items
+                .values()
+                .filter(|holder| *holder == scheme)
+                .count();
             if !after.daily.contains_key(date) {
                 violations.push(format!(
-                    "device {device}: {label} lost the Daily Queue binding for {date} ({scheme})"
+                    "device {device}: {label} lost the Daily Queue binding for {date} \
+                     ({scheme}, held {held} line(s))"
                 ));
             }
         }

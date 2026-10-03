@@ -888,6 +888,37 @@ impl YrsSchemeDocument {
             .collect())
     }
 
+    /// `scheme_items`, `deleted_item_ids` and `tombstoned_item_ids` in ONE
+    /// decode of the document. Every pull compares every scheme's plain copy
+    /// against its document, which is the most expensive thing a caught-up sync
+    /// does (36 ms per pull on a 170-scheme account), and `sorted_entries`
+    /// decodes the whole document each time it is called — so that comparison
+    /// asks for all three at once rather than paying for three passes.
+    pub(crate) fn scheme_entry_summary(&self) -> anyhow::Result<SchemeEntrySummary> {
+        let mut summary = SchemeEntrySummary::default();
+        for (id, entry) in self.sorted_entries()? {
+            if entry.deleted {
+                if !entry.snapshot_json.is_empty() {
+                    summary.deleted.insert(id.clone());
+                }
+                summary.tombstoned.insert(id);
+                continue;
+            }
+            // Skip partial entries (empty snapshot) left by a pre-tombstone
+            // concurrent remove/edit clobber, so materialization stays
+            // consistent across replicas.
+            if entry.snapshot_json.is_empty() {
+                continue;
+            }
+            let Some(mut item) = entry.meta else {
+                continue;
+            };
+            item.content = ItemContent::from_inlines(entry.content);
+            summary.items.push(item);
+        }
+        Ok(summary)
+    }
+
     pub(crate) fn scheme_items(&self) -> anyhow::Result<Vec<Item>> {
         Ok(self
             .sorted_entries()?
@@ -965,6 +996,21 @@ pub(crate) fn item_text_ref(item_map: &MapRef, txn: &impl ReadTxn) -> Option<Tex
         Some(Out::YText(text)) => Some(text),
         _ => None,
     }
+}
+
+/// One decode of a scheme document, answering the three questions a pull's
+/// plain-vs-document comparison asks of it.
+#[derive(Clone, Debug, Default)]
+pub(crate) struct SchemeEntrySummary {
+    /// Live rows, exactly as `scheme_items` reports them.
+    pub(crate) items: Vec<Item>,
+    /// Tombstones that can be replayed as durable deletions. Deliberately
+    /// separate from `items`: a missing live row is ambiguous, but a preserved
+    /// tombstone with a snapshot is causal evidence of a local delete and can
+    /// be replayed after the sync journal is recovered.
+    pub(crate) deleted: HashSet<String>,
+    /// Every id the document holds as removed, partial entries included.
+    pub(crate) tombstoned: HashSet<String>,
 }
 
 /// What each side of an account-switch merge held live in one document

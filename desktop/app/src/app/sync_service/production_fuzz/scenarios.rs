@@ -21,6 +21,7 @@ fn world(seed: u64, accounts: usize) -> World {
             steps: 0,
             chaos: false,
             maintenance_coverage: false,
+            journal_loss: false,
         },
     )
 }
