@@ -559,7 +559,19 @@ async fn run_sync_attempt(
                 // its pull resolves the staleness, so no error state is written.
                 return AttemptOutcome::EpochStale;
             }
+            // `eprintln!` alone has never been readable by anyone who needed it:
+            // launched from Finder — which is how the app is actually run — stderr
+            // goes nowhere, and the popover truncates the message to a line. So the
+            // only record of a hard sync failure disappeared at the moment it
+            // mattered. Keep it on disk next to `knotq-notif.log` and
+            // `knotq-google.log`, which exist for exactly this reason, with the same
+            // rotation so it cannot grow without bound.
+            //
+            // Hard failures only: this arm has already returned for the two
+            // self-healing outcomes (an expired token, a stale push epoch), so every
+            // line here is a failure the user was actually shown.
             eprintln!("sync failed: {err:#}");
+            sync_log(&format!("sync failed: {err:#}"));
             let is_offline = err.downcast_ref::<SyncNetworkUnreachable>().is_some();
             let message = format!("{err:#}");
             // The store queue alone undercounts after a restart, when unpushed
@@ -582,6 +594,19 @@ async fn run_sync_attempt(
             AttemptOutcome::Done
         }
     }
+}
+
+/// Append one hard sync failure to `knotq-sync.log` in the app data directory.
+///
+/// Rotated by `append_diagnostic_line` at 1 MiB with one previous generation, and
+/// never fatal: a diagnostic that cannot be written must not disturb the thing it
+/// is describing.
+pub(crate) fn sync_log(message: &str) {
+    knotq_storage_json::append_diagnostic_line(
+        &knotq_storage_json::data_dir(),
+        "knotq-sync.log",
+        &format!("[{}] {message}", chrono::Utc::now().to_rfc3339()),
+    );
 }
 
 // Returns Err(()) only when the session is gone (refresh token dead) and the
