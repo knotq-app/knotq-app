@@ -2356,6 +2356,33 @@ document holds everything the plain workspace does, instead of whether they are
 equal, and `workspace_index_mismatch` uses it. The document is *expected* to hold
 more once writes retain.
 
+**And §1 was then built on top of it, so the ordering claim below is measured too.**
+Everything on `spike/placement-claim-and-index-retention`: the `item_home` map, the
+claim-aware dedupe, and — the part the earlier §1 attempt skipped — a claim-aware
+`reconcile_item_placements`, which may only tombstone a claimed row on a replica that
+can SEE the claimed home. That restates the destructive half's safety argument
+instead of inheriting one a claim invalidates, and it is why
+`the_dedupe_winner_does_not_depend_on_which_schemes_a_device_loaded` is un-ignored
+and passing there, for the first time, with a control test proving the claim is doing
+the work.
+
+The full matrix, every combination at both depths:
+
+| Tree | gate sweep 128x200 | census 400x300 |
+|---|---|---|
+| `origin/main` | 1 — journal 20223 | 5 |
+| the branch that landed | 1 — chaos 6 | **1** — chaos 38 |
+| §1 only | 3 — single 10118, journal 20116, chaos 6 | not run |
+| §2 only | 2 — single 10000, journal 20037 | 14 |
+| §1 + §2 | 2 — chaos 30, journal 20100 | 13 |
+
+§1 + §2 is the only thing that removes **chaos 6 and chaos 38 together**, and it takes
+single-account to 0/128 at gate depth. It is still 13x worse than the landed branch at
+census depth, and chaos **253** and **295** recur across configurations, so a fourth
+part is missing beyond claim + retention + comparison. Do not read the ordering
+conclusion above as "§1 unlocks §2": §1 makes §2 better (14 -> 13 at census, and the
+seeds it fixes are the ones that matter most) and neither order is sufficient alone.
+
 Together they are a different world — **317 failing seeds become 2**:
 
 | Tree | gate sweep (128x200) | census (400x300) |
