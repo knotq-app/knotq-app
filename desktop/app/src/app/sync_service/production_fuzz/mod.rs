@@ -1122,16 +1122,13 @@ fn replay_journal_loss_seed() {
 /// or none. Teaching it to fail the Nth request would make a unit-level
 /// reproduction possible and is worth doing.
 ///
-/// **`#[ignore]`d because it FAILS: it pins an open bug, not a fixed one.** The
-/// one-line fix — ask the workspace document's pull cursor instead of
-/// `document_cursors.is_empty()` — is written out at that predicate in
-/// `queue_local_only_documents_before_pull` along with what it cost when measured:
-/// chaos 109 **wedges** and 142/269 lose content, taking the 1200-seed census from
-/// one failing seed to three. The real fix is TODO.md §2 — stop the index writer
-/// publishing absence as deletion — after which a fresh joiner's index write
-/// cannot subtract at all.
+/// **FIXED 2026-10-04**, and not by any of the five things tried first. The
+/// predicate asked "does this device have a cursor"; the right question is "has it
+/// ever exchanged anything", because a cursor at sequence zero in both directions
+/// is a placeholder, not history. Measured in this very run: the offending device
+/// reads `cursors=11 moved=0` while every healthy device reads `moved=N` of `N`.
+/// See `queue_local_only_documents_before_pull`.
 #[test]
-#[ignore = "open bug: TODO.md 0D — a fresh install whose first sync failed publishes its own index"]
 fn a_fresh_install_whose_first_sync_failed_does_not_publish_its_own_index() {
     run_seed(
         38,
