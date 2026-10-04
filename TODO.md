@@ -1900,6 +1900,76 @@ index writer publishing absence as deletion — after which a fresh joiner's ind
 write cannot subtract at all, and the suppression stops being load-bearing in
 either direction.
 
+## 0E. The PR gate's own sweep: main fails 20223, this tree fails chaos 6
+
+Found 2026-10-04, by running CI's gate rather than reading its name. **Both trees
+fail it, and which seed they fail on is the whole decision.**
+
+The PR job (`ci.yml` -> `.github/actions/sync-stress`) runs the production fuzzer at
+**128 seeds x 200 steps**, not the 400 x 300 this file's census uses, and
+`run-sync-stress.sh --fuzz` — the command CLAUDE.md gives for local verification —
+**does not run the production fuzzer at all.** That is why a locally green
+`--fuzz` plus a green census still met a red gate. Run the composite action's
+command too:
+
+```sh
+KNOTQ_FUZZ_SEEDS=128 KNOTQ_FUZZ_STEPS=200 cargo test -p knotq-app --release production_fuzz
+```
+
+| Tree | gate sweep | reproduces as a single seed? |
+|---|---|---|
+| `origin/main` | **20223** — a Daily page, its line and its binding lost | yes, deterministically |
+| this tree | **chaos 6** — `device 4 still has 2 unpushed edit(s) after settling (wedged)` | only with the sweep's environment, below |
+
+### Replaying a sweep seed needs the sweep's environment
+
+chaos 6 passes as a plain `replay_production_seed` at 200 steps and fails in the
+sweep, which looks like the process-dependence recorded below and is not. `run_seeds`
+wraps the whole sweep in `with_fuzz_test_environment(true)`, so
+`KNOTQ_SQUASH_MIN_STATE_BYTES=0` and `KNOTQ_SQUASH_MIN_RATIO=1` are set for every
+seed and epoch squashes fire constantly. Add them and it reproduces every time, on
+this tree and never on main:
+
+```sh
+KNOTQ_SQUASH_MIN_STATE_BYTES=0 KNOTQ_SQUASH_MIN_RATIO=1 \
+  KNOTQ_REPRO_SEED=6 KNOTQ_FUZZ_STEPS=200 $BIN --ignored --exact \
+  app::sync_service::production_fuzz::replay_production_seed
+```
+
+**Do this before calling any sweep result unattributable.**
+
+### It is the move->index fix, and that fix is worth more than the seed
+
+Ablated one change at a time against the gate sweep:
+
+| Ablation | gate sweep |
+|---|---|
+| the integrity re-offer off | **worse** — 6 *and* 34 |
+| the empty-index rescue off | 6 (unchanged) |
+| **the move->index fix off** | **green, 33 passed, 0 failed** |
+
+And with the move->index fix off, at census depth: chaos **194**, single **10054**
+and single **10117** all fail — three reproducible content losses. So the gate can
+be made green by giving back three data-loss bugs, which is the wrong trade.
+
+### What is known about chaos 6, and what is not
+
+Device 4's queue holds two `PersonalWorkspace` edits whose origin is
+`Batch([])` — a synthetic operation, the shape `merge_sync_crdt_states` pushes when
+it re-expresses a population. They do not drain.
+
+A harness explanation was investigated and **falsified**: the settle loop injects
+faults like any other sync, so it can crash a device in its last round and then
+judge it for the pending edits that crash guarantees. Adding a bounded fault-free
+drain before the verdict — tried in three positions, including after the passive
+checks, since `view()` is what flushes deferred changes into countable pending edits
+— leaves chaos 6 failing. Devices stay busy for all eight drain rounds. So this is
+a real wedge, not an oracle artifact, and the harness change was reverted rather
+than kept for the look of it.
+
+What is still unexplained is why those two edits cannot be pushed. That is where the
+next session should start, with the repro line above.
+
 ### Four attempts at it, and every one trades chaos 38 for chaos 109
 
 Worth the space, because each looks like the obvious next idea and all four cost
