@@ -166,6 +166,15 @@ pub(super) fn sync_snapshot_in(
     // id. The carried snapshot is queued for push so the server unions it in too;
     // `queue_workspace_bootstrap_updates` only force-pushes docs with no server base.
     let account_switched = workspace.sync.id != previous_workspace_document_id;
+    // Carrying content is only ever an improvement; carrying *absence* is a
+    // deletion. An empty (two-byte) state has nothing to preserve, so taking it
+    // as the source replaces whatever the canonical id holds with nothing — and
+    // `from_states` then builds the index unseeded, which switches off the
+    // pre-pull repair and lets the next pull materialize over every local-only
+    // page. Journal-loss seed 20223 reached exactly that: a store whose index
+    // document had been re-keyed to a stray id (see
+    // `WorkspaceStore::reroot_pre_sign_in_edits`) offered its empty document as
+    // the source and overwrote the account's real 12 KB index with it.
     let reidentified_workspace = if account_switched {
         let source = if crdt_states.contains_key(&previous_workspace_document_id) {
             Some(previous_workspace_document_id)
@@ -179,8 +188,46 @@ pub(super) fn sync_snapshot_in(
         };
         source
             .and_then(|document| crdt_states.remove(&document))
-            .map(|state| {
-                crdt_states.insert(workspace.sync.id, state.clone());
+            .map(|carried| {
+                // This rescue does TWO things, and they must not be confused:
+                // it makes the canonical id hold this device's index locally,
+                // AND it offers that index to the server as a full snapshot. The
+                // second is load-bearing on its own — the server may not hold
+                // what this device's index does.
+                //
+                // Carrying content does both. Carrying ABSENCE does neither: an
+                // unwritten Yjs document is the two-byte update `[0, 0]`, not
+                // zero-length, so a stale id with no content is still *present*
+                // in `crdt_states` and used to be chosen over the canonical id's
+                // real state — replacing the account's index with nothing and
+                // queueing the nothing for push. `from_states` then built the
+                // index unseeded, which switches off
+                // `queue_local_only_documents_before_pull` and lets the pull
+                // materialize over every local-only page (journal-loss seed
+                // 20223: a Daily page, its line and its queue binding).
+                //
+                // So when there is nothing to carry and the canonical id already
+                // holds the index, keep what is there and offer THAT instead.
+                // Suppressing the whole rescue in that case was tried and loses
+                // the push half: chaos 38 ends with the account missing a folder
+                // this device held. Both halves are needed, which is why this is
+                // a substitution and not a `filter`.
+                let state = if knotq_sync::crdt_state_is_empty(&carried) {
+                    match crdt_states.get(&workspace.sync.id) {
+                        Some(canonical) if !knotq_sync::crdt_state_is_empty(canonical) => {
+                            canonical.clone()
+                        }
+                        // Both sides are empty: there is no index anywhere to
+                        // prefer, so behave exactly as before.
+                        _ => {
+                            crdt_states.insert(workspace.sync.id, carried.clone());
+                            carried
+                        }
+                    }
+                } else {
+                    crdt_states.insert(workspace.sync.id, carried.clone());
+                    carried
+                };
                 CrdtDocumentUpdate {
                     document: workspace.sync.id,
                     kind: SyncDocumentKind::PersonalWorkspace,

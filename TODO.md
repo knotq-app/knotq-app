@@ -86,6 +86,185 @@ When adding a repair, a normalization, or any path that writes one half of a
 device's state, the question to answer is "does the other half get the same
 write?" — 0d, 0e and 0f below were each a *no*.
 
+## The five laws, and why they compose
+
+The projection law above is one of five. Stating them together is what turns a
+pile of seed fixes into an argument, because the thing we actually want is a
+single global property:
+
+> **No intent the user applied and the device acknowledged is ever lost.**
+
+That is not directly testable — "ever" quantifies over every interleaving of
+edits, syncs, crashes, interruptions and clock changes. It decomposes into five
+local properties that *are* testable, and whose conjunction implies it.
+
+**L1 — Projection.** A device's plain `Workspace` is exactly what its own CRDT
+documents materialize to. *Checked:* `desktop/state/tests/projection_law.rs`,
+every step of the production fuzzer, and `KNOTQ_CHECK_DISK=1` against the real
+data directory. *Stated in:* `shared/sync/src/projection.rs`.
+
+**L2 — Intent durability.** When a command is acknowledged to the UI, its
+effect is already in the durable CRDT. *Checked:* the production fuzzer drives
+real `AppState` and real disk, and its crash model (`CrashPoint`) kills the
+process at each save boundary.
+
+**L3 — Publication recoverability.** What a device owes the server is a
+function of durable state alone. **This is the law that was missing**, and
+every entry in this file whose symptom is "an edit was dropped" is a violation
+of it. The obligation lived only in `local_state.pending` — a queue of encoded
+updates — and nothing anywhere recorded what the server holds in CRDT terms
+(`DocumentSyncCursor` carries sequence numbers and an epoch, not a state
+vector). So the obligation was not merely *forgotten* when that queue was lost,
+it was **unrecoverable**, and the value it degraded to was "I owe nothing" —
+the lossy direction.
+
+**L4 — Replacement safety.** Every path that *replaces* durable state rather
+than merging into it preserves what it discards. A CRDT merge is lossless by
+construction, so every non-merge write is where loss can enter, and each one
+owes a proof. The replacement sites are: epoch adoption
+(`adopt_squashed_document`), account-switch reseed, crash recovery, the
+loaders' error paths, and — until 0x — the integrity repair.
+
+**L5 — Merge.** Yrs merge is commutative, associative and idempotent, and a
+deletion survives merging with a state that does not know about it. Given.
+
+**The composition.** L1 says what the user sees is what the device knows. L2
+says what the device knows survives the process dying. L3 says the device can
+always work out what to tell the server. L4 says nothing silently drops what
+the device knows. L5 says once the server is told, every device agrees. Chain
+them and an acknowledged intent reaches every device, which is the global
+property.
+
+Each law also says what a *violation* looks like, which is why attribution got
+cheaper: an L1 break shows up as a field changing with no remote writer, an L3
+break as a device that keeps something forever without publishing it, an L4
+break as content vanishing at a specific sync step.
+
+**Where they stand.** L1, L2 and L5 hold and are checked. L4 held everywhere
+except the integrity repair, which 0x fixes. L3 is **partially** restored: 0x's
+re-offer covers every document the server's integrity proof names, which is the
+reachable majority. It is not a theorem, and the remaining hole is not a
+missing line of code but a missing fact — see "Why Case A cannot be closed with
+a cursor heuristic" and 0y.
+
+### Why a full snapshot is safe where re-asserting the plain files is not
+
+These look like the same operation and are not, and the difference is the whole
+reason 0x could be fixed without reintroducing `offline_device_join`:
+
+- A **full snapshot** republishes the structs the document already holds, under
+  their original ids. Merging it into the server cannot resurrect anything the
+  account tombstoned — the account's delete refers to exactly those struct ids
+  and wins — and cannot erase anything the server has that this device lacks,
+  because a merge only adds. It carries this device's tombstones, which is the
+  point.
+- **Re-asserting the plain workspace** (what `queue_local_only_documents_before_pull`
+  does) writes plain items *into* the document, minting NEW structs with new
+  ids that the account has never tombstoned. That is precisely how a fresh
+  install's starter content comes back from the dead.
+
+So "offer the whole document" is a safe default and "re-assert what the files
+say" is not. The workspace index is excluded from the former anyway: its content
+*is* the identity, and publishing a pre-join index over the account's costs the
+account everything.
+
+### Making L3 total
+
+Persist, per document, the state vector the server is known to hold, **in the
+same file as the document's bytes** so the two cannot be lost independently.
+Then `owed(doc) = encode_diff(doc, acked_sv(doc))`, the pending queue becomes a
+cache, and the degraded value of a missing `acked_sv` is the empty vector —
+which yields a full snapshot, which by the argument above is lossless. That
+flips the failure direction of every auxiliary-state loss from "sends too
+little" to "sends too much", and too much is free.
+
+The one discontinuity is the join boundary: before a device has joined an
+account, its documents are its own and must not be published over the
+account's; after, they must. That needs a durable witness outside the journal
+(0y) — `workspace.sync.id` cannot serve, because
+`canonicalize_personal_sync_identity` derives it from the account id at
+sign-in, before any sync has happened. Chaos seed 11 is what a fix that skips
+this step looks like in practice: a fresh install's starter tombstones
+published onto the account's live rows.
+
+### The coverage argument, by cases — and the case that stays open
+
+A scheme document on a device can diverge from the server for any reason at
+all — a lost journal, a dropped queue entry, a push the server did not keep.
+Rather than enumerate causes, enumerate what the device can *know*:
+
+- **Case A — no cursor for the document. STILL OPEN.** The device cannot
+  compute a meaningful delta, and the server's integrity proof does not cover
+  it either (its scope is documents whose cursor has advanced). Two attempts to
+  re-offer anyway each cost other data, and both are recorded below because the
+  second one is the real lesson. Test:
+  `an_offline_deletion_survives_an_unmarked_journal_loss`, `#[ignore]`d and
+  naming 0y.
+- **Case B — a cursor exists.** The document is in the integrity proof's
+  scope, and the proof runs on exactly the syncs that matter: it is gated on
+  `local_state.pending.is_empty()`, so it fires precisely when the queue is not
+  explaining the divergence. 0x makes that proof reconcile both ways. Test:
+  `an_offline_deletion_survives_losing_only_the_outbound_queue`, which fails
+  without it with the reported symptom.
+- **Case C — the server has no base.** The existing bootstrap already sends a
+  full snapshot.
+
+The cases are exhaustive over "does this device have a cursor, and does the
+server have a base". B and C are fixed; A is not, so the class is covered for
+every document the server can name and open for the rest.
+
+**Measured, not assumed.** Case B's test was run with its fix reverted and
+fails with the reported symptom; the integrity path is exercised by the
+in-process server in `shared/sync/src/testing.rs`, which mirrors the backend's
+proof.
+
+#### Why Case A cannot be closed with a cursor heuristic
+
+Two attempts, both reverted, both caught by the fuzzer against a measured
+baseline rather than by review:
+
+1. **Re-offer a full snapshot of every cursor-less document.** Safe in the
+   sense that matters — a snapshot merges into any base and cannot erase
+   remote structs — but enormously loud: on a device that lost its journal it
+   re-sends the entire workspace. Production fuzz seed **20082** went from
+   passing to losing an archived folder on that change alone.
+2. **Re-offer an exact `diff(local, server_state_vector)`** instead, the
+   precise statement of what is owed. That fixed 20082 and then chaos seed
+   **11** lost starter item `…2009` from scheme `…0102`. Both ids are
+   *derived*, so they are byte-identical on every account and every fresh
+   install: the device was publishing its own **pre-join starter tombstones**
+   onto rows the account holds live, which is `starter_content_join.rs` /
+   `offline_device_join.rs` reached by a new route.
+
+**The lesson is the overloading.** "This device has no cursor for the
+document" means one of three things that need opposite handling:
+
+| State | Correct behaviour | Distinguishable? |
+|---|---|---|
+| First join | re-assert nothing | **no** |
+| Lost journal | re-assert everything | **no** |
+| Account switch | defer to the switch reseed | yes (`needs_full_reseed`) |
+
+A first join and a lost journal are indistinguishable from durable state today,
+because `canonicalize_personal_sync_identity` derives `workspace.sync.id`
+straight from the account id **at sign-in**, before any sync has happened. A
+device that has synced for months and lost its journal presents exactly as one
+that just signed in. Any rule keyed on cursors therefore has to guess, and
+guessing wrong in either direction destroys data belonging to somebody.
+
+That is what 0y is for, and why it is a prerequisite rather than a nicety.
+
+### The hazard is now in the sweep, not just in a repro
+
+`desktop_production_journal_loss_fuzz` runs the everyday single-account
+configuration with one addition: a device periodically loses `sync-state.json`
+between quit and launch, with the CRDT documents left intact. It is checked by
+the same no-silent-loss oracle as every other step — deliberately *not* treated
+as a modeled-loss boundary the way a crash is, because losing bookkeeping about
+what was sent must cost nothing. `journal_loss` is off in every other
+configuration and the roll values it claims fall through to the identical local
+action when off, so no catalogued seed's trajectory moves.
+
 ## 0a. [FIXED] Workspace identity re-adoption never actually persisted, causing repeated re-keying that eventually dropped a scheme's binding
 
 **Discovered 2026-09-17** via a 500-seed sweep of
@@ -1214,6 +1393,107 @@ any device in that seed crosses an account boundary, so it is not the known
 account-switch exclusion (0i), and two hypotheses for it are already disproved
 (see the gate section above — read those before re-deriving them).
 
+### A second nightly step was running zero tests
+
+Found 2026-10-02 while running the nightly's own commands by hand. Its
+multi-origin daily-queue step passed `-- --ignored --exact
+daily_queue_multiorigin_stress`, and `--ignored` means *run only ignored tests*.
+The test was un-ignored when it became fast enough for every `cargo test`, so
+from that moment the step reported success having run nothing:
+
+    running 0 tests
+    test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 19 filtered out
+
+Same shape as the link failure above — a nightly step that looked green and was
+not doing its job — and the second one found in this file. Fixed by
+`--include-ignored`, which runs the test whether or not it is ignored, so
+re-ignoring it later cannot empty the step again. The coverage was not entirely
+lost in the meantime: the test is in `sync_property_model`, so the deep step
+above ran it at that step's `KNOTQ_FUZZ_SEEDS`, just never at the 3000 this step
+asks for.
+
+**The lesson, again: run the gate's own command lines and read how many tests
+they report.** Both holes were invisible to anyone reading the YAML.
+
+### Re-measured 2026-10-02, after 0A
+
+At the nightly's own depth (`KNOTQ_FUZZ_SEEDS=400 KNOTQ_FUZZ_STEPS=300`,
+one seed per process), of the five seeds the sweep still blocks on:
+
+| Seed | Before | After 0A | Note |
+|---|---|---|---|
+| 332 | fail | **pass** | the resurrection in 0A was its whole mechanism |
+| 389 | fail | **pass** | passed before 0A too, on the current tree |
+| 10117 | fail | **pass** | likewise; the doubled-text gap it pinned is still real, see its section |
+| 194 | fail | fail | a lost Daily Queue *binding*, not a lost item |
+| 10054 | fail | fail | traced below; a different root cause from 0A |
+
+Running the nightly's own four commands at its own depths on that tree gives:
+
+| Nightly step | Result |
+|---|---|
+| `knotq-sync` full suite | green |
+| production_fuzz 400 x 300 | **red**: 194 (chaos), 10054 + 10350 (single), 20223 (journal-loss) |
+| multi-origin daily-queue, 3000 seeds | ran **zero tests** — see the section above |
+| `sync_property_model` 1500 x 400 | green, 15 passed, 2596 s |
+
+Two of those four are newly named and both were attributed before being believed:
+
+- **20223** (journal-loss, loses a Daily scheme + its item + its binding at step
+  33) fails **identically with the 0A rule disabled**, so it is not a regression
+  from it. That sweep had never run at 400 x 300 before, so this is depth, not
+  change — and it is the same Daily-page family as 194.
+- **10350** is not attributable to a seed at all: see "The sweep's answer depends
+  on the PROCESS". It passes 40/40 as its own process and passes in an isolated
+  sweep at one and at four workers. Note that its symptom (step 202, item
+  `92b72501…`, scheme `ba929b98…`) is the one this file records as FIXED on
+  2026-09-24, so the obvious reading — "that fix regressed" — is wrong.
+
+A second run of the same sweep on the same tree then named **10374** instead, and
+that one is real: step 248, device 3 loses schemes `016116db…` "scheme 3485" and
+`11d75484…` "scheme 2540" plus folder `6db57f8c…`, four violations, failing
+identically with the 0A rule disabled. It is a scheme/folder loss — the
+workspace-index class, not the Daily-page class the other three belong to — and
+it is **newly named here**, having been missed by the run that should have found
+it. Treat the list of red seeds in this file as a lower bound.
+
+389 and 10117 passing is a trajectory change, not evidence that the defects they
+exposed are gone — 10117's `concurrent_same_item_creation_with_different_content_doubles_text`
+still fails as a unit test. Treat them as "no longer selected by this corpus".
+
+**10054, traced 2026-10-02.** Not a resurrection and not the placement gate:
+
+- step 239: device 1 moves item `88b70256…` out of Daily 09-17 (`6eff952f`) into
+  scheme `5f4b96ab`.
+- a later step permanently deletes the FOLDER holding `5f4b96ab`
+  (`PermanentlyDeleteFolder { 8d6870c9 } => -folder 8d6870c9 -scheme 5f4b96ab`),
+  so the destination scheme is destroyed and the copy in it goes with it.
+- step 270: device 3, which never saw the move, carries the row from 09-17 to
+  Daily 09-18 (`244425d7`) — a live copy again.
+- step 274: `sync: the pull dropped 1 scheme(s) this device held: 5f4b96ab
+  (published=true unpushed=true …)`, and the server view holds the row nowhere.
+  Daily 09-18 is reported as `materialized no scheme: 069440c6 doc=244425d7
+  live=false deferred=true` — **the account's index has the binding and no node
+  entry**, so a fresh joiner cannot materialize that day at all.
+
+Two separate things to fix, neither of them 0A:
+
+1. `Attribution::moved_into` keeps only the LAST destination of a move
+   (`HashMap::insert`), so `moved_into_a_destroyed_scheme` stops excusing the row
+   once a second move overwrites the entry. Here the first destination *was*
+   destroyed. A `HashMap<ItemId, HashSet<SchemeId>>` would be the faithful shape.
+2. The real defect is the one `materialized_workspace_repair` already names in a
+   comment: *"a day should not reach the index with a binding and no node entry"*.
+   `workspace_index.rs` retains an unloaded scheme's node entry only
+   `if let Some(stored) = stored_nodes.get(&id)`, so a device whose own index
+   document has no entry for it contributes none — and `sync_string_map` then
+   removes it for the whole account. Rebuilding the page in `materialize` is
+   explicitly the wrong fix (chaos 108 / single-account 10214); synthesizing the
+   missing *node entry* at the index write is a different and untried move.
+
+**194** is the same family seen from the other side: the binding itself goes
+missing at settle.
+
 **Decision still to make.** The link fix alone turns the nightly from "red
 because it cannot build" into "red because it finds real seeds". Either
 drain them and keep 400 x 300, or bring the file down to a depth that is
@@ -1221,6 +1501,1242 @@ actually green and raise it deliberately afterwards — which is what the note
 above ("raising the gate's depth is worth doing only once the sweep is green")
 already says, written while this file quietly specified a higher one.
 
+
+## 0x. [FIXED] The integrity repair resolved every disagreement in the server's favour, and deleted unsent local work to do it
+
+**Reported from the field 2026-10-01**, and the first entry here that came from a
+user rather than a fuzzer: a line deleted while the app showed "offline" was back
+on every device after the next sync. Consistent, so not a convergence failure —
+the deletion was simply dropped.
+
+**Reproduced** by `shared/sync/tests/offline_deletion_durability.rs`, which states
+the property the report violates — *a deletion made while a device cannot reach
+the server survives whatever happens before its next successful sync* — and walks
+the interruptions a real offline period can contain: a restart, repeated failed
+syncs, a push reseed, a concurrent edit elsewhere, a damaged journal, an unmarked
+journal loss, losing one scheme's CRDT state, an abandoned unlanded pull, and
+emptying a scheme completely. Nine of the ten passed. The tenth — the journal
+gone with nothing marking it — lost the deletion, exactly as reported.
+
+**Root cause: two separate things, both in the integrity-repair path.**
+
+The server periodically proves document hashes to the client. On a mismatch the
+client reset the cursor, re-fetched full state, and then force-**adopted** it:
+
+```rust
+let needs_adoption = |doc: &PulledCrdtDocument| {
+    doc.kind == SyncDocumentKind::Scheme
+        && (integrity_repair_documents.contains(&doc.document)   // <- wrong bucket
+            || cursor.epoch != doc.epoch)                        // genuine squash
+};
+```
+
+Adoption *replaces* the local document. That is correct for an epoch squash,
+where the server's state shares no Yjs history and merging would double every
+item's text. It is wrong for an integrity mismatch, where the epoch is unchanged
+and the two states still share history — a merge there is exact.
+
+The only thing standing between a user's unsent work and that replacement was
+`!local_state.has_pending_for_document(document)`. The pending queue is therefore
+load-bearing for data safety, which it is not durable enough to be: it lives in
+`sync-state.json`, the file that is lost or defaulted in every scenario this
+document already catalogues. `adopt_squashed_document` even names the hazard in a
+comment — *"this is the one place an adoption can cost content"* — and only logs
+it, and the log only covers items the local document **has**, never ones it has
+**deleted**, which is the reported case.
+
+**The second half is that the repair was one-directional.** Merging fixes this
+device's copy of the disagreement. Nothing fixed the server's: with no pending
+entry, the device kept its deletion and could never tell anyone about it. So
+even with the merge in place the account stayed wrong — loss turned into a
+permanent stall.
+
+**The fix** is to treat an integrity mismatch as what the server actually said —
+these two copies disagree — and resolve it symmetrically:
+
+- Integrity-mismatched documents **merge** instead of being replaced. Epoch
+  adoption is untouched and still replaces, which is correct for a squash.
+- After the merge, the mismatched documents are **re-offered to the server as
+  full snapshots**. A snapshot merges into any base, so it can only add; it is
+  scoped to the documents the server named, so it never becomes a workspace-wide
+  reseed; and it needs no pending queue, which is exactly what is missing.
+
+The result is self-correcting: the device ends up a superset of the server, the
+server merges the snapshot, and the next proof agrees.
+
+**A wrong turn worth recording.** The first attempt inferred "my journal was
+lost" from *no cursor history + the account already knows my workspace document*
+and set the existing `storage_recovery_pending` flag. It is wrong, and
+`cross_version_compat::a_document_epoch_from_the_future_does_not_panic` caught
+it: `canonicalize_personal_sync_identity` derives `workspace.sync.id` straight
+from the account id **at sign-in**, before any sync, so a genuine first join is
+indistinguishable from a lost journal by that test. Re-asserting there is the
+`offline_device_join.rs` disaster — the joining device writes its own index over
+the account's. Telling those two states apart needs a witness that survives the
+journal and is written only after a run completes; there is none today (see 0y).
+The fix above avoids needing one, because the server names the documents.
+
+## 0A. [FIXED] The post-pull repair re-expressed rows the pull had just removed
+
+**Chaos 332 and the placement ping-pong family are this one defect.** Found
+2026-10-02 by tracing presence tags, not by reasoning about the landing.
+
+`local_ahead_items` is computed **before** the pull, and the post-pull repair
+re-expresses it afterwards. A row can be in that set for two very different
+reasons, and only the pre-pull comparison can still tell them apart:
+
+- this device's document held the row **live with a different value** — a real
+  local edit that has not been flushed. Edit versus a concurrent remote delete
+  resolves toward keeping the content, deliberately;
+  `persistence_boundary_fuzz_converges` pins that and its comment says so ("the
+  local edit must be re-expressed after the remote tombstone is merged rather
+  than disappearing").
+- this device's document had **no entry for the row at all**. Then the only
+  reason it is in the set is that the plain copy lists it — and the plain files
+  are a projection of the documents, which lags every pull. That is no evidence
+  of an edit, and if the pull now carries a removal for the id, the account knows
+  that row and has deleted or moved it.
+
+The code re-expressed both, so the second case resurrects. The same function
+already refused the mirror inference in the other direction, and had for a long
+time: *"Lines the CRDT has and the plain copy does not are NOT treated as local
+deletions. 'Plain lacks it' is ambiguous."* The converse was never stated.
+
+**The mechanism, measured step by step on 332.** The daily documents are
+`ea4f07d4` for 2026-09-14 and `f9bc2620` for 09-15:
+
+| step | what happens |
+|---|---|
+| 9 | device 1 carries line `…0402` from 09-14 to 09-15: a tombstone in `ea4f07d4`, a `seed:` presence tag in `f9bc2620` |
+| 45 | **device 0 pulls that tombstone and the post-pull repair puts the row back on 09-14** — a `resurrect:` tag in `ea4f07d4`. Device 0's 09-14 document held no entry for the row: `crdt_live=0 tombstoned=0 plain=2` |
+| 53 | device 0, which now sees the row on 09-14, moves it to 09-15: a fresh entry in `f9bc2620` |
+| 55, 56 | devices 1 and 3, which see the row on 09-14, tombstone the 09-15 copy |
+| 60 | device 0's landing removes its own 09-14 resurrection |
+| 70 | the row is live in neither day. The oracle reports it, correctly, as an item no device deleted |
+
+The write itself is `ensure_item_presence`'s `resurrection_epoch` arm, reached
+because `replace_scheme_inner` sees a stored entry that is `deleted` while the
+scheme it is told to write still lists the row. `replace_scheme` is right to have
+that path — an undo, a paste or a retype does re-add a row over a tombstone — but
+a repair is not an edit. It runs precisely because the two halves already
+disagree, which is the one situation where the plain copy's claim carries no
+weight on its own.
+
+**Three measurements that each killed an earlier version of this fix. Read them
+before changing this code again.**
+
+- It is the **post-pull** repair, not the pre-pull one. A pre-pull-only rule
+  leaves 332 failing, because pre-pull there is no tombstone yet: the pull is
+  what delivers it.
+- "Tombstoned" cannot be `deleted_item_ids`, which filters out entries with an
+  empty snapshot. 332's entry is exactly that shape — the removal arrived before
+  content was ever populated locally — so the first attempt changed nothing at
+  all.
+- **Comparing content does not work**, and this is the one that is genuinely
+  counter-intuitive. The obvious rule is "re-express it only if the plain row
+  differs from the tombstoned row, i.e. somebody edited it". Measured on
+  `persistence_boundary_fuzz_converges`' own seeds, the two are **equal**:
+
+      local_text=Some("plain-repair-2654435769-0") doc_text=Some("plain-repair-2654435769-0")
+
+  because the pre-pull repair has already written the local edit into the
+  document, and the pull then merged the peer's tombstone on top of it. By the
+  time the post-pull repair runs, an edited row and a stale row look identical.
+  The distinction has to be captured at the pre-pull comparison, where the
+  document either had a differing live entry or had nothing — hence
+  `local_absent_items`.
+
+Dropping an id from `ahead` would not have been enough either: `ahead` only
+steers `merge_items_for_adoption`, which only runs when the scheme already had
+raw-only items. The rule drops the id from `touched` **and** from the repair
+input, so `merge_items_for_adoption` leaves it out of the merged scheme and
+`replace_scheme` never sees it.
+
+**Also in this change:** `scheme_entry_summary` answers "live rows", "replayable
+tombstones" and "every removal" from ONE decode of a scheme document. The
+per-scheme comparison every pull runs was already paying for two full decodes
+(`raw_scheme_items` plus `raw_scheme_deleted_item_ids`), so adding the third
+question made it cheaper rather than more expensive.
+
+**Pinned by** `a_remote_deletion_is_not_undone_by_a_device_whose_plain_copy_is_ahead`
+and `a_local_addition_still_lands_when_the_same_scheme_holds_a_remote_deletion`
+(`shared/sync/tests/offline_deletion_durability.rs`), both of which fail without
+the change. The second is the guard that matters: the easy way to "fix" this is
+to stop re-expressing anything, and a line the user really did type in that same
+scheme must still reach the account.
+
+### The re-offer needs a termination bound, and only the WebSocket suite found it
+
+Added 2026-10-03, after the fix above was already measured green by the whole
+per-seed census. The integrity re-offer is a full snapshot per named document, and
+nothing stopped it repeating: the device re-offers, the server's next proof still
+disagrees, so it re-offers again. Against a real backend
+(`run-sync-stress.sh --fuzz`, which no amount of in-memory fuzzing substitutes for)
+`ws_account_hopping_fuzz_converges` livelocks on it — "re-offering 11 document(s)"
+without end, the server answering `rate_limit.exceeded`, and finally "a device on
+account 0 has stuck pending (wedge)". `origin/main` passes that suite, so it was a
+regression this work introduced, and a WEDGE at that.
+
+Three bounds measured, in order:
+
+| Bound | `ws_account_hopping` | census |
+|---|---|---|
+| skip documents that already have a queued edit | still wedges (11 → 6) | — |
+| drop the re-offer entirely | green | **chaos 34 and 66 lose content**, 4 `offline_deletion_durability` cases fail |
+| **once per document per mismatch episode** (`integrity_reoffered`, cleared when the server reports nothing mismatched) | **green** | **clean** |
+
+Only the third terminates *by construction* rather than by hope. "Only when the
+queue is empty" sounds like it should be enough — and it is the condition that
+makes the repair useful, since a lost journal is exactly an empty queue — but the
+device drains, re-offers, disagrees again, and round it goes; measured, it still
+wedges.
+
+**The lesson for the gate: the in-memory census and the real-transport suite find
+different classes.** A change can be green across 1200 seeds and still wedge a
+device against wrangler, because what livelocks is the interaction with a server
+that rate-limits and recomputes proofs. Run both before claiming a sync change is
+safe.
+
+## 0B. [FIXED] The re-identification rescue replaced a real workspace index with an empty document
+
+Found 2026-10-03 by tracing journal-loss seed 20223, the only journal-loss seed
+the 2026-10-02 census failed.
+
+**Census, both trees measured back-to-back with a verified harness binary and the
+same instrument** (the first three runs of it were measuring nothing — see the
+census section's warning):
+
+| Configuration | `origin/main` | this tree |
+|---|---|---|
+| chaos (1–400) | **194, 332** | **38** |
+| single-account (10000–10399) | **10054, 10117** | clean |
+| journal-loss (20000–20399) | **20223** | clean |
+| | **5 failing** | **1 failing** |
+
+194 / 10054 are the cross-scheme-move family, 332 / 10117 the post-pull
+resurrection, 20223 this entry — the four fixes in this body of work, each
+confirmed red on main and green here. The one that remains, chaos 38, is a
+pre-existing defect this work newly *selects* rather than causes; it is diagnosed
+in full in 0D.
+
+Single-account **10395** (`sync left item … in the workspace more than once`, the
+placement family) also deserves recording: it failed 10/10 replays in one window
+on BOTH trees and 0/12 in another, with no code change in between. So a seed's
+outcome is not stable over time on one binary, which is the missing half of "The
+sweep's answer depends on the PROCESS" below — that section bounded the variation
+to "something shared inside a process" and this rules even that out. Until the
+cause is found, read every seed list in this file, including the table above, as a
+sample rather than a verdict.
+
+The fix is one guard, and the two-line class of mistake behind it is worth
+stating on its own: **carrying content is always an improvement; carrying
+ABSENCE is a deletion.**
+
+### What the fuzzer reported, and what 0w got wrong about it
+
+    sync: pre-pull local-only repair skipped: workspace document not seeded yet
+      (doc=051f6cea… state_bytes=2 cursors=6 schemes=6)
+    sync: the pull dropped 1 scheme(s) this device held: 1ec12563…
+      (published=false unpushed=true archived=false daily=true)
+
+0w read that 2-byte index on a device holding 6 cursors as a **deadlock** — "a
+device whose own index is empty while the account's is also empty can never
+publish its index". That is not what happens. The account's index was 12 KB and
+**on this device's disk the whole time**, under the canonical document id. The
+device had simply stopped looking there, and the sync run then overwrote it.
+
+Measured, in order:
+
+1. Device 2 installs with `workspace.id` 9dbe442b and `sync.id` b24e741c —
+   `Workspace::new` draws the two independently — and signs in to account
+   051f6cea.
+2. Its first sync lands through `replace_from_sync`, which replays unpushed
+   pre-sign-in edits over the account's document. One is the index *population*,
+   which carries `meta.id`/`meta.sync`; Yjs resolves a map key by last writer, so
+   the workspace materialized afterwards wears the PRE-SIGN-IN identity.
+   `reroot_pre_sign_in_edits` canonicalizes to `self.workspace.id` — read back
+   after that replay — and `sync.id = DocumentId(workspace_id.0)` therefore
+   derives an index document id **from a local `WorkspaceId`**. The saved
+   `workspace.json` names 9dbe442b for both.
+3. `from_states` keys the index by `workspace.sync.id`, so every later launch
+   builds it EMPTY while `051f6cea.ydoc` sits on disk with the real index.
+4. The next sync canonicalizes back to 051f6cea, sees the document id change as
+   an account switch, and the re-identification rescue carries the previous id's
+   state across. It chose its source by **presence**:
+
+   ```rust
+   if crdt_states.contains_key(&previous_workspace_document_id) { … }
+   ```
+
+   An unwritten Yjs document is the canonical two-byte update `[0, 0]`, not
+   zero-length, so the stale id *was* present — and the rescue removed that empty
+   state and inserted it under the canonical id, replacing a 12 KB index with
+   nothing, then queued the nothing for push.
+5. `from_states` built the index unseeded, so
+   `queue_local_only_documents_before_pull` published nothing, and the pull
+   materialized the account's index over device 2's local-only Daily page. The
+   page, its line and its queue binding went together.
+
+### The fix, and why it is deliberately this narrow
+
+`sync_snapshot_in` now refuses exactly one move: carrying a source with no
+operations onto a canonical id that has some. Nothing else changes — the source
+selection above it is untouched. `knotq_sync::crdt_state_is_empty` is
+`update_v1_is_empty` made public, because `is_empty()` is the wrong test for a
+Yjs state and was the wrong test here.
+
+**Widening it was tried first and cost eight seeds.** Choosing the source by
+"whichever id carries content", and reading a present-but-empty canonical state
+as absent for the by-shape fallback, both look like the same idea and move a
+first sign-in onto a different path: chaos **132, 178, 289, 295, 320**,
+single-account **10156** and journal-loss **20047, 20144** all went from green to
+failing, every one of them green on `origin/main`. Narrowing the guard to the
+destructive case alone returned seven of the eight; the eighth was the other half
+of the attempt, below.
+
+### A real defect found on the way, and the fix for it is FALSIFIED
+
+Step 2 above is its own bug: a signed-in device saves a `workspace.json` naming
+an index document that exists nowhere, and keeps it until its next sync. A device
+that never syncs again keeps it forever.
+
+Passing the account's canonical id into `reroot_pre_sign_in_edits` (captured
+before the replay) does fix the identity, and **wedges chaos 178**: it makes that
+call re-key `id`/`sync.id`, which queues index edits *there*, after
+`remap_pending_workspace_document` has already run. Device 0 ends with five
+unpushed `PersonalWorkspace` edits addressed to the stray document and never
+drains its queue ("still has 5 unpushed edit(s) after settling"). It also moved
+20223's own failure rather than removing it — to step 163, where the account loses
+a row across a cross-scheme move (the placement family, §1 of "The two modeling
+choices"). With the re-root left alone and only the guard in place, 20223 is green
+at 300 steps.
+
+Re-keying the plain workspace is half of the job; the document's content and the
+edits addressed to it have to move with it, which is what
+`adopt_sync_workspace_identity` already does on the merge path. Pinned as an
+`#[ignore]`d test in
+`desktop/state/tests/sign_in_keeps_the_account_identity.rs`. **Do not re-apply
+the one-liner.**
+
+### Pinned by
+
+`a_relaunch_does_not_come_back_with_an_empty_workspace_index` (production_fuzz)
+replays 20223 in `replay_journal_loss_seed`'s exact environment — squash
+thresholds forced on, maintenance steps off — at 200 steps, because at 120 the
+ablation is not selected.
+
+## 0D. [DIAGNOSED, NOT FIXED] A failed first sync lets a fresh install delete the account's folders
+
+Found 2026-10-03, by chaos seed 38, and **this one is a field-plausible
+data-loss path rather than a fuzz curiosity**: all it needs is a new device
+signing in on a flaky network.
+
+What the trace shows, with device 5 installed and signed into account 0 at the
+last step of the run:
+
+    device 5 installed, account Some(0)
+      pre-pull repair: first sync: index repair suppressed, authored lines only
+    device 5 run: failed: memory server: connection dropped
+      pre-pull repair: repairing 0 missing scheme doc(s), index_mismatch=true,
+                       5 scheme(s) with local-ahead content
+    sync: workspace index write removes 3 node entr(ies): 38de9f2d…, 5f44979a…, eff50a3d…
+    device 5 run: pushed 11 doc(s) …
+    VIOLATION: device 5's sync (server state) lost folder eff50a3d… that no device deleted
+
+The first run is protected. The second is not, and it publishes an index built
+from this device's **pre-sign-in** plain workspace; `sync_string_map` means "the
+account's index is now exactly this", so three folders the device had not yet
+pulled became a deletion for every device on the account.
+
+### The cause is one predicate asking the wrong question
+
+```rust
+let first_sync_with_this_server = local_state.document_cursors.is_empty();
+```
+
+A run that fails partway still leaves cursors behind, so "has a cursor" and "has
+ever synced successfully with this server" are not the same thing — and the gap
+between them is exactly where the suppression is load-bearing. This is the same
+overloading of "no cursor" that the `WHAT IS STILL MISSING` note in
+`batch_pull_and_apply` describes from the other direction, and the witness 0y
+wanted. **It does not need a new witness.** The workspace document's own pull
+cursor already records it: `last_pulled_sequence > 0` means the server has
+actually sent this device the account's index.
+
+```rust
+let has_pulled_the_accounts_index = local_state
+    .document_cursors
+    .get(&crdt_docs.workspace_document_id())
+    .is_some_and(|cursor| cursor.last_pulled_sequence > 0);
+let first_sync_with_this_server =
+    local_state.document_cursors.is_empty() || !has_pulled_the_accounts_index;
+```
+
+A device that has synced for months is unaffected — its cursor is long past zero.
+A device that has never received an index keeps the conservative path, where its
+content still reaches the account through the post-pull bootstrap's full
+snapshot, which can only add.
+
+### …and that fix was measured, and it is WORSE. It is not in the tree.
+
+It does what it says: chaos **38** goes green and chaos **253** — the seed this
+file records as needing the repair to actually RUN — stays green. And the full
+1200-seed census goes from **one** failing seed to **three**:
+
+| Seed | What it becomes |
+|---|---|
+| chaos 109 | **wedges** — `device 4 still has 1 unpushed edit(s) after settling`, a `PersonalWorkspace` edit that never drains |
+| chaos 142 | `a fresh device is missing content existing devices have (server lost it)` |
+| chaos 269 | the server's view loses an item at step 249 |
+
+All three are green on `origin/main`. The wedge is the same shape as "Attempt A"
+under §2, and the reason is the same: **suppressing the index repair for longer is
+not free.** The repair is what publishes a device's own index content, so withheld,
+the queue behind it has nowhere to go.
+
+So this is a knowingly-wrong line, documented at the line, with the obvious fix
+and its cost written next to it. The fix that works has to come from §2 — stop the
+index writer publishing absence as deletion — after which a fresh joiner's index
+write cannot subtract at all, and the suppression stops being load-bearing in
+either direction.
+
+## 0E. The PR gate's own sweep: main fails 20223, this tree fails chaos 6
+
+Found 2026-10-04, by running CI's gate rather than reading its name. **Both trees
+fail it, and which seed they fail on is the whole decision.**
+
+The PR job (`ci.yml` -> `.github/actions/sync-stress`) runs the production fuzzer at
+**128 seeds x 200 steps**, not the 400 x 300 this file's census uses, and
+`run-sync-stress.sh --fuzz` — the command CLAUDE.md gives for local verification —
+**does not run the production fuzzer at all.** That is why a locally green
+`--fuzz` plus a green census still met a red gate. Run the composite action's
+command too:
+
+```sh
+KNOTQ_FUZZ_SEEDS=128 KNOTQ_FUZZ_STEPS=200 cargo test -p knotq-app --release production_fuzz
+```
+
+| Tree | gate sweep | reproduces as a single seed? |
+|---|---|---|
+| `origin/main` | **20223** — a Daily page, its line and its binding lost | yes, deterministically |
+| this tree | **chaos 6** — `device 4 still has 2 unpushed edit(s) after settling (wedged)` | only with the sweep's environment, below |
+
+### Replaying a sweep seed needs the sweep's environment
+
+chaos 6 passes as a plain `replay_production_seed` at 200 steps and fails in the
+sweep, which looks like the process-dependence recorded below and is not. `run_seeds`
+wraps the whole sweep in `with_fuzz_test_environment(true)`, so
+`KNOTQ_SQUASH_MIN_STATE_BYTES=0` and `KNOTQ_SQUASH_MIN_RATIO=1` are set for every
+seed and epoch squashes fire constantly. Add them and it reproduces every time, on
+this tree and never on main:
+
+```sh
+KNOTQ_SQUASH_MIN_STATE_BYTES=0 KNOTQ_SQUASH_MIN_RATIO=1 \
+  KNOTQ_REPRO_SEED=6 KNOTQ_FUZZ_STEPS=200 $BIN --ignored --exact \
+  app::sync_service::production_fuzz::replay_production_seed
+```
+
+**Do this before calling any sweep result unattributable.**
+
+### It is the move->index fix, and that fix is worth more than the seed
+
+Ablated one change at a time against the gate sweep:
+
+| Ablation | gate sweep |
+|---|---|
+| the integrity re-offer off | **worse** — 6 *and* 34 |
+| the empty-index rescue off | 6 (unchanged) |
+| **the move->index fix off** | **green, 33 passed, 0 failed** |
+
+And with the move->index fix off, at census depth: chaos **194**, single **10054**
+and single **10117** all fail — three reproducible content losses. So the gate can
+be made green by giving back three data-loss bugs, which is the wrong trade.
+
+### What is known about chaos 6, and what is not
+
+Device 4's queue holds two `PersonalWorkspace` edits whose origin is
+`Batch([])` — a synthetic operation, the shape `merge_sync_crdt_states` pushes when
+it re-expresses a population. They do not drain.
+
+A harness explanation was investigated and **falsified**: the settle loop injects
+faults like any other sync, so it can crash a device in its last round and then
+judge it for the pending edits that crash guarantees. Adding a bounded fault-free
+drain before the verdict — tried in three positions, including after the passive
+checks, since `view()` is what flushes deferred changes into countable pending edits
+— leaves chaos 6 failing. Devices stay busy for all eight drain rounds. So this is
+a real wedge, not an oracle artifact, and the harness change was reverted rather
+than kept for the look of it.
+
+What is still unexplained is why those two edits cannot be pushed. That is where the
+next session should start, with the repro line above.
+
+### Four attempts at it, and every one trades chaos 38 for chaos 109
+
+Worth the space, because each looks like the obvious next idea and all four cost
+the same seed. The target is to let a device that has not seen the account's index
+PUBLISH what it holds while forbidding it to SUBTRACT — `sync_string_map` means
+"the account's index is now exactly this", a claim only a writer that has seen the
+account's index can make.
+
+| Attempt | chaos 38 | chaos 109 |
+|---|---|---|
+| suppress the whole repair when the index was never pulled | fixed | **wedges** (also 142, 269 lose content) |
+| add-only index write, witness `last_pulled_sequence > 0` | fixed | **wedges** |
+| add-only, witness "a cursor exists at all" | still deletes | fixed |
+| add-only, witness "pulled content OR accepted push" | fixed | **wedges** |
+| …plus a containment comparison for add-only writers | fixed | **wedges** |
+
+The third shows why a witness alone cannot do it: chaos 38's failed first run
+leaves a cursor behind, so "has a cursor" is already true for the device that must
+not subtract. The others all end at the same place, and the last one is the
+interesting failure because it added the second half §2 asks for — a comparison
+that reads a retained key as agreement rather than disagreement
+(`workspace_folder_records_contain`) — and 109 wedged anyway.
+
+**Traced:** device 4's runs report "pushed 1 doc(s), 0 pending left" and the oracle
+still finds one unpushed index edit at settle. The retained entries **materialize
+back into the plain workspace**, which is a local change, which queues another
+index edit. That is the third change attempt A needed and never had: retention
+needs a comparison *and* a materialization that does not adopt what was retained.
+At that point this is attempt A rebuilt, with its 30-of-30 wedge waiting, so it was
+reverted rather than finished.
+
+**What that leaves as the choice**, and it is a real one rather than an oversight:
+chaos 38 is an account-wide folder DELETION that is pre-existing and reachable in
+the field; chaos 109 would be a NEW wedge — one device that stops syncing until it
+signs out and in. Nothing measured here fixes the first without causing the second,
+so the first is left standing and documented rather than traded for a regression.
+The way out is §2 done properly — the index writer never publishing absence at all,
+with the comparison and materialization that implies — which is a redesign of the
+index write, not a patch to its callers.
+
+Pinned by `a_fresh_install_whose_first_sync_failed_does_not_publish_its_own_index`
+(production_fuzz, `#[ignore]`d because it fails).
+
+**Not a `workspace_is_seeded()` check, which looks like the same idea and is not.**
+A first sign-in runs `repopulate_workspace_canonically`, which seeds the canonical
+index document with *this device's own* pre-sign-in content — so the document is
+seeded while the device has still never seen the account's index. That is why
+device 5 got past the `!workspace_is_seeded()` early return above.
+
+### Why it was invisible until now
+
+chaos 38 is green on `origin/main`: the trajectory there never puts a fresh
+install's failed first run in front of a successful second one. The code path is
+identical on main, so the defect is pre-existing and was simply never selected —
+a reminder that the census measures *trajectories*, and a green seed is not a
+proof about the code it ran. Seed 38 earned its place in the corpus the moment
+0B's fix shifted the trajectory onto it.
+
+Guarded against over-suppression by chaos **253**, the seed this file records as
+depending on the repair actually running: it stays green.
+
+## 0C. The document-namespaced item skeleton is written but NOT landed
+
+Built before 2026-10-03, found uncommitted and unmeasured on that date, and held
+back. It is the fix §"Also genuinely broken, and separate" asks for —
+`stable_item_seed_client_id` hashing the item id alone, so the same item in two
+scheme documents occupies one `(clientID, clock)` range — implemented as:
+
+- `stable_item_seed_client_id(document, item_id)`, hash namespace `v1` → `v2`;
+- `SCHEME_POPULATION_ENCODING_VERSION` 3 → 5, `ITEM_CREATION_ENCODING_VERSION`
+  1 → 3, with both pinned hashes re-pinned;
+- a `creation_candidate:<sha256>` key written into each item map, plus a
+  `raw_content` field and a `reconcile_content_shadow` rule that uses the
+  candidates to collapse a doubled creation run — the 10117 doubled-text gap.
+
+**It is not the cause of the eight census regressions measured that day** (0B) —
+reverting it leaves all eight failing — so it is held back on its own merits:
+
+1. **Its own test was weakened rather than satisfied.**
+   `item_skeleton_structs_must_not_alias_across_documents` asserted the property
+   ("A's tombstone must not reach B's row"); the uncommitted version deletes that
+   and asserts the implementation instead (the two clientIDs differ, the encoded
+   states differ). Nothing in the tree demonstrates the aliasing is fixed.
+2. **It is not backward compatible, and the version bumps do not make it so.**
+   The constants exist so a build writing different bytes uses a different
+   clientID and cannot alias an older build's structs — that is all they buy.
+   The deterministic skeleton exists for the opposite reason: so two devices that
+   independently create the SAME item encode byte-identical ops and Yjs dedupes
+   them into one container. With derived (v8) item ids — starter content, daily
+   carryover — independent same-id creation is routine, not rare.
+
+   **Measured 2026-10-03 rather than argued, and it is worse than "a duplicate
+   row":**
+
+   | Two devices creating one row | rows | text |
+   |---|---|---|
+   | same build | 1 | `"shopping list"` |
+   | old build + new build | 1 | **empty, in 20 of 40 sampled documents** |
+
+   The row survives and its CONTENT does not, about half the time, and which way
+   any one document goes is not predictable from anything a user can see. Each
+   build's update carries its own skeleton *and* its text, so naively either
+   container would arrive with its content — but the text is authored under
+   `stable_item_creation_client_id`, which both builds derive identically, so the
+   two text runs occupy the same `(clientID, clock)` range while hanging off
+   different parents. Yjs keeps whichever integrated first; the two containers then
+   compete for the single `items_by_id` key, resolved by last writer; and when the
+   surviving container is not the one the surviving text attached to, the row goes
+   blank. A starter line or a carried-over Daily line empties itself for everyone
+   on one of the two versions.
+
+   Pinned by `mixed_fleet_item_seed.rs`, which asserts the hazard (so it passes
+   while the derivation is unchanged and fails the moment anyone changes it) and
+   carries a control proving same-build dedupe still works.
+
+So it needs what [[crdt-epoch-history-squash]] needed: every client updated
+first, or a capability gate. Both halves are on `wip/uncommitted-2026-10-03`.
+Measure it against the full 1200-seed census *and* an explicit old-encoding ↔
+new-encoding merge test before landing any of it.
+
+## 0y. The journal-loss gap closed itself; the witness was built, measured, and removed
+
+`load_local_sync_state` marks `storage_recovery_pending` for the damage it can
+see — an unparseable or empty file — and the recovery path re-expresses durable
+tombstones before adopting the server's view. It does not cover a journal that is
+simply **absent**: deleted, restored from a backup predating it, or defaulted by
+an `unwrap_or_default()`. All three arrive looking exactly like a device that has
+never synced, and the engine must treat those two opposite ways.
+
+This entry used to propose the fix: a witness written once after the first
+successful sync, outside the journal (`settings.json`), so "no cursors" could be
+read as "the journal is gone" rather than "this device is new".
+
+**Built it. Measured it. Removed it.** 2026-10-02:
+
+- The whole thing was implemented and compiles end to end — an additive
+  `AppSettings::sync_joined_at` keyed by `(api_base, user_id)`, a
+  `#[serde(skip)]` `LocalSyncState::joined_account_at` the drivers inject from
+  settings, recording after a run whose cursors landed, in the desktop sync task,
+  the mobile sync cycle, the production fuzzer and the test harness.
+- `an_offline_deletion_survives_an_unmarked_journal_loss`, the `#[ignore]`d test
+  this entry existed to un-ignore, **passes without it**. It also passes with the
+  witness forcibly set to `None`, and with the 0A rule disabled as well — so
+  neither change is what fixed it.
+- A second test was written specifically to reach the case the witness was
+  designed for: the deleted row's id is **derived** (v8), which the first-join
+  filter in `queue_local_only_documents_before_pull` deliberately refuses to
+  re-assert, so by the argument above its deletion should be unrecoverable.
+  `an_offline_deletion_of_a_derived_id_row_survives_an_unmarked_journal_loss`
+  passes too, with and without the witness.
+
+So in every case reachable from the harness, the deletion already survives —
+the account's own copy of the document holds the tombstone and the integrity
+proof (0x) brings the halves back together, with nothing having to infer that the
+journal was lost.
+
+**Why removing it was the right call and not laziness.** The witness's two
+consumers are the two most dangerous flags in the engine:
+
+- `first_sync_with_this_server` — flipping it false makes a device write its
+  workspace index to the account instead of adopting the account's. Getting that
+  wrong once cost the account everything (`offline_device_join.rs`).
+- `needs_storage_recovery()` — flipping it true re-expresses durable tombstones
+  and re-offers every document. Getting that wrong publishes a fresh install's
+  starter tombstones onto the account's live rows (chaos seed 11) or drops an
+  archived folder (production fuzz seed 20082). Both happened, from exactly this
+  shape of inference.
+
+A change to those flags with no failing case to justify it is unexercised risk in
+the worst place in the codebase, and the tail risk is real: settings and the
+journal are separate files, so a restore can leave a witness that says "joined"
+beside cursors that say "new" — which is chaos seed 11's precondition.
+
+**What a future attempt needs, in order.** First a *failing* case: a deletion
+that is genuinely lost after an unmarked journal loss, which means a document the
+server's integrity proof does not reach (the harness's server implements the
+proof, so the harness cannot currently produce one). Then the witness, gated to
+the `needs_storage_recovery` half only — re-offering is an idempotent Yjs union,
+writing the index is not. The implementation is straightforward and is described
+above; the missing piece is the evidence, not the code.
+
+## 0z. `unlanded_pulls` is never cleared when a run lands
+
+Found 2026-10-02 while reading a real `sync-state.json`: **164 entries**, from a
+run that had long since landed.
+
+`unlanded_pulls` is written in exactly one place (`sync_snapshot_in`) and read in
+exactly one (`abandon_unlanded_sync_run`, on quit). Nothing clears it when the
+run it describes lands in the UI store, so the file keeps naming that run's
+documents until some later run overwrites the list. Quit while a *new* run is in
+flight but before it has written its own list, and the shutdown rewinds the pull
+cursors of up to 164 documents that were already landed — the next launch
+re-downloads all of them.
+
+Not data loss: `reset_pull_cursor` only sets `last_pulled_sequence = 0`, it does
+not drop the cursor, so the device never masquerades as a first sync (which would
+be far worse — see 0x). It is wasted bandwidth and a broken invariant: the field
+claims to mean "the in-flight run's pulls" and actually means "the last run's
+pulls, possibly landed long ago". The honest fix is to tag the list with the run
+it belongs to and have the quit abandon it only when it matches the run actually
+in flight.
+
+## The two modeling choices behind the remaining bug families
+
+Written 2026-10-02 after reading the code rather than the symptoms. Neither is a
+bug in a function; both are decisions that make whole classes of bug reachable,
+and the seeds this file keeps re-litigating are their shadows.
+
+### 1. An item's placement is inferred from containment, and the tiebreak is per-device
+
+`knotq_model::Item` has no field naming its scheme. An item's location *is*
+"which document physically contains it", so a move is a tombstone in document A
+plus an insert in document B — two operations in **two independent convergence
+domains**, with per-document sequences on the server and per-document cursors on
+the client. Nothing makes a replica observe both halves together, or ever.
+
+The duplicate that results is resolved by `dedupe_materialized_items`:
+
+```rust
+let mut scheme_ids: Vec<SchemeId> = workspace.schemes.keys().copied().collect();
+scheme_ids.sort();   // lowest id among the schemes THIS DEVICE has loaded
+```
+
+That is a function of the device's loaded window, not of account state. Replicas
+pick different winners, each republishes its own belief, and
+`reconcile_item_placements` then *deletes* the copy it judges to be losing.
+
+**The code states the invariant it cannot keep, in the same breath.** Immediately
+above that call:
+
+> Keep the same deterministic winner on every replica. Only schemes materialized
+> above participate: a lazy/off-window Daily page is intentionally absent and
+> must not be interpreted as a deletion or placement decision.
+
+Both sentences are correct and they contradict each other as an invariant: the
+winner is deterministic *given a candidate set*, and the candidate set is
+per-device. Two devices with different loaded windows — which is the normal
+state, and the whole point of deferring off-window days — are choosing from
+different sets. So "the same winner on every replica" is true only for replicas
+that happen to have loaded the same days. Nothing in the design makes that so. This
+is the 332 / 48 / 238 family, the "row is in no scheme at all" symptom, and the
+reason chaos 127 above is so sharp-edged: a page restored from a deferred
+document instantly creates a placement the live documents disagree with.
+
+Representing a move as delete+insert is known not to converge — it is why
+replicated-tree work defines a dedicated move operation, and why Figma, Linear,
+Notion and Drive all store a parent as an **attribute of the child** resolved by
+one authority. The restructure is to make placement an explicit, convergent
+attribute so the winner is a pure function of account state, which also removes
+the need for a destructive reconcile at all. It is an additive index/field
+change: old clients ignore it and behave exactly as they do today.
+
+#### Pinned, and why no device-local rule can fix it
+
+`the_dedupe_winner_does_not_depend_on_which_schemes_a_device_loaded`
+(`shared/sync/src/crdt/tests/workspace_materialization.rs`, `#[ignore]`d) is the
+flaw in nine lines of setup: one row live in two scheme documents, two replicas,
+one holding both schemes and one holding only the higher-id page. They disagree:
+
+    the one holding both schemes shows it in  [46ff1310…]
+    the one holding only the higher shows it in [a02e6bfa…]
+
+That also closes off the cheap fixes. A rule can only converge if it reads data
+both replicas have, and what differs here *is* the data they have — one of them
+cannot see the low-id page at all. So no amount of re-deriving the winner from
+local documents converges, however the tiebreak is phrased. **The placement has
+to be stored somewhere both replicas read.** Use this test as the acceptance
+criterion; it passes exactly when that is true.
+
+#### The placement attribute, attempted
+
+Built and measured 2026-10-03, then reverted. Worth reading before anyone builds
+it again, because it very nearly worked and the reason it did not is specific.
+
+What was built: an additive `item_home` root map in the workspace index
+(`item_id -> scheme_id`), written by the device that performs a cross-scheme move
+(`crdt_change_set_for_command` detects delete-from-A + insert-into-B), read by
+`dedupe_materialized_items`, which preferred the recorded home over its
+lowest-loaded-id rule. No on-disk format change: the plain workspace never saw
+it, and an older build ignores an unknown Yjs root map exactly as it ignores
+`node_fields`.
+
+It worked on the seeds: chaos 194, 389, 48, 238 and single-account 10054 all went
+green. Three implementation details were load-bearing and are worth keeping:
+
+- The claim must be written **inside** `sync_snapshot`'s delta-capture window.
+  The baseline is taken there, so a claim written beforehand is excluded from the
+  emitted update and never reaches the server — and a run whose only change is a
+  claim has to emit something.
+- The claim must be honoured **only as a preference among copies that exist**. A
+  first version hid the row whenever its claimed scheme was unloaded or had since
+  tombstoned it, so the line vanished; chaos 127 reported it immediately as the
+  server losing `…0402`.
+- `seen.insert` still decides even in the home scheme. Skipping it left both
+  copies visible when one scheme held an id twice, which is a workspace holding
+  one id twice — seven single-account seeds caught that at once.
+
+**Why it was reverted:** even with all three, seeds 10044 and 135 ended with the
+VISIBLE workspace holding a row twice. The plain workspace is reconciled against
+the dedupe by a separate pass (`reconcile_item_placements`, gated on the
+landing), and a claim can disagree with what that pass last wrote, so the two
+halves drift until it runs again. Closing that means making the reconcile
+claim-aware and re-examining its "the winner is a minimum, so the globally lowest
+copy is never deleted anywhere" safety argument, which a claim invalidates.
+
+Then the ablation that ended it: with the claims forced empty the same seeds
+still passed, because the attempt had *also* been setting `workspace: true` on
+every move — and that alone is the fix above. The attribute was solving a problem
+the index write already solved, at far greater cost.
+
+The flaw it targets is still real and still pinned
+(`the_dedupe_winner_does_not_depend_on_which_schemes_a_device_loaded`): two
+replicas with different loaded windows still disagree about where a duplicated
+row lives. What is no longer true is that any *census seed* depends on it.
+
+#### The restructure, scoped so it needs no on-disk format change
+
+Worked out 2026-10-02. The obvious shape — put a `scheme` field on `Item` — drags
+in `workspace.json`, which means the upgrade framework, a release fixture and a
+migration. None of that is necessary, because the plain workspace is a
+*projection*: the authority can live in the CRDT alone.
+
+1. **A new root map in the workspace index document**, `item_home`, mapping
+   `item_id -> scheme_id`. Yjs merges an unknown root map without complaint, so
+   an older build ignores it and keeps using today's rule — no worse than now.
+2. **Write an entry only when a row crosses schemes.** A row that has never moved
+   is unambiguous and needs no entry, which keeps the map proportional to moves
+   rather than to items (a 3.7k-item workspace would otherwise add 3.7k index
+   keys that every device pulls).
+3. **Retain those keys additively.** `sync_string_map` would delete every entry a
+   writer does not list, which is the flaw in §2 — but `item_home` is safe to
+   retain where `nodes` was not, because nothing compares it against the plain
+   workspace. That comparison is what made retention wedge 30/30 seeds; a map
+   outside it has no fixed point to lose.
+4. **`dedupe_materialized_items` prefers `item_home` when present**, falling back
+   to the current lowest-loaded-id rule when it is absent. That is the whole
+   behavioural change: the winner stops depending on which schemes the device has
+   loaded, so replicas agree, nobody republishes a competing placement, and
+   `reconcile_item_placements` no longer has to delete anything.
+5. **Nothing is written to `workspace.json`.** `materialize_workspace_inner`
+   already holds the index document when it calls the dedupe, so the map is read
+   there and passed down; it never needs a home on `Workspace`.
+
+Acceptance: seeds 194, 10054 and 20223 (the whole census failure set), plus 48
+and 238 should stop needing the placement-reconcile gate to stay narrow. Gate:
+the full per-seed census, because the sweep is not trustworthy, and a check that
+chaos 112/127/277 stay green — those are the three seeds that caught the rescue
+attempts, and they are the ones a placement change is most likely to disturb.
+
+Not attempted here. It is a change to the index writer and the materializer — the
+two places where today's three attempts each produced a regression that only a
+1200-seed census caught — and it deserves its own run at it rather than the tail
+of a session.
+
+### §2 ATTEMPTED PROPERLY, 2026-10-04: both halves built and measured
+
+The first time the two changes this section says are needed have been built
+*together* and measured at both depths. Not landable, and the numbers say exactly
+why — read these before attempting it a third time.
+
+**Half one, retention.** `sync_string_map` grew a sibling,
+`sync_string_map_removing`, where the writer must justify each removal with
+`may_remove(key, stored)`. The evidence is the permanent-delete tombstone the
+section already identifies — `permanently_deleted_scheme_ids` /
+`permanently_deleted_folder_ids`, both already computed in `replace_snapshot`.
+Applied to `nodes`, `node_fields`, `scheme_sync`, `folder_sync` and `daily_queue`
+(the last keyed on the *bound scheme's* tombstone, since a day this device has not
+loaded must keep its binding).
+
+Alone it is catastrophic, and it reproduces "Attempt A" at full scale:
+
+| Configuration | failing seeds, gate sweep 128x200 |
+|---|---|
+| single-account | **126 of 128** |
+| journal-loss | **126 of 128** |
+| chaos | **65 of 128** |
+
+Every one is the wedge, on every device at once: `device 0 still has 10 unpushed
+edit(s) after settling`, `device 1 … 16`, `device 2 … 8`, `device 3 … 5`, all on the
+`PersonalWorkspace` document. The lost fixed point, exactly as recorded.
+
+**Half two, the comparison.** `workspace_folder_records_contain` asks whether the
+document holds everything the plain workspace does, instead of whether they are
+equal, and `workspace_index_mismatch` uses it. The document is *expected* to hold
+more once writes retain.
+
+**And §1 was then built on top of it, so the ordering claim below is measured too.**
+Everything on `spike/placement-claim-and-index-retention`: the `item_home` map, the
+claim-aware dedupe, and — the part the earlier §1 attempt skipped — a claim-aware
+`reconcile_item_placements`, which may only tombstone a claimed row on a replica that
+can SEE the claimed home. That restates the destructive half's safety argument
+instead of inheriting one a claim invalidates, and it is why
+`the_dedupe_winner_does_not_depend_on_which_schemes_a_device_loaded` is un-ignored
+and passing there, for the first time, with a control test proving the claim is doing
+the work.
+
+The full matrix, every combination at both depths:
+
+| Tree | gate sweep 128x200 | census 400x300 |
+|---|---|---|
+| `origin/main` | 1 — journal 20223 | 5 |
+| the branch that landed | 1 — chaos 6 | **1** — chaos 38 |
+| §1 only | 3 — single 10118, journal 20116, chaos 6 | not run |
+| §2 only | 2 — single 10000, journal 20037 | 14 |
+| §1 + §2 | 2 — chaos 30, journal 20100 | 13 |
+
+§1 + §2 is the only thing that removes **chaos 6 and chaos 38 together**, and it takes
+single-account to 0/128 at gate depth. It is still 13x worse than the landed branch at
+census depth, and chaos **253** and **295** recur across configurations, so a fourth
+part is missing beyond claim + retention + comparison. Do not read the ordering
+conclusion above as "§1 unlocks §2": §1 makes §2 better (14 -> 13 at census, and the
+seeds it fixes are the ones that matter most) and neither order is sufficient alone.
+
+Together they are a different world — **317 failing seeds become 2**:
+
+| Tree | gate sweep (128x200) | census (400x300) |
+|---|---|---|
+| retention only | 317 | not run (pointless) |
+| retention + containment | **2** — single 10000, journal 20037 | **14** |
+| `origin/main` | 1 — journal 20223 | 5 |
+| the branch that landed | 1 — chaos 6 | 1 — chaos 38 |
+
+Chaos goes **fully green at the gate's depth, seeds 6 and 38 included** — the first
+thing in this file to fix either. But at census depth it costs chaos 32, 118, 213,
+**253**, 269, 285, 295, **389**, single 10000, 10071, 10128 and journal 20037, 20062,
+20357. 253 is the seed this file records as needing the repair to RUN and 389 is one
+the move->index fix had fixed, so retention disturbs both directions.
+
+**What the remaining 14 have in common, and it names half three.** Every one
+replays as the same shape: `device N's sync (server state) lost item X (in scheme Y
+"Daily …")` — the audit device, materializing from the server, cannot see a row in a
+Daily page. Retaining an index entry makes a page visible to a materializer whose
+documents do not hold it; the row then appears in two schemes,
+`dedupe_materialized_items` picks one, and the oracle's one-entry-per-id view reports
+it lost from the other. That is §1, reached from §2: **retention cannot land until
+placement is an explicit convergent attribute, because retention manufactures
+exactly the duplicate placements §1 cannot resolve.**
+
+So the order is settled by measurement: **§1 first, then §2.** The reverse — which is
+the intuitive order, since §2 is where the data loss is visible — produces a tree
+that is better at 200 steps and five times worse at 300.
+
+### 2. The workspace index publishes absence as deletion
+
+```rust
+let stale = map.keys().filter(|key| !desired_keys.contains(*key));
+for key in stale { map.remove(&mut *txn, &key); }   // sync_string_map
+```
+
+Every index write says "the account's index is now exactly this". A device with a
+partial view — an unloaded Daily page, a scheme the pull just dropped — deletes
+the rest for everyone, which is the set-reset anti-pattern and the 194 / 10054 /
+20223 family. It is also self-reinforcing: the pull drops a scheme the account's
+index lacks, `ensure_sync_metadata` drops its `scheme_sync` entry, and the next
+index write makes the loss authoritative.
+
+The intended design is already written down — `PermanentlyDeleteScheme`'s own
+comment says the tombstone exists so "the workspace-index writer [can] tell a
+real deletion apart from a scheme this device merely cannot see" — the writer
+just never used it for the removal decision. Attempt A above is what happens if
+you add that check alone; see it for what else has to change with it.
+
+### Also genuinely broken, and separate
+
+`stable_item_seed_client_id` hashes the item id alone while every other derived
+identity namespaces by `DocumentId`, so the same item in two documents occupies
+an identical `(clientID, clock)` range — two distinct operations sharing one Yjs
+identity, which is the invariant Yjs correctness rests on. Needs an
+encoding-version bump and a mixed-fleet decision, so it is called out rather
+than slipped in.
+
+## The per-seed census, and the three seeds that survive it
+
+**The sweep is not the instrument.** It misses genuinely failing seeds and
+reports ones that do not reproduce (next section). One seed per process is
+reproducible — seed 10350 passed 40/40 and seed 10374 0/100 that way — so the
+measurement that counts is a census: every seed in every configuration, one
+process each, at the nightly's own depth.
+
+**Check the binary before trusting a census.** `ls -t … | head -1` picks the
+newest matching file, and `target/release/deps/` accumulates one `knotq-<hash>`
+per distinct source state *plus* the `knotq` bin target under the same prefix. Run
+`"$BIN" --list | grep -c production_fuzz` first and assert it is non-zero: a
+census whose binary is stale or is the app rather than the harness reports every
+seed green. On 2026-10-03 three consecutive censuses reported single-account
+0/400 while seed **10395** fails 10/10 when replayed — on this tree *and* on
+`origin/main`. Same lesson as the two nightly steps above, from a third
+direction: read what the instrument actually ran.
+
+```sh
+# ~45 min for 1200 seeds; the script is in the session notes, the shape is:
+BIN=$(ls -t target/release/deps/knotq-* | grep -vE '\.(d|rlib|rmeta)$' | head -1)
+KNOTQ_REPRO_SEED=$seed KNOTQ_FUZZ_STEPS=300 $BIN --ignored --exact \
+  app::sync_service::production_fuzz::replay_production_seed      # +KNOTQ_REPRO_PLAIN=1
+KNOTQ_REPRO_SEED=$seed KNOTQ_FUZZ_STEPS=300 $BIN --ignored --exact \
+  app::sync_service::production_fuzz::replay_journal_loss_seed
+```
+
+**Census on 2026-10-02, 400 seeds per configuration at 300 steps:**
+
+| Configuration | Failing | After the 2026-10-03 fix |
+|---|---|---|
+| chaos (1–400) | **194** | none |
+| single-account (10000–10399) | **10054** | none |
+| journal-loss (20000–20399) | **20223** | **20223** |
+
+Three seeds, one per configuration — far smaller than the sweep's shifting
+reports suggested. Two of them were one bug; see "[FIXED] The whole family was a
+cross-scheme move not touching the index".
+
+### 20223's root cause: a device can never publish its own index
+
+Measured, not inferred. Device 2 relaunches at step 31 and its next sync drops
+Daily 2026-09-16 with its line and its queue binding
+(`published=false unpushed=true archived=false daily=true`). The pre-pull repair
+— the thing that publishes local index content — is skipped, and instrumenting
+the guard says why:
+
+    skipped: workspace document not seeded yet (doc=051f6cea… state_bytes=2 cursors=6 schemes=6)
+
+**A 2-byte (empty) index document on a device holding 6 cursors and 6 schemes.**
+That is a deadlock, not a transient:
+
+1. `queue_local_only_documents_before_pull` returns early while
+   `!crdt_docs.workspace_is_seeded()` (the index has no `meta.id`), for the good
+   reason that writing the plain workspace into an unseeded index mints a
+   competing index that wins the merge and costs the account everything
+   (`offline_device_join.rs`).
+2. An index document becomes seeded by being **written** locally, or by pulling
+   an index that already has content.
+3. So a device whose own index is empty while the account's is also empty can
+   never publish its index — and the moment the account gets index content from
+   another device, this device's local-only pages are materialized away.
+
+The `!daily` arm of `restore_unpublished_schemes_dropped_by_pull` is what
+finally drops the page, but it is the last step of that chain, not the cause.
+**The fix belongs at step 1–2**: either seed the index document on the first
+successful sync (`queue_workspace_bootstrap_updates` already exists for this —
+why it did not seed device 2 is the open question), or publish local index
+content *after* adopting the server's index, which is sequencing rather than
+suppression. The post-pull repair re-expresses scheme content only
+(`sync_scheme_documents`), so publishing the index there is new machinery.
+
+Note also that most "not seeded yet" lines are benign: 82 of 83 in that run come
+from the fuzzer's own audit-pull device, which starts empty every time
+(`cursors=0 schemes=0`). Only the one reading above has real content. Do not
+read the raw count as a systemic hole; it was checked and it is not one.
+
+### [FIXED] The whole family was a cross-scheme move not touching the index
+
+**Resolved 2026-10-03. Census: chaos 0/400, single-account 0/400, journal 1/400
+(only 20223 left).** The fix is three lines in
+`crdt_change_set_for_command`, and it is none of the things attempted below.
+
+`Command::crdt_documents()` reports `workspace: false` for a move batch —
+correct about the document *set*, since a move adds no scheme and removes none,
+and the wrong question. The index is how every other device learns the
+destination page exists at all: its node entry, and for a Daily page its queue
+binding. A move that leaves the index out of the change set leaves the
+destination unpublished, so the next pull materializes the account's index over
+it and the page, its lines and its binding go together.
+
+```rust
+let moves_a_line_between_schemes = /* an id deleted from one scheme, inserted in another */;
+WorkspaceCrdtChangeSet {
+    workspace: documents.workspace || moves_a_line_between_schemes,
+    ...
+```
+
+Fixed by this, all previously red: chaos **194**, **389**, **48**, **238** and
+single-account **10054**. Nothing regressed — 112, 127, 135, 277 and 10044 stay
+green, and the whole 1200-seed census is clean apart from 20223.
+
+**It costs no extra traffic.** `workspace: true` only emits an update when the
+index's content actually differs; for a move with nothing unpublished the write
+is a no-op. That is also why it is safe: it gives pending local index content a
+chance to flush, and does nothing otherwise.
+
+**Pinned by** `desktop/state/tests/move_publishes_the_index.rs` — one test that
+the move puts the index in scope (fails without the change) and one guard that an
+ordinary text edit does not (the index is pushed to every device, so widening
+that would turn a keystroke into account-wide traffic).
+
+**It also unblocked something this file said was blocked.** 0w records that
+widening the placement-reconcile gate "takes the release-depth gate from 5
+failing seeds to 17" and surfaces chaos 48/238. Measured again today: with 0A in
+place it surfaces neither, because 0A removed the resurrection that drove the
+oscillation. The gate widening is *not* in the tree — it turned out to be
+unnecessary once the move published the index — but the note about it was
+measured before 0A and should not be trusted as written.
+
+### Three attempts that did NOT fix it, and what each cost
+
+Kept because each one is a plausible-looking fix that a reader will propose
+again, and each was caught only by running the full census rather than the seed
+it targeted.
+
+| Attempt | Fixed | Broke |
+|---|---|---|
+| index writes retain keys with no delete tombstone | 194 | **30 of 30** sampled green seeds wedge |
+| daily rescue restores the page body | 20223 | 127 — a row shows twice |
+| daily rescue restores the binding only | 20223 | 112, 277 — **duplicate item ids** |
+| the placement attribute (`item_home` in the index) | 194, 389, 48, 238, 10054 | 10044, 135 — **duplicate item ids in the visible workspace** |
+
+The fourth is the interesting one, and it is written up under "the placement
+attribute, attempted" below. The first three share a cause: each puts back a
+page, binding or index entry the account has not seen, and since placement is an
+inference, reintroducing a container reintroduces a placement claim the documents
+have already moved past.
+
+### The rescue layer, for the record
+
+**Three independent attempts, each measured against the full 1200-seed census,
+each regressing a different seed for the same underlying reason.** This is the
+strongest statement in this file about 194 / 10054 / 20223, and it is a negative
+result worth more than another patch: it closes off a whole approach.
+
+| Attempt | Fixes | Breaks | Symptom of the regression |
+|---|---|---|---|
+| index writes retain keys with no delete tombstone | 194 | **30 of 30** sampled green seeds | every device wedges with an undrained index queue |
+| daily rescue restores the page body | 20223 | 127 | a row shows twice; visible 15 vs the device's own CRDT 16 |
+| daily rescue restores the binding only | 20223 | 112, 277 | **duplicate item ids in the visible workspace** |
+
+The third is the clearest. Re-binding a day whose page the account has never held
+makes the page reachable again — and its rows now live somewhere else, so the
+same id becomes visible twice:
+
+    step 175: device 0: sync left item c1eedd3f… in the workspace more than once
+    step 187: scheme 2b1646c2… has 3 item(s), the CRDT has 2; only in the
+              workspace: [c1eedd3f… (the CRDT places it in 1d98a5db…)]
+
+An `items_by_id` map has one entry per id, so a workspace holding an id twice has
+no CRDT representation at all — the halves diverge from that moment on. That is a
+worse failure than the one being fixed.
+
+**Why all three fail the same way.** Every one of them tries to put back a page,
+a binding or an index entry that the account has not seen, and an item's
+placement is not stored anywhere — it *is* which document contains the row (see
+"The two modeling choices"). So reintroducing any container reintroduces a
+placement claim, and the documents have moved on. There is no version of
+"restore what the account is missing" that is safe while placement is an
+inference.
+
+**What this means for 194 / 10054 / 20223.** They are one bug with one fix, and
+the fix is the placement restructure, not the rescue. Until an item carries its
+owning scheme as an explicit convergent attribute:
+
+- a rescue cannot know whether the rows it is restoring still belong to the page;
+- `dedupe_materialized_items` cannot agree between devices, because its winner is
+  the lowest scheme id *among the schemes that device happens to have loaded*;
+- and the repair that would publish a device's local-only page is the same code
+  that, run a moment later, has to decide whether that page's rows are duplicates.
+
+Do not spend another attempt at this layer. The next change here should be the
+attribute, with these three seeds as its acceptance test and the full census as
+its regression gate.
+
+### Two earlier fixes attempted against this census, and both reverted
+
+Both were measured against the full census rather than the seeds they targeted,
+which is the only reason they are recorded as failures instead of shipped.
+
+**A. Index writes stop publishing absence as deletion.** `sync_string_map` means
+"the account's index is now exactly this", so a device with a partial view
+deletes the rest for everyone. Making it retain any key the writer has no
+permanent-delete tombstone for **fixes chaos 194** and **wedges 30 of 30**
+otherwise-green single-account seeds: every device ends with an undrained index
+queue ("still has 12 unpushed edit(s) after settling (wedged)"). The mechanism is
+a lost fixed point — a retained entry materializes back into the workspace, the
+plain and CRDT halves can then never re-converge, so `workspace_index_mismatch`
+is true on every pull and the repair queues another full index snapshot forever.
+
+A correct version needs **two** changes together: retention, *and* a comparison
+that does not read a retained-but-unspeakable-for key as "the halves disagree".
+The permanent-delete sentinel alone is also too strict a removability test —
+archive flows remove a node with an ordinary origin. Pinned as an `#[ignore]`d
+test in `shared/sync/tests/index_absence_is_not_deletion.rs`, whose sibling
+(`an_explicit_delete_still_removes_the_scheme_everywhere`) is the guard any
+attempt has to keep passing.
+
+**B. Narrow the daily arm of the dropped-scheme rescue.** The rescue declines for
+*any* Daily page; `held_schemes` is built from the pre-pull plain workspace, so an
+out-of-window day can never be a candidate, which suggested the guard was wider
+than its reason. Restricting it to days the device has no unpublished stake in
+(`items` is captured only when the document has unpushed edits the server has
+never held) **fixes 20223** and **breaks chaos 127** — exactly the seed the
+guard's own comment names. The full census makes it a 1:1 trade:
+chaos {127, 194} + single {10054} + journal {} against the baseline's
+{194, 10054, 20223}.
+
+127's mechanism, measured with `KNOTQ_DBG_DUP=1`: row `…2005` is live in
+**exactly one** CRDT document, so this is not a dedupe hidden copy. The restore
+reintroduces the row onto the page it has left, from a body read out of a
+**deferred** document — which `documents_holding_item` does not scan — so the
+device ends up showing the row twice, the dedupe hides the live copy, and from
+step 188 the visible page has 15 rows against its own CRDT's 16. Filtering rows
+already placed elsewhere does not help: the restore happens *before* the move.
+
+**The guard is load-bearing and its comment is correct.** A rescue must not
+rebuild a page from a deferred document's body.
+
+## The sweep's answer depends on the PROCESS, not on the seed
+
+Sharpened 2026-10-02, and it changes how every result in this file should be
+read. The section below has said since 0v that "something those share changes a
+seed's outcome"; the sharing is now bounded, and it is **not** inside a sweep.
+
+Measured on single-account seed 10350, which the nightly-depth sweep reports as
+failing:
+
+| How it was run | Result |
+|---|---|
+| the nightly's `cargo test production_fuzz` (all three sweeps, one process) | **fails** at step 202 |
+| the single-account sweep alone, 400 x 300, `KNOTQ_FUZZ_WORKERS=4` | passes |
+| the single-account sweep alone, 400 x 300, `KNOTQ_FUZZ_WORKERS=1` | passes |
+| one-seed replay, 40 separate processes | passes 40/40 |
+
+And then, running the identical tree at the identical depth a second time, the
+same sweep reported **10374 instead of 10350**. Replaying both one at a time:
+
+| Seed | Sweep run 1 | Sweep run 2 | One-seed replay |
+|---|---|---|---|
+| 10054 | fails | fails | **fails** |
+| 10350 | fails | passes | **passes** (40/40 processes) |
+| 10374 | passes | fails | **fails** |
+
+So the sweep **misses a genuine failing seed** (10374 in run 1) and **reports one
+that does not reproduce** (10350 in run 1), in the same run. 10374 is real: four
+violations at step 248 — device 3 loses two schemes and a folder no device
+deleted — and it fails identically with the 0A rule disabled, so it is not a
+regression from it. It had simply never been named, because the sweep that was
+supposed to name it did not.
+
+Identical results at one worker and at four rule out concurrency *within* a
+sweep. Passing 40/40 as its own process rules out per-process `HashMap` ordering
+in the replay configuration. What is left is residue from the **other sweep tests
+in the same process** — `ENV_LOCK` serializes them, so they do not overlap in
+time, yet running after them changes seed 10350's outcome.
+
+Also eliminated, each by measurement rather than argument:
+
+- **Not the squash thresholds.** `run_seeds` sets `KNOTQ_SQUASH_MIN_STATE_BYTES=0`
+  and `KNOTQ_SQUASH_MIN_RATIO=1` process-wide for a whole sweep even for seeds
+  whose own `maintenance_coverage` is off, and `replay_production_seed` does not.
+  Replaying 10350 with those set by hand still passes.
+- **Not ids minted off the seeded thread.** `set_deterministic_id_seed` is
+  thread-local and `parallel::map_ordered` spawns its own threads, so an id minted
+  inside one would fall back to a real `Uuid::new_v4()` and make the run
+  nondeterministic. Instrumenting that fallback arm to print a backtrace whenever
+  it is taken shows **zero** hits across a 300-step replay. The production code
+  does not mint ids on those threads.
+- **Not the deterministic-id memo** in `knotq_model::daily_queue`: it is a
+  thread-local cache of a pure function of the date.
+
+**What this means for the gate.** A sweep failure is not by itself attributable
+to its seed, and a green replay does not exonerate the code. Both directions have
+now been observed. Until the residue is found, report sweep results **and** a
+one-seed replay, and say which disagreed — several conclusions in 0w rest on
+"the seed replays green", which is exactly the evidence this undermines.
+
+**Where to look next.** Something process-global that the production code (not the
+harness) carries across `World` instances: a `OnceLock`/`static` initialised on
+first use, a cached path or policy read once per process (`write_atomic`'s
+fsync policy is one such, already deliberate), or a counter like `fuzz_root`'s
+`RUN`, which differs between the gate run and an isolated sweep because the other
+sweeps advanced it. The cheapest next experiment is to run two sweeps in one
+process and bisect which predecessor is required.
 
 ## The parallel sweep can miss a failing seed
 

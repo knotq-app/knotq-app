@@ -365,6 +365,48 @@ impl DesktopDevice {
         Self::launch(index, data_dir, settings, today, account)
     }
 
+    /// Quit, lose the sync journal, and launch again.
+    ///
+    /// Distinct from [`Self::crash`] on purpose. A crash is interrupted *work*,
+    /// and the save path leaves recovery markers that say so. This is the file
+    /// simply not being there on the next launch — deleted, restored from a
+    /// backup that predates it, or handed back as a default by a caller's
+    /// `unwrap_or_default()` — with nothing anywhere to record that it ever
+    /// existed.
+    ///
+    /// Nothing may be lost. The CRDT documents are untouched and they are the
+    /// device's real state; the journal only ever held *bookkeeping about what
+    /// had been sent*. A device that forgets what it sent must re-send, not
+    /// forget what it knows. This is the hazard behind the 2026-10-01 field
+    /// report, and running it against the same oracle as every other step is
+    /// what makes "a lost journal costs nothing" a checked property rather
+    /// than a claim.
+    pub(super) fn lose_sync_journal(self) -> Self {
+        let Self {
+            index,
+            data_dir,
+            workspace_path,
+            mut state,
+            account,
+            run_in_flight,
+            ..
+        } = self;
+        if run_in_flight {
+            crate::app::services::abandon_unlanded_sync_run(&workspace_path);
+        }
+        crate::app::services::write_shutdown_workspace(&workspace_path, &mut state)
+            .expect("shutdown flush");
+        // After a clean quit, so the journal this removes is a complete one —
+        // the file is lost, not half-written.
+        if let Some(dir) = workspace_path.parent() {
+            let _ = std::fs::remove_file(dir.join("sync-state.json"));
+        }
+        let settings = state.settings.clone();
+        let today = state.daily_queue_today;
+        drop(state);
+        Self::launch(index, data_dir, settings, today, account)
+    }
+
     /// Die mid-save and launch again. Whatever was not written is gone — the
     /// in-memory state is simply dropped.
     pub(super) fn crash(self, point: CrashPoint) -> Self {

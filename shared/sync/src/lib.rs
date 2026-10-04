@@ -20,9 +20,10 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 pub use crdt::{
-    state_is_workspace_index, validate_crdt_update_sequence, AccountSwitchMerge,
-    DocumentApplyError, DocumentStateHandle, WorkspaceApplyError, WorkspaceCrdtApplyOutcome,
-    WorkspaceCrdtChangeSet, WorkspaceCrdtDocuments, WorkspaceCrdtSyncOutcome, YrsSchemeDocument,
+    crdt_state_is_empty, state_is_workspace_index, validate_crdt_update_sequence,
+    AccountSwitchMerge, DocumentApplyError, DocumentStateHandle, WorkspaceApplyError,
+    WorkspaceCrdtApplyOutcome, WorkspaceCrdtChangeSet, WorkspaceCrdtDocuments,
+    WorkspaceCrdtSyncOutcome, YrsSchemeDocument,
 };
 pub use documents::{scheme_documents, sync_documents};
 pub use engine::{

@@ -72,6 +72,47 @@ fn empty_pull_repairs_a_stale_materialized_workspace() {
     );
 }
 
+/// A corrupt `sync-state.json` used to recover as a plain default: the durable
+/// CRDT still contained the local tombstone, but the pending queue and cursors
+/// were gone. The next pull therefore treated the server's live copy as truth
+/// and resurrected the line. Recovery must re-express that tombstone before
+/// adopting the remote view.
+#[test]
+fn recovered_sync_state_replays_an_offline_deletion() {
+    let mut h = Harness::new(2);
+    h.login_all();
+
+    let scheme = h.add_scheme(
+        D0,
+        "Offline deletion recovery",
+        &["keep", "delete me", "change me"],
+    );
+    h.settle();
+    h.remove_line(D0, scheme, 1);
+    h.edit_line(D0, scheme, 1, "changed offline");
+
+    // Simulate the state journal being unreadable after the edit. The CRDT
+    // snapshot is intact, exactly as in the real paired-save ordering.
+    {
+        let state = h.device_mut_for_surgery(D0).local_state_mut();
+        state.pending.clear();
+        state.document_cursors.clear();
+        state.storage_recovery_pending = true;
+    }
+
+    h.sync(D0);
+    h.sync(D1);
+    h.sync(D0);
+
+    for device in h.device_keys() {
+        assert_eq!(
+            h.device(device).scheme_item_texts(scheme),
+            vec!["keep".to_string(), "changed offline".to_string()],
+            "{device:?}: recovered offline deletion was resurrected"
+        );
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Bug 1a — restart_with_pending_edits_must_not_wedge_sync
 // ---------------------------------------------------------------------------

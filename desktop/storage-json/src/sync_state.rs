@@ -34,29 +34,39 @@ pub fn load_local_sync_state(workspace_path: &Path) -> Result<LocalSyncState> {
     }
     let raw = fs::read_to_string(&path).with_context(|| format!("read {}", path.display()))?;
     if raw.trim().is_empty() {
-        return Ok(LocalSyncState::default());
+        return recover_unreadable_sync_state(&path, "file was empty");
     }
     match serde_json::from_str(&raw) {
         Ok(state) => Ok(state),
-        Err(error) => {
-            // A damaged sync-state file must never be silently overwritten by a
-            // default state. It may be the only record of an unsent edit. Keep a
-            // recoverable copy, then let the caller start from clean cursors so
-            // the next sync re-pulls the server's merged state.
-            let backup = unreadable_backup_path(&path);
-            fs::rename(&path, &backup).or_else(|rename_error| {
-                fs::copy(&path, &backup).map(|_| ()).with_context(|| {
-                    format!("preserve unreadable sync state after rename failed ({rename_error})")
-                })
-            })?;
-            eprintln!(
-                "sync state parse failed; preserved {} as {}: {error}",
-                path.display(),
-                backup.display()
-            );
-            Ok(LocalSyncState::default())
-        }
+        Err(error) => recover_unreadable_sync_state(&path, &format!("parse failed: {error}")),
     }
+}
+
+/// Replace damaged sync metadata with an explicit recovery marker while
+/// preserving the original bytes beside it. An empty file is treated as
+/// damage too: an interrupted atomic write must not look like a clean first
+/// sync and silently discard the outbound deletion queue.
+fn recover_unreadable_sync_state(path: &Path, reason: &str) -> Result<LocalSyncState> {
+    let backup = unreadable_backup_path(path);
+    fs::rename(path, &backup).or_else(|rename_error| {
+        fs::copy(path, &backup).map(|_| ()).with_context(|| {
+            format!("preserve unreadable sync state after rename failed ({rename_error})")
+        })
+    })?;
+    eprintln!(
+        "sync state recovery: preserved {} as {}: {reason}",
+        path.display(),
+        backup.display()
+    );
+    let state = LocalSyncState {
+        storage_recovery_pending: true,
+        ..Default::default()
+    };
+    let recovered_json =
+        serde_json::to_string_pretty(&state).context("serialize recovered sync state")?;
+    crate::files::write_atomic(path, recovered_json.as_bytes())
+        .with_context(|| format!("write recovered sync state {}", path.display()))?;
+    Ok(state)
 }
 
 fn unreadable_backup_path(path: &Path) -> PathBuf {
@@ -269,10 +279,20 @@ mod tests {
 
         let recovered = load_local_sync_state(&workspace_path).unwrap();
 
-        assert_eq!(recovered, LocalSyncState::default());
+        assert!(recovered.storage_recovery_pending);
         assert!(
-            !path.exists(),
-            "the corrupt source must not remain in the write path"
+            load_local_sync_state(&workspace_path)
+                .unwrap()
+                .storage_recovery_pending
+        );
+        assert_eq!(
+            recovered.pending,
+            LocalSyncState::default().pending,
+            "recovery must not invent outbound edits"
+        );
+        assert!(
+            path.exists(),
+            "the recovered marker must remain in the write path"
         );
         let backups = fs::read_dir(&dir)
             .unwrap()
@@ -282,6 +302,30 @@ mod tests {
             .collect::<Vec<_>>();
         assert_eq!(backups.len(), 1);
         assert_eq!(fs::read(dir.join(&backups[0])).unwrap(), b"{not valid json");
+
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn empty_sync_state_is_preserved_before_recovery() {
+        let dir = std::env::temp_dir().join(format!("knotq-sync-state-empty-{}", Uuid::new_v4()));
+        let workspace_path = dir.join("workspace").join("workspace.json");
+        let path = sync_state_path(&workspace_path);
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(&path, b"\n").unwrap();
+
+        let recovered = load_local_sync_state(&workspace_path).unwrap();
+
+        assert!(recovered.storage_recovery_pending);
+        assert!(path.exists());
+        let backups = fs::read_dir(&dir)
+            .unwrap()
+            .filter_map(Result::ok)
+            .map(|entry| entry.file_name().to_string_lossy().into_owned())
+            .filter(|name| name.starts_with("sync-state.json.unreadable-"))
+            .collect::<Vec<_>>();
+        assert_eq!(backups.len(), 1);
+        assert_eq!(fs::read(dir.join(&backups[0])).unwrap(), b"\n");
 
         let _ = fs::remove_dir_all(dir);
     }

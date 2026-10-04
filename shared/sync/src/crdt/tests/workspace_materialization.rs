@@ -882,3 +882,73 @@ fn workspace_crdt_documents_merge_an_edit_made_during_a_shared_first_sync_base()
         "the edit made while populating device b's first-sync base was lost in the merge"
     );
 }
+
+/// Two replicas holding the same duplicated row must show it in the same scheme.
+///
+/// `dedupe_materialized_items` states this invariant where it is called — "keep
+/// the same deterministic winner on every replica" — and in the next sentence
+/// says why it cannot hold: "only schemes materialized above participate: a
+/// lazy/off-window Daily page is intentionally absent". The winner is the lowest
+/// scheme id among the schemes THAT DEVICE materialized, so two replicas with
+/// different loaded windows choose from different candidate sets, and different
+/// windows are the normal state — deferring off-window days is the point.
+///
+/// No rule over local documents can fix this: a rule converges only if it reads
+/// data both replicas have, and what differs here IS the data they have. The
+/// placement has to be recorded somewhere both of them read.
+///
+/// **An attempt at that is recorded in `app/TODO.md`** ("the placement attribute,
+/// attempted") — an additive `item_home` map in the workspace index, written by
+/// the device that performs a move. It fixed chaos 194, 389, 48, 238 and
+/// single-account 10054, and left the VISIBLE workspace holding a row twice on
+/// seeds 10044 and 135, because the plain workspace is reconciled against the
+/// dedupe by a separate pass that the claim can disagree with. The claim half is
+/// reverted; the widened placement-reconcile gate that came with it is not, and
+/// is what fixes 194 and 10054 today.
+#[test]
+#[ignore = "open: the dedupe winner depends on the device's loaded window; see app/TODO.md"]
+fn the_dedupe_winner_does_not_depend_on_which_schemes_a_device_loaded() {
+    let duplicated = Item::new("moved line");
+
+    let mut both = Workspace::new();
+    let low = add_root_scheme(&mut both, "aaa low id");
+    let high = add_root_scheme(&mut both, "zzz high id");
+    // Fix the ordering the rule keys on, so the test does not depend on which
+    // ids `add_root_scheme` happened to mint.
+    let (low, high) = if low < high { (low, high) } else { (high, low) };
+    for scheme in [low, high] {
+        both.schemes
+            .get_mut(&scheme)
+            .unwrap()
+            .items
+            .push(duplicated.clone());
+    }
+
+    // The second replica has the same two documents but has only materialized
+    // the higher-id one — an off-window day, a deferred page, a partial restore.
+    let mut only_high = both.clone();
+    only_high.schemes.remove(&low);
+
+    dedupe_materialized_items(&mut both);
+    dedupe_materialized_items(&mut only_high);
+
+    let shows_it = |workspace: &Workspace| -> Vec<SchemeId> {
+        let mut holders: Vec<SchemeId> = workspace
+            .schemes
+            .iter()
+            .filter(|(_, scheme)| scheme.items.iter().any(|item| item.id == duplicated.id))
+            .map(|(id, _)| *id)
+            .collect();
+        holders.sort();
+        holders
+    };
+
+    assert_eq!(
+        shows_it(&both),
+        shows_it(&only_high),
+        "two replicas disagree about where the row lives: the one holding both \
+         schemes shows it in {:?}, the one holding only the higher id shows it in {:?}",
+        shows_it(&both),
+        shows_it(&only_high),
+    );
+}

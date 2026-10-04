@@ -16,7 +16,7 @@ use super::*;
 /// struct — a silent id collision that makes the Yjs merge ORDER-DEPENDENT (the loser's
 /// content is dropped on whichever side integrates second), permanently diverging
 /// replicas. Reserving one bit per namespace makes the two kinds un-collidable.
-const ITEM_SEED_NAMESPACE_BIT: u64 = 1 << 52;
+pub(crate) const ITEM_SEED_NAMESPACE_BIT: u64 = 1 << 52;
 
 /// Map a 64-bit hash into the document/replica clientID half: a 52-bit odd value with
 /// the namespace bit CLEAR. `| 1` keeps it non-zero (and odd).

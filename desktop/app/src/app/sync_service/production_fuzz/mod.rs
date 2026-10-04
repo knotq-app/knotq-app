@@ -58,6 +58,10 @@ struct Config {
     chaos: bool,
     /// Require each maintenance path to run at least once in this fuzz world.
     maintenance_coverage: bool,
+    /// Lose a device's sync journal between quit and launch. Off by default so
+    /// the roll values it claims keep falling through to the same local action
+    /// they do today — every catalogued seed keeps its exact trajectory.
+    journal_loss: bool,
 }
 
 struct World {
@@ -484,6 +488,23 @@ impl World {
         self.check_projection(index, "a relaunch");
     }
 
+    /// The journal is gone on the next launch. The CRDT documents are intact,
+    /// so nothing the user did is actually unknown to this device — only the
+    /// record of what it had sent. Checked with the ordinary invariants: unlike
+    /// a crash, this is NOT a modeled-loss boundary, and anything that goes
+    /// missing here is a real bug.
+    fn lose_journal(&mut self, index: usize) {
+        let before = self.view(index);
+        let device = self.devices[index].take().unwrap();
+        self.devices[index] = Some(device.lose_sync_journal());
+        let after = self.view(index);
+        self.log(format!(
+            "device {index} lost its sync journal and relaunched"
+        ));
+        self.check(index, "sync journal loss", &before, &after);
+        self.check_projection(index, "a sync journal loss");
+    }
+
     fn crash(&mut self, index: usize) {
         let point = match self.rng.below(3) {
             0 => CrashPoint::BeforeSave,
@@ -576,6 +597,7 @@ impl World {
                 }
                 self.log(format!("account {account}: server fault injected"));
             }
+            91..=92 if self.config.journal_loss => self.lose_journal(index),
             89..=90 if self.devices.len() < self.config.max_devices => {
                 let account = self.rng.below(self.accounts.len() as u64) as usize;
                 self.add_device(Some(account));
@@ -1020,6 +1042,7 @@ fn desktop_production_sync_fuzz() {
         steps: env_usize("KNOTQ_FUZZ_STEPS", 120),
         chaos: true,
         maintenance_coverage: true,
+        journal_loss: false,
     });
 }
 
@@ -1034,6 +1057,177 @@ fn desktop_production_single_account_fuzz() {
         steps: env_usize("KNOTQ_FUZZ_STEPS", 120),
         chaos: false,
         maintenance_coverage: true,
+        journal_loss: false,
+    });
+}
+
+/// Replay one `desktop_production_journal_loss_fuzz` seed. `KNOTQ_REPRO_SEED=20082`.
+#[test]
+#[ignore = "triage helper; replays KNOTQ_REPRO_SEED under the journal-loss configuration"]
+fn replay_journal_loss_seed() {
+    let seed = env_usize("KNOTQ_REPRO_SEED", 20_082) as u64;
+    // Mirror what the sweep actually does per seed, which is not what
+    // `run_seed` does:
+    //
+    // - the sweep wraps the WHOLE run in `with_fuzz_test_environment(true)`, so
+    //   `KNOTQ_SQUASH_MIN_STATE_BYTES=0` / `KNOTQ_SQUASH_MIN_RATIO=1` are set
+    //   for every seed — epoch squashes fire constantly;
+    // - but it forces `maintenance_coverage` off for every seed except the one
+    //   designated to prove the maintenance paths ran.
+    //
+    // A replay that passes `maintenance_coverage: true` to `run_seed` gets
+    // neither of those and is a different world: it reported seed 20082 as
+    // passing while the sweep failed it reproducibly. Call `run_seed_inner`
+    // directly, because `run_seed` would take `ENV_LOCK` a second time and
+    // deadlock.
+    with_fuzz_test_environment(true, || {
+        run_seed_inner(
+            seed,
+            Config {
+                accounts: 1,
+                initial_devices: 3,
+                max_devices: 4,
+                steps: env_usize("KNOTQ_FUZZ_STEPS", 200),
+                chaos: false,
+                maintenance_coverage: false,
+                journal_loss: true,
+            },
+        )
+    });
+}
+
+/// A fresh install whose FIRST sync fails must not publish its own index.
+///
+/// Chaos seed 38, traced 2026-10-03. Device 5 is installed and signed into
+/// account 0 at the last step, drops its connection once, and its next sync
+/// removes three of the account's folders for every device:
+///
+///     device 5 installed, account Some(0)
+///       pre-pull repair: first sync: index repair suppressed, authored lines only
+///     device 5 run: failed: memory server: connection dropped
+///       pre-pull repair: repairing 0 missing scheme doc(s), index_mismatch=true
+///     sync: workspace index write removes 3 node entr(ies): 38de9f2d…, 5f44979a…, eff50a3d…
+///
+/// The first run is protected and the second is not: the suppression asked
+/// `document_cursors.is_empty()`, and a run that fails partway still leaves
+/// cursors behind. The index it then publishes is built from this device's
+/// PRE-SIGN-IN workspace, and `sync_string_map` makes everything the account has
+/// that this device has not pulled a deletion for everyone. Signing in on a flaky
+/// network is the whole repro — see TODO.md 0D.
+///
+/// Pinned here rather than as a `knotq-sync` unit test because the state needs a
+/// *partially* completed pull — cursors for some documents, none for the
+/// workspace index — and the in-memory server can only fail a whole pull request,
+/// so `lose_next_push_responses` / `fail_next_pulls` produce either every cursor
+/// or none. Teaching it to fail the Nth request would make a unit-level
+/// reproduction possible and is worth doing.
+///
+/// **`#[ignore]`d because it FAILS: it pins an open bug, not a fixed one.** The
+/// one-line fix — ask the workspace document's pull cursor instead of
+/// `document_cursors.is_empty()` — is written out at that predicate in
+/// `queue_local_only_documents_before_pull` along with what it cost when measured:
+/// chaos 109 **wedges** and 142/269 lose content, taking the 1200-seed census from
+/// one failing seed to three. The real fix is TODO.md §2 — stop the index writer
+/// publishing absence as deletion — after which a fresh joiner's index write
+/// cannot subtract at all.
+#[test]
+#[ignore = "open bug: TODO.md 0D — a fresh install whose first sync failed publishes its own index"]
+fn a_fresh_install_whose_first_sync_failed_does_not_publish_its_own_index() {
+    run_seed(
+        38,
+        Config {
+            accounts: 2,
+            initial_devices: 3,
+            max_devices: 5,
+            steps: env_usize("KNOTQ_FUZZ_STEPS", 300),
+            chaos: true,
+            maintenance_coverage: false,
+            journal_loss: false,
+        },
+    );
+}
+
+/// A device that relaunches must not come back with an EMPTY workspace index.
+///
+/// Journal-loss seed 20223, traced 2026-10-03. Device 2 relaunches at step 31
+/// and its very next sync drops Daily 2026-09-16 with its line and its queue
+/// binding. Two defects compose, and the second one is what destroys the data:
+///
+///  1. Landing the first sync after signing in replays the device's unpushed
+///     pre-sign-in index population over the account's document. That
+///     population carries `meta.id`/`meta.sync`, Yjs resolves a map key by last
+///     writer, so the workspace materialized afterwards wears the PRE-SIGN-IN
+///     identity — and `reroot_pre_sign_in_edits` then canonicalized to *that*,
+///     deriving an index document id from a local `WorkspaceId`. The device
+///     saved a `workspace.json` naming a document nothing has ever held, while
+///     the account's real index stayed on disk under the canonical id. Pinned
+///     by `desktop/state/tests/sign_in_keeps_the_account_identity.rs`.
+///  2. The next sync canonicalizes back, sees the document id change as an
+///     account switch, and the re-identification rescue carried the previous
+///     id's state over the canonical one — **without checking that it carries
+///     anything**. It was the two-byte empty document, so a real 12 KB index was
+///     replaced with nothing. `from_states` then built the index unseeded,
+///     `queue_local_only_documents_before_pull` declined to publish what this
+///     device held, and the pull materialized the account's index over its
+///     local-only Daily page.
+///
+/// **Measured, so the record is exact: this seed needs only (2).** With the
+/// content check ablated it fails again — at step 163, the same Daily page now
+/// missing from the server's view. With only the re-root fix ablated it PASSES,
+/// because the rescue refuses to carry the empty document and the index survives
+/// the stray id. (1) is therefore a real defect this seed does not select; it is
+/// pinned on its own by
+/// `desktop/state/tests/sign_in_keeps_the_account_identity.rs`, and it is worth
+/// fixing because the corrupt `workspace.json` persists until the next sync —
+/// a device that never syncs again keeps it.
+///
+/// Needs the deeper run: at 120 steps the ablation is not selected, so the
+/// default here is 200. Mirrors `replay_journal_loss_seed`'s environment exactly
+/// — squash thresholds forced on, maintenance steps off — because a seed
+/// replayed in a different world is a different scenario.
+#[test]
+fn a_relaunch_does_not_come_back_with_an_empty_workspace_index() {
+    with_fuzz_test_environment(true, || {
+        run_seed_inner(
+            20_223,
+            Config {
+                accounts: 1,
+                initial_devices: 3,
+                max_devices: 4,
+                steps: env_usize("KNOTQ_FUZZ_STEPS", 200),
+                chaos: false,
+                maintenance_coverage: false,
+                journal_loss: true,
+            },
+        )
+    });
+}
+
+/// The same everyday case, but a device periodically loses its sync journal
+/// between quit and launch.
+///
+/// This is the hazard class behind the 2026-10-01 field report, and it is run
+/// here rather than as a one-off repro because the question is not "does this
+/// one deletion survive" but "does ANY user intent survive losing the record of
+/// what had been sent". The journal holds bookkeeping; the CRDT documents hold
+/// what the user did. Losing the former must cost nothing, and the oracle that
+/// decides that is the same no-silent-loss oracle every other step is checked
+/// against — so a pass here composes with the rest of the sweep rather than
+/// standing alone.
+///
+/// `journal_loss` is off in every other configuration, and the roll values it
+/// claims fall through to the identical local action when it is off, so no
+/// catalogued seed's trajectory moves.
+#[test]
+fn desktop_production_journal_loss_fuzz() {
+    run_seeds(20_000, || Config {
+        accounts: 1,
+        initial_devices: 3,
+        max_devices: 4,
+        steps: env_usize("KNOTQ_FUZZ_STEPS", 120),
+        chaos: false,
+        maintenance_coverage: true,
+        journal_loss: true,
     });
 }
 
@@ -1063,6 +1257,7 @@ fn a_scheme_created_in_flight_survives_an_unrelated_replace_fallback() {
             steps: env_usize("KNOTQ_FUZZ_STEPS", 120),
             chaos: false,
             maintenance_coverage: true,
+            journal_loss: false,
         },
     );
 }
@@ -1093,6 +1288,7 @@ fn a_daily_page_reloaded_from_disk_keeps_what_the_documents_hold() {
             steps: env_usize("KNOTQ_FUZZ_STEPS", 200),
             chaos: false,
             maintenance_coverage: false,
+            journal_loss: false,
         },
     );
 }
@@ -1111,8 +1307,121 @@ fn successive_acknowledged_item_edits_survive_a_later_move() {
             steps: env_usize("KNOTQ_FUZZ_STEPS", 120),
             chaos: false,
             maintenance_coverage: false,
+            journal_loss: false,
         },
     );
+}
+
+/// Does a seed's outcome depend on what ran BEFORE it in the same process?
+///
+/// The sweep and the one-seed replay disagree about seeds in both directions —
+/// the sweep has both missed a genuinely failing seed and reported one that
+/// replays green 40 times out of 40 (`app/TODO.md`, "The sweep's answer depends
+/// on the PROCESS"). Concurrency inside a sweep is ruled out (identical results
+/// at one worker and at four), so what is left is residue left behind by earlier
+/// `World`s in the same process.
+///
+/// This runs the target seed, then some decoy seeds, then the target seed AGAIN,
+/// in one process, and prints both outcomes. Two different answers for the same
+/// seed in the same process is the leak, caught directly instead of inferred
+/// from two separate runs.
+///
+/// **What it has already ruled out, so nobody re-runs these.** Eight
+/// journal-loss decoys ahead of seed 10350 do not flip it, and neither does
+/// setting the sweep's squash thresholds (`KNOTQ_SQUASH_MIN_STATE_BYTES=0`,
+/// `KNOTQ_SQUASH_MIN_RATIO=1`) by hand, which `run_seeds` applies process-wide
+/// for a whole sweep even to seeds whose own `maintenance_coverage` is off.
+/// `cargo test production_fuzz` runs 30-odd tests serialized by `ENV_LOCK` in
+/// libtest's run-varying order, so the next thing to try is more decoys, and
+/// decoys drawn from the pinned single-seed regressions rather than a sweep.
+///
+/// ```sh
+/// KNOTQ_REPRO_PLAIN=1 KNOTQ_REPRO_SEED=10350 KNOTQ_FUZZ_STEPS=300 \
+///   KNOTQ_DECOY_CONFIG=journal KNOTQ_DECOY_FIRST=20000 KNOTQ_DECOY_COUNT=8 \
+///   cargo test -p knotq-app --release residue_probe -- --ignored --nocapture
+/// ```
+#[test]
+#[ignore = "triage helper; asks whether a seed's outcome depends on process history"]
+fn residue_probe() {
+    let seed = env_usize("KNOTQ_REPRO_SEED", 1) as u64;
+    let chaos = std::env::var("KNOTQ_REPRO_PLAIN").is_err();
+    let target = || Config {
+        accounts: if chaos { 2 } else { 1 },
+        initial_devices: 3,
+        max_devices: if chaos { 5 } else { 4 },
+        steps: env_usize("KNOTQ_FUZZ_STEPS", 120),
+        chaos,
+        maintenance_coverage: false,
+        journal_loss: false,
+    };
+    // The decoys mirror whichever sweep is suspected of leaving the residue.
+    let decoy_kind = std::env::var("KNOTQ_DECOY_CONFIG").unwrap_or_else(|_| "journal".to_string());
+    let decoy = || match decoy_kind.as_str() {
+        "chaos" => Config {
+            accounts: 2,
+            initial_devices: 3,
+            max_devices: 5,
+            steps: env_usize("KNOTQ_FUZZ_STEPS", 120),
+            chaos: true,
+            maintenance_coverage: false,
+            journal_loss: false,
+        },
+        "plain" => Config {
+            accounts: 1,
+            initial_devices: 3,
+            max_devices: 4,
+            steps: env_usize("KNOTQ_FUZZ_STEPS", 120),
+            chaos: false,
+            maintenance_coverage: false,
+            journal_loss: false,
+        },
+        _ => Config {
+            accounts: 1,
+            initial_devices: 3,
+            max_devices: 4,
+            steps: env_usize("KNOTQ_FUZZ_STEPS", 120),
+            chaos: false,
+            maintenance_coverage: false,
+            journal_loss: true,
+        },
+    };
+    let decoy_first = env_usize("KNOTQ_DECOY_FIRST", 20_000) as u64;
+    let decoy_count = env_usize("KNOTQ_DECOY_COUNT", 8) as u64;
+
+    let attempt = |label: &str, seed: u64, config: Config| -> Option<String> {
+        let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            run_seed_inner(seed, config)
+        }));
+        let result = outcome.err().map(|payload| panic_message(payload.as_ref()));
+        eprintln!(
+            "RESIDUE {label} seed {seed}: {}",
+            result.as_deref().unwrap_or("passed")
+        );
+        result
+    };
+
+    // Everything inside one `with_fuzz_test_environment`, which is how a sweep
+    // runs: the squash thresholds and the fsync policy are then identical for
+    // every seed here, so they cannot be what differs.
+    let (before, after) = with_fuzz_test_environment(true, || {
+        let before = attempt("first", seed, target());
+        for offset in 0..decoy_count {
+            attempt("decoy", decoy_first + offset, decoy());
+        }
+        let after = attempt("again", seed, target());
+        (before, after)
+    });
+
+    match (&before, &after) {
+        (None, None) => eprintln!("RESIDUE VERDICT: seed {seed} passed both times"),
+        (Some(_), Some(_)) => eprintln!("RESIDUE VERDICT: seed {seed} failed both times"),
+        _ => panic!(
+            "RESIDUE LEAK: seed {seed} changed answer within one process.\n\
+             before decoys: {}\nafter decoys:  {}",
+            before.as_deref().unwrap_or("passed"),
+            after.as_deref().unwrap_or("passed")
+        ),
+    }
 }
 
 #[test]
@@ -1143,6 +1452,7 @@ fn replay_production_seed() {
             steps: env_usize("KNOTQ_FUZZ_STEPS", 120),
             chaos,
             maintenance_coverage: env_usize("KNOTQ_REPRO_MAINTENANCE", maintenance_by_default) != 0,
+            journal_loss: false,
         },
     );
 }

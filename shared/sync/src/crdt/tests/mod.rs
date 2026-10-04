@@ -7,6 +7,7 @@ mod daily_window_index;
 mod document_state_handles;
 mod helpers;
 mod merge;
+mod mixed_fleet_item_seed;
 mod repair_sync;
 mod schema_validation;
 mod scheme_edit_sequences;

@@ -4,6 +4,11 @@ use crate::platform_provider::{
 };
 use async_trait::async_trait;
 
+// See the note on `StorageBackend` in `knotq-storage`: `async_trait`'s expansion
+// marks each boxed future `#[must_use]`, and these methods return `anyhow::Result`,
+// which already is — so clippy 1.99's `double_must_use` fires once per method from
+// code the macro wrote.
+#[allow(clippy::double_must_use)]
 #[async_trait]
 pub trait NotificationProvider: Send + Sync {
     async fn schedule(&self, notifications: &[NotificationRequest]) -> anyhow::Result<Vec<String>>;

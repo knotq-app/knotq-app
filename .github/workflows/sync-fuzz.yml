@@ -124,12 +124,18 @@ jobs:
         # Release build: a debug fuzz run of this depth takes hours.
         run: cargo test -p knotq-sync --test sync_property_model --release -- --nocapture
 
+      # `--include-ignored`, not `--ignored`: this test was un-ignored once it
+      # was fast enough to run on every `cargo test`, and `--ignored` means "run
+      # ONLY ignored tests" — so this step silently ran zero tests and reported
+      # success. Measured 2026-10-02: "running 0 tests ... 19 filtered out".
+      # `--include-ignored` runs it either way, so re-ignoring it later cannot
+      # empty this step again.
       - name: Run the multi-origin daily-queue stress
         env:
           KNOTQ_FUZZ_SEEDS: "3000"
         run: |
           cargo test -p knotq-sync --test sync_property_model --release -- \
-            --ignored --exact daily_queue_multiorigin_stress --nocapture
+            --include-ignored --exact daily_queue_multiorigin_stress --nocapture
 
       - name: Run the desktop production-path fuzzer at depth
         env:

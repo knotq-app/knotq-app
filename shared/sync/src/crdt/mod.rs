@@ -193,6 +193,17 @@ mod workspace_index;
 use update_capture::{Delta, UpdateCapture};
 
 pub use encoding::stable_client_id;
+
+/// Whether a persisted CRDT state carries no operations at all.
+///
+/// A document that has never been written is not zero-length: Yjs encodes it as
+/// the canonical two-byte update `[0, 0]` (no struct clients, no delete-set
+/// clients). Any caller deciding between "I hold this document" and "I hold
+/// CONTENT for this document" needs this rather than `is_empty()` — the two
+/// differ precisely where mistaking one for the other costs data.
+pub fn crdt_state_is_empty(state: &[u8]) -> bool {
+    encoding::update_v1_is_empty(state)
+}
 pub use scheme_content::{AccountSwitchMerge, YrsSchemeDocument};
 pub use validation::validate_crdt_update_sequence;
 
@@ -704,6 +715,17 @@ impl WorkspaceCrdtDocuments {
     /// is considered authoritative.
     pub fn workspace_is_seeded(&self) -> bool {
         self.workspace.is_seeded()
+    }
+
+    /// The document id the workspace index is stored under. Diagnostics only.
+    pub fn workspace_document_id(&self) -> DocumentId {
+        self.workspace.id
+    }
+
+    /// How many bytes the workspace index's persisted state encodes to.
+    /// Diagnostics only: an empty Yjs document is two bytes.
+    pub fn workspace_state_len(&self) -> usize {
+        self.workspace.encode_state_shared_v1().len()
     }
 
     /// Compare the persisted folder records without treating their derived
@@ -2409,6 +2431,18 @@ impl WorkspaceCrdtDocuments {
         self.schemes
             .get(&scheme_id)
             .map(YrsSchemeDocument::scheme_items)
+            .transpose()
+    }
+
+    /// Live rows plus both removal sets from one decode — see
+    /// [`YrsSchemeDocument::scheme_entry_summary`].
+    pub(crate) fn raw_scheme_entry_summary(
+        &self,
+        scheme_id: SchemeId,
+    ) -> anyhow::Result<Option<scheme_content::SchemeEntrySummary>> {
+        self.schemes
+            .get(&scheme_id)
+            .map(YrsSchemeDocument::scheme_entry_summary)
             .transpose()
     }
 

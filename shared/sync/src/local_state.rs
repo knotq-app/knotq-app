@@ -245,6 +245,19 @@ pub struct LocalSyncState {
     /// this recovery proof does not require decoding the whole workspace.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub sync_in_progress: bool,
+    /// Documents this device has already re-offered to the server after it
+    /// reported an integrity mismatch, so a mismatch that does not clear cannot
+    /// make the device re-offer forever. Cleared the moment the server stops
+    /// reporting any mismatch at all, so this is "once per mismatch episode"
+    /// rather than "once ever". See the re-offer in `batch_pull_and_apply`.
+    #[serde(default, skip_serializing_if = "HashSet::is_empty")]
+    pub integrity_reoffered: HashSet<DocumentId>,
+    /// A damaged sync-state journal was recovered as a default state. The CRDT
+    /// documents are still authoritative, but cursor/queue history is not, so
+    /// the next sync must re-express durable local tombstones before adopting
+    /// the server's view. Cleared only after that recovery push succeeds.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub storage_recovery_pending: bool,
     /// Deferred scheme documents whose complete remote state changed during a
     /// lazy bootstrap. Mobile keeps their existing plain files cheap to load,
     /// but must hydrate the authoritative CRDT bytes when one of these schemes
@@ -315,6 +328,22 @@ impl LocalSyncState {
     /// every document.
     pub fn needs_full_reseed(&self) -> bool {
         self.reseed_all_documents
+    }
+
+    pub fn needs_storage_recovery(&self) -> bool {
+        self.storage_recovery_pending
+    }
+
+    pub fn clear_storage_recovery(&mut self) {
+        self.storage_recovery_pending = false;
+    }
+
+    /// Record that this device's sync journal is not trustworthy, so the next
+    /// push offers every durable document back to the server as a full
+    /// snapshot. Set by the loader when it can see the damage, and by the pull
+    /// when it can only infer it.
+    pub fn mark_storage_recovery(&mut self) {
+        self.storage_recovery_pending = true;
     }
 
     /// Clear the re-seed obligation once the snapshots have been queued.
@@ -748,11 +777,14 @@ pub fn queue_workspace_bootstrap_updates(
     replica_id: ReplicaId,
     remote_latest: &HashMap<DocumentId, u64>,
 ) -> Vec<DocumentId> {
-    let reseed_all = sync_state.needs_full_reseed();
+    let reseed_all = sync_state.needs_full_reseed() || sync_state.needs_storage_recovery();
     // A normal pull only needs to bootstrap documents for which the server has
     // no base. Computing this set from the authoritative server heads lets the
     // CRDT layer skip full-state encoding for every already-synced document.
-    // Account/server reseeds are intentionally exhaustive and remain rare.
+    // Account/server and storage-recovery reseeds are intentionally exhaustive
+    // and remain rare. A recovered journal has no trustworthy cursor/queue
+    // pairing, so every durable CRDT snapshot must be offered back to the
+    // server; merging a complete snapshot cannot erase remote-only structs.
     let bootstrap_documents: HashSet<DocumentId> = crdt
         .known_document_ids()
         .into_iter()
@@ -811,9 +843,10 @@ pub fn queue_workspace_bootstrap_updates(
     // (a throwaway snapshot would carry a fresh identity that competes with them).
     // After an account/server change this device shares no history with the new
     // server's documents, so an incremental delta against the local state vector
-    // is not applicable there — every document must go out as a full snapshot,
-    // even one the server already has a base for (a snapshot merges into any
-    // base; a foreign-history delta corrupts it). See `reseed_all_documents`.
+    // is not applicable there. A recovered sync journal has the same problem:
+    // its cursor/queue pairing is unknown. Every document must go out as a full
+    // snapshot, even one the server already has a base for (a snapshot merges
+    // into any base; a foreign-history delta corrupts it).
     for update in crdt
         .full_snapshot_updates_for_documents(&bootstrap_documents)
         .updates
