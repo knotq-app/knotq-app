@@ -1825,7 +1825,7 @@ replays 20223 in `replay_journal_loss_seed`'s exact environment — squash
 thresholds forced on, maintenance steps off — at 200 steps, because at 120 the
 ablation is not selected.
 
-## 0D. [DIAGNOSED, NOT FIXED] A failed first sync lets a fresh install delete the account's folders
+## 0D. [FIXED] A failed first sync let a fresh install delete the account's folders
 
 Found 2026-10-03, by chaos seed 38, and **this one is a field-plausible
 data-loss path rather than a fuzz curiosity**: all it needs is a new device
@@ -1877,7 +1877,37 @@ A device that has never received an index keeps the conservative path, where its
 content still reaches the account through the post-pull bootstrap's full
 snapshot, which can only add.
 
-### …and that fix was measured, and it is WORSE. It is not in the tree.
+### FIXED 2026-10-04 — and by none of the five things tried first
+
+The predicate asked the wrong question, but so did every attempted fix. They all
+reached for *which* cursor, or for retaining index keys; the answer was simpler and
+narrower.
+
+A cursor whose `last_pulled_sequence` and `last_pushed_sequence` are both zero is a
+**placeholder** — the run that created it received nothing for that document and sent
+nothing. "Has a cursor" was never the question:
+
+```rust
+let first_sync_with_this_server = !local_state
+    .document_cursors
+    .values()
+    .any(|cursor| cursor.last_pulled_sequence > 0 || cursor.last_pushed_sequence > 0);
+```
+
+**Measured discrimination, in the failing run itself:** the offending device reads
+`cursors=11 moved=0`; every healthy device in the same account reads `moved=N` of `N`.
+So this widens the suppression by exactly one state — every cursor vacuous — and a
+device that has genuinely exchanged anything is untouched. That is why it does not
+wedge 109 the way everything below does.
+
+**Result:** PR gate sweep 33 passed / 0 failed; census chaos 0/400, single 0/400,
+journal 0/400; multi-origin 3000 seeds, the HTTP + WebSocket suite against wrangler,
+and the unit suites all green. The first fully green census in this file's history.
+
+### The five attempts that came first, and what each cost
+
+Kept because each looks like the obvious next idea and all five trade seed 38 for
+another seed.
 
 It does what it says: chaos **38** goes green and chaos **253** — the seed this
 file records as needing the repair to actually RUN — stays green. And the full
