@@ -743,12 +743,39 @@ impl WorkspaceStore {
         // lives elsewhere has to be rewritten from the visible placement, which
         // deletes that copy. Leaving it costs a line: deleting the visible copy
         // later reveals the hidden one, and a line the user deleted reappears in
-        // another scheme (production fuzz chaos seeds 39, 42, 52). The winner is
-        // the lowest scheme id, identical on every replica and a minimum, so the
-        // copy in the globally lowest scheme is never deleted anywhere.
+        // another scheme (production fuzz chaos seeds 39, 42, 52).
+        //
+        // **This is the destructive half, and its old safety argument was "the winner
+        // is the lowest scheme id, identical on every replica and a minimum, so the
+        // copy in the globally lowest scheme is never deleted anywhere". A placement
+        // claim invalidates that argument** — the winner is now whatever the account
+        // recorded, which is not a minimum — so the rule has to be restated rather
+        // than inherited. This is exactly what the previous attempt at the claim
+        // skipped, and it ended with the visible workspace holding a row twice
+        // (seeds 10044, 135).
+        //
+        // The restated rule: a claimed row may only be tombstoned by a replica that
+        // can SEE the claimed home. Every such replica reads the same claim and
+        // agrees, so they cannot destroy each other's winner; a replica that cannot
+        // see the home hides its copy locally (cosmetic, reversible) and destroys
+        // nothing, leaving the decision to one that can. Unclaimed rows keep the
+        // lowest-id rule and its original argument untouched.
+        let claims = self.crdt.item_placement_claims();
+        let home_is_visible = |item: &String| {
+            claims
+                .get(item)
+                .is_some_and(|home| self.workspace.schemes.contains_key(home))
+        };
         let hidden_copies: std::collections::HashMap<SchemeId, HashSet<String>> = hidden_copies
             .into_iter()
             .filter(|(scheme, _)| self.workspace.schemes.contains_key(scheme))
+            .filter_map(|(scheme, items)| {
+                let tombstonable: HashSet<String> = items
+                    .into_iter()
+                    .filter(|item| !claims.contains_key(item) || home_is_visible(item))
+                    .collect();
+                (!tombstonable.is_empty()).then_some((scheme, tombstonable))
+            })
             .collect();
         let resolved_duplicates = !hidden_copies.is_empty();
         if resolved_duplicates {
@@ -1908,17 +1935,28 @@ fn crdt_change_set_for_command(command: &Command) -> WorkspaceCrdtChangeSet {
     // a move adds no scheme and removes none — true of the document SET, and the
     // wrong question. What matters is that the index's description of where lines
     // live has changed.
-    let moves_a_line_between_schemes = inserted_items.iter().any(|(destination, inserted)| {
-        inserted.iter().any(|item| {
-            deleted_items
+    // Where each row that crosses schemes has gone. This is the account's record of
+    // a placement — the one fact both replicas can read when a move leaves the same
+    // id live in two documents, since the fallback (lowest scheme id among the
+    // schemes a device has LOADED) is a per-device answer. Written into the index's
+    // `item_home` map; nothing reaches `workspace.json`.
+    let mut item_homes: HashMap<String, SchemeId> = HashMap::new();
+    for (destination, inserted) in &inserted_items {
+        for item in inserted {
+            let crossed = deleted_items
                 .iter()
-                .any(|(source, items)| source != destination && items.contains(item))
-        })
-    });
+                .any(|(source, items)| source != destination && items.contains(item));
+            if crossed {
+                item_homes.insert(item.clone(), *destination);
+            }
+        }
+    }
+    let moves_a_line_between_schemes = !item_homes.is_empty();
     WorkspaceCrdtChangeSet {
         workspace: documents.workspace || moves_a_line_between_schemes,
         schemes: documents.schemes.into_iter().collect(),
         deleted_items,
+        item_homes,
     }
 }
 

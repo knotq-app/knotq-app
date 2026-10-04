@@ -905,8 +905,15 @@ fn workspace_crdt_documents_merge_an_edit_made_during_a_shared_first_sync_base()
 /// dedupe by a separate pass that the claim can disagree with. The claim half is
 /// reverted; the widened placement-reconcile gate that came with it is not, and
 /// is what fixes 194 and 10054 today.
+/// **Closed 2026-10-04.** The claim is read by the dedupe and honoured only among
+/// copies that exist, and the destructive half (`reconcile_item_placements`) now
+/// tombstones a claimed row only on a replica that can SEE the claimed home — which
+/// is the part the earlier attempt skipped and what left the visible workspace
+/// holding a row twice. Both arms of this test are asserted below: with a claim the
+/// replicas agree even though one cannot see the claimed scheme, and without one the
+/// old lowest-loaded-id rule still applies (and still disagrees, which is why the
+/// claim exists).
 #[test]
-#[ignore = "open: the dedupe winner depends on the device's loaded window; see app/TODO.md"]
 fn the_dedupe_winner_does_not_depend_on_which_schemes_a_device_loaded() {
     let duplicated = Item::new("moved line");
 
@@ -929,8 +936,12 @@ fn the_dedupe_winner_does_not_depend_on_which_schemes_a_device_loaded() {
     let mut only_high = both.clone();
     only_high.schemes.remove(&low);
 
-    dedupe_materialized_items(&mut both);
-    dedupe_materialized_items(&mut only_high);
+    // The account recorded where the row went: the HIGHER id, which is precisely the
+    // answer the lowest-loaded-id rule would never give the replica that holds both.
+    let claim: HashMap<String, SchemeId> =
+        HashMap::from([(duplicated.id.to_string(), high)]);
+    dedupe_materialized_items(&mut both, &claim);
+    dedupe_materialized_items(&mut only_high, &claim);
 
     let shows_it = |workspace: &Workspace| -> Vec<SchemeId> {
         let mut holders: Vec<SchemeId> = workspace
@@ -951,4 +962,44 @@ fn the_dedupe_winner_does_not_depend_on_which_schemes_a_device_loaded() {
         shows_it(&both),
         shows_it(&only_high),
     );
+    assert_eq!(
+        shows_it(&both),
+        vec![high],
+        "the replicas agree, but not on the scheme the account recorded"
+    );
+}
+
+/// The other arm: with no claim the rule is unchanged, and unchanged means it still
+/// disagrees. Kept so the test above is known to be measuring the claim rather than
+/// some incidental change to the dedupe.
+#[test]
+fn without_a_claim_the_dedupe_winner_still_depends_on_the_loaded_window() {
+    let duplicated = Item::new("moved line");
+    let mut both = Workspace::new();
+    let low = add_root_scheme(&mut both, "aaa low id");
+    let high = add_root_scheme(&mut both, "zzz high id");
+    let (low, high) = if low < high { (low, high) } else { (high, low) };
+    for scheme in [low, high] {
+        both.schemes
+            .get_mut(&scheme)
+            .unwrap()
+            .items
+            .push(duplicated.clone());
+    }
+    let mut only_high = both.clone();
+    only_high.schemes.remove(&low);
+
+    let no_claim = HashMap::new();
+    dedupe_materialized_items(&mut both, &no_claim);
+    dedupe_materialized_items(&mut only_high, &no_claim);
+
+    let holder = |workspace: &Workspace| -> Option<SchemeId> {
+        workspace
+            .schemes
+            .iter()
+            .find(|(_, scheme)| scheme.items.iter().any(|item| item.id == duplicated.id))
+            .map(|(id, _)| *id)
+    };
+    assert_eq!(holder(&both), Some(low));
+    assert_eq!(holder(&only_high), Some(high));
 }

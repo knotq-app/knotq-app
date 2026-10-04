@@ -35,6 +35,23 @@ struct WorkspaceMaps {
     deleted_scheme_origins: MapRef,
     recently_deleted_folders: MapRef,
     deleted_folder_origins: MapRef,
+    /// `item_id -> scheme_id`: where a row that has CROSSED SCHEMES belongs.
+    ///
+    /// An item carries no field naming its scheme, so its location *is* which
+    /// document contains it — and a move is a tombstone in one document plus an
+    /// insert in another, two operations in two independent convergence domains
+    /// that nothing makes a replica observe together. The duplicate that results is
+    /// resolved by `dedupe_materialized_items`, whose winner is the lowest scheme id
+    /// *among the schemes that device happens to have loaded*: a per-device answer
+    /// to an account-wide question, so replicas with different loaded windows
+    /// disagree, and `reconcile_item_placements` then DELETES the copy it judges to
+    /// be losing. See `app/TODO.md` §1.
+    ///
+    /// This is the one place both replicas can read. Additive: Yjs merges an unknown
+    /// root map without complaint, so a build that predates it ignores the key and
+    /// keeps today's rule — and an entry is written only when a row actually crosses
+    /// schemes, so the map stays proportional to moves rather than to items.
+    item_home: MapRef,
 }
 
 impl WorkspaceMaps {
@@ -50,6 +67,7 @@ impl WorkspaceMaps {
             deleted_scheme_origins: doc.get_or_insert_map("deleted_scheme_origins"),
             recently_deleted_folders: doc.get_or_insert_map("recently_deleted_folders"),
             deleted_folder_origins: doc.get_or_insert_map("deleted_folder_origins"),
+            item_home: doc.get_or_insert_map("item_home"),
         }
     }
 }
@@ -217,6 +235,7 @@ impl YrsJsonDocument {
         &self,
         snapshot: &WorkspaceDocumentSnapshot,
         force: bool,
+        item_homes: &HashMap<String, SchemeId>,
     ) -> anyhow::Result<Option<CrdtDocumentUpdate>> {
         // `force` deliberately re-emits the WHOLE document, so it never uses
         // what the write produced; an ordinary edit takes the delta from the
@@ -230,7 +249,12 @@ impl YrsJsonDocument {
                 None => Delta::Diff(self.doc.transact().state_vector()),
             }
         };
-        let changed = self.replace_snapshot(snapshot)?;
+        // INSIDE the capture window. The baseline is taken above, so a claim
+        // written before this point is excluded from the emitted update and never
+        // reaches the server — and a run whose only change is a claim has to emit
+        // something.
+        let claims_changed = self.record_item_homes(item_homes)?;
+        let changed = self.replace_snapshot(snapshot)? || claims_changed;
         if !changed && !force {
             return Ok(None);
         }
@@ -326,6 +350,9 @@ impl YrsJsonDocument {
             deleted_scheme_origins: deleted_origins,
             recently_deleted_folders,
             deleted_folder_origins,
+            // The claim map is additive and written only by `record_item_homes`;
+            // a snapshot write neither derives nor removes it.
+            item_home: _,
         } = WorkspaceMaps::get(&self.doc);
         let mut txn = self.doc.transact_mut();
 
@@ -767,11 +794,43 @@ impl YrsJsonDocument {
         }
         report_map_removals("node_fields", &node_fields, &txn, &node_field_entries);
         report_map_removals("folder_sync", &folder_sync, &txn, &folder_sync_entries);
-        changed |= sync_string_map(&nodes, &mut txn, &node_entries);
-        changed |= sync_string_map(&node_fields, &mut txn, &node_field_entries);
-        changed |= sync_string_map(&scheme_sync, &mut txn, &scheme_sync_entries);
-        changed |= sync_string_map(&folder_sync, &mut txn, &folder_sync_entries);
-        changed |= sync_string_map(&daily_queue, &mut txn, &daily_queue_entries);
+
+        // What this writer can prove was deleted, rather than merely cannot see.
+        let tombstoned: HashSet<String> = permanently_deleted_scheme_ids
+            .iter()
+            .map(|id| id.to_string())
+            .chain(
+                permanently_deleted_folder_ids
+                    .iter()
+                    .map(|id| id.to_string()),
+            )
+            .collect();
+        let id_was_deleted = |key: &str, _stored: &str| tombstoned.contains(key);
+        // `node_fields` is keyed `<node id><sep><field>`, so match the id prefix.
+        let node_field_was_deleted =
+            |key: &str, _stored: &str| tombstoned.iter().any(|id| key.starts_with(id.as_str()));
+        // A Daily binding is keyed by date and names a scheme; the scheme's tombstone
+        // is the evidence. A day this device has not loaded keeps its binding, which
+        // is the one chaos 194 loses.
+        let bound_scheme_was_deleted = |_key: &str, stored: &str| tombstoned.contains(stored);
+
+        changed |= sync_string_map_removing(&nodes, &mut txn, &node_entries, &id_was_deleted);
+        changed |= sync_string_map_removing(
+            &node_fields,
+            &mut txn,
+            &node_field_entries,
+            &node_field_was_deleted,
+        );
+        changed |=
+            sync_string_map_removing(&scheme_sync, &mut txn, &scheme_sync_entries, &id_was_deleted);
+        changed |=
+            sync_string_map_removing(&folder_sync, &mut txn, &folder_sync_entries, &id_was_deleted);
+        changed |= sync_string_map_removing(
+            &daily_queue,
+            &mut txn,
+            &daily_queue_entries,
+            &bound_scheme_was_deleted,
+        );
         changed |= sync_string_map(&recently_deleted, &mut txn, &recently_deleted_entries);
         changed |= sync_string_map(&deleted_origins, &mut txn, &deleted_origin_entries);
         changed |= sync_string_map(
@@ -845,6 +904,47 @@ impl YrsJsonDocument {
             .is_some()
     }
 
+    /// Record where rows that crossed schemes belong. Additive: a claim is only
+    /// ever written, never removed, so a build that does not know the map is
+    /// unaffected and no replica can retract another's.
+    pub(crate) fn record_item_homes(
+        &self,
+        item_homes: &HashMap<String, SchemeId>,
+    ) -> anyhow::Result<bool> {
+        if item_homes.is_empty() {
+            return Ok(false);
+        }
+        let maps = WorkspaceMaps::get(&self.doc);
+        let mut txn = self.doc.transact_mut();
+        let mut changed = false;
+        // Sorted: two devices writing the same claims must emit identical bytes.
+        let mut entries: Vec<(&String, &SchemeId)> = item_homes.iter().collect();
+        entries.sort();
+        for (item, scheme) in entries {
+            let value = scheme.to_string();
+            let existing = maps
+                .item_home
+                .get_as::<_, Option<String>>(&txn, item.as_str())
+                .ok()
+                .flatten();
+            if existing.as_deref() != Some(value.as_str()) {
+                maps.item_home.insert(&mut txn, item.clone(), value);
+                changed = true;
+            }
+        }
+        Ok(changed)
+    }
+
+    /// Where each row that has crossed schemes belongs, as the account records it.
+    pub(crate) fn item_homes(&self) -> HashMap<String, SchemeId> {
+        let maps = WorkspaceMaps::get(&self.doc);
+        let txn = self.doc.transact();
+        string_map_entries(&maps.item_home, &txn)
+            .into_iter()
+            .filter_map(|(item, scheme)| scheme.parse::<SchemeId>().ok().map(|s| (item, s)))
+            .collect()
+    }
+
     pub(crate) fn validate(&self) -> anyhow::Result<()> {
         match self.kind {
             SyncDocumentKind::PersonalWorkspace => validate_workspace_document(&self.doc),
@@ -865,6 +965,9 @@ impl YrsJsonDocument {
             deleted_scheme_origins: deleted_origins_map,
             recently_deleted_folders: recently_deleted_folders_map,
             deleted_folder_origins: deleted_folder_origins_map,
+            // Read through `item_homes()` instead: the claim is not part of the
+            // plain-workspace projection this snapshot describes.
+            item_home: _,
         } = WorkspaceMaps::get(&self.doc);
         let txn = self.doc.transact();
         let raw_recently_deleted = string_map_entries(&recently_deleted_map, &txn);
@@ -1418,14 +1521,52 @@ pub(crate) fn sync_string_map(
     txn: &mut TransactionMut,
     desired: &[(String, String)],
 ) -> bool {
+    sync_string_map_removing(map, txn, desired, &|_key, _stored| true)
+}
+
+/// `sync_string_map`, except the writer must justify every removal.
+///
+/// **The fix for "the workspace index publishes absence as deletion".**
+/// `sync_string_map` means *the account's index is now exactly this*, and a device
+/// with a partial view — an unloaded Daily page, a scheme the pull just dropped, a
+/// fresh install that has not pulled yet — cannot truthfully say that. Its absence
+/// of a key is not evidence of a deletion, yet `map.remove` publishes it as one to
+/// every device: chaos 38 (three folders), chaos 194 and single 10054 (a day's
+/// binding, a row), journal 20223.
+///
+/// `may_remove(key, stored)` is the evidence — the permanent-delete tombstone, which
+/// `PermanentlyDeleteScheme`'s comment says exists precisely so "the workspace-index
+/// writer [can] tell a real deletion apart from a scheme this device merely cannot
+/// see". Retaining can only ever leave the account holding MORE than one device knows
+/// about, which the materializer is there to teach it.
+///
+/// Retention alone deadlocks (every device wedges with an undrained index queue): it
+/// needs `workspace_folder_records_contain` for the comparison, and it needs
+/// placement claims, because a retained entry otherwise manufactures duplicate
+/// placements the dedupe cannot resolve the same way on every replica.
+pub(crate) fn sync_string_map_removing(
+    map: &MapRef,
+    txn: &mut TransactionMut,
+    desired: &[(String, String)],
+    may_remove: &dyn Fn(&str, &str) -> bool,
+) -> bool {
     let mut changed = false;
     let desired_keys: HashSet<&str> = desired.iter().map(|(key, _)| key.as_str()).collect();
     let stale = map
-        .keys(&*txn)
-        .filter(|key| !desired_keys.contains(*key))
-        .map(str::to_string)
+        .iter(&*txn)
+        .filter(|(key, _)| !desired_keys.contains(*key))
+        .map(|(key, value)| {
+            let stored = match value {
+                yrs::Out::Any(yrs::Any::String(text)) => text.to_string(),
+                other => other.to_string(&*txn),
+            };
+            (key.to_string(), stored)
+        })
         .collect::<Vec<_>>();
-    for key in stale {
+    for (key, stored) in stale {
+        if !may_remove(&key, &stored) {
+            continue;
+        }
         map.remove(&mut *txn, &key);
         changed = true;
     }

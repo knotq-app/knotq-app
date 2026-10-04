@@ -236,6 +236,11 @@ pub struct WorkspaceCrdtChangeSet {
     /// hidden by workspace-wide duplicate placement; only an explicit delete
     /// is evidence that such a copy should be tombstoned.
     pub deleted_items: HashMap<SchemeId, HashSet<String>>,
+    /// `item_id -> the scheme it was just moved INTO`, for rows that crossed
+    /// schemes in this batch. Recorded in the index's `item_home` map so every
+    /// replica resolves the resulting duplicate the same way — see that map.
+    /// Nothing is written to `workspace.json`: the claim is CRDT-only.
+    pub item_homes: HashMap<String, SchemeId>,
 }
 
 impl WorkspaceCrdtChangeSet {
@@ -251,6 +256,7 @@ impl WorkspaceCrdtChangeSet {
 
     pub fn merge(&mut self, other: Self) {
         self.workspace |= other.workspace;
+        self.item_homes.extend(other.item_homes);
         self.schemes.extend(other.schemes);
         for (scheme, items) in other.deleted_items {
             self.deleted_items.entry(scheme).or_default().extend(items);
@@ -258,7 +264,10 @@ impl WorkspaceCrdtChangeSet {
     }
 
     pub fn is_empty(&self) -> bool {
-        !self.workspace && self.schemes.is_empty() && self.deleted_items.is_empty()
+        !self.workspace
+            && self.schemes.is_empty()
+            && self.deleted_items.is_empty()
+            && self.item_homes.is_empty()
     }
 }
 
@@ -752,6 +761,47 @@ impl WorkspaceCrdtDocuments {
             && actual.recently_deleted_folders == expected.recently_deleted_folders
             && actual.deleted_folder_origins == expected.deleted_folder_origins
             && actual.folder_sync == expected.folder_sync)
+    }
+
+    /// Does the document hold everything the plain workspace does?
+    ///
+    /// The question an index writer can answer once its writes retain keys it has no
+    /// evidence to remove (`sync_string_map_removing`): the document is EXPECTED to
+    /// hold more than any one device's view, so equality reports a disagreement on
+    /// every pull, the repair re-queues a full index snapshot, and every device ends
+    /// with an undrained index queue. That is the lost fixed point behind
+    /// "Attempt A"; measured without this, 317 of 384 sweep seeds fail.
+    pub fn workspace_folder_records_contain(&self, workspace: &Workspace) -> anyhow::Result<bool> {
+        if !self.workspace.is_seeded() {
+            return Ok(false);
+        }
+        let mut normalized = workspace.clone();
+        normalized.ensure_sync_metadata();
+        let actual = self.workspace.snapshot()?;
+        let mut expected = workspace_document_snapshot(&normalized);
+        for folder in &mut expected.folders {
+            folder.children.clear();
+        }
+        let mut actual_folders = actual.folders;
+        actual_folders
+            .iter_mut()
+            .for_each(|folder| folder.children.clear());
+        Ok(expected
+            .folders
+            .iter()
+            .all(|folder| actual_folders.contains(folder))
+            && expected
+                .folder_sync
+                .iter()
+                .all(|entry| actual.folder_sync.contains(entry))
+            && expected
+                .recently_deleted_folders
+                .iter()
+                .all(|entry| actual.recently_deleted_folders.contains(entry))
+            && expected
+                .deleted_folder_origins
+                .iter()
+                .all(|entry| actual.deleted_folder_origins.contains(entry)))
     }
 
     /// Promote a deferred scheme document into a live Yjs document, so it can be
@@ -1312,7 +1362,7 @@ impl WorkspaceCrdtDocuments {
         {
             match self
                 .workspace
-                .sync_snapshot(&workspace_document_snapshot(&workspace), true)
+                .sync_snapshot(&workspace_document_snapshot(&workspace), true, &HashMap::new())
             {
                 Ok(_) => healed.push(self.workspace.id),
                 Err(err) => eprintln!("heal workspace CRDT document failed: {err:#}"),
@@ -1806,7 +1856,10 @@ impl WorkspaceCrdtDocuments {
                 .unwrap_or(true);
             let force =
                 workspace_documents_missing || workspace_documents_removed || archive_changed;
-            match self.workspace.sync_snapshot(&desired, force) {
+            match self
+                .workspace
+                .sync_snapshot(&desired, force, &changeset.item_homes)
+            {
                 Ok(Some(update)) => outcome.updates.push(update),
                 Ok(None) => {}
                 Err(err) => outcome.push_error("workspace CRDT update", err),
@@ -2378,6 +2431,13 @@ impl WorkspaceCrdtDocuments {
         self.materialize_workspace_inner(current, false, trust_empty_crdt)
     }
 
+    /// The account's record of where rows that crossed schemes belong — the index's
+    /// `item_home` map. Empty on an account whose devices predate it, in which case
+    /// every placement falls back to the lowest-loaded-id rule.
+    pub fn item_placement_claims(&self) -> HashMap<String, SchemeId> {
+        self.workspace.item_homes()
+    }
+
     /// Every scheme document that holds a live copy of `item`.
     ///
     /// An item id is globally unique, so more than one entry means two
@@ -2736,7 +2796,12 @@ impl WorkspaceCrdtDocuments {
         // winner on every replica. Only schemes materialized above participate:
         // a lazy/off-window Daily page is intentionally absent and must not be
         // interpreted as a deletion or placement decision.
-        let hidden_copies = dedupe_materialized_items(&mut workspace);
+        // The account's own answer, where it has one: a row that crossed schemes
+        // recorded where it went. Read from the index, so every replica reads the
+        // same thing — which the lowest-loaded-id rule below cannot be, since the
+        // candidate set is whatever this device happens to have loaded.
+        let homes = self.workspace.item_homes();
+        let hidden_copies = dedupe_materialized_items(&mut workspace, &homes);
         workspace.ensure_sync_metadata();
         Ok((workspace, hidden_copies))
     }
@@ -2787,25 +2852,72 @@ pub(crate) fn merge_raw_only_items(
 /// lowest scheme is never a loser anywhere. A caller may therefore delete the
 /// losing copies from their documents without any risk of every replica
 /// deleting a different one and losing the line altogether.
-fn dedupe_materialized_items(workspace: &mut Workspace) -> HashMap<SchemeId, HashSet<String>> {
+/// Resolve a row that two documents both hold live.
+///
+/// `homes` is the account's record of where a row that crossed schemes went (the
+/// index's `item_home` map). Where it has an answer every replica reads the same
+/// one, which is the whole point: the fallback — lowest scheme id among the schemes
+/// THIS DEVICE loaded — is a per-device answer to an account-wide question, so two
+/// replicas with different loaded windows disagree and `reconcile_item_placements`
+/// then deletes the copy each judges to be losing.
+///
+/// Three details are load-bearing and were each learned by breaking something:
+///
+///  - the claim is honoured **only as a preference among copies that exist**. If the
+///    claimed scheme is not loaded here, or has since tombstoned the row, the claim
+///    is ignored rather than used to hide the row — hiding it on the strength of an
+///    unreachable home makes the line vanish (chaos 127 reported it immediately).
+///  - `seen.insert` still decides within the home scheme, so a scheme holding one id
+///    twice cannot leak both copies into the workspace. A workspace holding one id
+///    twice has no CRDT representation at all.
+///  - ordering is by scheme id, so the fallback is deterministic given a candidate
+///    set.
+fn dedupe_materialized_items(
+    workspace: &mut Workspace,
+    homes: &HashMap<String, SchemeId>,
+) -> HashMap<SchemeId, HashSet<String>> {
     let mut scheme_ids: Vec<SchemeId> = workspace.schemes.keys().copied().collect();
     scheme_ids.sort();
-    let mut seen = HashSet::new();
-    let mut hidden: HashMap<SchemeId, HashSet<String>> = HashMap::new();
-    for scheme_id in scheme_ids {
-        let Some(scheme) = workspace.schemes.get_mut(&scheme_id) else {
+    // Which rows have a claim this device can actually honour: the claimed scheme is
+    // loaded AND still holds the row. Anything else falls back to the id rule.
+    let mut honourable: HashMap<String, SchemeId> = HashMap::new();
+    for (item, home) in homes {
+        let Ok(item_id) = item.parse::<knotq_model::ItemId>() else {
             continue;
         };
-        scheme.items.retain(|item| {
-            if seen.insert(item.id) {
-                return true;
-            }
-            hidden
-                .entry(scheme_id)
-                .or_default()
-                .insert(item.id.to_string());
-            false
-        });
+        if workspace
+            .schemes
+            .get(home)
+            .is_some_and(|scheme| scheme.items.iter().any(|row| row.id == item_id))
+        {
+            honourable.insert(item.clone(), *home);
+        }
+    }
+    let mut seen = HashSet::new();
+    let mut hidden: HashMap<SchemeId, HashSet<String>> = HashMap::new();
+    // Claimed rows first, so a claimed home always wins `seen` against any other
+    // scheme regardless of id order.
+    for pass_is_claimed in [true, false] {
+        for scheme_id in &scheme_ids {
+            let scheme_id = *scheme_id;
+            let Some(scheme) = workspace.schemes.get_mut(&scheme_id) else {
+                continue;
+            };
+            scheme.items.retain(|item| {
+                let key = item.id.to_string();
+                let claimed_home = honourable.get(&key);
+                let is_claimed_here = claimed_home == Some(&scheme_id);
+                if pass_is_claimed != is_claimed_here {
+                    // Decided in the other pass; leave it for now.
+                    return true;
+                }
+                if seen.insert(item.id) {
+                    return true;
+                }
+                hidden.entry(scheme_id).or_default().insert(key);
+                false
+            });
+        }
     }
     hidden
 }

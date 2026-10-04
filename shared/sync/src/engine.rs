@@ -1380,7 +1380,10 @@ fn queue_local_only_documents_before_pull(
         missing_schemes.clear();
     }
     let workspace_index_mismatch = !first_sync_with_this_server
-        && match crdt_docs.workspace_folder_records_match(workspace) {
+        // Containment, not equality: index writes retain keys the writer has no
+        // evidence to remove, so the document legitimately holds more than this
+        // device's view. Equality here is what loses the fixed point.
+        && match crdt_docs.workspace_folder_records_contain(workspace) {
             Ok(matches) => !matches,
             Err(error) => {
                 // An unreadable comparison is not permission to discard the
