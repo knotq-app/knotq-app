@@ -141,14 +141,12 @@ impl HttpClient {
 
     fn authorized(&self, request: ureq::Request) -> ureq::Request {
         use std::time::Duration;
-        // The local Wrangler proxy currently exposes a streamed
-        // `CompressionStream` response with an empty body to this test
-        // transport. Keep the HTTP convergence suite focused on sync
-        // semantics; the worker-runtime compression test covers the gzip
-        // response path, and real mobile clients still advertise gzip.
+        // No `accept-encoding` override: `ureq` advertises gzip by default, and
+        // that is what the desktop and mobile clients send. This used to pin
+        // `identity` to step around a pull body the backend had compressed twice
+        // — which hid that bug from the one suite that drives the real wire.
         request
             .timeout(Duration::from_secs(30))
-            .set("accept-encoding", "identity")
             .set("authorization", &format!("Bearer {}", self.bearer_token))
     }
 }

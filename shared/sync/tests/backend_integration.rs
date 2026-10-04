@@ -748,3 +748,120 @@ fn http_scenario_n_carryover_chain() {
     let mut h = bootstrap_harness(&base_url, "n-carryover-chain", 2);
     common::scenarios::scenario_n_carryover_chain(&mut h);
 }
+
+// ---------------------------------------------------------------------------
+// Wire encoding — the response as a shipping client receives it
+// ---------------------------------------------------------------------------
+
+/// A pull must parse for a client that sends exactly what the shipping apps send.
+///
+/// The desktop and mobile clients call `ureq` with its defaults, which advertise
+/// `Accept-Encoding: gzip` and decode one layer when the response says
+/// `Content-Encoding: gzip`. `HttpClient` used to pin `accept-encoding: identity`
+/// and the backend used to switch compression off under `KNOTQ_TEST_MODE`, so the
+/// one encoding production actually serves was the one this suite never requested —
+/// and the backend was compressing the pull body twice while declaring it once.
+/// Every HTTP pull then failed in the field with `Failed to read JSON: expected
+/// value at line 1 column 1`, visible only when the WebSocket was down.
+///
+/// Deliberately not routed through `HttpClient`: this pins the request a real
+/// client makes, independent of whatever the harness transport chooses to send.
+#[test]
+fn http_pull_parses_for_a_client_that_accepts_gzip() {
+    let Some(base_url) = backend_url() else {
+        return;
+    };
+    let bootstrap =
+        backend_bootstrap(&base_url, &unique_test_email("gzip-pull")).expect("bootstrap");
+    let request = BatchPullRequest {
+        replica_id: ReplicaId::new(),
+        cursors: HashMap::new(),
+        client_protocol_version: knotq_sync::CLIENT_SYNC_PROTOCOL_VERSION,
+        integrity_state_vectors: Vec::new(),
+        state_vectors: Vec::new(),
+    };
+    let url = format!("{base_url}/v1/sync/pull");
+    let response = ureq::post(&url)
+        .set(
+            "authorization",
+            &format!("Bearer {}", bootstrap.bearer_token),
+        )
+        .send_json(serde_json::to_value(&request).expect("serialise pull"))
+        .expect("pull request");
+    let parsed: knotq_sync::BatchPullResponse = response
+        .into_json()
+        .unwrap_or_else(|error| panic!("parse sync response from {url}: {error}"));
+    assert!(
+        !parsed.has_more,
+        "an empty workspace has nothing more to pull"
+    );
+}
+
+/// The pull body decodes to JSON under every `Accept-Encoding` a client can send,
+/// with real content in it.
+///
+/// The check is on the bytes left AFTER the client's one decode: they must be
+/// JSON, never a second gzip stream. `identity` is here because it is what this
+/// harness used to pin, and a fix for gzip clients must not break a client that
+/// declines compression.
+#[test]
+fn http_pull_body_is_json_after_one_decode_for_every_accept_encoding() {
+    use std::io::Read;
+
+    let Some(base_url) = backend_url() else {
+        return;
+    };
+    let bootstrap =
+        backend_bootstrap(&base_url, &unique_test_email("gzip-wire")).expect("bootstrap");
+    let client = HttpClient::from_bootstrap(&base_url, &bootstrap);
+    // Something to pull, so the body is a real document page and not 70 bytes.
+    let document = DocumentId::new();
+    client
+        .push(&orphan_push_request(
+            document,
+            SyncDocumentKind::Scheme,
+            build_valid_scheme_update(document),
+        ))
+        .expect("seed one document");
+
+    let url = format!("{base_url}/v1/sync/pull");
+    for accept_encoding in [None, Some("gzip"), Some("identity")] {
+        let request = BatchPullRequest {
+            replica_id: ReplicaId::new(),
+            cursors: HashMap::new(),
+            client_protocol_version: knotq_sync::CLIENT_SYNC_PROTOCOL_VERSION,
+            integrity_state_vectors: Vec::new(),
+            state_vectors: Vec::new(),
+        };
+        let mut call = ureq::post(&url).set(
+            "authorization",
+            &format!("Bearer {}", bootstrap.bearer_token),
+        );
+        if let Some(value) = accept_encoding {
+            call = call.set("accept-encoding", value);
+        }
+        let response = call
+            .send_json(serde_json::to_value(&request).expect("serialise pull"))
+            .unwrap_or_else(|error| panic!("pull with {accept_encoding:?}: {error}"));
+        let mut body = Vec::new();
+        response
+            .into_reader()
+            .read_to_end(&mut body)
+            .expect("read pull body");
+
+        assert!(
+            !body.starts_with(&[0x1f, 0x8b]),
+            "accept-encoding {accept_encoding:?}: the body is still gzip after the client's \
+             one decode — the server compressed it more than once"
+        );
+        let parsed: knotq_sync::BatchPullResponse = serde_json::from_slice(&body)
+            .unwrap_or_else(|error| panic!("accept-encoding {accept_encoding:?}: {error}"));
+        assert!(
+            parsed
+                .documents
+                .iter()
+                .any(|pulled| pulled.document == document),
+            "accept-encoding {accept_encoding:?}: the seeded document did not come back"
+        );
+    }
+}

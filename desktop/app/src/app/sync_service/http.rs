@@ -79,11 +79,30 @@ fn read_sync_json<R: serde::de::DeserializeOwned>(
         format!(
             "parse sync response from {url}: status {status}, content-type {content_type}, \
              content-encoding {content_encoding}, content-length {declared_length}, read {} \
-             byte(s), body begins {}",
+             byte(s), body begins {}{}",
             body.len(),
             body_preview(&body),
+            still_compressed_note(&body),
         )
     })
+}
+
+/// Names the one unparseable body whose preview is unreadable: gzip.
+///
+/// `ureq` decodes a `Content-Encoding: gzip` response and then REMOVES that header,
+/// so by the time this runs a body the server compressed twice reports
+/// `content-encoding identity` above and previews as two bytes of noise — the
+/// message would point away from the cause. This is exactly what the backend
+/// served on every HTTP pull (it gzipped the body and the Workers runtime gzipped
+/// it again to match the header), so say so in words.
+fn still_compressed_note(body: &[u8]) -> &'static str {
+    const GZIP_MAGIC: [u8; 2] = [0x1f, 0x8b];
+    if body.starts_with(&GZIP_MAGIC) {
+        " — the body is still gzip after decoding, so the server compressed it more than \
+         once or mislabelled its encoding"
+    } else {
+        ""
+    }
 }
 
 /// A bounded, escaped look at a body that would not parse.
@@ -434,5 +453,108 @@ mod tests {
             "the error carried {} characters of the body",
             report.len()
         );
+    }
+
+    /// `{"documents":[],"notification_schedule_revision":7,"has_more":false}`,
+    /// gzipped once — what a correct server sends under `Content-Encoding: gzip`.
+    const PULL_GZIPPED_ONCE: &[u8] = &[
+        0x1f, 0x8b, 0x08, 0x00, 0x00, 0x00, 0x00, 0x00, 0x02, 0xff, 0x0d, 0xc8, 0x31, 0x0a, 0xc0,
+        0x20, 0x0c, 0x05, 0xd0, 0xbb, 0xfc, 0xd9, 0xbd, 0xe0, 0x55, 0x4a, 0x91, 0xa0, 0x11, 0x03,
+        0x6a, 0xc0, 0xc4, 0x2e, 0xa5, 0x77, 0x6f, 0xdf, 0xf8, 0x1e, 0x14, 0xcd, 0x7b, 0xf0, 0x74,
+        0x43, 0x3c, 0xaf, 0x80, 0xa9, 0x2e, 0x55, 0x32, 0xb9, 0xe8, 0x4c, 0x96, 0x1b, 0x97, 0xdd,
+        0x39, 0x2d, 0xbe, 0xc5, 0xfe, 0x41, 0x3c, 0x02, 0x1a, 0x59, 0x1a, 0xba, 0x18, 0xb1, 0x52,
+        0x37, 0x7e, 0x3f, 0xbe, 0x97, 0x3a, 0xa3, 0x44, 0x00, 0x00, 0x00,
+    ];
+
+    /// The same body gzipped a second time — what the backend sent on every HTTP
+    /// pull while it compressed the body itself AND let the Workers runtime
+    /// compress it again to match the header.
+    const PULL_GZIPPED_TWICE: &[u8] = &[
+        0x1f, 0x8b, 0x08, 0x00, 0x00, 0x00, 0x00, 0x00, 0x02, 0xff, 0x93, 0xef, 0xe6, 0x60, 0x00,
+        0x01, 0xa6, 0xff, 0xbc, 0x27, 0x0c, 0xb9, 0x0e, 0x28, 0xf0, 0xb0, 0x5e, 0xd8, 0xfd, 0xe7,
+        0xe6, 0xde, 0x07, 0xa1, 0x5e, 0x13, 0x17, 0x08, 0x32, 0x67, 0x1d, 0x38, 0xa2, 0xb7, 0xb4,
+        0x3c, 0xff, 0xfe, 0x0f, 0x39, 0x91, 0xb3, 0xd5, 0x1f, 0x4a, 0x9c, 0x6d, 0xd6, 0x37, 0xac,
+        0xd4, 0x0b, 0x35, 0xda, 0xf9, 0xc2, 0x67, 0x9a, 0xf4, 0xf4, 0xbb, 0x96, 0xba, 0xfb, 0x8e,
+        0xfe, 0x73, 0xb4, 0x61, 0x92, 0x8a, 0x94, 0xda, 0x25, 0xb1, 0x31, 0xc8, 0xbc, 0xce, 0x7e,
+        0xdf, 0x74, 0xab, 0xc5, 0x2e, 0x40, 0xd3, 0x00, 0xc9, 0xa5, 0xea, 0x24, 0x56, 0x00, 0x00,
+        0x00,
+    ];
+
+    /// Serve one canned HTTP response on a loopback port and return its URL.
+    /// `ureq::Response::new` only takes a `&str` body, and the whole point here is
+    /// the path a compressed body takes through `ureq`'s own decoder.
+    fn serve_once(content_encoding: Option<&str>, body: &'static [u8]) -> String {
+        use std::io::{BufRead, BufReader, Write};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind loopback");
+        let url = format!("http://{}/v1/sync/pull", listener.local_addr().unwrap());
+        let encoding = content_encoding
+            .map(|value| format!("content-encoding: {value}\r\n"))
+            .unwrap_or_default();
+        std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("accept");
+            let mut reader = BufReader::new(stream.try_clone().expect("clone stream"));
+            let mut content_length = 0usize;
+            loop {
+                let mut line = String::new();
+                if reader.read_line(&mut line).unwrap_or(0) == 0 || line == "\r\n" {
+                    break;
+                }
+                if let Some(value) = line.to_ascii_lowercase().strip_prefix("content-length:") {
+                    content_length = value.trim().parse().unwrap_or(0);
+                }
+            }
+            let mut request_body = vec![0u8; content_length];
+            let _ = std::io::Read::read_exact(&mut reader, &mut request_body);
+            let head = format!(
+                "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\n{encoding}\
+                 content-length: {}\r\nconnection: close\r\n\r\n",
+                body.len()
+            );
+            let _ = stream.write_all(head.as_bytes());
+            let _ = stream.write_all(body);
+        });
+        url
+    }
+
+    fn pull_from(url: &str) -> Result<BatchPullResponse> {
+        let response = ureq::post(url)
+            .send_json(serde_json::json!({}))
+            .expect("the canned server answers 200");
+        read_sync_json(url, response)
+    }
+
+    /// The healthy case, through the real decoder: the client advertises gzip (it
+    /// always does — `ureq`'s default `gzip` feature adds the header), the server
+    /// answers with ONE gzip layer, and the pull parses.
+    #[test]
+    fn a_gzip_response_is_decoded_and_parsed() {
+        let url = serve_once(Some("gzip"), PULL_GZIPPED_ONCE);
+        let pulled = pull_from(&url).expect("a singly gzipped pull parses");
+        assert_eq!(pulled.notification_schedule_revision, 7);
+        assert!(pulled.documents.is_empty());
+    }
+
+    /// The field failure, byte for byte: two gzip layers under a header declaring
+    /// one. The client cannot repair this, but it must say what it is — the old
+    /// message was `Failed to read JSON: expected value at line 1 column 1`, and
+    /// even the newer one reports `content-encoding identity` (the header is gone
+    /// after decoding) over a two-character preview of noise.
+    #[test]
+    fn a_twice_compressed_response_is_named_as_still_compressed() {
+        let url = serve_once(Some("gzip"), PULL_GZIPPED_TWICE);
+        let err = pull_from(&url).expect_err("gzip bytes are not a sync response");
+        let report = format!("{err:#}");
+        assert!(
+            report.contains("still gzip after decoding"),
+            "a doubly compressed body must be named, not shown as noise: {report}"
+        );
+    }
+
+    /// A parse failure that is NOT compression must not be blamed on it.
+    #[test]
+    fn an_ordinary_parse_failure_is_not_blamed_on_compression() {
+        let url = serve_once(None, b"<!DOCTYPE html>");
+        let report = format!("{:#}", pull_from(&url).expect_err("HTML is not a pull"));
+        assert!(!report.contains("still gzip"), "{report}");
     }
 }
