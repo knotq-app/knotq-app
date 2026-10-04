@@ -1900,6 +1900,46 @@ index writer publishing absence as deletion — after which a fresh joiner's ind
 write cannot subtract at all, and the suppression stops being load-bearing in
 either direction.
 
+### Four attempts at it, and every one trades chaos 38 for chaos 109
+
+Worth the space, because each looks like the obvious next idea and all four cost
+the same seed. The target is to let a device that has not seen the account's index
+PUBLISH what it holds while forbidding it to SUBTRACT — `sync_string_map` means
+"the account's index is now exactly this", a claim only a writer that has seen the
+account's index can make.
+
+| Attempt | chaos 38 | chaos 109 |
+|---|---|---|
+| suppress the whole repair when the index was never pulled | fixed | **wedges** (also 142, 269 lose content) |
+| add-only index write, witness `last_pulled_sequence > 0` | fixed | **wedges** |
+| add-only, witness "a cursor exists at all" | still deletes | fixed |
+| add-only, witness "pulled content OR accepted push" | fixed | **wedges** |
+| …plus a containment comparison for add-only writers | fixed | **wedges** |
+
+The third shows why a witness alone cannot do it: chaos 38's failed first run
+leaves a cursor behind, so "has a cursor" is already true for the device that must
+not subtract. The others all end at the same place, and the last one is the
+interesting failure because it added the second half §2 asks for — a comparison
+that reads a retained key as agreement rather than disagreement
+(`workspace_folder_records_contain`) — and 109 wedged anyway.
+
+**Traced:** device 4's runs report "pushed 1 doc(s), 0 pending left" and the oracle
+still finds one unpushed index edit at settle. The retained entries **materialize
+back into the plain workspace**, which is a local change, which queues another
+index edit. That is the third change attempt A needed and never had: retention
+needs a comparison *and* a materialization that does not adopt what was retained.
+At that point this is attempt A rebuilt, with its 30-of-30 wedge waiting, so it was
+reverted rather than finished.
+
+**What that leaves as the choice**, and it is a real one rather than an oversight:
+chaos 38 is an account-wide folder DELETION that is pre-existing and reachable in
+the field; chaos 109 would be a NEW wedge — one device that stops syncing until it
+signs out and in. Nothing measured here fixes the first without causing the second,
+so the first is left standing and documented rather than traded for a regression.
+The way out is §2 done properly — the index writer never publishing absence at all,
+with the comparison and materialization that implies — which is a redesign of the
+index write, not a patch to its callers.
+
 Pinned by `a_fresh_install_whose_first_sync_failed_does_not_publish_its_own_index`
 (production_fuzz, `#[ignore]`d because it fails).
 

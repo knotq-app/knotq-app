@@ -58,8 +58,10 @@ fn recover_unreadable_sync_state(path: &Path, reason: &str) -> Result<LocalSyncS
         path.display(),
         backup.display()
     );
-    let mut state = LocalSyncState::default();
-    state.storage_recovery_pending = true;
+    let state = LocalSyncState {
+        storage_recovery_pending: true,
+        ..Default::default()
+    };
     let recovered_json =
         serde_json::to_string_pretty(&state).context("serialize recovered sync state")?;
     crate::files::write_atomic(path, recovered_json.as_bytes())
