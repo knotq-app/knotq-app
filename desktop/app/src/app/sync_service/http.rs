@@ -26,11 +26,81 @@ impl SyncTransport for SyncHttpClient {
         // scheduler's epoch-stale re-pull can react — mirroring the WebSocket
         // transport's `map_push_error`. The plain string this used to return
         // silently disabled both on the HTTP fallback path.
-        self.authorized(ureq::post(&url))
+        let response = self
+            .authorized(ureq::post(&url))
             .send_json(serde_json::to_value(request)?)
-            .map_err(sync_push_http_error)?
-            .into_json()
-            .with_context(|| format!("parse sync response from {url}"))
+            .map_err(sync_push_http_error)?;
+        read_sync_json(&url, response)
+    }
+}
+
+/// Parse a sync response, and when it will not parse, SAY WHY.
+///
+/// `Response::into_json` consumes the body, so the bytes are gone by the time the
+/// error exists: every parse failure read `parse sync response from <url>: Failed to
+/// read JSON: <serde error>` and nothing else. In the field that is not enough to
+/// act on — a truncated body, a proxy's HTML error page served with a 200, and a
+/// field whose type the client rejects all look identical, and they need completely
+/// different fixes. Reading the body first costs one buffer (and tends to be
+/// *faster*: `from_reader` over a network stream reads in small chunks, while
+/// `from_slice` parses one contiguous slice) and makes the difference legible.
+///
+/// The preview is bounded and escaped on purpose. It exists to show the SHAPE of an
+/// unparseable body — `<!DOCTYPE html`, an empty body, a truncated object — and a
+/// couple of hundred bytes is enough for that, while a whole sync response is the
+/// user's content and does not belong in an error string.
+fn read_sync_json<R: serde::de::DeserializeOwned>(
+    url: &str,
+    response: ureq::Response,
+) -> Result<R> {
+    let status = response.status();
+    let content_type = response.content_type().to_string();
+    let declared_length = response
+        .header("content-length")
+        .map(ToOwned::to_owned)
+        .unwrap_or_else(|| "absent".to_string());
+    let content_encoding = response
+        .header("content-encoding")
+        .map(ToOwned::to_owned)
+        .unwrap_or_else(|| "identity".to_string());
+    let mut body = Vec::new();
+    response
+        .into_reader()
+        .read_to_end(&mut body)
+        .with_context(|| {
+            format!(
+                "read sync response body from {url} (status {status}, content-type \
+                 {content_type}, content-length {declared_length}, got {} byte(s) before the \
+                 read failed)",
+                body.len()
+            )
+        })?;
+    serde_json::from_slice(&body).with_context(|| {
+        format!(
+            "parse sync response from {url}: status {status}, content-type {content_type}, \
+             content-encoding {content_encoding}, content-length {declared_length}, read {} \
+             byte(s), body begins {}",
+            body.len(),
+            body_preview(&body),
+        )
+    })
+}
+
+/// A bounded, escaped look at a body that would not parse.
+fn body_preview(body: &[u8]) -> String {
+    const PREVIEW_BYTES: usize = 200;
+    if body.is_empty() {
+        return "<empty>".to_string();
+    }
+    let shown = &body[..body.len().min(PREVIEW_BYTES)];
+    let text: String = String::from_utf8_lossy(shown)
+        .chars()
+        .map(|c| if c.is_control() { '·' } else { c })
+        .collect();
+    if body.len() > PREVIEW_BYTES {
+        format!("{text:?}… (truncated for this message)")
+    } else {
+        format!("{text:?}")
     }
 }
 
@@ -101,11 +171,11 @@ impl SyncHttpClient {
         T: serde::Serialize,
         R: serde::de::DeserializeOwned,
     {
-        self.authorized(ureq::post(url))
+        let response = self
+            .authorized(ureq::post(url))
             .send_json(serde_json::to_value(body)?)
-            .map_err(sync_http_error)?
-            .into_json()
-            .with_context(|| format!("parse sync response from {url}"))
+            .map_err(sync_http_error)?;
+        read_sync_json(url, response)
     }
 
     fn authorized(&self, request: ureq::Request) -> ureq::Request {
@@ -307,5 +377,62 @@ mod tests {
         assert!(err.downcast_ref::<SyncProtocolOutdated>().is_some());
         assert!(err.downcast_ref::<SyncPushRejected>().is_none());
         assert!(err.downcast_ref::<SyncUnauthorized>().is_none());
+    }
+
+    /// A body that will not parse must say what came back, because the three
+    /// causes need completely different fixes and the old message could not tell
+    /// them apart: a proxy's HTML page served with a 200, a truncated body, and a
+    /// field whose type the client rejects all read as `Failed to read JSON`.
+    ///
+    /// Nothing tested this path at all before — `TestServer` is in-memory and never
+    /// serializes, and the wrangler suite only ever sees a healthy server — which is
+    /// why a real parse failure in the field came with nothing to act on.
+    #[test]
+    fn an_unparseable_response_says_what_came_back() {
+        let html = "<!DOCTYPE html><html><head><title>502 Bad Gateway</title></head>";
+        let response = ureq::Response::new(200, "OK", html).unwrap();
+        let err = read_sync_json::<serde_json::Value>("https://api.example/v1/sync/pull", response)
+            .expect_err("HTML is not a sync response");
+        let report = format!("{err:#}");
+
+        assert!(report.contains("status 200"), "no status: {report}");
+        assert!(
+            report.contains("read 64 byte(s)"),
+            "no body length: {report}"
+        );
+        assert!(
+            report.contains("<!DOCTYPE html"),
+            "no body preview, so the shape of the body is still invisible: {report}"
+        );
+    }
+
+    /// An empty 200 is its own diagnosis — "the server said OK and sent nothing" —
+    /// and must not be reported as though some content failed to parse.
+    #[test]
+    fn an_empty_response_is_named_as_empty() {
+        let response = ureq::Response::new(200, "OK", "").unwrap();
+        let err = read_sync_json::<serde_json::Value>("https://api.example/v1/sync/pull", response)
+            .expect_err("an empty body is not a sync response");
+        let report = format!("{err:#}");
+        assert!(report.contains("read 0 byte(s)"), "{report}");
+        assert!(report.contains("<empty>"), "{report}");
+    }
+
+    /// The preview is bounded: a whole sync response is the user's content and does
+    /// not belong in an error string, and a couple of hundred bytes is enough to see
+    /// the shape.
+    #[test]
+    fn the_body_preview_is_bounded() {
+        let long = format!("{{\"documents\": \"{}\"", "x".repeat(10_000));
+        let response = ureq::Response::new(200, "OK", &long).unwrap();
+        let err = read_sync_json::<serde_json::Value>("https://api.example/v1/sync/pull", response)
+            .expect_err("truncated JSON is not a sync response");
+        let report = format!("{err:#}");
+        assert!(report.contains("truncated for this message"), "{report}");
+        assert!(
+            report.len() < 1_000,
+            "the error carried {} characters of the body",
+            report.len()
+        );
     }
 }
