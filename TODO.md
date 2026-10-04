@@ -2324,6 +2324,67 @@ two places where today's three attempts each produced a regression that only a
 1200-seed census caught — and it deserves its own run at it rather than the tail
 of a session.
 
+### §2 ATTEMPTED PROPERLY, 2026-10-04: both halves built and measured
+
+The first time the two changes this section says are needed have been built
+*together* and measured at both depths. Not landable, and the numbers say exactly
+why — read these before attempting it a third time.
+
+**Half one, retention.** `sync_string_map` grew a sibling,
+`sync_string_map_removing`, where the writer must justify each removal with
+`may_remove(key, stored)`. The evidence is the permanent-delete tombstone the
+section already identifies — `permanently_deleted_scheme_ids` /
+`permanently_deleted_folder_ids`, both already computed in `replace_snapshot`.
+Applied to `nodes`, `node_fields`, `scheme_sync`, `folder_sync` and `daily_queue`
+(the last keyed on the *bound scheme's* tombstone, since a day this device has not
+loaded must keep its binding).
+
+Alone it is catastrophic, and it reproduces "Attempt A" at full scale:
+
+| Configuration | failing seeds, gate sweep 128x200 |
+|---|---|
+| single-account | **126 of 128** |
+| journal-loss | **126 of 128** |
+| chaos | **65 of 128** |
+
+Every one is the wedge, on every device at once: `device 0 still has 10 unpushed
+edit(s) after settling`, `device 1 … 16`, `device 2 … 8`, `device 3 … 5`, all on the
+`PersonalWorkspace` document. The lost fixed point, exactly as recorded.
+
+**Half two, the comparison.** `workspace_folder_records_contain` asks whether the
+document holds everything the plain workspace does, instead of whether they are
+equal, and `workspace_index_mismatch` uses it. The document is *expected* to hold
+more once writes retain.
+
+Together they are a different world — **317 failing seeds become 2**:
+
+| Tree | gate sweep (128x200) | census (400x300) |
+|---|---|---|
+| retention only | 317 | not run (pointless) |
+| retention + containment | **2** — single 10000, journal 20037 | **14** |
+| `origin/main` | 1 — journal 20223 | 5 |
+| the branch that landed | 1 — chaos 6 | 1 — chaos 38 |
+
+Chaos goes **fully green at the gate's depth, seeds 6 and 38 included** — the first
+thing in this file to fix either. But at census depth it costs chaos 32, 118, 213,
+**253**, 269, 285, 295, **389**, single 10000, 10071, 10128 and journal 20037, 20062,
+20357. 253 is the seed this file records as needing the repair to RUN and 389 is one
+the move->index fix had fixed, so retention disturbs both directions.
+
+**What the remaining 14 have in common, and it names half three.** Every one
+replays as the same shape: `device N's sync (server state) lost item X (in scheme Y
+"Daily …")` — the audit device, materializing from the server, cannot see a row in a
+Daily page. Retaining an index entry makes a page visible to a materializer whose
+documents do not hold it; the row then appears in two schemes,
+`dedupe_materialized_items` picks one, and the oracle's one-entry-per-id view reports
+it lost from the other. That is §1, reached from §2: **retention cannot land until
+placement is an explicit convergent attribute, because retention manufactures
+exactly the duplicate placements §1 cannot resolve.**
+
+So the order is settled by measurement: **§1 first, then §2.** The reverse — which is
+the intuitive order, since §2 is where the data loss is visible — produces a tree
+that is better at 200 steps and five times worse at 300.
+
 ### 2. The workspace index publishes absence as deletion
 
 ```rust
