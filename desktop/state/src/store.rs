@@ -760,22 +760,17 @@ impl WorkspaceStore {
         // see the home hides its copy locally (cosmetic, reversible) and destroys
         // nothing, leaving the decision to one that can. Unclaimed rows keep the
         // lowest-id rule and its original argument untouched.
-        let claims = self.crdt.item_placement_claims();
-        let home_is_visible = |item: &String| {
-            claims
-                .get(item)
-                .is_some_and(|home| self.workspace.schemes.contains_key(home))
-        };
+        // The dedupe above decided this, reading the same claims, so follow it rather
+        // than second-guess it: a copy it hid is one this replica has resolved, and
+        // leaving it costs the projection law — the scheme would show fewer rows than
+        // its own document holds, for ever (chaos 295: "has 3 item(s), the CRDT has
+        // 4"). The claim's safety comes from the dedupe only honouring a home it can
+        // SEE: every replica that can see it reads the same claim and hides the same
+        // copies, and one that cannot falls back to the lowest-loaded-id rule, whose
+        // own argument is unchanged.
         let hidden_copies: std::collections::HashMap<SchemeId, HashSet<String>> = hidden_copies
             .into_iter()
             .filter(|(scheme, _)| self.workspace.schemes.contains_key(scheme))
-            .filter_map(|(scheme, items)| {
-                let tombstonable: HashSet<String> = items
-                    .into_iter()
-                    .filter(|item| !claims.contains_key(item) || home_is_visible(item))
-                    .collect();
-                (!tombstonable.is_empty()).then_some((scheme, tombstonable))
-            })
             .collect();
         let resolved_duplicates = !hidden_copies.is_empty();
         if resolved_duplicates {
