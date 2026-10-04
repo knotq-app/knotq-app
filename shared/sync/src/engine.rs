@@ -1355,11 +1355,38 @@ fn queue_local_only_documents_before_pull(
     // (§2) so that a fresh joiner's index write cannot subtract in the first
     // place. Until then this line is knowingly wrong in the direction recorded
     // above. Do not "fix" it alone.
-    let first_sync_with_this_server = local_state.document_cursors.is_empty();
+    // "Has this device ever exchanged anything with this server?" — NOT "does it
+    // have a cursor". A cursor whose sequences are both zero is a PLACEHOLDER: the
+    // run that created it received nothing for that document and sent nothing. A
+    // brand-new install whose first run fails partway leaves a pile of them (chaos
+    // seed 38: eleven cursors, none moved, `unlanded_pulls` naming all eleven), and
+    // under the old test that was enough to look like a device that had synced — so
+    // the suppression below, the only thing stopping a fresh install publishing its
+    // PRE-SIGN-IN index over the account's, switched off. `sync_string_map` then made
+    // every folder the account held and this device had not seen a deletion for
+    // everyone: three of them, at the first successful sync after a dropped
+    // connection. Signing in on a flaky network is the whole reproduction.
+    //
+    // Measured discrimination, same run: the offending device reads
+    // `cursors=11 moved=0`; every healthy device in the same account reads
+    // `moved=N` of `N`. So this widens the suppression by exactly one state — every
+    // cursor vacuous — and leaves a device that has genuinely exchanged anything
+    // untouched. That matters, because suppressing on broader signals was measured
+    // and is worse: keying it on the index cursor alone wedges chaos 109 (the repair
+    // is also what PUBLISHES, so withholding it leaves the queue nowhere to drain),
+    // and dropping the repair outright costs chaos 34 and 66 as well. See TODO.md 0D.
+    let first_sync_with_this_server = !local_state
+        .document_cursors
+        .values()
+        .any(|cursor| cursor.last_pulled_sequence > 0 || cursor.last_pushed_sequence > 0);
     let recover_local_tombstones = local_state.needs_storage_recovery();
     if first_sync_with_this_server {
+        // The message states the predicate it actually tests. It briefly claimed
+        // "no pulled account index yet", describing a predicate that was measured
+        // and reverted — a diagnostic that misdescribes its own condition is worse
+        // than none.
         trace_pre_pull_repair(
-            "first sync (no pulled account index yet): index repair suppressed, authored lines only",
+            "first sync (no cursor has moved): index repair suppressed, authored lines only",
         );
     }
     if recover_local_tombstones {
