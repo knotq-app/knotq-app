@@ -1682,6 +1682,56 @@ fn shadow_miss_timing() -> bool {
     })
 }
 
+/// `build_item_creation_update`, with the skeleton's seed clientID supplied by the
+/// caller instead of derived. Test-only, and it exists so a test can ask what
+/// happens when two builds derive that id DIFFERENTLY — the question any change to
+/// `stable_item_seed_client_id` has to answer before it ships, because the
+/// deterministic skeleton's whole purpose is that two devices creating the same
+/// item emit byte-identical ops.
+#[cfg(test)]
+pub(crate) fn build_item_creation_update_under_seed(
+    document: DocumentId,
+    item_id: &str,
+    content: &[Inline],
+    seed_client_id: u64,
+) -> anyhow::Result<Vec<u8>> {
+    let seed_doc = Doc::with_options(yrs_doc_options(document, seed_client_id, OffsetKind::Utf16));
+    {
+        let items = seed_doc.get_or_insert_map("items_by_id");
+        let mut txn = seed_doc.transact_mut();
+        let item_map = items.insert(&mut txn, item_id, MapPrelim::default());
+        item_map.insert(&mut txn, "schema", "knotq.item.v1");
+        item_map.insert(&mut txn, "id", item_id);
+        item_map.insert(&mut txn, "text", TextPrelim::new(""));
+    }
+    let skeleton = seed_doc.transact().encode_diff_v1(&StateVector::default());
+    if content.is_empty() {
+        return Ok(skeleton);
+    }
+    let content_key = serde_json::to_vec(content)?;
+    let doc = Doc::with_options(yrs_doc_options(
+        document,
+        super::encoding::stable_item_creation_client_id(document, item_id, &content_key),
+        OffsetKind::Utf16,
+    ));
+    doc.transact_mut()
+        .apply_update(Update::decode_v1(&skeleton)?)?;
+    let after_skeleton = doc.transact().state_vector();
+    {
+        let items = doc.get_or_insert_map("items_by_id");
+        let mut txn = doc.transact_mut();
+        let Some(item_map) = item_map_ref(&items, &txn, item_id) else {
+            return Ok(skeleton);
+        };
+        let Some(text) = item_text_ref(&item_map, &txn) else {
+            return Ok(skeleton);
+        };
+        insert_inline_content(&text, &mut txn, content)?;
+    }
+    let text_update = doc.transact().encode_diff_v1(&after_skeleton);
+    Ok(yrs::merge_updates_v1(&[skeleton, text_update])?)
+}
+
 #[cfg(test)]
 mod metadata_migration_tests {
     use super::*;

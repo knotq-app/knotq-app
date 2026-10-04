@@ -1988,10 +1988,32 @@ reverting it leaves all eight failing — so it is held back on its own merits:
    clientID and cannot alias an older build's structs — that is all they buy.
    The deterministic skeleton exists for the opposite reason: so two devices that
    independently create the SAME item encode byte-identical ops and Yjs dedupes
-   them into one container. Change the derivation and an old build and a new build
-   stop deduping, so each authors its own container for the same row. With derived
-   (v8) item ids — starter content, daily carryover — independent same-id creation
-   is routine, not rare, so a mixed fleet would double those rows.
+   them into one container. With derived (v8) item ids — starter content, daily
+   carryover — independent same-id creation is routine, not rare.
+
+   **Measured 2026-10-03 rather than argued, and it is worse than "a duplicate
+   row":**
+
+   | Two devices creating one row | rows | text |
+   |---|---|---|
+   | same build | 1 | `"shopping list"` |
+   | old build + new build | 1 | **empty, in 20 of 40 sampled documents** |
+
+   The row survives and its CONTENT does not, about half the time, and which way
+   any one document goes is not predictable from anything a user can see. Each
+   build's update carries its own skeleton *and* its text, so naively either
+   container would arrive with its content — but the text is authored under
+   `stable_item_creation_client_id`, which both builds derive identically, so the
+   two text runs occupy the same `(clientID, clock)` range while hanging off
+   different parents. Yjs keeps whichever integrated first; the two containers then
+   compete for the single `items_by_id` key, resolved by last writer; and when the
+   surviving container is not the one the surviving text attached to, the row goes
+   blank. A starter line or a carried-over Daily line empties itself for everyone
+   on one of the two versions.
+
+   Pinned by `mixed_fleet_item_seed.rs`, which asserts the hazard (so it passes
+   while the derivation is unchanged and fails the moment anyone changes it) and
+   carries a control proving same-build dedupe still works.
 
 So it needs what [[crdt-epoch-history-squash]] needed: every client updated
 first, or a capability gate. Both halves are on `wip/uncommitted-2026-10-03`.
