@@ -14,6 +14,8 @@ pub(super) struct MarkdownStyle {
     /// Inside a `` `code` `` span: monospace on a tinted ground, and nothing in
     /// it is markup or a link.
     pub(super) code: bool,
+    /// The body of a `> quoted` line: dimmed, with a bar painted beside it.
+    pub(super) quote: bool,
     /// Set on runs that fall inside a detected URL so they render in the link
     /// color with an underline. Not produced by markdown parsing; layered on in
     /// `build_line_layout`.
@@ -64,16 +66,39 @@ const DELIMITERS: &[(&str, Emphasis)] = &[
     ("~~", Emphasis::Strikethrough),
 ];
 
+/// The runs of a line that stands on its own: headings and inline markup, plus
+/// the two forms that take the whole line — a `> quote` and a `---` rule.
 pub(super) fn parse_markdown_runs(line: &str) -> Vec<MarkdownRun> {
+    if is_markdown_rule(line) {
+        // The dashes are all marker: off the cursor's line nothing is shaped
+        // and the rule is painted in the row instead.
+        return vec![MarkdownRun {
+            len: line.len(),
+            style: MarkdownStyle::default(),
+            kind: MarkdownRunKind::Marker,
+        }];
+    }
+    if let Some(marker) = markdown_quote_marker_range(line) {
+        let mut runs = Vec::new();
+        let style = MarkdownStyle {
+            quote: true,
+            ..MarkdownStyle::default()
+        };
+        push_markdown_run(&mut runs, marker.end, style, MarkdownRunKind::Marker);
+        parse_emphasis(&line[marker.end..], style, &mut runs);
+        return runs;
+    }
+    parse_inline_markdown_runs(line)
+}
+
+/// The runs of a line inside a table cell, where a quote or a rule has no row
+/// of its own to be drawn in: headings (as weight) and inline markup only.
+pub(super) fn parse_inline_markdown_runs(line: &str) -> Vec<MarkdownRun> {
     let heading = is_markdown_heading(line);
     let base_style = MarkdownStyle {
         bold: heading,
-        italic: false,
-        highlight: false,
-        strikethrough: false,
         heading,
-        code: false,
-        link: false,
+        ..MarkdownStyle::default()
     };
     let mut runs = Vec::new();
     // The leading `#`/`## ` of a heading is a marker; the rest is parsed as body.
@@ -88,6 +113,24 @@ pub(super) fn parse_markdown_runs(line: &str) -> Vec<MarkdownRun> {
     };
     parse_emphasis(&line[body_start..], base_style, &mut runs);
     runs
+}
+
+/// A line that is nothing but three or more dashes: a horizontal rule.
+pub(super) fn is_markdown_rule(line: &str) -> bool {
+    let trimmed = line.trim();
+    trimmed.len() >= 3 && trimmed.bytes().all(|byte| byte == b'-')
+}
+
+/// The `> ` that opens a quoted line (leading whitespace included), or the
+/// whole of a line that is only `>`.
+pub(super) fn markdown_quote_marker_range(line: &str) -> Option<Range<usize>> {
+    let leading_ws = line.len() - line.trim_start().len();
+    let rest = line[leading_ws..].strip_prefix('>')?;
+    match rest.chars().next() {
+        None => Some(0..line.len()),
+        Some(' ') => Some(0..leading_ws + 2),
+        Some(_) => None,
+    }
 }
 
 /// Walks `text`, applying any emphasis markers on top of `base_style`. Delimiter
@@ -325,6 +368,50 @@ mod tests {
     fn brackets_without_a_web_address_are_left_as_typed() {
         for line in ["[x] (later)", "[1](2)", "[a](file:///x)", "a [b] c"] {
             assert_eq!(visible(line), line);
+        }
+    }
+
+    #[test]
+    fn a_quote_hides_its_marker_and_marks_its_body() {
+        let runs = content("> said **this**");
+        assert_eq!(visible("> said **this**"), "said this");
+        assert!(runs.iter().all(|(_, style)| style.quote));
+        assert!(runs
+            .iter()
+            .any(|(text, style)| text == "this" && style.bold));
+    }
+
+    #[test]
+    fn only_a_marker_followed_by_a_space_quotes() {
+        assert!(markdown_quote_marker_range("> a").is_some());
+        assert!(markdown_quote_marker_range(">").is_some());
+        assert!(markdown_quote_marker_range("  > a").is_some());
+        for line in [">a", "a > b", ">> a", "->", ""] {
+            assert_eq!(markdown_quote_marker_range(line), None, "{line:?}");
+            assert_eq!(visible(line), line);
+        }
+    }
+
+    #[test]
+    fn three_or_more_dashes_alone_are_a_rule() {
+        for line in ["---", "-----", "  ---  "] {
+            assert!(is_markdown_rule(line), "{line:?}");
+            assert_eq!(visible(line), "");
+        }
+        for line in ["--", "--- a", "- - -", "***", "---x", ""] {
+            assert!(!is_markdown_rule(line), "{line:?}");
+        }
+    }
+
+    #[test]
+    fn a_table_cell_keeps_dashes_and_angle_brackets_as_text() {
+        for line in ["---", "> 5"] {
+            let total: usize = parse_inline_markdown_runs(line)
+                .iter()
+                .filter(|run| run.kind == MarkdownRunKind::Content)
+                .map(|run| run.len)
+                .sum();
+            assert_eq!(total, line.len(), "{line:?}");
         }
     }
 }

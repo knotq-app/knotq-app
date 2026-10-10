@@ -359,6 +359,7 @@ fn markdown_runs_mark_emphasis_without_removing_markers() {
         strikethrough: false,
         heading: false,
         code: false,
+        quote: false,
         link: false,
     };
     let italic = MarkdownStyle {
@@ -368,6 +369,7 @@ fn markdown_runs_mark_emphasis_without_removing_markers() {
         strikethrough: false,
         heading: false,
         code: false,
+        quote: false,
         link: false,
     };
     let highlight = MarkdownStyle {
@@ -377,6 +379,7 @@ fn markdown_runs_mark_emphasis_without_removing_markers() {
         strikethrough: false,
         heading: false,
         code: false,
+        quote: false,
         link: false,
     };
     let strikethrough = MarkdownStyle {
@@ -386,6 +389,7 @@ fn markdown_runs_mark_emphasis_without_removing_markers() {
         strikethrough: true,
         heading: false,
         code: false,
+        quote: false,
         link: false,
     };
 
@@ -414,6 +418,7 @@ fn markdown_runs_mark_headings_as_bold_heading() {
         strikethrough: false,
         heading: true,
         code: false,
+        quote: false,
         link: false,
     };
     assert_eq!(

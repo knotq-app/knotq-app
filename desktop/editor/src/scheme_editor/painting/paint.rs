@@ -100,6 +100,9 @@ impl SchemeEditor {
                 let _ = line.paint(line_origin, line_height, TextAlign::Left, None, window, cx);
                 self.register_link_hitboxes(row, line_origin);
                 if !path.is_cell() {
+                    self.paint_block_markup(row, line_origin, bounds, window);
+                }
+                if !path.is_cell() {
                     self.paint_block_suffix(row, text_origin, window, cx);
                 }
                 if let Some(editor_row) = self.rows.get(row).cloned() {

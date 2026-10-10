@@ -11,6 +11,8 @@ pub(super) struct LineLayoutInput<'a> {
     pub default_color: gpui::Hsla,
     pub is_done: bool,
     pub reveal: bool,
+    /// A table cell: no quote or rule, which need a row of their own.
+    pub in_cell: bool,
     pub extra_collapsed: &'a [Range<usize>],
 }
 
@@ -59,7 +61,7 @@ impl SchemeEditor {
         Some((a.min(b), a.max(b)))
     }
 
-    fn row_reveals_markers(&self, row: usize) -> bool {
+    pub(super) fn row_reveals_markers(&self, row: usize) -> bool {
         matches!(self.active_preview_rows(), Some((start, end)) if row >= start && row <= end)
     }
 
@@ -241,6 +243,7 @@ impl SchemeEditor {
                 default_color: color,
                 is_done,
                 reveal,
+                in_cell: is_cell,
                 extra_collapsed: &extra_collapsed,
             });
             let mut shaped = window
@@ -338,6 +341,7 @@ impl SchemeEditor {
             default_color,
             is_done,
             reveal,
+            in_cell,
             extra_collapsed,
         } = input;
         let mut shaped = String::with_capacity(hidden_prefix.len() + line.len());
@@ -360,7 +364,12 @@ impl SchemeEditor {
         }
 
         let mut pos = 0;
-        for markdown_run in parse_markdown_runs(line) {
+        let markdown_runs = if in_cell {
+            parse_inline_markdown_runs(line)
+        } else {
+            parse_markdown_runs(line)
+        };
+        for markdown_run in markdown_runs {
             let end = pos + markdown_run.len;
             let is_marker = markdown_run.kind == MarkdownRunKind::Marker;
             let mut segment_start = pos;
@@ -443,6 +452,8 @@ impl SchemeEditor {
             token_hsla(self.theme.done_text)
         } else if style.link {
             token_hsla(self.theme.link)
+        } else if style.quote {
+            token_hsla(self.theme.text_soft)
         } else {
             default_color
         };
