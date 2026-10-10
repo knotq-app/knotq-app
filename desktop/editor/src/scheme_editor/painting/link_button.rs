@@ -9,8 +9,8 @@ impl SchemeEditor {
         let range = self.line_range(loc.row)?;
         let line = self.text.get(range)?;
         detect_links(line).into_iter().find_map(|link| {
-            (loc.col >= link.start && loc.col <= link.end)
-                .then(|| (loc.row, link.clone(), link_url(&line[link])))
+            (loc.col >= link.range.start && loc.col <= link.range.end)
+                .then_some((loc.row, link.range, link.url))
         })
     }
 
@@ -119,7 +119,7 @@ impl SchemeEditor {
         let line_height = self.line_map.row_line_height(row);
         let wrap_ranges = self.line_map.wrapped_line_ranges(row);
         for link in links {
-            let url = link_url(&line[link.clone()]);
+            let DetectedLink { range: link, url } = link;
             for wrap in &wrap_ranges {
                 let start = link.start.max(wrap.start);
                 let end = link.end.min(wrap.end);

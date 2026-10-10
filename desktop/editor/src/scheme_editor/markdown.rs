@@ -2,6 +2,8 @@ use std::ops::Range;
 
 use knotq_model::ItemMarker;
 
+use super::links::{code_span_at, named_link_at};
+
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub(super) struct MarkdownStyle {
     pub(super) bold: bool,
@@ -9,6 +11,9 @@ pub(super) struct MarkdownStyle {
     pub(super) highlight: bool,
     pub(super) strikethrough: bool,
     pub(super) heading: bool,
+    /// Inside a `` `code` `` span: monospace on a tinted ground, and nothing in
+    /// it is markup or a link.
+    pub(super) code: bool,
     /// Set on runs that fall inside a detected URL so they render in the link
     /// color with an underline. Not produced by markdown parsing; layered on in
     /// `build_line_layout`.
@@ -67,6 +72,7 @@ pub(super) fn parse_markdown_runs(line: &str) -> Vec<MarkdownRun> {
         highlight: false,
         strikethrough: false,
         heading,
+        code: false,
         link: false,
     };
     let mut runs = Vec::new();
@@ -91,6 +97,36 @@ fn parse_emphasis(text: &str, base_style: MarkdownStyle, runs: &mut Vec<Markdown
     let mut index = 0;
 
     while index < text.len() {
+        // Code first: whatever sits between two backticks is literal, so a
+        // `**` or a `[` inside it must not start anything.
+        if let Some(inner_len) = code_span_at(&text[index..]) {
+            let mut code_style = base_style;
+            code_style.code = true;
+            push_markdown_run(runs, 1, base_style, MarkdownRunKind::Marker);
+            push_markdown_run(runs, inner_len, code_style, MarkdownRunKind::Content);
+            push_markdown_run(runs, 1, base_style, MarkdownRunKind::Marker);
+            index += inner_len + 2;
+            continue;
+        }
+        // `[label](url)`: the label is content (and may carry emphasis); the
+        // brackets and the address are markers. The link colour is layered on
+        // by the layout, from the same parse (`detect_links`).
+        if let Some(link) = named_link_at(&text[index..]) {
+            push_markdown_run(runs, link.label.start, base_style, MarkdownRunKind::Marker);
+            parse_emphasis(
+                &text[index + link.label.start..index + link.label.end],
+                base_style,
+                runs,
+            );
+            push_markdown_run(
+                runs,
+                link.len - link.label.end,
+                base_style,
+                MarkdownRunKind::Marker,
+            );
+            index += link.len;
+            continue;
+        }
         if let Some((delimiter, emphasis)) = open_delimiter(&text[index..]) {
             let inner_start = index + delimiter.len();
             if let Some(close_rel) = text[inner_start..].find(delimiter) {
@@ -220,5 +256,75 @@ mod tests {
         assert_eq!(auto_bullet_prefix("1."), None); // no space after dot
         assert_eq!(auto_bullet_prefix("12. multi-digit"), None); // single-digit only
         assert_eq!(auto_bullet_prefix("a. "), None); // not a digit
+    }
+
+    fn content(line: &str) -> Vec<(String, MarkdownStyle)> {
+        let mut pos = 0;
+        let mut out = Vec::new();
+        for run in parse_markdown_runs(line) {
+            if run.kind == MarkdownRunKind::Content {
+                out.push((line[pos..pos + run.len].to_string(), run.style));
+            }
+            pos += run.len;
+        }
+        assert_eq!(pos, line.len(), "runs must cover the line exactly");
+        out
+    }
+
+    fn visible(line: &str) -> String {
+        content(line).into_iter().map(|(text, _)| text).collect()
+    }
+
+    #[test]
+    fn backticks_mark_code_and_hide_themselves() {
+        let runs = content("run `cargo test` now");
+        assert_eq!(visible("run `cargo test` now"), "run cargo test now");
+        let code: Vec<&str> = runs
+            .iter()
+            .filter(|(_, style)| style.code)
+            .map(|(text, _)| text.as_str())
+            .collect();
+        assert_eq!(code, ["cargo test"]);
+    }
+
+    #[test]
+    fn nothing_inside_code_is_markup() {
+        let runs = content("`**not bold** [x](https://a.com)`");
+        assert_eq!(runs.len(), 1);
+        assert_eq!(runs[0].0, "**not bold** [x](https://a.com)");
+        assert!(runs[0].1.code && !runs[0].1.bold);
+    }
+
+    #[test]
+    fn code_inside_emphasis_keeps_the_emphasis() {
+        let runs = content("**bold `code`**");
+        let code = runs.iter().find(|(_, style)| style.code).unwrap();
+        assert_eq!(code.0, "code");
+        assert!(code.1.bold);
+    }
+
+    #[test]
+    fn a_lone_or_empty_backtick_pair_is_text() {
+        assert_eq!(visible("it's 5` wide"), "it's 5` wide");
+        assert_eq!(visible("empty `` pair"), "empty `` pair");
+    }
+
+    #[test]
+    fn a_named_link_shows_only_its_label() {
+        assert_eq!(
+            visible("see [the **docs**](https://example.com) here"),
+            "see the docs here"
+        );
+        let runs = content("see [the **docs**](https://example.com) here");
+        assert!(runs
+            .iter()
+            .any(|(text, style)| text == "docs" && style.bold));
+    }
+
+    #[test]
+    fn brackets_without_a_web_address_are_left_as_typed() {
+        for line in ["[x] (later)", "[1](2)", "[a](file:///x)", "a [b] c"] {
+            assert_eq!(visible(line), line);
+        }
     }
 }
