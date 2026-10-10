@@ -22,10 +22,10 @@ fn deleting_one_recurring_occurrence_adds_exdate() {
     let mut item = Item::new("standup")
         .with_start(dt(5, 10))
         .with_end(dt(5, 11));
-    item.repeats = Some(CalendarRecurrence {
+    item.repeats = Some(Box::new(CalendarRecurrence {
         rrules: vec!["FREQ=DAILY;COUNT=5".to_string()],
         ..CalendarRecurrence::default()
-    });
+    }));
 
     let command = event_popup_delete_command(
         &item,
@@ -57,10 +57,10 @@ fn deleting_this_and_future_truncates_simple_recurrence() {
     let mut item = Item::new("standup")
         .with_start(dt(5, 10))
         .with_end(dt(5, 11));
-    item.repeats = Some(CalendarRecurrence {
+    item.repeats = Some(Box::new(CalendarRecurrence {
         rrules: vec!["FREQ=DAILY;COUNT=5".to_string()],
         ..CalendarRecurrence::default()
-    });
+    }));
 
     let command = event_popup_delete_command(
         &item,
@@ -95,7 +95,7 @@ fn clearing_recurrence_from_later_occurrence_keeps_selected_occurrence_dates() {
     let mut item = Item::new("standup")
         .with_start(dt(5, 10))
         .with_end(dt(5, 11));
-    item.repeats = Some(recurrence);
+    item.repeats = Some(Box::new(recurrence));
 
     let draft = EventPopupDraft {
         scheme_id: knotq_model::SchemeId::new(),
@@ -249,10 +249,10 @@ fn deleting_from_the_first_occurrence_deletes_the_whole_item() {
     let mut item = Item::new("standup");
     item.marker = knotq_model::ItemMarker::Checkbox;
     item.start = Some(dt(5, 9));
-    item.repeats = Some(CalendarRecurrence {
+    item.repeats = Some(Box::new(CalendarRecurrence {
         rrules: vec!["FREQ=DAILY".into()],
         ..Default::default()
-    });
+    }));
     let occurrence = OccurrenceId::Recurring {
         original_start: CalendarDateTime::utc(dt(5, 9)),
     };
@@ -280,10 +280,10 @@ fn deleting_from_a_later_occurrence_truncates_the_series() {
     let mut item = Item::new("standup");
     item.marker = knotq_model::ItemMarker::Checkbox;
     item.start = Some(dt(5, 9));
-    item.repeats = Some(CalendarRecurrence {
+    item.repeats = Some(Box::new(CalendarRecurrence {
         rrules: vec!["FREQ=DAILY".into()],
         ..Default::default()
-    });
+    }));
     let occurrence = OccurrenceId::Recurring {
         original_start: CalendarDateTime::utc(dt(8, 9)),
     };
@@ -317,10 +317,10 @@ fn deleting_all_events_removes_the_item_whatever_the_recurrence() {
     let scheme_id = knotq_model::SchemeId::new();
     let item_id = knotq_model::ItemId::new();
     let mut item = Item::new("standup");
-    item.repeats = Some(CalendarRecurrence {
+    item.repeats = Some(Box::new(CalendarRecurrence {
         rrules: vec!["FREQ=DAILY".into()],
         ..Default::default()
-    });
+    }));
 
     let command = event_popup_delete_command(
         &item,

@@ -15,7 +15,7 @@ impl KnotQApp {
             .scheme(scheme_id)
             .and_then(|scheme| scheme.item(item_id))
             .cloned()?;
-        item.repeats = popup.draft_repeats.clone();
+        item.repeats = popup.draft_repeats.clone().map(Box::new);
         Some(item)
     }
 
@@ -93,7 +93,7 @@ impl KnotQApp {
             return;
         };
         let (interval, end, mut weekdays) =
-            match item.repeats.as_ref().and_then(editable_simple_recurrence) {
+            match item.repeats.as_deref().and_then(editable_simple_recurrence) {
                 Some(SimpleRecurrence::Weekly {
                     interval,
                     weekdays,
@@ -117,7 +117,7 @@ impl KnotQApp {
             return;
         }
         popup.draft_repeats = Some(recurrence_with_simple(
-            item.repeats.as_ref(),
+            item.repeats.as_deref(),
             SimpleRecurrence::Weekly {
                 interval,
                 weekdays,
@@ -205,7 +205,7 @@ impl KnotQApp {
 
         let mut delete_item = item.clone();
         if popup.draft_repeats.is_some() {
-            delete_item.repeats = popup.draft_repeats.clone();
+            delete_item.repeats = popup.draft_repeats.clone().map(Box::new);
         }
 
         let Some(command) = event_popup_delete_command(

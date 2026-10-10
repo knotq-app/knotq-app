@@ -43,7 +43,7 @@ pub(super) fn event_popup_layer(
                 EventScopeAction::Delete => popup
                     .draft_repeats
                     .as_ref()
-                    .or(item.repeats.as_ref())
+                    .or(item.repeats.as_deref())
                     .is_some_and(recurrence_can_delete_future),
             };
             let can_apply_all = true;

@@ -439,16 +439,16 @@ pub(crate) fn google_event_to_item(
     item.marker = ItemMarker::Checkbox;
     item.start = start;
     item.end = end;
-    item.repeats = google_event_recurrence(event);
+    item.repeats = google_event_recurrence(event).map(Box::new);
     let key = google_event_key(event);
-    item.external = Some(ExternalItemSource {
+    item.external = Some(Box::new(ExternalItemSource {
         provider: CalendarProvider::Google,
         account_id: account.account_id.clone(),
         calendar_id: calendar_id.to_string(),
         event_id: key.event_id,
         instance_id: key.instance_id,
         updated_at: event.updated,
-    });
+    }));
     Some(item)
 }
 

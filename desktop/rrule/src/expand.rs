@@ -128,10 +128,10 @@ mod tests {
         let mut item = Item::new("MATH 15");
         item.start = Some(local_utc(2026, 1, 5, 18, 0));
         item.end = Some(local_utc(2026, 1, 5, 19, 0));
-        item.repeats = Some(CalendarRecurrence {
+        item.repeats = Some(Box::new(CalendarRecurrence {
             rrules: vec!["FREQ=WEEKLY;INTERVAL=1;BYDAY=MO,WE,FR".to_string()],
             ..Default::default()
-        });
+        }));
         let occs = item.occurrences(local_utc(2026, 1, 5, 0, 0), local_utc(2026, 1, 12, 0, 0));
         assert_eq!(occs.len(), 3);
         assert_eq!(
@@ -144,10 +144,10 @@ mod tests {
     fn weekly_rrule_without_byday_repeats_on_anchor_weekday() {
         let mut item = Item::new("review");
         item.start = Some(local_utc(2026, 1, 8, 8, 30));
-        item.repeats = Some(CalendarRecurrence {
+        item.repeats = Some(Box::new(CalendarRecurrence {
             rrules: vec!["FREQ=WEEKLY;INTERVAL=1".to_string()],
             ..Default::default()
-        });
+        }));
 
         let occs = item.occurrences(local_utc(2026, 1, 1, 0, 0), local_utc(2026, 1, 23, 0, 0));
 
@@ -166,10 +166,10 @@ mod tests {
     fn repeat_count_is_total_occurrences() {
         let mut item = Item::new("class");
         item.start = Some(local_utc(2026, 1, 5, 18, 0));
-        item.repeats = Some(CalendarRecurrence {
+        item.repeats = Some(Box::new(CalendarRecurrence {
             rrules: vec!["FREQ=WEEKLY;INTERVAL=1;BYDAY=MO,WE,FR;COUNT=4".to_string()],
             ..Default::default()
-        });
+        }));
 
         let occs = item.occurrences(local_utc(2026, 1, 1, 0, 0), local_utc(2026, 1, 31, 0, 0));
 
@@ -186,10 +186,10 @@ mod tests {
     fn date_only_until_includes_occurrences_on_that_date() {
         let mut item = Item::new("class");
         item.start = Some(local_utc(2026, 1, 5, 18, 0));
-        item.repeats = Some(CalendarRecurrence {
+        item.repeats = Some(Box::new(CalendarRecurrence {
             rrules: vec!["FREQ=DAILY;INTERVAL=1;UNTIL=20260107".to_string()],
             ..Default::default()
-        });
+        }));
 
         let occs = item.occurrences(local_utc(2026, 1, 1, 0, 0), local_utc(2026, 1, 10, 0, 0));
 
@@ -205,10 +205,10 @@ mod tests {
         let mut item = Item::new("class");
         item.start = Some(local_utc(2026, 1, 5, 18, 0));
         item.end = Some(local_utc(2026, 1, 5, 19, 0));
-        item.repeats = Some(CalendarRecurrence {
+        item.repeats = Some(Box::new(CalendarRecurrence {
             rrules: vec!["FREQ=WEEKLY;INTERVAL=1;BYDAY=MO,WE,FR".to_string()],
             ..Default::default()
-        });
+        }));
 
         let wed_start = local_utc(2026, 1, 7, 0, 0);
         let wed_end = local_utc(2026, 1, 8, 0, 0);

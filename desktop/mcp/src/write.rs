@@ -187,10 +187,10 @@ pub fn add_item(args: &Args, ctx: &ToolContext) -> Result<Outcome, ToolError> {
     item.priority = args.opt_u8("priority", MAX_PRIORITY)?;
     if let Some(rrules) = args.opt_string_list("rrules")? {
         if !rrules.is_empty() {
-            item.repeats = Some(CalendarRecurrence {
+            item.repeats = Some(Box::new(CalendarRecurrence {
                 rrules,
                 ..Default::default()
-            });
+            }));
         }
     }
     item.marker = match args.opt_str("marker")? {
@@ -483,7 +483,7 @@ pub fn set_item_recurrence(args: &Args, ctx: &ToolContext) -> Result<Outcome, To
             raw_import: item.repeats.as_ref().and_then(|r| r.raw_import.clone()),
         })
     };
-    if item.repeats == repeats {
+    if item.repeats.as_deref() == repeats.as_ref() {
         return Ok(Outcome::unchanged(json!({
             "scheme_id": scheme_id.to_string(),
             "item": item_view(item),

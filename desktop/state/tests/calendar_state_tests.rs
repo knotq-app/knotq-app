@@ -73,10 +73,10 @@ fn mark_past_events_done_completes_elapsed_recurring_occurrences() {
     let start = Utc.with_ymd_and_hms(2026, 5, 18, 16, 0, 0).unwrap();
     let end = Utc.with_ymd_and_hms(2026, 5, 18, 18, 0, 0).unwrap();
     let mut item = Item::new("Class").with_start(start).with_end(end);
-    item.repeats = Some(CalendarRecurrence {
+    item.repeats = Some(Box::new(CalendarRecurrence {
         rrules: vec!["FREQ=WEEKLY;BYDAY=MO,WE,FR".into()],
         ..Default::default()
-    });
+    }));
     let mut workspace = workspace_with_item(item);
 
     let changed = mark_past_events_done(
@@ -171,7 +171,7 @@ fn mark_past_events_done_completes_elapsed_overridden_recurring_occurrences() {
     let override_end = Utc.with_ymd_and_hms(2026, 5, 18, 18, 0, 0).unwrap();
     let occurrence = OccurrenceId::recurring_utc(original_start);
     let mut item = Item::new("Class").with_start(base_start).with_end(base_end);
-    item.repeats = Some(CalendarRecurrence {
+    item.repeats = Some(Box::new(CalendarRecurrence {
         rrules: vec!["FREQ=WEEKLY;BYDAY=WE,TH,FR".into()],
         overrides: vec![OccurrenceOverride {
             occurrence: occurrence.clone(),
@@ -181,7 +181,7 @@ fn mark_past_events_done_completes_elapsed_overridden_recurring_occurrences() {
             available: None,
         }],
         ..Default::default()
-    });
+    }));
     let mut workspace = workspace_with_item(item);
 
     let changed = mark_past_events_done(

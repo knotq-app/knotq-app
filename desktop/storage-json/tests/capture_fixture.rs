@@ -134,10 +134,10 @@ fn build_workspace() -> (Workspace, uuid::Uuid) {
             item.end = Some(start + Duration::hours(1));
             item.available = Some(start - Duration::days(1));
             item.priority = Some(2);
-            item.repeats = Some(Recurrence {
+            item.repeats = Some(Box::new(Recurrence {
                 rrules: vec!["FREQ=WEEKLY;BYDAY=MO,WE".into()],
                 ..Default::default()
-            });
+            }));
             item
         },
         {

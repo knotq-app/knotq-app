@@ -48,7 +48,7 @@ pub fn event_update_commands(
             date: event.end,
         });
     }
-    if item.repeats != event.recurrence {
+    if item.repeats.as_deref() != event.recurrence.as_ref() {
         commands.push(Command::SetItemRecurrence {
             scheme: scheme_id,
             item: item.id,
@@ -62,7 +62,7 @@ fn item_from_imported_event(event: ImportedEvent) -> Item {
     let mut item = Item::new(event.summary);
     item.start = event.start;
     item.end = event.end;
-    item.repeats = event.recurrence;
+    item.repeats = event.recurrence.map(Box::new);
     if item.start.is_some() || item.end.is_some() || item.repeats.is_some() {
         item.marker = ItemMarker::Checkbox;
     }

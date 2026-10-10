@@ -174,6 +174,6 @@ impl KnotQApp {
         self.workspace
             .scheme(target.scheme_id)
             .and_then(|scheme| scheme.item(target.item_id))
-            .and_then(|item| item.repeats.clone())
+            .and_then(|item| item.repeats.as_deref().cloned())
     }
 }

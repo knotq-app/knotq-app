@@ -38,6 +38,9 @@ pub(crate) fn decode_scheme_xml(raw: &str, path: &Path, id: SchemeId) -> Result<
             _ => {}
         }
     }
+    // Growing by doubling leaves up to half the buffer unused, and a loaded
+    // scheme is held for the whole session while most are never appended to.
+    items.shrink_to_fit();
     Ok(SchemeFile { id, items })
 }
 
@@ -65,8 +68,9 @@ fn read_item(reader: &mut Reader<&[u8]>, start: &BytesStart, path: &Path) -> Res
                 b"table" => content.push(Inline::Table(read_table(reader, path)?)),
                 b"repeats" => {
                     let json = read_element_text(reader, b"repeats")?;
-                    item.repeats =
-                        Some(serde_json::from_str::<Recurrence>(&json).context("parse repeats")?);
+                    item.repeats = Some(Box::new(
+                        serde_json::from_str::<Recurrence>(&json).context("parse repeats")?,
+                    ));
                 }
                 b"state" => {
                     let json = read_element_text(reader, b"state")?;
@@ -74,10 +78,10 @@ fn read_item(reader: &mut Reader<&[u8]>, start: &BytesStart, path: &Path) -> Res
                 }
                 b"external" => {
                     let json = read_element_text(reader, b"external")?;
-                    item.external = Some(
+                    item.external = Some(Box::new(
                         serde_json::from_str::<ExternalItemSource>(&json)
                             .context("parse external")?,
-                    );
+                    ));
                 }
                 _ => {}
             },
@@ -179,10 +183,10 @@ fn parse_item_attrs(e: &BytesStart) -> Result<Item> {
             }
             b"priority" => item.priority = Some(value.parse::<u8>().context("parse priority")?),
             b"rrule" => {
-                item.repeats = Some(Recurrence {
+                item.repeats = Some(Box::new(Recurrence {
                     rrules: vec![value.to_string()],
                     ..Default::default()
-                })
+                }))
             }
             _ => {}
         }

@@ -23,10 +23,10 @@ fn workspace_with_rich_items() -> (Workspace, SchemeId) {
     let mut repeating = Item::new("repeating");
     repeating.marker = ItemMarker::Checkbox;
     repeating.start = Some(chrono::Utc::now());
-    repeating.repeats = Some(CalendarRecurrence {
+    repeating.repeats = Some(Box::new(CalendarRecurrence {
         rrules: vec!["FREQ=WEEKLY;INTERVAL=1".to_string()],
         ..Default::default()
-    });
+    }));
 
     scheme.items = vec![plain, dated, repeating];
     let scheme_id = scheme.id;

@@ -6,7 +6,7 @@ use knotq_commands::{
     filter_recurring_occurrence_toggles, ChangeSet, Command, CommandOrigin, CommandReceipt,
     WorkspaceCommandExt,
 };
-use knotq_index::IndexedWorkspace;
+use knotq_index::{IndexedView, WorkspaceIndex};
 use knotq_model::{
     DocumentId, OperationId, ReplicaId, Scheme, SchemeId, SyncDocumentKind, Workspace, WorkspaceId,
 };
@@ -101,11 +101,10 @@ pub struct StoreOperation {
 
 pub struct WorkspaceStore {
     workspace: Workspace,
-    // Search/calendar/channel index over `workspace`. Nothing on the hot path
-    // reads it, so it is rebuilt lazily (see `index_stale`/`indexed`) rather than
-    // on every edit — a full re-tokenize of every item per keystroke otherwise.
-    indexed: IndexedWorkspace,
-    index_stale: bool,
+    // Calendar/channel index over `workspace`. Nothing on the hot path reads
+    // it (only agent tools do), so it is built on first use and dropped by the
+    // next edit rather than kept current — or kept at all — on every keystroke.
+    index: Option<WorkspaceIndex>,
     dirty: WorkspaceDirtyState,
     replica_id: ReplicaId,
     next_sequence: u64,
@@ -158,7 +157,6 @@ impl WorkspaceStore {
             WorkspaceDirtyState::default()
         };
         dirty.index |= sync_metadata_dirty;
-        let indexed = IndexedWorkspace::build(workspace.clone());
         let crdt = restored_workspace_crdt(&workspace, replica_id, &crdt_states);
         // A device with no saved CRDT state (a genuinely fresh install, or one
         // that never reached its first successful save) constructs an
@@ -185,8 +183,7 @@ impl WorkspaceStore {
             .collect();
         Self {
             workspace,
-            indexed,
-            index_stale: false,
+            index: None,
             dirty,
             replica_id,
             next_sequence: initial_sequence.max(1),
@@ -349,7 +346,7 @@ impl WorkspaceStore {
             // doc-derived index yet; without one it would sit in the visible
             // workspace with no document behind it.
             self.workspace.ensure_sync_metadata();
-            self.index_stale = true;
+            self.index = None;
             self.dirty = WorkspaceDirtyState::all(&self.workspace);
             self.crdt_save_scope.widen_to_all();
             self.defer_crdt(changes);
@@ -448,7 +445,7 @@ impl WorkspaceStore {
             }
         }
         self.workspace = recovered;
-        self.index_stale = true;
+        self.index = None;
         self.dirty = WorkspaceDirtyState::all(&self.workspace);
         self.crdt_save_scope.widen_to_all();
         true
@@ -650,7 +647,7 @@ impl WorkspaceStore {
         if adopted.is_empty() {
             return 0;
         }
-        self.index_stale = true;
+        self.index = None;
 
         // The page came off disk, but this device's own documents may already
         // hold a newer version of it — a Daily page's name and colour live in
@@ -704,7 +701,7 @@ impl WorkspaceStore {
             return false;
         };
         self.workspace.schemes.insert(scheme_id, scheme);
-        self.index_stale = true;
+        self.index = None;
         self.dirty.schemes.insert(scheme_id);
         self.crdt_save_scope.widen_to_all();
         true
@@ -765,7 +762,7 @@ impl WorkspaceStore {
         if changed_schemes.is_empty() && !resolved_duplicates {
             return false;
         }
-        self.index_stale = true;
+        self.index = None;
         self.dirty.schemes.extend(changed_schemes);
         self.crdt_save_scope.widen_to_all();
         true
@@ -813,7 +810,7 @@ impl WorkspaceStore {
         }
         self.workspace.ensure_sync_metadata();
         self.dirty.index = true;
-        self.index_stale = true;
+        self.index = None;
         self.defer_crdt(WorkspaceCrdtChangeSet::default().workspace());
         self.flush_crdt();
         true
@@ -832,16 +829,13 @@ impl WorkspaceStore {
         &self.workspace
     }
 
-    /// Lazily rebuild the search/calendar/channel index from the current
-    /// workspace before returning it. Edits only flag the index stale (cheap), so
-    /// the expensive rebuild happens at most once per burst, when a reader
-    /// actually asks — and only if something changed since the last read.
-    pub fn indexed(&mut self) -> &IndexedWorkspace {
-        if self.index_stale {
-            self.indexed.replace_workspace(self.workspace.clone());
-            self.index_stale = false;
-        }
-        &self.indexed
+    /// The workspace with its calendar/channel index, building the index if an
+    /// edit has dropped it since the last read. Edits only drop it (cheap), so
+    /// the build happens at most once per burst, when a reader actually asks.
+    pub fn indexed(&mut self) -> IndexedView<'_> {
+        self.index
+            .get_or_insert_with(|| WorkspaceIndex::build(&self.workspace))
+            .view(&self.workspace)
     }
 
     pub fn dirty(&self) -> &WorkspaceDirtyState {
@@ -1121,7 +1115,7 @@ impl WorkspaceStore {
         let mut dirty = dirty;
         dirty.index |= sync_metadata_dirty;
         self.workspace = workspace;
-        self.index_stale = true;
+        self.index = None;
         self.crdt = restored_workspace_crdt(&self.workspace, self.replica_id, &crdt_states);
         self.population_bases.clear();
         // The replacement states are already the canonical sync result. A
@@ -1200,7 +1194,7 @@ impl WorkspaceStore {
         }
         if outcome.workspace_is_ok() {
             self.workspace = outcome.workspace;
-            self.index_stale = true;
+            self.index = None;
             self.dirty = WorkspaceDirtyState::all(&self.workspace);
             self.crdt_save_scope.widen_to_all();
         }
@@ -1243,7 +1237,7 @@ impl WorkspaceStore {
             .canonicalize_personal_sync_identity_with_change(workspace_id);
         if repair_needed {
             self.dirty.index = true;
-            self.index_stale = true;
+            self.index = None;
             self.defer_crdt(WorkspaceCrdtChangeSet::default().workspace());
             self.flush_crdt();
             self.crdt_save_scope.widen_to_all();
@@ -1470,7 +1464,7 @@ impl WorkspaceStore {
             return false;
         }
         self.workspace = outcome.workspace;
-        self.index_stale = true;
+        self.index = None;
         self.dirty = WorkspaceDirtyState::all(&self.workspace);
         // A pull can carry an update for any document, and `apply_remote_updates`
         // does not report which ones moved.
@@ -1601,7 +1595,7 @@ impl WorkspaceStore {
             self.remap_pending_workspace_document(previous_document, sync_workspace.sync.id);
         }
         self.dirty.index = true;
-        self.index_stale = true;
+        self.index = None;
         // `reidentify_workspace_document` only re-keys the document's external
         // binding; the `sync` metadata stored in its own "meta" map content (read
         // back by every future materialization, including the one later in this
@@ -1796,7 +1790,7 @@ impl WorkspaceStore {
             self.dirty.index = true;
             crdt_changes.workspace = true;
         }
-        self.index_stale = true;
+        self.index = None;
         // Defer the actual CRDT reconciliation (a yrs commit, O(whole document))
         // instead of doing it on every edit. A keystroke burst then reconciles
         // once, on the next flush, rather than once per character. Nothing is

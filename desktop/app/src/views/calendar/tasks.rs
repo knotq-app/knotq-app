@@ -48,7 +48,7 @@ impl OccurrenceInputs {
             start: item.start,
             end: item.end,
             available: item.available,
-            repeats: item.repeats.clone(),
+            repeats: item.repeats.as_deref().cloned(),
             state: item.state.clone(),
         }
     }
@@ -58,7 +58,7 @@ impl OccurrenceInputs {
             && self.start == item.start
             && self.end == item.end
             && self.available == item.available
-            && self.repeats == item.repeats
+            && self.repeats.as_ref() == item.repeats.as_deref()
             && self.state == item.state
     }
 }

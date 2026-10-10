@@ -129,7 +129,7 @@ fn item_has_unfinished_state(item: &Item) -> bool {
     if item.state.is_empty() {
         return true;
     }
-    if recurrence_has_open_future(item.repeats.as_ref()) {
+    if recurrence_has_open_future(item.repeats.as_deref()) {
         return true;
     }
     item.state.iter().any(|entry| !entry.state.is_done())

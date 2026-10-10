@@ -2,7 +2,7 @@ use std::collections::{HashMap, HashSet};
 
 use chrono::NaiveDate;
 use knotq_commands::{ChangeSet, Command, CommandError, CommandOrigin, CommandReceipt};
-use knotq_index::IndexedWorkspace;
+use knotq_index::IndexedView;
 use knotq_model::{
     AppSettings, CalendarViewMode, CalendarWeekRange, DocumentId, NodeRef, NotificationDefaults,
     SavedWindowPosition, SavedWindowSize, Scheme, SchemeId, ThemeMode, TimeFormat, Workspace,
@@ -647,7 +647,7 @@ impl AppState {
     /// The search/calendar/channel index over the live workspace, rebuilt lazily
     /// on demand (see [`WorkspaceStore::indexed`]). No render path reads this
     /// today; it exists for query features and is kept off the per-edit hot path.
-    pub fn indexed(&mut self) -> &IndexedWorkspace {
+    pub fn indexed(&mut self) -> IndexedView<'_> {
         self.store.indexed()
     }
 

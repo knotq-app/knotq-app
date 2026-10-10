@@ -285,7 +285,7 @@ fn rich_markdown_task() -> Item {
     item.start = Some(start);
     item.end = Some(end);
     item.available = Some(available);
-    item.repeats = Some(CalendarRecurrence {
+    item.repeats = Some(Box::new(CalendarRecurrence {
         rrules: vec!["FREQ=WEEKLY;COUNT=3".to_string()],
         rdates: vec![CalendarDateTime::utc(start + Duration::days(2))],
         exdates: vec![CalendarDateTime::utc(start + Duration::weeks(2))],
@@ -300,7 +300,7 @@ fn rich_markdown_task() -> Item {
             content_type: "text/calendar".to_string(),
             data: "BEGIN:VEVENT\nSUMMARY:Launch\nEND:VEVENT".to_string(),
         }),
-    });
+    }));
     item.state[0].state.notification_offset_secs = Some(15 * 60);
     item.state.push(OccurrenceState {
         occurrence: recurring,
@@ -310,14 +310,14 @@ fn rich_markdown_task() -> Item {
         },
     });
     item.priority = Some(2);
-    item.external = Some(ExternalItemSource {
+    item.external = Some(Box::new(ExternalItemSource {
         provider: CalendarProvider::Google,
         account_id: "acct-123".to_string(),
         calendar_id: "primary".to_string(),
         event_id: "event-456".to_string(),
         instance_id: Some("instance-789".to_string()),
         updated_at: Some(start - Duration::minutes(5)),
-    });
+    }));
     item
 }
 

@@ -68,7 +68,7 @@ pub fn event_popup_commit_commands(
             DateEditScope::AllFuture => RecurrenceEditScope::AllFuture,
             DateEditScope::AllEvents => RecurrenceEditScope::AllEvents,
         };
-        if let Some(recurrence) = draft.draft_repeats.as_ref().or(item.repeats.as_ref()) {
+        if let Some(recurrence) = draft.draft_repeats.as_ref().or(item.repeats.as_deref()) {
             if let Some(repeats) = scoped_date_edit_recurrence(
                 item,
                 recurrence,
@@ -111,7 +111,7 @@ pub fn event_popup_commit_commands(
     }
     if (!scoped_date_change || scope == DateEditScope::AllEvents)
         && draft.repeats_dirty
-        && item.repeats != draft.draft_repeats
+        && item.repeats.as_deref() != draft.draft_repeats.as_ref()
     {
         commands.push(Command::SetItemRecurrence {
             scheme,

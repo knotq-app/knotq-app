@@ -23,7 +23,7 @@ pub mod write;
 
 use chrono::{DateTime, NaiveDate, Utc};
 use knotq_commands::Command;
-use knotq_index::IndexedWorkspace;
+use knotq_index::IndexedView;
 use knotq_model::{Folder, FolderId, Scheme, SchemeId, TimeFormat, Workspace};
 use serde_json::Value;
 
@@ -33,13 +33,13 @@ pub use write::created_id;
 
 /// Everything a tool call is evaluated against.
 ///
-/// The workspace is borrowed *from the index* rather than passed separately, so
+/// The workspace is taken *from the indexed view* rather than passed separately, so
 /// the two can never disagree — a tool that reads an occurrence from the
 /// calendar index and then looks up its text in the workspace is guaranteed to
 /// be looking at the same revision of both.
 pub struct ToolContext<'a> {
     pub workspace: &'a Workspace,
-    pub indexed: &'a IndexedWorkspace,
+    pub indexed: IndexedView<'a>,
     pub now: DateTime<Utc>,
     /// The user's *local* calendar date. Passed in rather than derived, because
     /// "today" is a property of where the user is, and this crate has no
@@ -52,14 +52,14 @@ pub struct ToolContext<'a> {
 
 impl<'a> ToolContext<'a> {
     pub fn new(
-        indexed: &'a IndexedWorkspace,
+        indexed: IndexedView<'a>,
         now: DateTime<Utc>,
         today: NaiveDate,
         time_format: TimeFormat,
         read_only: bool,
     ) -> Self {
         Self {
-            workspace: &indexed.workspace,
+            workspace: indexed.workspace,
             indexed,
             now,
             today,

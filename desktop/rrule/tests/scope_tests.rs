@@ -43,7 +43,7 @@ fn all_future_date_edit_preserves_prior_occurrences_and_reduces_count() {
     let mut item = Item::new("standup")
         .with_start(dt(5, 10))
         .with_end(dt(5, 11));
-    item.repeats = Some(recurrence.clone());
+    item.repeats = Some(Box::new(recurrence.clone()));
 
     let edited = recurrence_with_prior_overrides(
         &item,
@@ -95,7 +95,7 @@ fn all_future_date_edit_drops_selected_special_case_override() {
     let mut item = Item::new("standup")
         .with_start(dt(5, 10))
         .with_end(dt(5, 11));
-    item.repeats = Some(recurrence.clone());
+    item.repeats = Some(Box::new(recurrence.clone()));
 
     let edited = recurrence_with_prior_overrides(&item, &recurrence, &selected, 2).unwrap();
 
@@ -109,7 +109,7 @@ fn all_future_date_edit_drops_selected_special_case_override() {
     let mut moved_item = item.clone();
     moved_item.start = Some(dt(7, 12));
     moved_item.end = Some(dt(7, 13));
-    moved_item.repeats = Some(edited);
+    moved_item.repeats = Some(Box::new(edited));
     let starts = moved_item
         .occurrences(dt(5, 0), dt(11, 0))
         .into_iter()

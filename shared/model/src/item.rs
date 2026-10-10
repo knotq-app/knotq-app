@@ -39,14 +39,14 @@ pub struct Item {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub available: Option<DateTime<Utc>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub repeats: Option<Recurrence>,
+    pub repeats: Option<Box<Recurrence>>,
     /// One state slot per stable occurrence identity. Always at least one slot.
     #[serde(default = "default_state", skip_serializing_if = "is_default_state")]
     pub state: Vec<OccurrenceState>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub priority: Option<u8>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub external: Option<ExternalItemSource>,
+    pub external: Option<Box<ExternalItemSource>>,
 }
 
 /// The whole content of a single line: exactly one of plain text, one image, or
@@ -238,7 +238,7 @@ impl Item {
 
     pub fn with_repeats(mut self, repeats: Recurrence) -> Self {
         self.marker = ItemMarker::Checkbox;
-        self.repeats = Some(repeats);
+        self.repeats = Some(Box::new(repeats));
         self
     }
 

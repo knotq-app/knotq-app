@@ -344,7 +344,7 @@ fn random_item(rng: &mut Rng, anchor: chrono::DateTime<Utc>) -> Item {
         item.available = Some(anchor + Duration::minutes(rng.offset_minutes()));
     }
     if rng.chance(30) && (has_start || has_end) {
-        item.repeats = Some(random_recurrence(rng));
+        item.repeats = Some(Box::new(random_recurrence(rng)));
     }
     if rng.chance(30) {
         item.state_for_occurrence_mut(OccurrenceId::Single).progress = -1;
@@ -522,10 +522,10 @@ fn phase_one_skips_undated_and_unmarked_lines_without_expanding_them() {
             let mut item = Item::new("dated bullet");
             item.marker = ItemMarker::Bullet;
             item.start = Some(today_start + Duration::hours(3));
-            item.repeats = Some(CalendarRecurrence {
+            item.repeats = Some(Box::new(CalendarRecurrence {
                 rrules: vec!["FREQ=DAILY".to_string()],
                 ..Default::default()
-            });
+            }));
             item
         },
     ];
@@ -837,7 +837,7 @@ fn realistic_workspace(anchor: chrono::DateTime<Utc>) -> Vec<(RefScheme, Vec<Ite
                         item.end = Some(when + Duration::hours(1));
                     }
                     if rng.chance(REPEAT_PERCENT) {
-                        item.repeats = Some(random_recurrence(&mut rng));
+                        item.repeats = Some(Box::new(random_recurrence(&mut rng)));
                         // A repeating task that is actually used has its past
                         // instances ticked off; one that is not shows up as a
                         // wall of overdue rows, which is a property of the data

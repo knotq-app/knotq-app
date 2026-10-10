@@ -41,10 +41,10 @@ fn annotation_text_formats_at_and_due_items() {
 fn annotation_text_includes_repeats() {
     let mut item = Item::new("class");
     item.marker = ItemMarker::Checkbox;
-    item.repeats = Some(CalendarRecurrence {
+    item.repeats = Some(Box::new(CalendarRecurrence {
         rrules: vec!["FREQ=WEEKLY;INTERVAL=1;BYDAY=MO,WE,FR".to_string()],
         ..Default::default()
-    });
+    }));
 
     assert_eq!(
         annotation_text(&item, TimeFormat::TwentyFourHour).as_deref(),
@@ -56,7 +56,7 @@ fn annotation_text_includes_repeats() {
 fn annotation_text_includes_repeat_exceptions() {
     let mut item = Item::new("class");
     item.marker = ItemMarker::Checkbox;
-    item.repeats = Some(CalendarRecurrence {
+    item.repeats = Some(Box::new(CalendarRecurrence {
         rrules: vec!["FREQ=DAILY;INTERVAL=1".to_string()],
         exdates: vec![
             CalendarDateTime::Date {
@@ -70,7 +70,7 @@ fn annotation_text_includes_repeat_exceptions() {
             },
         ],
         ..Default::default()
-    });
+    }));
 
     assert_eq!(
         format_repeat_annotation_for_year(item.repeats.as_ref().unwrap(), 2026),
@@ -151,7 +151,7 @@ fn empty_line_attribute_clear_preserves_text_and_id_only() {
         .with_start(start)
         .with_end(end)
         .done();
-    item.repeats = Some(default_repeat());
+    item.repeats = Some(Box::new(default_repeat()));
     item.priority = Some(1);
     let id = item.id;
 
@@ -294,7 +294,7 @@ fn non_checkbox_marker_clears_checkbox_annotations() {
         .with_start(start)
         .with_end(end)
         .done();
-    item.repeats = Some(default_repeat());
+    item.repeats = Some(Box::new(default_repeat()));
     item.priority = Some(2);
 
     let updated = item_with_marker(item, ItemMarker::Bullet);

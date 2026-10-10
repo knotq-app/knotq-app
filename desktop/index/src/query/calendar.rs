@@ -4,25 +4,22 @@ use knotq_model::ItemKind;
 use knotq_rrule::{DefaultExpander, OccurrenceExpander};
 
 use crate::calendar::OccurrenceWithContext;
-use crate::IndexedWorkspace;
+use crate::IndexedView;
 
 pub struct CalendarQuery<'a> {
-    indexed: &'a IndexedWorkspace,
+    indexed: IndexedView<'a>,
     expander: &'a dyn OccurrenceExpander,
 }
 
 impl<'a> CalendarQuery<'a> {
-    pub fn new(indexed: &'a IndexedWorkspace) -> Self {
+    pub fn new(indexed: IndexedView<'a>) -> Self {
         Self {
             indexed,
             expander: &DefaultExpander,
         }
     }
 
-    pub fn with_expander(
-        indexed: &'a IndexedWorkspace,
-        expander: &'a dyn OccurrenceExpander,
-    ) -> Self {
+    pub fn with_expander(indexed: IndexedView<'a>, expander: &'a dyn OccurrenceExpander) -> Self {
         Self { indexed, expander }
     }
 
