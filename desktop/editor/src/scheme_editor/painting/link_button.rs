@@ -10,7 +10,7 @@ impl SchemeEditor {
         let line = self.text.get(range)?;
         detect_links(line).into_iter().find_map(|link| {
             (loc.col >= link.range.start && loc.col <= link.range.end)
-                .then(|| (loc.row, link.range, link.url))
+                .then_some((loc.row, link.range, link.url))
         })
     }
 
