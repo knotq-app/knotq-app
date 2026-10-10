@@ -1,17 +1,29 @@
-use chrono::Local;
+use chrono::{DateTime, Duration, Local, NaiveDate, Utc};
 use knotq_date_util::format_time;
-use knotq_model::{Item, ItemId, ItemKind, SchemeId, TimeFormat, Workspace};
-use std::cmp::Ordering;
+use knotq_model::{Item, ItemId, ItemKind, Scheme, SchemeId, TimeFormat, Workspace};
 
+use super::text_match::{match_fields, FieldMatch, SearchTerms, Words};
 use crate::IndexedWorkspace;
 
 const MAX_SEARCH_HITS: usize = 60;
-const NAVIGATION_FIELD_WEIGHT: i32 = 5_000;
-const SCHEME_TITLE_FIELD_WEIGHT: i32 = 4_600;
-const ITEM_TITLE_FIELD_WEIGHT: i32 = 4_000;
-const SCHEME_CONTEXT_FIELD_WEIGHT: i32 = 1_200;
-const DAILY_QUEUE_CONTEXT_FIELD_WEIGHT: i32 = 1_100;
-const DETAIL_FIELD_WEIGHT: i32 = 800;
+/// Guessed matches (typos, abbreviations) are only worth showing when little
+/// matched what was actually typed.
+const LITERAL_HITS_THAT_SILENCE_GUESSES: usize = 5;
+
+// A place to go outranks a line that matches equally well: typing a scheme's
+// name is almost always asking for the scheme.
+const NAVIGATION_BONUS: i32 = 300;
+const SCHEME_BONUS: i32 = 250;
+
+// What a line is tells us how likely it is to be the one wanted, independent
+// of how well its text matches. These are deliberately smaller than the gap
+// between match kinds, so they order equals rather than override relevance.
+const DONE_PENALTY: i32 = 120;
+const CURRENT_DATE_BONUS: i32 = 60;
+const STALE_DATE_PENALTY: i32 = 40;
+const DAILY_TODAY_BONUS: i32 = 40;
+const DAILY_THIS_WEEK_BONUS: i32 = 20;
+const DAILY_OLD_PENALTY: i32 = 60;
 
 #[derive(Clone, Copy, Debug)]
 pub struct SearchOptions<'a> {
@@ -92,51 +104,68 @@ pub fn search_hits(
     query: &str,
     options: SearchOptions<'_>,
 ) -> Vec<SearchHit> {
-    let query = query.trim();
-    let mut hits = Vec::new();
-
-    push_navigation_hits(&mut hits, query, options);
-    push_scheme_hits(&mut hits, workspace, time_format, query);
-    push_daily_queue_hits(&mut hits, workspace, time_format, query, options);
-
-    hits.sort_by(compare_ranked_hits);
-    hits.truncate(MAX_SEARCH_HITS);
-    hits.into_iter().map(|hit| hit.hit).collect()
+    search_hits_at(workspace, time_format, query, options, Utc::now())
 }
 
-#[derive(Clone, Debug)]
-struct RankedSearchHit {
-    hit: SearchHit,
-    rank: SearchRank,
-    ordinal: usize,
+/// [`search_hits`] with the clock passed in, since ranking prefers what is
+/// current.
+pub fn search_hits_at(
+    workspace: &Workspace,
+    time_format: TimeFormat,
+    query: &str,
+    options: SearchOptions<'_>,
+    now: DateTime<Utc>,
+) -> Vec<SearchHit> {
+    let terms = SearchTerms::new(query);
+    let mut candidates = Vec::new();
+
+    push_navigation_candidates(&mut candidates, &terms, options);
+    push_scheme_candidates(&mut candidates, workspace, time_format, &terms, now);
+    push_daily_queue_candidates(
+        &mut candidates,
+        workspace,
+        time_format,
+        &terms,
+        options,
+        now,
+    );
+
+    let literal = candidates.iter().filter(|hit| hit.literal).count();
+    if literal >= LITERAL_HITS_THAT_SILENCE_GUESSES {
+        candidates.retain(|hit| hit.literal);
+    }
+    // Stable, so equal scores keep workspace order.
+    candidates.sort_by_key(|hit| std::cmp::Reverse(hit.score));
+    candidates.truncate(MAX_SEARCH_HITS);
+    candidates
+        .into_iter()
+        .map(|candidate| candidate.source.into_hit(time_format, options))
+        .collect()
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-struct SearchRank {
+/// A match, held as borrows until it is known to be one of the few shown: a
+/// short query matches most of a workspace, and only the top of that list is
+/// worth building a [`SearchHit`] for.
+#[derive(Clone, Copy, Debug)]
+struct Candidate<'a> {
+    source: Source<'a>,
     score: i32,
-    start: usize,
-    span: usize,
+    literal: bool,
 }
 
 #[derive(Clone, Copy, Debug)]
-struct TextMatch {
-    score: i32,
-    start: usize,
-    span: usize,
+enum Source<'a> {
+    Calendar,
+    DailyQueueView,
+    Scheme(&'a Scheme),
+    SchemeItem(&'a Scheme, &'a Item),
+    DailyQueueItem(&'a Scheme, &'a Item),
 }
 
-#[derive(Clone, Debug)]
-struct TokenSpan {
-    text: String,
-    start: usize,
-    end: usize,
-}
-
-fn push_navigation_hits(hits: &mut Vec<RankedSearchHit>, query: &str, options: SearchOptions<'_>) {
-    if let Some(rank) = field_rank("Calendar", query, NAVIGATION_FIELD_WEIGHT) {
-        push_ranked_hit(
-            hits,
-            SearchHit {
+impl Source<'_> {
+    fn into_hit(self, time_format: TimeFormat, options: SearchOptions<'_>) -> SearchHit {
+        match self {
+            Source::Calendar => SearchHit {
                 target: SearchTarget::Calendar,
                 scheme_name: "Navigation".to_string(),
                 color_index: None,
@@ -145,13 +174,7 @@ fn push_navigation_hits(hits: &mut Vec<RankedSearchHit>, query: &str, options: S
                 detail: "view".to_string(),
                 status: SearchHitStatus::None,
             },
-            rank,
-        );
-    }
-    if let Some(rank) = field_rank(options.daily_queue_title, query, NAVIGATION_FIELD_WEIGHT) {
-        push_ranked_hit(
-            hits,
-            SearchHit {
+            Source::DailyQueueView => SearchHit {
                 target: SearchTarget::DailyQueue {
                     scheme_id: None,
                     item_id: None,
@@ -163,391 +186,192 @@ fn push_navigation_hits(hits: &mut Vec<RankedSearchHit>, query: &str, options: S
                 detail: "view".to_string(),
                 status: SearchHitStatus::None,
             },
-            rank,
-        );
+            Source::Scheme(scheme) => SearchHit {
+                target: SearchTarget::Scheme {
+                    scheme_id: scheme.id,
+                    item_id: None,
+                },
+                scheme_name: scheme.name.clone(),
+                color_index: Some(scheme.color_index),
+                color_override: None,
+                title: scheme.name.clone(),
+                detail: "scheme".to_string(),
+                status: SearchHitStatus::None,
+            },
+            Source::SchemeItem(scheme, item) => {
+                let (detail, status) = item_detail(item, time_format);
+                SearchHit {
+                    target: SearchTarget::Scheme {
+                        scheme_id: scheme.id,
+                        item_id: Some(item.id),
+                    },
+                    scheme_name: scheme.name.clone(),
+                    color_index: Some(scheme.color_index),
+                    color_override: None,
+                    title: item.text(),
+                    detail,
+                    status,
+                }
+            }
+            Source::DailyQueueItem(scheme, item) => SearchHit {
+                target: SearchTarget::DailyQueue {
+                    scheme_id: Some(scheme.id),
+                    item_id: Some(item.id),
+                },
+                scheme_name: options.daily_queue_title.to_string(),
+                color_index: None,
+                color_override: Some(options.daily_queue_marker_color),
+                title: item.text(),
+                detail: item_detail(item, time_format).0,
+                status: SearchHitStatus::DailyQueue,
+            },
+        }
     }
 }
 
-fn push_scheme_hits(
-    hits: &mut Vec<RankedSearchHit>,
-    workspace: &Workspace,
-    time_format: TimeFormat,
-    query: &str,
+fn push_navigation_candidates<'a>(
+    candidates: &mut Vec<Candidate<'a>>,
+    terms: &SearchTerms,
+    options: SearchOptions<'_>,
 ) {
+    if let Some(mat) = match_fields(terms, "Calendar", &terms.words_of("Calendar"), || []) {
+        push_candidate(candidates, Source::Calendar, mat, NAVIGATION_BONUS);
+    }
+    let title = options.daily_queue_title;
+    if let Some(mat) = match_fields(terms, title, &terms.words_of(title), || []) {
+        push_candidate(candidates, Source::DailyQueueView, mat, NAVIGATION_BONUS);
+    }
+}
+
+fn push_scheme_candidates<'a>(
+    candidates: &mut Vec<Candidate<'a>>,
+    workspace: &'a Workspace,
+    time_format: TimeFormat,
+    terms: &SearchTerms,
+    now: DateTime<Utc>,
+) {
+    let mut title_words = Words::default();
     for scheme in workspace
         .iter_schemes()
         .filter(|scheme| !workspace.is_daily_queue_scheme(scheme.id))
     {
-        if let Some(rank) = field_rank(&scheme.name, query, SCHEME_TITLE_FIELD_WEIGHT) {
-            push_ranked_hit(
-                hits,
-                SearchHit {
-                    target: SearchTarget::Scheme {
-                        scheme_id: scheme.id,
-                        item_id: None,
-                    },
-                    scheme_name: scheme.name.clone(),
-                    color_index: Some(scheme.color_index),
-                    color_override: None,
-                    title: scheme.name.clone(),
-                    detail: "scheme".to_string(),
-                    status: SearchHitStatus::None,
-                },
-                rank,
-            );
+        let scheme_words = terms.words_of(&scheme.name);
+        if let Some(mat) = match_fields(terms, &scheme.name, &scheme_words, || []) {
+            push_candidate(candidates, Source::Scheme(scheme), mat, SCHEME_BONUS);
         }
 
         for item in &scheme.items {
-            if !item_has_search_title(item) {
-                continue;
-            }
-            let title = item.text();
-            let (detail, status) = item_detail(item, time_format);
-            let Some(rank) = best_rank([
-                field_rank(&title, query, ITEM_TITLE_FIELD_WEIGHT),
-                field_rank(&scheme.name, query, SCHEME_CONTEXT_FIELD_WEIGHT),
-                field_rank(&detail, query, DETAIL_FIELD_WEIGHT),
-            ]) else {
+            let Some(title) = search_title(item) else {
                 continue;
             };
-
-            push_ranked_hit(
-                hits,
-                SearchHit {
-                    target: SearchTarget::Scheme {
-                        scheme_id: scheme.id,
-                        item_id: Some(item.id),
-                    },
-                    scheme_name: scheme.name.clone(),
-                    color_index: Some(scheme.color_index),
-                    color_override: None,
-                    title,
-                    detail,
-                    status,
-                },
-                rank,
+            terms.fill(&mut title_words, title);
+            let Some(mat) = match_fields(terms, title, &title_words, || {
+                [
+                    scheme_words.clone(),
+                    terms.words_of(&item_detail(item, time_format).0),
+                ]
+            }) else {
+                continue;
+            };
+            push_candidate(
+                candidates,
+                Source::SchemeItem(scheme, item),
+                mat,
+                item_currency(item, now),
             );
         }
     }
 }
 
-fn push_daily_queue_hits(
-    hits: &mut Vec<RankedSearchHit>,
-    workspace: &Workspace,
+fn push_daily_queue_candidates<'a>(
+    candidates: &mut Vec<Candidate<'a>>,
+    workspace: &'a Workspace,
     time_format: TimeFormat,
-    query: &str,
+    terms: &SearchTerms,
     options: SearchOptions<'_>,
+    now: DateTime<Utc>,
 ) {
-    for (date, scheme) in workspace.iter_daily_queue_schemes() {
-        let day_label = format!("{}", date.format("%Y %B %-d"));
+    let today = now.with_timezone(&Local).date_naive();
+    let daily_queue_words = terms.words_of(options.daily_queue_title);
+    let mut title_words = Words::default();
+    // Newest day first, so that among equally good matches the recent one leads.
+    let mut days: Vec<_> = workspace.iter_daily_queue_schemes().collect();
+    days.sort_by_key(|(date, _)| std::cmp::Reverse(*date));
+    for (date, scheme) in days {
+        let day_currency = daily_queue_day_currency(date, today);
         for item in &scheme.items {
-            if !item_has_search_title(item) {
-                continue;
-            }
-            let title = item.text();
-            let (detail, _) = item_detail(item, time_format);
-            let Some(rank) = best_rank([
-                field_rank(&title, query, ITEM_TITLE_FIELD_WEIGHT),
-                field_rank(
-                    options.daily_queue_title,
-                    query,
-                    DAILY_QUEUE_CONTEXT_FIELD_WEIGHT,
-                ),
-                field_rank(&day_label, query, DAILY_QUEUE_CONTEXT_FIELD_WEIGHT),
-                field_rank(&detail, query, DETAIL_FIELD_WEIGHT),
-            ]) else {
+            let Some(title) = search_title(item) else {
                 continue;
             };
-
-            push_ranked_hit(
-                hits,
-                SearchHit {
-                    target: SearchTarget::DailyQueue {
-                        scheme_id: Some(scheme.id),
-                        item_id: Some(item.id),
-                    },
-                    scheme_name: options.daily_queue_title.to_string(),
-                    color_index: None,
-                    color_override: Some(options.daily_queue_marker_color),
-                    title,
-                    detail,
-                    status: SearchHitStatus::DailyQueue,
-                },
-                rank,
+            terms.fill(&mut title_words, title);
+            let Some(mat) = match_fields(terms, title, &title_words, || {
+                [
+                    daily_queue_words.clone(),
+                    terms.words_of(&format!("{}", date.format("%Y %B %-d"))),
+                    terms.words_of(&item_detail(item, time_format).0),
+                ]
+            }) else {
+                continue;
+            };
+            push_candidate(
+                candidates,
+                Source::DailyQueueItem(scheme, item),
+                mat,
+                item_currency(item, now) + day_currency,
             );
         }
     }
 }
 
-fn push_ranked_hit(hits: &mut Vec<RankedSearchHit>, hit: SearchHit, rank: SearchRank) {
-    hits.push(RankedSearchHit {
-        hit,
-        rank,
-        ordinal: hits.len(),
+fn push_candidate<'a>(
+    candidates: &mut Vec<Candidate<'a>>,
+    source: Source<'a>,
+    mat: FieldMatch,
+    adjustment: i32,
+) {
+    candidates.push(Candidate {
+        source,
+        score: mat.score + adjustment,
+        literal: mat.literal,
     });
 }
 
-fn compare_ranked_hits(left: &RankedSearchHit, right: &RankedSearchHit) -> Ordering {
-    right
-        .rank
-        .score
-        .cmp(&left.rank.score)
-        .then_with(|| left.rank.start.cmp(&right.rank.start))
-        .then_with(|| left.rank.span.cmp(&right.rank.span))
-        .then_with(|| left.ordinal.cmp(&right.ordinal))
-}
-
-fn best_rank<const N: usize>(ranks: [Option<SearchRank>; N]) -> Option<SearchRank> {
-    ranks.into_iter().flatten().max_by(compare_ranks)
-}
-
-fn compare_ranks(left: &SearchRank, right: &SearchRank) -> Ordering {
-    left.score
-        .cmp(&right.score)
-        .then_with(|| right.start.cmp(&left.start))
-        .then_with(|| right.span.cmp(&left.span))
-}
-
-fn field_rank(text: &str, query: &str, field_weight: i32) -> Option<SearchRank> {
-    text_match(text, query).map(|mat| SearchRank {
-        score: field_weight + mat.score,
-        start: mat.start,
-        span: mat.span,
-    })
-}
-
-fn text_match(text: &str, query: &str) -> Option<TextMatch> {
-    let query = query.trim();
-    if query.is_empty() {
-        return Some(TextMatch {
-            score: 0,
-            start: 0,
-            span: 0,
-        });
+/// How much more or less likely a line is to be the one wanted because of its
+/// state: finished work and long-past dates sink, what is due around now rises.
+fn item_currency(item: &Item, now: DateTime<Utc>) -> i32 {
+    if item.repeats.is_none() && item.single_state().is_done() {
+        return -DONE_PENALTY;
     }
-
-    let text = text.trim();
-    if text.is_empty() {
-        return None;
+    let Some(date) = item.start.or(item.end) else {
+        return 0;
+    };
+    if item.repeats.is_some() {
+        return 0;
     }
-
-    let query_lower = query.to_lowercase();
-    let text_lower = text.to_lowercase();
-    let query_len = query_lower.chars().count();
-    let text_len = text_lower.chars().count();
-    let mut best = None;
-
-    if text_lower == query_lower {
-        keep_better_match(
-            &mut best,
-            TextMatch {
-                score: 1_250,
-                start: 0,
-                span: text_len,
-            },
-        );
-    }
-
-    if let Some(byte_ix) = text_lower.find(&query_lower) {
-        let start = text_lower[..byte_ix].chars().count();
-        let boundary_bonus = if is_word_boundary(&text_lower, byte_ix) {
-            90
-        } else {
-            0
-        };
-        let prefix_bonus = if start == 0 { 110 } else { 0 };
-        keep_better_match(
-            &mut best,
-            TextMatch {
-                score: penalized_score(
-                    880 + boundary_bonus + prefix_bonus,
-                    start,
-                    query_len,
-                    query_len,
-                ),
-                start,
-                span: query_len,
-            },
-        );
-    }
-
-    if let Some(mat) = token_match(&text_lower, &query_lower) {
-        keep_better_match(&mut best, mat);
-    }
-
-    if let Some(indices) = subsequence_match_indices(text, query) {
-        if let (Some(first), Some(last)) = (indices.first(), indices.last()) {
-            let span = last.saturating_sub(*first) + 1;
-            keep_better_match(
-                &mut best,
-                TextMatch {
-                    score: penalized_score(520, *first, span, query_len),
-                    start: *first,
-                    span,
-                },
-            );
-        }
-    }
-
-    best
-}
-
-fn token_match(text_lower: &str, query_lower: &str) -> Option<TextMatch> {
-    let text_tokens = token_spans(text_lower);
-    let query_tokens = token_spans(query_lower);
-    if text_tokens.is_empty() || query_tokens.is_empty() {
-        return None;
-    }
-
-    let mut text_ix = 0;
-    let mut first_start = None;
-    let mut last_end = 0;
-    let mut quality_sum = 0;
-
-    for query_token in &query_tokens {
-        let mut best_token_ix = None;
-        let mut best_quality = 0;
-
-        for (ix, token) in text_tokens.iter().enumerate().skip(text_ix) {
-            let quality = token_match_quality(&token.text, &query_token.text);
-            if quality == 0 {
-                continue;
-            }
-            if quality > best_quality {
-                best_token_ix = Some(ix);
-                best_quality = quality;
-            }
-            if quality >= 120 {
-                break;
-            }
-        }
-
-        let token_ix = best_token_ix?;
-        let token = &text_tokens[token_ix];
-        first_start.get_or_insert(token.start);
-        last_end = token.end;
-        quality_sum += best_quality;
-        text_ix = token_ix + 1;
-    }
-
-    let start = first_start.unwrap_or(0);
-    let span = last_end.saturating_sub(start);
-    let query_len: usize = query_tokens
-        .iter()
-        .map(|token| token.text.chars().count())
-        .sum();
-    let average_quality = quality_sum / query_tokens.len() as i32;
-    let base = if query_tokens.len() == 1 { 720 } else { 780 };
-
-    Some(TextMatch {
-        score: penalized_score(base + average_quality, start, span, query_len),
-        start,
-        span,
-    })
-}
-
-fn token_match_quality(token: &str, query: &str) -> i32 {
-    if token == query {
-        120
-    } else if token.starts_with(query) {
-        100
-    } else if token.contains(query) {
-        70
+    if date >= now - Duration::days(1) && date <= now + Duration::days(14) {
+        CURRENT_DATE_BONUS
+    } else if date < now - Duration::days(30) {
+        -STALE_DATE_PENALTY
     } else {
         0
     }
 }
 
-fn token_spans(text: &str) -> Vec<TokenSpan> {
-    let mut tokens = Vec::new();
-    let mut current = String::new();
-    let mut start = 0;
-
-    for (ix, ch) in text.chars().enumerate() {
-        if ch.is_alphanumeric() {
-            if current.is_empty() {
-                start = ix;
-            }
-            current.extend(ch.to_lowercase());
-            continue;
-        }
-        if !current.is_empty() {
-            tokens.push(TokenSpan {
-                text: std::mem::take(&mut current),
-                start,
-                end: ix,
-            });
-        }
-    }
-
-    if !current.is_empty() {
-        tokens.push(TokenSpan {
-            text: current,
-            start,
-            end: text.chars().count(),
-        });
-    }
-
-    tokens
-}
-
-fn is_word_boundary(text: &str, byte_ix: usize) -> bool {
-    if byte_ix == 0 {
-        return true;
-    }
-    text[..byte_ix]
-        .chars()
-        .next_back()
-        .is_none_or(|ch| !ch.is_alphanumeric())
-}
-
-fn penalized_score(base: i32, start: usize, span: usize, query_len: usize) -> i32 {
-    let start_penalty = start.min(80) as i32 * 2;
-    let gap_penalty = span.saturating_sub(query_len).min(120) as i32 * 5;
-    (base - start_penalty - gap_penalty).max(1)
-}
-
-fn keep_better_match(best: &mut Option<TextMatch>, candidate: TextMatch) {
-    let replace = best.as_ref().is_none_or(|best| {
-        candidate
-            .score
-            .cmp(&best.score)
-            .then_with(|| best.start.cmp(&candidate.start))
-            .then_with(|| best.span.cmp(&candidate.span))
-            == Ordering::Greater
-    });
-    if replace {
-        *best = Some(candidate);
+fn daily_queue_day_currency(date: NaiveDate, today: NaiveDate) -> i32 {
+    match (today - date).num_days() {
+        ..=0 => DAILY_TODAY_BONUS,
+        1..=7 => DAILY_THIS_WEEK_BONUS,
+        8..=30 => 0,
+        _ => -DAILY_OLD_PENALTY,
     }
 }
 
-fn subsequence_match_indices(text: &str, query: &str) -> Option<Vec<usize>> {
-    let query: Vec<char> = query
-        .trim()
-        .chars()
-        .flat_map(|ch| ch.to_lowercase())
-        .collect();
-    if query.is_empty() {
-        return Some(Vec::new());
-    }
-
-    let mut matched = Vec::new();
-    let mut query_ix = 0;
-    for (text_ix, ch) in text.chars().enumerate() {
-        let text_ch = ch.to_lowercase().next().unwrap_or(ch);
-        if text_ch == query[query_ix] {
-            matched.push(text_ix);
-            query_ix += 1;
-            if query_ix == query.len() {
-                return Some(matched);
-            }
-        }
-    }
-    None
-}
-
-fn item_has_search_title(item: &Item) -> bool {
-    !item.text().trim().is_empty()
+/// The text a line is found by, or `None` for a line with none (blank, image,
+/// table).
+fn search_title(item: &Item) -> Option<&str> {
+    item.content
+        .as_text()
+        .filter(|text| !text.trim().is_empty())
 }
 
 fn item_detail(item: &Item, time_format: TimeFormat) -> (String, SearchHitStatus) {
