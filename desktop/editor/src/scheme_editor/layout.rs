@@ -343,7 +343,10 @@ impl SchemeEditor {
         let mut shaped = String::with_capacity(hidden_prefix.len() + line.len());
         let mut runs = Vec::new();
         let mut collapsed = Vec::new();
-        let link_ranges = detect_links(line);
+        let link_ranges: Vec<Range<usize>> = detect_links(line)
+            .into_iter()
+            .map(|link| link.range)
+            .collect();
 
         if !hidden_prefix.is_empty() {
             shaped.push_str(hidden_prefix);
@@ -424,7 +427,7 @@ impl SchemeEditor {
         is_done: bool,
     ) -> TextRun {
         let mut font = font.clone();
-        font.family = SharedString::new(FONT_UI);
+        font.family = SharedString::new(if style.code { FONT_MONO } else { FONT_UI });
         if style.bold {
             font.weight = gpui::FontWeight::BOLD;
         }
@@ -448,8 +451,11 @@ impl SchemeEditor {
             len,
             font,
             color,
+            // A highlight inside code wins: it is the more deliberate mark.
             background_color: if style.highlight {
                 Some(token_hsla(self.theme.highlight_bg))
+            } else if style.code {
+                Some(token_hsla(self.theme.row_hover))
             } else {
                 None
             },
@@ -579,7 +585,7 @@ fn push_visible_line_layout_segment(
     // wholly inside or wholly outside a URL, and carries the link styling.
     for (sub, is_link) in split_by_links(range, link_ranges) {
         let mut run_style = style;
-        run_style.link = is_link;
+        run_style.link = is_link && !style.code;
         runs.push(editor.text_run(sub.end - sub.start, font, default_color, run_style, is_done));
     }
 }
