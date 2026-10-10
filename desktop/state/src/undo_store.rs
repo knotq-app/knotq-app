@@ -1,7 +1,7 @@
-use std::collections::VecDeque;
+use std::collections::{HashMap, HashSet, VecDeque};
 
 use knotq_commands::Command;
-use knotq_model::SchemeId;
+use knotq_model::{ItemId, SchemeId, Workspace};
 
 use crate::undo::UNDO_DEPTH;
 use crate::Selection;
@@ -273,23 +273,149 @@ impl UndoStore {
         self.redo.len()
     }
 
-    /// Discard undo/redo entries invalidated when a sync run replaces content for
-    /// a set of `affected` schemes. A scheme-scoped entry is dropped only if its
-    /// own scheme changed; a global (cross-scheme) entry is dropped only if it
-    /// touches an affected scheme; workspace-structural entries always survive.
-    /// This way a remote edit to scheme A leaves the undo history of the schemes
-    /// the user is actually working in (B, C, …) fully intact.
-    pub fn clear_affected_by_schemes(&mut self, affected: &std::collections::HashSet<SchemeId>) {
+    /// Discard the undo/redo entries a sync landing has invalidated, and no
+    /// others. An entry is dropped only if replaying its inverse could now do
+    /// something other than what it recorded: it addresses a line the sync
+    /// changed, or it is positional and the sync moved lines around. Edits to
+    /// the *other* lines of a scheme a remote device has just touched stay
+    /// undoable; workspace-structural entries always survive.
+    pub fn clear_invalidated_by_sync(&mut self, delta: &SyncDelta) {
         let keep = |entry: &UndoEntry| match entry.scope {
             UndoScope::Workspace => true,
-            UndoScope::Scheme(s) => !affected.contains(&s),
-            UndoScope::Global => touched(&entry.inverse)
-                .schemes
-                .iter()
-                .all(|s| !affected.contains(s)),
+            UndoScope::Scheme(_) | UndoScope::Global => !delta.invalidates(&entry.inverse),
         };
         self.undo.retain(keep);
         self.redo.retain(keep);
+    }
+}
+
+/// What a sync landing changed, at the granularity undo needs: per scheme,
+/// which lines differ and whether any line was added, removed or moved.
+#[derive(Clone, Debug, Default)]
+pub struct SyncDelta {
+    schemes: HashMap<SchemeId, SchemeDelta>,
+}
+
+#[derive(Clone, Debug)]
+enum SchemeDelta {
+    /// The scheme appeared or disappeared; nothing recorded against it holds.
+    Whole,
+    Lines {
+        /// Lines whose content differs, plus any present on only one side.
+        changed: HashSet<ItemId>,
+        /// The sequence of line ids differs, so an index no longer means the
+        /// line it meant.
+        order_changed: bool,
+    },
+}
+
+impl SyncDelta {
+    /// The difference between the workspace before a landing and after it.
+    /// Schemes whose lines are equal are absent.
+    pub fn between(before: &Workspace, after: &Workspace) -> Self {
+        let mut schemes = HashMap::new();
+        for (scheme_id, old) in &before.schemes {
+            let Some(new) = after.schemes.get(scheme_id) else {
+                schemes.insert(*scheme_id, SchemeDelta::Whole);
+                continue;
+            };
+            if new.items == old.items {
+                continue;
+            }
+            let old_by_id: HashMap<ItemId, &knotq_model::Item> =
+                old.items.iter().map(|item| (item.id, item)).collect();
+            let mut changed: HashSet<ItemId> = new
+                .items
+                .iter()
+                .filter(|item| old_by_id.get(&item.id) != Some(item))
+                .map(|item| item.id)
+                .collect();
+            let new_ids: HashSet<ItemId> = new.items.iter().map(|item| item.id).collect();
+            changed.extend(old_by_id.keys().filter(|id| !new_ids.contains(id)));
+            let order_changed = old.items.len() != new.items.len()
+                || old
+                    .items
+                    .iter()
+                    .zip(new.items.iter())
+                    .any(|(old, new)| old.id != new.id);
+            schemes.insert(
+                *scheme_id,
+                SchemeDelta::Lines {
+                    changed,
+                    order_changed,
+                },
+            );
+        }
+        for scheme_id in after.schemes.keys() {
+            if !before.schemes.contains_key(scheme_id) {
+                schemes.insert(*scheme_id, SchemeDelta::Whole);
+            }
+        }
+        Self { schemes }
+    }
+
+    /// Whether the landing changed this line (or its whole scheme).
+    pub fn changed_line(&self, scheme: SchemeId, item: ItemId) -> bool {
+        match self.schemes.get(&scheme) {
+            None => false,
+            Some(SchemeDelta::Whole) => true,
+            Some(SchemeDelta::Lines { changed, .. }) => changed.contains(&item),
+        }
+    }
+
+    fn reordered(&self, scheme: SchemeId) -> bool {
+        match self.schemes.get(&scheme) {
+            None => false,
+            Some(SchemeDelta::Whole) => true,
+            Some(SchemeDelta::Lines { order_changed, .. }) => *order_changed,
+        }
+    }
+
+    /// Whether replaying `cmd` after this landing could do something other
+    /// than what it was recorded to do. Exhaustive, so a new `Command` variant
+    /// has to say how it addresses what it changes.
+    fn invalidates(&self, cmd: &Command) -> bool {
+        match cmd {
+            // Addressed by line id: still exactly right unless that line changed.
+            Command::UpdateItemText { scheme, item, .. }
+            | Command::SetItemIndent { scheme, item, .. }
+            | Command::SetItemMarker { scheme, item, .. }
+            | Command::SetItemMarkerFamily { scheme, item, .. }
+            | Command::SetItemDate { scheme, item, .. }
+            | Command::SetItemRecurrence { scheme, item, .. }
+            | Command::SetItemPriority { scheme, item, .. }
+            | Command::SetOccurrenceNotificationOffset { scheme, item, .. }
+            | Command::ToggleOccurrence { scheme, item, .. }
+            | Command::DeleteItem { scheme, item } => self.changed_line(*scheme, *item),
+            Command::ReplaceItem { scheme, item } => self.changed_line(*scheme, item.id),
+            // Addressed by position: an index only means the same line while
+            // the scheme's lines are in the same order.
+            Command::InsertItem { scheme, item, .. } => {
+                self.reordered(*scheme) || self.changed_line(*scheme, item.id)
+            }
+            Command::ReorderItem { scheme, .. } => self.reordered(*scheme),
+            // Workspace structure is not what a landing's line delta describes;
+            // these apply or fail on their own terms, as they always have.
+            Command::CreateFolder { .. }
+            | Command::RestoreFolder { .. }
+            | Command::RestoreDeletedFolder { .. }
+            | Command::RenameFolder { .. }
+            | Command::SetFolderExpanded { .. }
+            | Command::DeleteFolder { .. }
+            | Command::PermanentlyDeleteFolder { .. }
+            | Command::CreateScheme { .. }
+            | Command::RestoreScheme { .. }
+            | Command::RestoreDeletedScheme { .. }
+            | Command::RenameScheme { .. }
+            | Command::SetSchemeColor { .. }
+            | Command::SetSchemeGsync { .. }
+            | Command::SetSchemeSource { .. }
+            | Command::DeleteScheme { .. }
+            | Command::PermanentlyDeleteScheme { .. }
+            | Command::MoveNode { .. }
+            | Command::EnsureDailyQueue { .. } => false,
+            Command::Batch(commands) => commands.iter().any(|cmd| self.invalidates(cmd)),
+        }
     }
 }
 
