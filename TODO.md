@@ -1,6 +1,52 @@
 # Known gaps
 
-**Updated 2026-09-24.** These notes track confirmed data-loss/convergence
+## Where things stand (checked 2026-10-10)
+
+Read this first; much of what follows is the record of how each item was found
+and is written as of the day it was found.
+
+**The gates are green.** Checked against the runs, not against the notes below:
+
+- **Nightly deep fuzz (`sync-fuzz.yml`)** — passing since 2026-10-04. It ran at
+  its configured depth on `c2a311d` (2026-10-04) and `6085be8` (2026-10-10): the
+  property fuzzer at 1500 x 400, the multi-origin daily-queue stress at 3000
+  seeds, the desktop production-path fuzzer at 400 x 300, and the deep WebSocket
+  job. The green runs in between are skips — the workflow does not re-fuzz a
+  commit pair it has already fuzzed — so two real runs, not seven.
+- **PR gate (`ci.yml` `sync-stress`)** — green on `main` through #59.
+- **Release gate** — v0.58.0 built on 2026-10-01 after two red attempts.
+
+So **0w** ("at its configured depth it is red") and **0E** ("main fails 20223,
+this tree fails chaos 6") describe a state that no longer holds. Their sections
+are kept as the record of what was wrong and what fixed it.
+
+**Green is not the same as nothing excused.** `run_seeds` in
+`production_fuzz/mod.rs` does not fail the sweep on single-account seeds
+**10106, 10175 and 10192** (`KNOWN_FAILING`, #53). They are one bug, still
+open: a device that created a scheme before its first sync keeps its own
+name/colour/gsync for it while the account moves on, because
+`repopulate_workspace_canonically` discards the snapshot that would publish its
+index writes. Metadata only — no content lost, no item dropped, no device
+wedged. Any other failing seed still fails the build.
+
+**Still open, in the order a user would feel them:**
+
+| | What | Why it is not fixed |
+|---|---|---|
+| **0i**, **0i-b** | Switching accounts on a device can delete the *other* account's data | Root cause found (identical Yjs structs across accounts). Two fixes failed; the remaining one changes the document format |
+| **4** | Desktop undo history for a scheme is wiped when a sync touches that scheme | Deferred since 2026-06-26 |
+| `KNOWN_FAILING` | The three excused seeds above | Four fixes rejected at 300 x 200 |
+| **0C** | Item skeletons alias across documents; the namespaced skeleton is written but not landed | An incompatible format change |
+| **0z** | `unlanded_pulls` is never cleared when a run lands | Not yet attempted |
+| **3** | No backup/DR for the backend's Durable Object state | A project, and an ops decision |
+| **5** | Cloudflare rate limiting unverified in production | Needs the dashboard, not this checkout |
+
+Not re-verified on 2026-10-10: the individual `[FIXED]` entries, and whether
+**0r** (seed 10105's Daily page colour, "passes but untraced") is still
+untraced. They are as their own sections left them.
+
+**Updated 2026-09-24** (the summary this file carried before the block above;
+its claim that 0w is open is superseded). These notes track confirmed data-loss/convergence
 bugs and deferred release work. Current deploy-blocking status: 0a, 0b, 0c, 0d,
 0e, 0f, 0g, 0h, 0j, 0k, 0l, 0m, 0n, 0o, 0p, 0q, 0t, 0u, 0v, 1, and 2 are fixed
 and verified; 0i (the account-switch exclusion) and 0w (the deep gate's 7 Daily-Queue seeds) are open, and 0r (one scheme colour) now passes but is untraced; 3 and 5 remain backend/ops gaps,
@@ -831,7 +877,7 @@ content into this device's deletions and reverts.
 chaos 190 and 299: recovery then sees no change at all, writes nothing, and the
 documents stay behind the plain files, so the projection law fails on launch.
 
-## 0w. The nightly deep gate never ran, and at its configured depth it is red
+## 0w. [GREEN since 2026-10-04, three seeds excused] The nightly deep gate never ran, and at its configured depth it was red
 
 **Found 2026-09-24 while debugging eight consecutive red nightlies.** The red
 was not a sync bug. `sync-fuzz.yml` installed only `pkg-config` and
@@ -1930,7 +1976,7 @@ index writer publishing absence as deletion — after which a fresh joiner's ind
 write cannot subtract at all, and the suppression stops being load-bearing in
 either direction.
 
-## 0E. The PR gate's own sweep: main fails 20223, this tree fails chaos 6
+## 0E. [GREEN on main since 2026-10-04] The PR gate's own sweep: main failed 20223, that tree failed chaos 6
 
 Found 2026-10-04, by running CI's gate rather than reading its name. **Both trees
 fail it, and which seed they fail on is the whole decision.**
