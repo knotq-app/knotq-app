@@ -3238,12 +3238,26 @@ and it has to interact correctly with the account-deletion purge path so a
 backup doesn't become a GDPR regression by outliving a deletion request), not
 something to do blind.
 
-## 4. Desktop undo doesn't survive a sync that touches the scheme you're mid-undo-history on
+## 4. [FIXED] Desktop undo doesn't survive a sync that touches the scheme you're mid-undo-history on
 
-If a remote edit lands on scheme X while you still have local undo history for
-X, that history is wiped rather than preserved per-scheme (other schemes'
-undo history is already correctly scoped and survives). Explicitly deferred by
-the user in the original 2026-06-26 undo-scoping rework; still deferred.
+**Resolution 2026-10-10.** A landing used to drop every undo step recorded
+against a scheme the sync had changed at all — so a phone adding one line to
+today's Daily page cost the desktop its whole history for that page. The
+landing now diffs the scheme line by line (`SyncDelta`) and drops a step only
+when replaying it could do something other than what it recorded:
+
+- a step addressed by line id (text, marker, dates, completion, delete) is
+  dropped only if the sync changed **that line**;
+- a positional step (re-inserting a deleted line, a reorder) is dropped only if
+  the sync added, removed or moved lines in that scheme.
+
+What is still dropped is dropped on purpose: undoing a text edit on a line
+another device has since rewritten would silently overwrite their text.
+
+**Verified:** four cases in `state/tests/sync_merge_tests.rs`
+(`undo_survives_a_sync_that_changed_another_line_of_the_same_scheme` and its
+neighbours); `SyncDelta::invalidates` is an exhaustive match, so a new
+`Command` variant has to say how it addresses what it changes.
 
 ## 5. Cloudflare-side rate limiting is unverified in production
 

@@ -12,7 +12,7 @@ use knotq_sync::PendingCrdtEdit;
 use crate::moved_edits::{EditedFolderFields, LocalItemEdits};
 use crate::{
     CrdtSaveScope, DailyQueueState, EditorSessions, EditorUndoGroup, EventBus, NotificationState,
-    RetainedCompletedItems, Selection, UndoScope, UndoStore, View, WorkspaceDirtyState,
+    RetainedCompletedItems, Selection, SyncDelta, UndoScope, UndoStore, View, WorkspaceDirtyState,
     WorkspaceStore, WorkspaceView,
 };
 
@@ -821,26 +821,13 @@ impl AppState {
         let visible_change = self.workspace.schemes != workspace.schemes
             || self.workspace.clone_without_schemes() != workspace.clone_without_schemes();
 
-        // Work out which schemes this sync run actually changed by diffing the
-        // incoming content against the current one. The replace path runs only
-        // when there are no in-flight local edits, so any item-content difference
-        // is precisely the remote delta. (We can't use `crdt_states` for this —
-        // it always carries every document, not just the changed ones.) Undo
-        // history for schemes the sync didn't touch then survives the replace.
-        let mut affected_schemes = std::collections::HashSet::new();
-        for (scheme_id, old_scheme) in &self.workspace.schemes {
-            match workspace.schemes.get(scheme_id) {
-                Some(new_scheme) if new_scheme.items == old_scheme.items => {}
-                _ => {
-                    affected_schemes.insert(*scheme_id);
-                }
-            }
-        }
-        for scheme_id in workspace.schemes.keys() {
-            if !self.workspace.schemes.contains_key(scheme_id) {
-                affected_schemes.insert(*scheme_id);
-            }
-        }
+        // What this run changed, line by line, from diffing the incoming
+        // content against the current one. The replace path runs only when
+        // there are no in-flight local edits, so any difference is precisely
+        // the remote delta. (We can't use `crdt_states` for this — it always
+        // carries every document, not just the changed ones.) Undo history
+        // survives for everything the delta leaves alone.
+        let delta = SyncDelta::between(&self.workspace, &workspace);
 
         // Apply the run's merged document states incrementally — only the documents
         // that actually changed — instead of reconstructing every CRDT document from
@@ -856,22 +843,23 @@ impl AppState {
         }
         self.sync_workspace_from_store();
 
-        // Discard undo/redo only for affected schemes and global entries,
-        // preserving history for unaffected schemes.
-        self.undo_store.clear_affected_by_schemes(&affected_schemes);
+        // Discard only the undo/redo this landing invalidated: steps on the
+        // lines it changed, and positional steps in schemes it reordered.
+        self.undo_store.clear_invalidated_by_sync(&delta);
 
-        // Clear editor groups only if they're tied to an affected scheme.
+        // An edit group coalesces keystrokes into one undo step for one line;
+        // it ends only if that line is one the landing changed.
         if self
             .editor_undo_group
             .as_ref()
-            .is_some_and(|g| affected_schemes.contains(&g.key.scheme_id))
+            .is_some_and(|g| delta.changed_line(g.key.scheme_id, g.key.item_id))
         {
             self.editor_undo_group = None;
         }
         if self
             .recurrence_undo_group
             .as_ref()
-            .is_some_and(|g| affected_schemes.contains(&g.key.scheme_id))
+            .is_some_and(|g| delta.changed_line(g.key.scheme_id, g.key.item_id))
         {
             self.recurrence_undo_group = None;
         }

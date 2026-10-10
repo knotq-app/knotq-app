@@ -41,5 +41,5 @@ pub use undo::{
     calendar_toggle_keys, editor_undo_key, recurrence_undo_key, should_coalesce_editor_undo,
     should_coalesce_recurrence_undo, EditorUndoGroup, EditorUndoKey, UNDO_DEPTH,
 };
-pub use undo_store::{NavSnapshot, UndoEntry, UndoScope, UndoStore};
+pub use undo_store::{NavSnapshot, SyncDelta, UndoEntry, UndoScope, UndoStore};
 pub use workspace_view::WorkspaceView;

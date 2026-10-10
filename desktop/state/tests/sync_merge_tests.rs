@@ -124,8 +124,8 @@ fn two_scheme_state() -> (AppState, (SchemeId, ItemId), (SchemeId, ItemId)) {
 }
 
 /// The replace path (sync lands with no in-flight local edits) must clear undo
-/// only for the schemes the sync actually changed — undo for schemes the user is
-/// working in that the sync didn't touch survives.
+/// only for what the sync actually changed — here the one line of scheme A —
+/// while undo for a scheme the sync didn't touch survives.
 #[test]
 fn replace_from_sync_clears_undo_only_for_changed_schemes() {
     let (mut state, (a, item_a_id), (b, item_b_id)) = two_scheme_state();
@@ -171,6 +171,185 @@ fn replace_from_sync_clears_undo_only_for_changed_schemes() {
         item_text(&state, b, item_b_id),
         "b0",
         "undoing B reverts its local edit even though a sync replaced the workspace"
+    );
+}
+
+/// A scheme with three lines, focused, so its edits file under its own undo
+/// scope.
+fn three_line_state() -> (AppState, SchemeId, [ItemId; 3]) {
+    let (mut state, scheme_id) = app_state_with_scheme("Plans");
+    let mut ids = Vec::new();
+    for (position, text) in ["one", "two", "three"].into_iter().enumerate() {
+        let item = Item::new(text);
+        ids.push(item.id);
+        state
+            .apply_prechecked_local_command(
+                Command::InsertItem {
+                    scheme: scheme_id,
+                    position,
+                    item,
+                },
+                CommandOrigin::User,
+            )
+            .unwrap();
+    }
+    state.select_node(NodeRef::Scheme(scheme_id));
+    (state, scheme_id, [ids[0], ids[1], ids[2]])
+}
+
+/// A sync run in which another device applies `remote` to the scheme.
+fn land_remote_change(state: &mut AppState, scheme_id: SchemeId, remote: impl FnOnce(&mut Scheme)) {
+    let snapshot = state.workspace.clone();
+    let snapshot_states = state.crdt_document_states();
+    let mut run_docs =
+        WorkspaceCrdtDocuments::from_states(&snapshot, ReplicaId::new(), &snapshot_states).unwrap();
+    let mut result = snapshot.clone();
+    remote(result.schemes.get_mut(&scheme_id).unwrap());
+    let outcome = run_docs.sync_changes(
+        &result,
+        &WorkspaceCrdtChangeSet::default().touch_scheme(scheme_id),
+    );
+    assert!(outcome.is_ok(), "{:?}", outcome.errors);
+    state.replace_workspace_from_sync(result, run_docs.document_states());
+}
+
+fn line_texts(state: &AppState, scheme: SchemeId) -> Vec<String> {
+    state
+        .workspace
+        .scheme(scheme)
+        .unwrap()
+        .items
+        .iter()
+        .map(Item::text)
+        .collect()
+}
+
+/// The case that used to cost the user their undo: another device edits a
+/// *different* line of the scheme being worked in. The local edit must still
+/// undo, and undoing it must not disturb what the other device wrote.
+#[test]
+fn undo_survives_a_sync_that_changed_another_line_of_the_same_scheme() {
+    let (mut state, scheme, [one, _, three]) = three_line_state();
+    state.apply_command(Command::UpdateItemText {
+        scheme,
+        item: one,
+        text: "one, edited here".into(),
+    });
+
+    land_remote_change(&mut state, scheme, |scheme| {
+        scheme
+            .item_mut(three)
+            .unwrap()
+            .set_text("three, edited there")
+    });
+    assert_eq!(
+        line_texts(&state, scheme),
+        ["one, edited here", "two", "three, edited there"]
+    );
+
+    assert!(
+        state.undo_command().is_some(),
+        "an edit to a line the sync did not touch must still undo"
+    );
+    assert_eq!(
+        line_texts(&state, scheme),
+        ["one", "two", "three, edited there"]
+    );
+    assert!(
+        state.has_pending_crdt_edits(),
+        "the undo is itself an edit to push"
+    );
+
+    assert!(state.redo_command().is_some());
+    assert_eq!(
+        line_texts(&state, scheme),
+        ["one, edited here", "two", "three, edited there"]
+    );
+}
+
+/// The case that must keep losing its undo: the other device changed the very
+/// line. Replaying the recorded text would silently overwrite what it wrote.
+#[test]
+fn undo_is_dropped_for_the_line_a_sync_changed_and_kept_for_the_rest() {
+    let (mut state, scheme, [one, two, _]) = three_line_state();
+    state.apply_command(Command::UpdateItemText {
+        scheme,
+        item: two,
+        text: "two, edited here".into(),
+    });
+    state.apply_command(Command::UpdateItemText {
+        scheme,
+        item: one,
+        text: "one, edited here".into(),
+    });
+
+    land_remote_change(&mut state, scheme, |scheme| {
+        scheme.item_mut(one).unwrap().set_text("one, edited there")
+    });
+
+    // The newest step was on the line the sync rewrote, so it is gone and the
+    // next undo is the older step on a line it left alone.
+    assert!(state.undo_command().is_some());
+    assert_eq!(
+        line_texts(&state, scheme),
+        ["one, edited there", "two", "three"]
+    );
+    assert!(
+        state.undo_command().is_none(),
+        "nothing recorded against the rewritten line may remain"
+    );
+    assert_eq!(
+        line_texts(&state, scheme),
+        ["one, edited there", "two", "three"]
+    );
+}
+
+/// Undoing a delete puts the line back at an index. Once another device has
+/// added or removed lines, that index names a different place, so the step is
+/// dropped — while a step addressed by line id in the same scheme still holds.
+#[test]
+fn a_positional_undo_is_dropped_when_a_sync_moves_lines_but_edits_by_id_survive() {
+    let (mut state, scheme, [one, two, _]) = three_line_state();
+    state.apply_command(Command::UpdateItemText {
+        scheme,
+        item: one,
+        text: "one, edited here".into(),
+    });
+    state.apply_command(Command::DeleteItem { scheme, item: two });
+    assert_eq!(line_texts(&state, scheme), ["one, edited here", "three"]);
+
+    land_remote_change(&mut state, scheme, |scheme| {
+        scheme.items.insert(0, Item::new("added there"))
+    });
+    assert_eq!(
+        line_texts(&state, scheme),
+        ["added there", "one, edited here", "three"]
+    );
+
+    // The delete's undo is gone; the text edit's is not.
+    assert!(state.undo_command().is_some());
+    assert_eq!(line_texts(&state, scheme), ["added there", "one", "three"]);
+    assert!(state.undo_command().is_none());
+}
+
+/// With the lines in the same order, an index still means what it meant, so
+/// undoing a delete works even though the sync edited the scheme.
+#[test]
+fn a_positional_undo_survives_a_sync_that_only_edited_other_lines() {
+    let (mut state, scheme, [_, two, three]) = three_line_state();
+    state.apply_command(Command::DeleteItem { scheme, item: two });
+
+    land_remote_change(&mut state, scheme, |scheme| {
+        scheme
+            .item_mut(three)
+            .unwrap()
+            .set_text("three, edited there")
+    });
+
+    assert!(state.undo_command().is_some());
+    assert_eq!(
+        line_texts(&state, scheme),
+        ["one", "two", "three, edited there"]
     );
 }
 
