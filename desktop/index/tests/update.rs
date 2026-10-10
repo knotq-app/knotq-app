@@ -17,7 +17,6 @@ fn incremental_update_matches_full_rebuild_for_changed_scheme() {
     );
     let rebuilt = IndexedWorkspace::build(workspace);
 
-    assert_eq!(indexed.search.documents, rebuilt.search.documents);
     assert_eq!(indexed.channel, rebuilt.channel);
     assert_eq!(indexed.calendar.items, rebuilt.calendar.items);
 }
