@@ -1083,10 +1083,10 @@ fn batch_pull_and_apply_with_integrity_documents_inner(
                 }
                 let merged = crate::crdt::merge_items_for_adoption(
                     &local_items,
-                    remote.items.clone(),
+                    remote.items.to_vec(),
                     &touched,
                 );
-                local_items = merged;
+                local_items = merged.into();
                 local.items = local_items;
             }
         }
@@ -1622,7 +1622,8 @@ fn queue_local_only_documents_before_pull(
                 continue;
             };
             local.items =
-                crate::crdt::merge_items_for_adoption(&local.items, crdt_items.clone(), ahead);
+                crate::crdt::merge_items_for_adoption(&local.items, crdt_items.clone(), ahead)
+                    .into();
         }
         repair_source = Cow::Owned(merged_workspace);
     }

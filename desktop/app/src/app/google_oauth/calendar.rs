@@ -294,7 +294,7 @@ pub(crate) fn apply_google_calendar_items(
         if imported_item_lists_equal(&scheme.items, &items) {
             return false;
         }
-        scheme.items = items;
+        scheme.items = items.into();
         return true;
     }
 

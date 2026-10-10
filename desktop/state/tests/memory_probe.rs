@@ -11,13 +11,16 @@
 //! cargo test -p knotq-state --test memory_probe --release -- --ignored --nocapture
 //! ```
 //!
-//! The one thing here that IS asserted lives in `guards`, at the bottom.
+//! The one thing here that IS asserted lives in `guards`, at the bottom: a
+//! state must not hold copies of the workspace it was built from.
 
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::sync::atomic::{AtomicUsize, Ordering::Relaxed};
 
 use knotq_index::WorkspaceIndex;
-use knotq_model::{AppSettings, Item, NodeRef, Scheme, Workspace};
+use std::collections::HashMap;
+
+use knotq_model::{AppSettings, DocumentId, Item, NodeRef, Scheme, Workspace};
 use knotq_state::AppState;
 use knotq_sync::WorkspaceCrdtDocuments;
 
@@ -101,17 +104,35 @@ fn state_for(workspace: &Workspace) -> AppState {
     )
 }
 
-/// `(workspace bytes, whole AppState bytes)` for a workspace of this shape.
-fn measure(
-    schemes: usize,
-    items_per_scheme: usize,
-    text_len: usize,
-    print: bool,
-) -> (usize, usize) {
+/// An `AppState` for a device that has never synced: no saved CRDT state, so
+/// every document is unpopulated and the state keeps what each scheme held as
+/// its population base.
+fn unsynced_state_for(workspace: &Workspace) -> AppState {
+    let today = chrono::Local::now().date_naive();
+    AppState::new(
+        workspace.clone(),
+        AppSettings::default(),
+        today,
+        today,
+        false,
+        HashMap::<DocumentId, Vec<u8>>::new(),
+        0,
+    )
+}
+
+struct Measured {
+    workspace: usize,
+    unsynced_state: usize,
+}
+
+fn measure(schemes: usize, items_per_scheme: usize, text_len: usize, print: bool) -> Measured {
     let source = synthetic_workspace(schemes, items_per_scheme, text_len);
-    let (copy, workspace_bytes, _) = held(|| source.clone());
+    // A deep copy, so the figure is what the lines themselves cost rather than
+    // a reference count on `source`'s.
+    let (copy, workspace_bytes, _) = held(|| deep_copy(&source));
     let (index, index_bytes, _) = held(|| WorkspaceIndex::build(&copy));
     drop(index);
+    drop(copy);
     let (crdt, crdt_bytes, crdt_peak) =
         held(|| WorkspaceCrdtDocuments::try_new(&source).expect("build crdt"));
     let (states, states_bytes, _) = held(|| crdt.document_states());
@@ -119,12 +140,13 @@ fn measure(
     drop(crdt);
     let (state, state_bytes, state_peak) = held(|| state_for(&source));
     drop(state);
+    let (unsynced, unsynced_bytes, unsynced_peak) = held(|| unsynced_state_for(&source));
+    drop(unsynced);
     if print {
         println!(
-            "{:>4} x {:>4} x {:>3}ch | workspace {:>6.1} MB | index +{:>6.1} | crdt docs {:>6.1} (peak {:>6.1}) | saved states {:>6.1} | AppState {:>6.1} (peak {:>6.1}) = {:.1}x workspace",
-            schemes,
-            items_per_scheme,
-            text_len,
+            "{schemes:>4} x {items_per_scheme:>4} x {text_len:>3}ch | workspace {:>6.1} MB | index {:>5.1} | \
+             crdt docs {:>6.1} (peak {:>6.1}) | saved states {:>5.1} | \
+             synced AppState +{:>6.1} (peak {:>6.1}) | never-synced AppState +{:>5.1} (peak {:>5.1})",
             mb(workspace_bytes),
             mb(index_bytes),
             mb(crdt_bytes),
@@ -132,17 +154,32 @@ fn measure(
             mb(states_bytes),
             mb(state_bytes),
             mb(state_peak),
-            state_bytes as f64 / workspace_bytes as f64,
+            mb(unsynced_bytes),
+            mb(unsynced_peak),
         );
     }
-    (workspace_bytes, state_bytes)
+    Measured {
+        workspace: workspace_bytes,
+        unsynced_state: unsynced_bytes,
+    }
+}
+
+/// A copy of `workspace` that shares nothing with it.
+fn deep_copy(workspace: &Workspace) -> Workspace {
+    let mut copy = workspace.clone();
+    for scheme in copy.schemes.values_mut() {
+        scheme.items = scheme.items.to_vec().into();
+    }
+    copy
 }
 
 #[test]
 #[ignore = "measurement, not an assertion; run with --ignored --nocapture"]
 fn probe_memory() {
     println!();
-    println!("== bytes held, by component ==");
+    println!(
+        "== bytes held, by component (AppState figures are on top of the caller's workspace) =="
+    );
     for (schemes, items, text_len) in [
         (20, 50, 60),
         (200, 100, 60),
@@ -150,5 +187,28 @@ fn probe_memory() {
         (200, 100, 300),
     ] {
         measure(schemes, items, text_len, true);
+    }
+}
+
+mod guards {
+    use super::*;
+
+    /// A state built from a workspace must not hold copies of its lines.
+    ///
+    /// It keeps the workspace three ways — the store's, the read-only view the
+    /// app renders from, and (until a first sync) what every scheme held
+    /// beforehand — and each used to be a full copy, so a never-synced install
+    /// held its workspace several times over for the whole session. They share
+    /// one set of lines now, and the state's own share is bookkeeping.
+    #[test]
+    fn a_never_synced_state_does_not_duplicate_the_workspace() {
+        let measured = measure(40, 200, 60, false);
+        assert!(
+            measured.unsynced_state < measured.workspace / 2,
+            "an AppState over a {:.1} MB workspace holds {:.1} MB of its own; \
+             something is copying the lines again",
+            mb(measured.workspace),
+            mb(measured.unsynced_state),
+        );
     }
 }

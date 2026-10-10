@@ -17,7 +17,7 @@ fn workspace_with_schemes(count: usize) -> Workspace {
     let mut workspace = Workspace::new();
     for i in 0..count {
         let mut scheme = Scheme::new(format!("scheme-{i}"), 0);
-        scheme.items = vec![Item::new("alpha"), Item::new("beta")];
+        scheme.items = vec![Item::new("alpha"), Item::new("beta")].into();
         workspace
             .folders
             .get_mut(&workspace.root)

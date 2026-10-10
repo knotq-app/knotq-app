@@ -557,7 +557,7 @@ fn incremental_sync_adds_exception_exdates_to_existing_recurring_parent() {
             ..Default::default()
         });
     existing.external = Some(Box::new(external("series-1")));
-    scheme.items = vec![existing];
+    scheme.items = vec![existing].into();
 
     let changed = apply_google_calendar_items(
         &mut scheme,
@@ -739,7 +739,7 @@ fn incremental_sync_updates_and_removes_matching_external_items() {
     let existing_id = existing.id;
     let mut removed = Item::new("Remove");
     removed.external = Some(Box::new(external("gone")));
-    scheme.items = vec![existing, removed];
+    scheme.items = vec![existing, removed].into();
 
     let mut updated = Item::new("Updated");
     updated.external = Some(Box::new(external("stay")));
@@ -777,7 +777,7 @@ fn incremental_sync_without_item_changes_is_stable() {
     let mut existing = Item::new("Same");
     existing.external = Some(Box::new(external("stay")));
     let existing_id = existing.id;
-    scheme.items = vec![existing];
+    scheme.items = vec![existing].into();
 
     let mut imported = Item::new("Same");
     imported.external = Some(Box::new(external("stay")));
@@ -812,7 +812,7 @@ fn incremental_sync_preserves_local_completion_state_for_same_event_time() {
     let mut scheme = Scheme::new("Work", 0);
     let mut existing = Item::new("Same").with_start(start).with_end(end).done();
     existing.external = Some(Box::new(external("stay")));
-    scheme.items = vec![existing];
+    scheme.items = vec![existing].into();
 
     let mut imported = Item::new("Same").with_start(start).with_end(end);
     imported.external = Some(Box::new(external("stay")));
@@ -845,7 +845,7 @@ fn full_sync_preserves_local_completion_state_for_same_event_time() {
     let mut scheme = Scheme::new("Work", 0);
     let mut existing = Item::new("Same").with_start(start).with_end(end).done();
     existing.external = Some(Box::new(external("stay")));
-    scheme.items = vec![existing];
+    scheme.items = vec![existing].into();
 
     let mut imported = Item::new("Same").with_start(start).with_end(end);
     imported.external = Some(Box::new(external("stay")));
@@ -879,7 +879,7 @@ fn sync_resets_completion_state_when_event_time_changes() {
         .with_end(dt("2026-05-18T13:30:00Z"))
         .done();
     existing.external = Some(Box::new(external("stay")));
-    scheme.items = vec![existing];
+    scheme.items = vec![existing].into();
 
     let mut imported = Item::new("Same")
         .with_start(dt("2026-05-19T13:00:00Z"))

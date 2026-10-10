@@ -157,7 +157,7 @@ fn carryover_skips_an_archive_copy_when_the_live_pair_arrives_together() {
     archived.id = daily_queue_displaced_item_id(live_id, previous_date);
 
     let mut previous = Scheme::new("Yesterday", 0);
-    previous.items = vec![live, archived.clone()];
+    previous.items = vec![live, archived.clone()].into();
     let mut today = Scheme::new("Today", 0);
     today.items.push(Item::new(""));
 

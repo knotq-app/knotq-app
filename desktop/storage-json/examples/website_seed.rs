@@ -53,7 +53,8 @@ fn main() -> anyhow::Result<()> {
         assignment("Performance reviews due", today + Duration::days(5), 17, 0),
         checkbox("Prep sprint board"),
         checkbox("Triage incoming bugs"),
-    ];
+    ]
+    .into();
     add_root_scheme(&mut workspace, root, work);
 
     let mut roadmap = Scheme::new("Product Roadmap", 3);
@@ -72,7 +73,8 @@ fn main() -> anyhow::Result<()> {
         checkbox("Finalize onboarding flow"),
         checkbox("Editor performance pass"),
         checkbox("Calendar import QA"),
-    ];
+    ]
+    .into();
     add_root_scheme(&mut workspace, root, roadmap);
 
     let mut personal = Scheme::new("Personal", 2);
@@ -80,7 +82,8 @@ fn main() -> anyhow::Result<()> {
         heading("# Personal"),
         reminder("Pick up dry cleaning", tomorrow, 16, 0),
         checkbox("Book train ticket"),
-    ];
+    ]
+    .into();
     add_root_scheme(&mut workspace, root, personal);
 
     let mut reading = Scheme::new("Reading List", 1);
@@ -89,7 +92,8 @@ fn main() -> anyhow::Result<()> {
         checkbox("Line-first planning notes"),
         checkbox("Calendar UX references"),
         bullet("Local-first sync write-ups"),
-    ];
+    ]
+    .into();
     add_root_scheme(&mut workspace, root, reading);
 
     let mut ideas = Scheme::new("Ideas", 5);
@@ -98,7 +102,8 @@ fn main() -> anyhow::Result<()> {
         bullet("Inline schedule preview"),
         bullet("Drag a document line into the week view"),
         bullet("Sketch launch card concepts"),
-    ];
+    ]
+    .into();
     add_root_scheme(&mut workspace, root, ideas);
 
     // ── Daily queue: yesterday (carry-over work) + today ─────────────────────
@@ -158,7 +163,7 @@ fn add_daily_queue(workspace: &mut Workspace, date: NaiveDate, items: Vec<Item>)
     let id = daily_queue_scheme_id(date);
     let mut scheme = Scheme::new("Daily", DAILY_QUEUE_COLOR_INDEX);
     scheme.id = id;
-    scheme.items = items;
+    scheme.items = items.into();
     workspace.schemes.insert(id, scheme);
     workspace.daily_queue.insert(date, id);
 }

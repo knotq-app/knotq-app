@@ -28,7 +28,7 @@ fn workspace_with_rich_items() -> (Workspace, SchemeId) {
         ..Default::default()
     }));
 
-    scheme.items = vec![plain, dated, repeating];
+    scheme.items = vec![plain, dated, repeating].into();
     let scheme_id = scheme.id;
     workspace
         .folders

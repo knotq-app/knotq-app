@@ -71,7 +71,7 @@ impl TestDevice {
         self.workspace
             .schemes
             .get(&scheme_id)
-            .map(|scheme| scheme.items.clone())
+            .map(|scheme| scheme.items.to_vec())
     }
 
     /// Replace a scheme's items wholesale and record the CRDT change. Models an
@@ -79,7 +79,7 @@ impl TestDevice {
     /// layer it is just another local edit, so it must converge like any other.
     pub fn revert_scheme_items(&mut self, scheme_id: SchemeId, items: Vec<Item>) {
         if let Some(scheme) = self.workspace.schemes.get_mut(&scheme_id) {
-            scheme.items = items;
+            scheme.items = items.into();
             self.record_changes(WorkspaceCrdtChangeSet::default().touch_scheme(scheme_id));
         }
     }
@@ -400,7 +400,7 @@ impl TestDevice {
         // same date across devices (the convergence check compares scheme names).
         let mut scheme = Scheme::new("Daily", 0);
         scheme.id = daily_id;
-        scheme.items = items;
+        scheme.items = items.into();
         self.workspace.schemes.insert(daily_id, scheme);
         self.workspace.daily_queue.insert(date, daily_id);
         self.record_changes(

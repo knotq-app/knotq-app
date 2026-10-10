@@ -120,7 +120,7 @@ mod tests {
         roman.marker = ItemMarker::Numbered;
         roman.marker_family = MarkerFamily::Roman;
         let plain = Item::new("plain");
-        scheme.items = vec![square, roman, plain];
+        scheme.items = vec![square, roman, plain].into();
 
         let xml = encode_scheme_xml(&scheme).expect("write");
         assert!(xml.contains("bullet.squares"), "{xml}");
@@ -144,7 +144,7 @@ mod tests {
         let mut scheme = Scheme::new("Future", 0);
         let mut item = Item::new("from the future");
         item.marker = ItemMarker::Bullet;
-        scheme.items = vec![item];
+        scheme.items = vec![item].into();
         let xml = encode_scheme_xml(&scheme)
             .expect("write")
             .replace("marker=\"bullet\"", "marker=\"bullet.holographic\"");

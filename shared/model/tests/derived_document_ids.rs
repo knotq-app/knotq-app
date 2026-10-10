@@ -32,7 +32,7 @@ fn workspace_with_a_folder_and_scheme() -> (Workspace, FolderId, Scheme) {
     workspace.folders.insert(folder_id, folder);
 
     let mut scheme = Scheme::new("scheme", 0);
-    scheme.items = vec![Item::new("alpha")];
+    scheme.items = vec![Item::new("alpha")].into();
     workspace
         .folders
         .get_mut(&workspace.root)

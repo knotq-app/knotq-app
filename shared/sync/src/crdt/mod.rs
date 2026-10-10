@@ -17,7 +17,7 @@ use anyhow::{anyhow, Context};
 use chrono::{DateTime, NaiveDate};
 use knotq_model::{
     DeletedFolderOrigin, DeletedSchemeOrigin, DocumentId, Folder, FolderId, Inline, Item,
-    ItemContent, ItemId, ItemMarker, NodeRef, ReplicaId, Scheme, SchemeId, SchemeSource,
+    ItemContent, ItemId, ItemList, ItemMarker, NodeRef, ReplicaId, Scheme, SchemeId, SchemeSource,
     SyncDocumentKind, SyncDocumentMeta, Workspace, PERMANENT_DELETE_TOMBSTONE_POSITION,
 };
 use serde::{Deserialize, Serialize};
@@ -1472,7 +1472,7 @@ impl WorkspaceCrdtDocuments {
                 let remote_items = adopted.scheme_items()?;
                 let merged = merge_items_for_adoption(&local_scheme.items, remote_items, touched);
                 let mut scheme = local_scheme.clone();
-                scheme.items = merged;
+                scheme.items = merged.into();
                 // Only a rescue that actually changes the adopted document is
                 // queued; identical content diffs to an empty update -> None.
                 adopted.sync_scheme(&scheme)?
@@ -1556,7 +1556,7 @@ impl WorkspaceCrdtDocuments {
             color_index: 0,
             gsync: false,
             source: SchemeSource::default(),
-            items,
+            items: items.into(),
         };
         let rebuilt = YrsSchemeDocument::from_scheme(document, &scheme)?;
         Ok(rebuilt.encode_state_v1())
@@ -2566,7 +2566,7 @@ impl WorkspaceCrdtDocuments {
                 // trusts as authoritative (a real merge result, or a synced
                 // scheme). Locally-authored content that has never reached the
                 // CRDT falls through instead of being wiped.
-                items
+                ItemList::from(items)
             } else if self.deferred.contains_key(&entry.id) {
                 // A deferred Daily Queue document is decoded when it is inside
                 // the view window (so a stale on-disk copy is repaired from
@@ -2606,7 +2606,7 @@ impl WorkspaceCrdtDocuments {
                     match deferred_live_document(&self.deferred[&entry.id])
                         .and_then(|doc| doc.scheme_items())
                     {
-                        Ok(items) => items,
+                        Ok(items) => items.into(),
                         Err(err) => {
                             eprintln!(
                                 "knotq: deferred scheme {} could not be decoded ({err:#}); \
@@ -2623,7 +2623,7 @@ impl WorkspaceCrdtDocuments {
             } else if let Some(scheme) = current.schemes.get(&entry.id) {
                 scheme.items.clone()
             } else {
-                Vec::new()
+                ItemList::new()
             };
             Some(Scheme {
                 id: entry.id,
@@ -2712,9 +2712,9 @@ impl WorkspaceCrdtDocuments {
             } else if let Some(deferred) = self.deferred.get(&scheme_id) {
                 deferred_live_document(deferred)
                     .and_then(|document| document.scheme_items())
-                    .unwrap_or_else(|_| current_scheme.items.clone())
+                    .unwrap_or_else(|_| current_scheme.items.to_vec())
             } else {
-                current_scheme.items.clone()
+                current_scheme.items.to_vec()
             };
             workspace.schemes.insert(
                 scheme_id,
@@ -2724,7 +2724,7 @@ impl WorkspaceCrdtDocuments {
                     color_index: current_scheme.color_index,
                     gsync: current_scheme.gsync,
                     source: current_scheme.source.clone(),
-                    items,
+                    items: items.into(),
                 },
             );
         }
@@ -2774,7 +2774,8 @@ pub(crate) fn merge_raw_only_items(
     // original visible list rather than being shifted by an earlier insert.
     extras.sort_by_key(|(position, _)| *position);
     for (position, item) in extras.into_iter().rev() {
-        merged.items.insert(position.min(merged.items.len()), item);
+        let position = position.min(merged.items.len());
+        merged.items.insert(position, item);
     }
     merged
 }

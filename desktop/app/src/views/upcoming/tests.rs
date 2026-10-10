@@ -750,7 +750,7 @@ fn the_day_key_actually_changes_the_candidates() {
     let mut harness = CacheHarness::new(1, today_start);
     let scheme = harness.scheme_ids()[0];
     harness.workspace.scheme_mut(scheme).unwrap().items =
-        vec![Item::new("due today").with_end(today_start + Duration::hours(9))];
+        vec![Item::new("due today").with_end(today_start + Duration::hours(9))].into();
 
     harness.refresh(today, today_start);
     let today_sources: Vec<CandidateSource> = harness.cache.as_ref().unwrap().schemes[&scheme]

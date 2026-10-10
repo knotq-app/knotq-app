@@ -22,7 +22,7 @@ fn a_scheme_rebound_to_a_new_document_lands_its_content() {
         .map(Item::new)
         .collect();
     let removed = lines[1].id;
-    scheme.items = lines;
+    scheme.items = lines.into();
     workspace
         .folders
         .get_mut(&workspace.root)
