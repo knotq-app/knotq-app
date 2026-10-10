@@ -121,7 +121,8 @@ fn build_workspace() -> (Workspace, uuid::Uuid) {
             "Markdown **bold**, __italic__, ==highlight==, ~~strike~~ and <angle> & ampersand",
         ),
         Item::new("Unicode: 日本語 — emoji 🧶 — quotes \"curly\" 'single'"),
-    ];
+    ]
+    .into();
 
     // 2. Scheduling: dates, recurrence, priority, per-occurrence overrides.
     let mut health = Scheme::new("Health", 3);
@@ -134,10 +135,10 @@ fn build_workspace() -> (Workspace, uuid::Uuid) {
             item.end = Some(start + Duration::hours(1));
             item.available = Some(start - Duration::days(1));
             item.priority = Some(2);
-            item.repeats = Some(Recurrence {
+            item.repeats = Some(Box::new(Recurrence {
                 rrules: vec!["FREQ=WEEKLY;BYDAY=MO,WE".into()],
                 ..Default::default()
-            });
+            }));
             item
         },
         {
@@ -146,7 +147,8 @@ fn build_workspace() -> (Workspace, uuid::Uuid) {
             item.end = Some(start + Duration::days(30));
             item
         },
-    ];
+    ]
+    .into();
 
     // 3. Block content: one image line and one table line.
     let asset = uuid::Uuid::new_v4();
@@ -176,7 +178,8 @@ fn build_workspace() -> (Workspace, uuid::Uuid) {
             item.content = ItemContent::Table(table);
             item
         },
-    ];
+    ]
+    .into();
 
     // 4. A read-only imported Google calendar.
     let mut imported = Scheme::new("Team calendar", 7);
@@ -195,7 +198,8 @@ fn build_workspace() -> (Workspace, uuid::Uuid) {
         item.start = Some(start);
         item.external = None;
         item
-    }];
+    }]
+    .into();
 
     // 5. An archived scheme, so `recently_deleted` + origins are populated.
     let archived = Scheme::new("Old project", 1);
@@ -248,7 +252,7 @@ fn build_workspace() -> (Workspace, uuid::Uuid) {
                 },
             }];
         }
-        daily.items = vec![item];
+        daily.items = vec![item].into();
         let id = daily.id;
         workspace.schemes.insert(id, daily);
         workspace.daily_queue.insert(date, id);

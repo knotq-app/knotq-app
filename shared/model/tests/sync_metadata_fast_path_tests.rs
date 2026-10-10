@@ -63,7 +63,7 @@ fn seeded_workspace(rng: &mut Rng) -> Workspace {
 
     for i in 0..rng.below(8) {
         let mut scheme = Scheme::new(format!("scheme-{i}"), (i % 8) as u8);
-        scheme.items = vec![Item::new("a"), Item::new("b")];
+        scheme.items = vec![Item::new("a"), Item::new("b")].into();
         workspace
             .folders
             .get_mut(&root)

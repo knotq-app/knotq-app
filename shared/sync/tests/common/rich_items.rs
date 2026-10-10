@@ -35,7 +35,7 @@ pub fn replace_scheme_items(h: &mut Harness, key: DeviceKey, scheme: SchemeId, i
             .map(|item| item.id.to_string())
             .collect();
         let new_ids: HashSet<String> = items.iter().map(|item| item.id.to_string()).collect();
-        scheme_data.items = items;
+        scheme_data.items = items.into();
         old_ids
             .difference(&new_ids)
             .cloned()

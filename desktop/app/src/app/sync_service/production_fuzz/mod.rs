@@ -391,7 +391,7 @@ impl World {
                             color_index: knotq_model::DAILY_QUEUE_COLOR_INDEX,
                             gsync: false,
                             source: knotq_model::SchemeSource::default(),
-                            items,
+                            items: items.into(),
                         },
                     );
                 }

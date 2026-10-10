@@ -133,7 +133,7 @@ fn insert_imported_scheme(workspace: &mut Workspace, items: Vec<Item>) -> Scheme
         read_only: true,
         last_synced_at: None,
     });
-    scheme.items = items;
+    scheme.items = items.into();
     let scheme_id = scheme.id;
     workspace.schemes.insert(scheme_id, scheme);
     workspace

@@ -37,7 +37,7 @@ impl KnotQApp {
             if popup.scheme_id == target.scheme_id && popup.item_id == target.item_id {
                 item.start = popup.draft_start;
                 item.end = popup.draft_end;
-                item.repeats = popup.draft_repeats.clone();
+                item.repeats = popup.draft_repeats.clone().map(Box::new);
             }
         }
         Some(item)

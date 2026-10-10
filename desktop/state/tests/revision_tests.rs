@@ -17,7 +17,7 @@ use support::date;
 fn state_with_scheme() -> (AppState, SchemeId) {
     let mut workspace = Workspace::new();
     let mut scheme = Scheme::new("scheme", 0);
-    scheme.items = vec![Item::new("alpha"), Item::new("beta")];
+    scheme.items = vec![Item::new("alpha"), Item::new("beta")].into();
     let scheme_id = scheme.id;
     workspace
         .folders
@@ -365,7 +365,7 @@ fn state_with_two_schemes() -> (AppState, SchemeId, SchemeId) {
     let mut ids = Vec::new();
     for name in ["first", "second"] {
         let mut scheme = Scheme::new(name, 0);
-        scheme.items = vec![Item::new("alpha"), Item::new("beta")];
+        scheme.items = vec![Item::new("alpha"), Item::new("beta")].into();
         ids.push(scheme.id);
         workspace
             .folders

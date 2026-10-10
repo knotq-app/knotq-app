@@ -279,7 +279,8 @@ pub fn make_default_workspace_for_date(today: NaiveDate) -> Workspace {
         )
         .with_marker(ItemMarker::Checkbox)
         .done(),
-    ];
+    ]
+    .into();
     let past_daily_id = past_daily.id;
     workspace.daily_queue.insert(yesterday, past_daily_id);
     workspace.schemes.insert(past_daily_id, past_daily);
@@ -293,7 +294,7 @@ pub fn make_default_workspace_for_date(today: NaiveDate) -> Workspace {
         knotq_model::DAILY_QUEUE_COLOR_INDEX,
     );
     daily.id = knotq_model::daily_queue_scheme_id(today);
-    daily.items = make_daily_seed_items();
+    daily.items = make_daily_seed_items().into();
     let daily_id = daily.id;
     workspace.daily_queue.insert(today, daily_id);
     workspace.schemes.insert(daily_id, daily);
@@ -393,7 +394,8 @@ fn make_start_here_scheme(today: NaiveDate) -> Scheme {
         )
         .with_marker(ItemMarker::Bullet)
         .with_indent(1),
-    ];
+    ]
+    .into();
     scheme
 }
 
@@ -458,7 +460,8 @@ fn make_scheduling_scheme(today: NaiveDate) -> Scheme {
             t("starter.scheduling.backlog"),
         )
         .with_marker(ItemMarker::Checkbox),
-    ];
+    ]
+    .into();
     scheme
 }
 
@@ -527,7 +530,8 @@ fn make_projects_scheme(today: NaiveDate) -> Scheme {
             t("starter.projects.tiny_workspace"),
         )
         .with_marker(ItemMarker::Checkbox),
-    ];
+    ]
+    .into();
     scheme
 }
 

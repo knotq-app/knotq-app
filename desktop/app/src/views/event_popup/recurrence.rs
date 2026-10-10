@@ -40,7 +40,7 @@ pub(super) fn simple_repeat_end(repeat: &Recurrence) -> Option<RepeatEnd> {
 }
 
 pub(super) fn event_repeat_for_mode(item: &Item, mode: EventRepeatMode) -> Recurrence {
-    let existing = item.repeats.as_ref().and_then(editable_simple_recurrence);
+    let existing = item.repeats.as_deref().and_then(editable_simple_recurrence);
     let (interval, end) = match existing.as_ref() {
         Some(
             SimpleRecurrence::Daily { interval, end }
@@ -68,7 +68,7 @@ pub(super) fn event_repeat_for_mode(item: &Item, mode: EventRepeatMode) -> Recur
         EventRepeatMode::Monthly => SimpleRecurrence::Monthly { interval, end },
         EventRepeatMode::Yearly => SimpleRecurrence::Yearly { interval, end },
     };
-    recurrence_with_simple(item.repeats.as_ref(), simple)
+    recurrence_with_simple(item.repeats.as_deref(), simple)
 }
 
 pub(super) fn repeat_with_end(repeat: &Recurrence, next_end: RepeatEnd) -> Option<Recurrence> {

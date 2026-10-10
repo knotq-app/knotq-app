@@ -17,9 +17,9 @@ impl KnotQApp {
         let mut draft_item = item.clone();
         draft_item.start = popup.draft_start;
         draft_item.end = popup.draft_end;
-        draft_item.repeats = popup.draft_repeats.clone();
+        draft_item.repeats = popup.draft_repeats.clone().map(Box::new);
         let mut base_repeat_item = item.clone();
-        base_repeat_item.repeats = popup.draft_repeats.clone();
+        base_repeat_item.repeats = popup.draft_repeats.clone().map(Box::new);
 
         let kind = draft_item.kind();
         let is_done = popup.draft_done;

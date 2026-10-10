@@ -88,7 +88,7 @@ fn changes_for(command: &Command) -> WorkspaceCrdtChangeSet {
 /// exactly as `mcp_service` does on the desktop's main thread.
 fn agent_call(device: &mut TestDevice, name: &str, args: Value) -> Value {
     let indexed = IndexedWorkspace::build(device.workspace.clone());
-    let ctx = ToolContext::new(&indexed, now(), today(), TimeFormat::default(), false);
+    let ctx = ToolContext::new(indexed.view(), now(), today(), TimeFormat::default(), false);
     let outcome =
         call_tool(name, Some(&args), &ctx).unwrap_or_else(|e| panic!("tool `{name}` failed: {e}"));
     match outcome {

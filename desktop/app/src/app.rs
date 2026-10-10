@@ -154,7 +154,7 @@ impl EventPopup {
             occurrence,
             draft_start,
             draft_end,
-            draft_repeats: item.repeats.clone(),
+            draft_repeats: item.repeats.as_deref().cloned(),
             draft_notification_offset_secs: occurrence_state.notification_offset_secs,
             draft_done: occurrence_state.is_done(),
             start_dirty: false,

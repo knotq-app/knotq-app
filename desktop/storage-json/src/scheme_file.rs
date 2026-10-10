@@ -30,7 +30,7 @@ pub(crate) fn scheme_from_index(index: SchemeIndex, items: Vec<knotq_model::Item
         color_index: index.color_index,
         gsync: index.gsync,
         source: index.source,
-        items,
+        items: items.into(),
     };
     for item in &mut scheme.items {
         item.enforce_marker_constraints();
@@ -180,7 +180,7 @@ fn rewrite_recovered_scheme_file(path: &Path, decoded: &DecodedSchemeFile) -> Re
         color_index: 0,
         gsync: false,
         source: Default::default(),
-        items: decoded.file.items.clone(),
+        items: decoded.file.items.clone().into(),
     };
     let xml = encode_scheme_xml(&scheme)?;
     write_atomic(path, xml.as_bytes()).with_context(|| format!("rewrite {}", path.display()))
@@ -394,7 +394,7 @@ mod tests {
             color_index: 0,
             gsync: false,
             source: Default::default(),
-            items: text_items,
+            items: text_items.into(),
         };
         let wrapped_xml = encode_scheme_xml(&corrupt_scheme).unwrap();
 

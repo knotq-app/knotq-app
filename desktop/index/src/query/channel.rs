@@ -1,12 +1,12 @@
 use crate::channel::{normalize_channel_ref, ChannelTarget};
-use crate::IndexedWorkspace;
+use crate::IndexedView;
 
 pub struct ChannelQuery<'a> {
-    indexed: &'a IndexedWorkspace,
+    indexed: IndexedView<'a>,
 }
 
 impl<'a> ChannelQuery<'a> {
-    pub fn new(indexed: &'a IndexedWorkspace) -> Self {
+    pub fn new(indexed: IndexedView<'a>) -> Self {
         Self { indexed }
     }
 

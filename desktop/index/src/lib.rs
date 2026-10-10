@@ -4,4 +4,4 @@ mod indexed;
 pub mod query;
 pub mod search;
 
-pub use indexed::{IndexChangeSet, IndexedWorkspace};
+pub use indexed::{IndexChangeSet, IndexedView, IndexedWorkspace, WorkspaceIndex};

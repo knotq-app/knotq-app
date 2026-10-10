@@ -1,7 +1,7 @@
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
-use crate::{Item, ItemId, SchemeId};
+use crate::{Item, ItemId, ItemList, SchemeId};
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Scheme {
@@ -12,7 +12,7 @@ pub struct Scheme {
     pub gsync: bool,
     #[serde(default, skip_serializing_if = "SchemeSource::is_local")]
     pub source: SchemeSource,
-    pub items: Vec<Item>,
+    pub items: ItemList,
 }
 
 impl Scheme {
@@ -23,7 +23,7 @@ impl Scheme {
             color_index,
             gsync: false,
             source: SchemeSource::Local,
-            items: Vec::new(),
+            items: ItemList::new(),
         }
     }
 

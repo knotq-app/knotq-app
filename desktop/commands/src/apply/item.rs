@@ -246,19 +246,19 @@ fn set_item_recurrence(
     let item_ref = item_mut(workspace, scheme, item)?;
     if repeats.is_some() {
         if let Some(prev) = ensure_checkbox(item_ref) {
-            item_ref.repeats = repeats;
+            item_ref.repeats = repeats.map(Box::new);
             return Ok(CommandReceipt {
                 inverse: Command::ReplaceItem { scheme, item: prev },
                 touched: ChangeSet::default().touched_scheme(scheme),
             });
         }
     }
-    let prev = std::mem::replace(&mut item_ref.repeats, repeats);
+    let prev = std::mem::replace(&mut item_ref.repeats, repeats.map(Box::new));
     Ok(CommandReceipt {
         inverse: Command::SetItemRecurrence {
             scheme,
             item,
-            repeats: prev,
+            repeats: prev.map(|repeats| *repeats),
         },
         touched: ChangeSet::default().touched_scheme(scheme),
     })

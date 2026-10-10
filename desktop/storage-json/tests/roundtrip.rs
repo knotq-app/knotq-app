@@ -81,14 +81,14 @@ fn save_workspace_splits_scheme_files_and_omits_empty_item_fields() {
     scheme.items.push(done);
     let mut image_item = Item::new("");
     let image_item_id = image_item.id;
-    image_item.external = Some(ExternalItemSource {
+    image_item.external = Some(Box::new(ExternalItemSource {
         provider: CalendarProvider::Google,
         account_id: "google".to_string(),
         calendar_id: "work".to_string(),
         event_id: "event-1".to_string(),
         instance_id: None,
         updated_at: Some(Utc.with_ymd_and_hms(2026, 5, 18, 12, 0, 0).unwrap()),
-    });
+    }));
     image_item.set_image(ImageInline {
         asset: uuid::Uuid::new_v4(),
         format: ImageAssetFormat::Png,

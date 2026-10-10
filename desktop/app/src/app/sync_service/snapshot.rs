@@ -701,7 +701,7 @@ struct HeldScheme {
     /// filled in only for a document the server has never sent us anything for
     /// that still has local edits waiting. That is a freshly created page and
     /// almost always nothing at all.
-    items: Option<Vec<knotq_model::Item>>,
+    items: Option<knotq_model::ItemList>,
 }
 
 fn held_schemes(
@@ -823,7 +823,7 @@ fn restore_unpublished_schemes_dropped_by_pull(
         let restorable = !published && unpushed && !scheme.archived && !daily;
         let Some(items) = crdt_docs
             .materialized_scheme_items(*scheme_id)
-            .or_else(|| scheme.items.clone())
+            .or_else(|| scheme.items.clone().map(Vec::from))
             .filter(|_| restorable)
         else {
             reported.push(format!(
@@ -841,7 +841,7 @@ fn restore_unpublished_schemes_dropped_by_pull(
                 color_index: scheme.color_index,
                 gsync: scheme.gsync,
                 source: scheme.source.clone(),
-                items,
+                items: items.into(),
             },
         );
         workspace

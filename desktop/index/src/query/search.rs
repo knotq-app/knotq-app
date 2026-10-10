@@ -3,7 +3,7 @@ use knotq_date_util::format_time;
 use knotq_model::{Item, ItemId, ItemKind, Scheme, SchemeId, TimeFormat, Workspace};
 
 use super::text_match::{match_fields, FieldMatch, SearchTerms, Words};
-use crate::IndexedWorkspace;
+use crate::IndexedView;
 
 const MAX_SEARCH_HITS: usize = 60;
 /// Guessed matches (typos, abbreviations) are only worth showing when little
@@ -32,14 +32,14 @@ pub struct SearchOptions<'a> {
 }
 
 pub struct SearchQuery<'a> {
-    indexed: &'a IndexedWorkspace,
+    indexed: IndexedView<'a>,
     time_format: TimeFormat,
     options: SearchOptions<'a>,
 }
 
 impl<'a> SearchQuery<'a> {
     pub fn new(
-        indexed: &'a IndexedWorkspace,
+        indexed: IndexedView<'a>,
         time_format: TimeFormat,
         options: SearchOptions<'a>,
     ) -> Self {
@@ -51,12 +51,7 @@ impl<'a> SearchQuery<'a> {
     }
 
     pub fn run(&self, text: &str) -> Vec<SearchHit> {
-        search_hits(
-            &self.indexed.workspace,
-            self.time_format,
-            text,
-            self.options,
-        )
+        search_hits(self.indexed.workspace, self.time_format, text, self.options)
     }
 }
 

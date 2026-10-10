@@ -77,14 +77,15 @@ impl Fixture {
                 let mut i = Item::new("standup");
                 i.marker = ItemMarker::Checkbox;
                 i.start = Some(at(2026, 9, 2, 9, 30));
-                i.repeats = Some(CalendarRecurrence {
+                i.repeats = Some(Box::new(CalendarRecurrence {
                     rrules: vec!["FREQ=DAILY".into()],
                     ..Default::default()
-                });
+                }));
                 i
             },
             Item::new("a plain note"),
-        ];
+        ]
+        .into();
         let notes_id = notes.id;
 
         let mut calendar = Scheme::new("Team calendar", 2);
@@ -97,7 +98,7 @@ impl Fixture {
             read_only: true,
             last_synced_at: None,
         });
-        calendar.items = vec![Item::new("all hands")];
+        calendar.items = vec![Item::new("all hands")].into();
         let calendar_id = calendar.id;
 
         let archived = Scheme::new("Old project", 3);
@@ -139,7 +140,13 @@ impl Fixture {
 
     pub fn call_as(&self, name: &str, args: Value, read_only: bool) -> Result<Outcome, ToolError> {
         let indexed = IndexedWorkspace::build(self.workspace.clone());
-        let ctx = ToolContext::new(&indexed, NOW(), today(), TimeFormat::default(), read_only);
+        let ctx = ToolContext::new(
+            indexed.view(),
+            NOW(),
+            today(),
+            TimeFormat::default(),
+            read_only,
+        );
         call_tool(name, Some(&args), &ctx)
     }
 
