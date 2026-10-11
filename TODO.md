@@ -29,12 +29,13 @@ name/colour/gsync for it while the account moves on, because
 index writes. Metadata only — no content lost, no item dropped, no device
 wedged. Any other failing seed still fails the build.
 
+**Fixed since this block was written:** item **4** (undo wiped by a sync), by #62.
+
 **Still open, in the order a user would feel them:**
 
 | | What | Why it is not fixed |
 |---|---|---|
 | **0i**, **0i-b** | Switching accounts on a device can delete the *other* account's data | Root cause found (identical Yjs structs across accounts). Two fixes failed; the remaining one changes the document format |
-| **4** | Desktop undo history for a scheme is wiped when a sync touches that scheme | Deferred since 2026-06-26 |
 | `KNOWN_FAILING` | The three excused seeds above | Four fixes rejected at 300 x 200 |
 | **0C** | Item skeletons alias across documents; the namespaced skeleton is written but not landed | An incompatible format change |
 | **0z** | `unlanded_pulls` is never cleared when a run lands | Not yet attempted |
