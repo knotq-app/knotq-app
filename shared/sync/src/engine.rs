@@ -2502,6 +2502,92 @@ mod tests {
         );
     }
 
+    /// Production-fuzz chaos seed 155. The index can hold a second folder named
+    /// "root" — another identity's root, carried in by an account switch — which
+    /// materialization treats as an alias and never shows. The plain workspace
+    /// therefore never lists it, and its `folder_sync` entry used to read as the
+    /// device being ahead of its own index. The repair dropped the entry and
+    /// queued a full index snapshot; nothing visible had changed, so the run did
+    /// not land, the UI store handed the next run the same document, and the
+    /// device re-published the workspace index on every sync for good.
+    #[test]
+    fn pre_pull_repair_ignores_folder_entries_the_index_does_not_materialize() {
+        let replica = ReplicaId::new();
+        let mut plain = Workspace::new();
+        plain.ensure_sync_metadata();
+        let index = plain.sync.id;
+        let root = plain.root;
+
+        // The index as the UI store holds it: the plain workspace plus an alias.
+        let alias = knotq_model::FolderId::new();
+        let mut aliased = plain.clone();
+        aliased.folders.insert(
+            alias,
+            knotq_model::Folder {
+                id: alias,
+                name: "root".to_string(),
+                parent: Some(root),
+                children: Vec::new(),
+                expanded: true,
+            },
+        );
+        aliased
+            .folders
+            .get_mut(&root)
+            .unwrap()
+            .children
+            .push(knotq_model::NodeRef::Folder(alias));
+        aliased.ensure_sync_metadata();
+        let mut crdt = WorkspaceCrdtDocuments::try_new(&aliased).unwrap();
+        // The premise: the document does not show the alias, so the plain
+        // workspace it materializes is the one without it.
+        let materialized = crdt
+            .materialized_workspace_repair(&plain, &|_| false)
+            .unwrap();
+        assert!(
+            !materialized.folders.contains_key(&alias),
+            "the alias materialized as a folder; this test no longer builds the shape it is about"
+        );
+
+        let mut local_state = LocalSyncState::default();
+        local_state.mark_pulled(index, SyncDocumentKind::PersonalWorkspace, 1, 0);
+        assert!(crdt.workspace_folder_records_match(&plain).unwrap());
+        assert!(
+            queue_local_only_documents_before_pull(&mut crdt, &mut local_state, &plain, replica)
+                .is_none(),
+            "an entry the index does not materialize was repaired as a local change"
+        );
+        assert!(
+            local_state.pending.is_empty(),
+            "a run with nothing to say queued an index snapshot"
+        );
+
+        // A folder the plain workspace really is ahead on still repairs.
+        let mut ahead = plain.clone();
+        let folder = knotq_model::FolderId::new();
+        ahead.folders.insert(
+            folder,
+            knotq_model::Folder {
+                id: folder,
+                name: "Plain only".to_string(),
+                parent: Some(root),
+                children: Vec::new(),
+                expanded: true,
+            },
+        );
+        ahead
+            .folders
+            .get_mut(&root)
+            .unwrap()
+            .children
+            .push(knotq_model::NodeRef::Folder(folder));
+        assert!(
+            queue_local_only_documents_before_pull(&mut crdt, &mut local_state, &ahead, replica)
+                .is_some(),
+            "a real folder difference was not repaired"
+        );
+    }
+
     #[test]
     fn pre_pull_repair_preserves_plain_workspace_scheme_against_stale_index() {
         let stale_workspace = Workspace::new();
