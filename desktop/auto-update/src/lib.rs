@@ -13,7 +13,9 @@ mod install;
 mod manifest;
 
 use download::{download_asset, verify_asset};
-use install::{check_dependencies, install_restart_update, stage_payload};
+use install::{
+    check_dependencies, install_restart_update, release_abandoned_mounts, stage_payload,
+};
 use manifest::{
     fetch_manifest, matching_asset, parse_version, target_kind, update_manifest_url,
     validate_asset_kind, version_is_newer,
@@ -221,6 +223,7 @@ pub fn prepare_update(
     }
 
     if version_dir.exists() {
+        release_abandoned_mounts(&version_dir);
         fs::remove_dir_all(&version_dir)
             .with_context(|| format!("clear old updates directory {}", version_dir.display()))?;
     }
@@ -374,6 +377,7 @@ pub fn discard_installed_downloads(updates_dir: &Path, current_version: &Version
         if version_is_newer(current_version, &version) {
             continue;
         }
+        release_abandoned_mounts(&path);
         if let Err(err) = fs::remove_dir_all(&path) {
             eprintln!(
                 "could not remove installed update {}: {err}",
@@ -398,6 +402,7 @@ fn discard_superseded_downloads(updates_dir: &Path, keep: &Path) {
         if !path.is_dir() || path == keep {
             continue;
         }
+        release_abandoned_mounts(&path);
         if let Err(err) = fs::remove_dir_all(&path) {
             eprintln!(
                 "could not remove superseded update {}: {err}",
@@ -1022,6 +1027,73 @@ mod end_to_end_tests {
         assert_eq!(again.staged_at, staged.staged_at);
         assert_eq!(again.version, staged.version);
         assert_eq!(again.install_strategy, staged.install_strategy);
+
+        let _ = server.manifest_requests;
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    /// Staging happens in the background now, so quitting the app in the middle
+    /// of one is ordinary — and a mount outlives the process that made it. The
+    /// next launch finds the image still attached inside the version directory,
+    /// read-only, and has to get past it rather than fail every check until the
+    /// machine is rebooted.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn a_staging_abandoned_while_mounted_is_recovered_on_the_next_run() {
+        let _serialized = crate::install::disk_image_tool_lock();
+        let root = scratch_dir("end-to-end-abandoned-mount");
+        let (asset_name, asset_bytes) = release_asset(&root);
+        let digest = sha256_hex(&asset_bytes);
+        let server = ReleaseServer::start(String::new(), asset_bytes.clone());
+        let config = AutoUpdateConfig {
+            current_version: Version::parse("0.1.0").unwrap(),
+            update_manifest_url: server.url("latest.json"),
+            user_agent: "KnotQ/test".into(),
+        };
+        let update = AvailableUpdate {
+            version: Version::parse("9.9.9").unwrap(),
+            tag_name: "v9.9.9".into(),
+            release_url: "https://example.test/notes".into(),
+            asset: ReleaseAsset {
+                os: std::env::consts::OS.into(),
+                arch: std::env::consts::ARCH.into(),
+                kind: asset_kind().into(),
+                name: asset_name.clone(),
+                download_url: server.url(&asset_name),
+                sha256: digest,
+            },
+        };
+        let updates_dir = root.join("updates");
+        let app_path = root.join("Applications/KnotQ.app");
+
+        // What the interrupted run left: the download, and the image attached
+        // under the version directory with no manifest written.
+        let version_dir = updates_dir.join("9.9.9");
+        let mount_root = version_dir.join("mount");
+        fs::create_dir_all(&mount_root).unwrap();
+        let abandoned_dmg = version_dir.join(&asset_name);
+        fs::write(&abandoned_dmg, &asset_bytes).unwrap();
+        let output = std::process::Command::new("hdiutil")
+            .args(["attach", "-nobrowse", "-readonly"])
+            .arg(&abandoned_dmg)
+            .arg("-mountroot")
+            .arg(&mount_root)
+            .output()
+            .expect("hdiutil attach");
+        assert!(output.status.success());
+        assert!(mount_root.join("KnotQ/KnotQ.app").is_dir());
+
+        let staged = prepare_update(&config, &update, &app_path, &updates_dir);
+
+        // Whatever happened, do not leave the image attached behind the test.
+        let _ = std::process::Command::new("hdiutil")
+            .args(["detach", "-force"])
+            .arg(mount_root.join("KnotQ"))
+            .output();
+
+        let staged = staged.expect("an abandoned mount must not block staging");
+        assert!(staged.payload_is_present());
+        assert!(!mount_root.exists());
 
         let _ = server.manifest_requests;
         let _ = fs::remove_dir_all(&root);

@@ -18,6 +18,10 @@ use walkdir::WalkDir;
 #[cfg(any(target_os = "macos", target_os = "linux"))]
 pub(crate) const PAYLOAD_DIR: &str = "payload";
 
+/// Where a disk image is attached while its bundle is copied out of it.
+#[cfg(target_os = "macos")]
+const MOUNT_DIR: &str = "mount";
+
 /// `hdiutil` refuses to attach while another attach is in flight ("Resource
 /// temporarily unavailable"), so the tests that build and mount disk images take
 /// turns. A real update only ever runs one of these at a time.
@@ -125,7 +129,8 @@ fn stage_macos_payload(
         .with_context(|| format!("failed to create {}", payload_root.display()))?;
     let staged_app = payload_root.join(app_name);
 
-    let mount_root = version_dir.join("mount");
+    let mount_root = version_dir.join(MOUNT_DIR);
+    release_abandoned_mounts(version_dir);
     let _ = fs::remove_dir_all(&mount_root);
     fs::create_dir_all(&mount_root)
         .with_context(|| format!("failed to create {}", mount_root.display()))?;
@@ -171,6 +176,24 @@ fn detach_disk_image(mount_path: &Path) -> Result<()> {
         .context("failed to detach update disk image")
         .and_then(|output| ensure_output_success(output, "detach update disk image"))
 }
+
+/// Detach whatever an interrupted staging left attached under `version_dir`.
+///
+/// A mount outlives the process that made it, and the image is attached
+/// read-only, so a version directory with one still in it cannot be removed:
+/// the delete walks into the volume and fails. Staging runs in the background,
+/// where quitting part-way through is ordinary, so every path that clears a
+/// version directory releases its mounts first.
+#[cfg(target_os = "macos")]
+pub(crate) fn release_abandoned_mounts(version_dir: &Path) {
+    let mount_root = version_dir.join(MOUNT_DIR);
+    if mount_root.is_dir() {
+        let _ = detach_every_mount(&mount_root);
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+pub(crate) fn release_abandoned_mounts(_version_dir: &Path) {}
 
 #[cfg(target_os = "macos")]
 fn detach_every_mount(mount_root: &Path) -> Result<()> {
