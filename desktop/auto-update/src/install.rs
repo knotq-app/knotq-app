@@ -13,25 +13,92 @@ use anyhow::{anyhow, bail, Context, Result};
 #[cfg(any(target_os = "macos", target_os = "linux"))]
 use walkdir::WalkDir;
 
+/// The name of the directory inside a version directory that holds the unpacked
+/// payload: the new `.app` bundle on macOS, the extracted tree on Linux.
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+pub(crate) const PAYLOAD_DIR: &str = "payload";
+
+/// Where a disk image is attached while its bundle is copied out of it.
+#[cfg(target_os = "macos")]
+const MOUNT_DIR: &str = "mount";
+
+/// `hdiutil` refuses to attach while another attach is in flight ("Resource
+/// temporarily unavailable"), so the tests that build and mount disk images take
+/// turns. A real update only ever runs one of these at a time.
+#[cfg(test)]
+pub(crate) fn disk_image_tool_lock() -> std::sync::MutexGuard<'static, ()> {
+    static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+/// Unpack a verified download into `version_dir/payload` so that installing it
+/// later is nothing but a local file copy.
+///
+/// `Ok(None)` means this platform installs the downloaded file as it is (the
+/// Windows installer), and the archive must be kept.
+#[cfg(target_os = "macos")]
+pub(crate) fn stage_payload(
+    downloaded_asset: &Path,
+    version_dir: &Path,
+    app_path: &Path,
+) -> Result<Option<PathBuf>> {
+    let app_name = app_path
+        .file_name()
+        .ok_or_else(|| anyhow!("invalid app bundle path {}", app_path.display()))?
+        .to_os_string();
+    stage_macos_payload(downloaded_asset, version_dir, &app_name).map(Some)
+}
+
+#[cfg(target_os = "linux")]
+pub(crate) fn stage_payload(
+    downloaded_asset: &Path,
+    version_dir: &Path,
+    _app_path: &Path,
+) -> Result<Option<PathBuf>> {
+    stage_linux_payload(downloaded_asset, version_dir).map(Some)
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "linux")))]
+pub(crate) fn stage_payload(
+    _downloaded_asset: &Path,
+    _version_dir: &Path,
+    _app_path: &Path,
+) -> Result<Option<PathBuf>> {
+    Ok(None)
+}
+
+/// Install an update that is already on disk. `payload` is the directory
+/// [`stage_payload`] produced; the archive path is only used by a staged update
+/// that predates payload staging.
 #[cfg(target_os = "macos")]
 pub(crate) fn install_restart_update(
+    payload: Option<&Path>,
     downloaded_asset: &Path,
     download_dir: &Path,
 ) -> Result<Option<PathBuf>> {
-    install_macos_update(downloaded_asset, download_dir)?;
+    let app_path = current_macos_app_bundle()?;
+    match payload {
+        Some(staged_app) => install_macos_from_payload(staged_app, &app_path)?,
+        None => install_macos_update(downloaded_asset, download_dir, &app_path)?,
+    }
     Ok(None)
 }
 
 #[cfg(target_os = "linux")]
 pub(crate) fn install_restart_update(
+    payload: Option<&Path>,
     downloaded_asset: &Path,
     download_dir: &Path,
 ) -> Result<Option<PathBuf>> {
-    install_linux_update(downloaded_asset, download_dir).map(Some)
+    match payload {
+        Some(extracted) => install_linux_from_payload(extracted).map(Some),
+        None => install_linux_update(downloaded_asset, download_dir).map(Some),
+    }
 }
 
 #[cfg(not(any(target_os = "macos", target_os = "linux")))]
 pub(crate) fn install_restart_update(
+    _payload: Option<&Path>,
     _downloaded_asset: &Path,
     _download_dir: &Path,
 ) -> Result<Option<PathBuf>> {
@@ -41,18 +108,35 @@ pub(crate) fn install_restart_update(
     )
 }
 
+/// Mount the disk image, copy the new bundle out of it, and unmount again.
+///
+/// This is the slow half of a macOS update — `hdiutil attach` plus reading every
+/// byte of the bundle back through a compressed image — and none of it needs the
+/// app to be shutting down, so it happens while the update is being staged
+/// rather than after the user asks to restart.
 #[cfg(target_os = "macos")]
-fn install_macos_update(downloaded_dmg: &Path, temp_dir: &Path) -> Result<()> {
-    let app_path = current_macos_app_bundle()?;
-    let app_name = app_path
-        .file_name()
-        .ok_or_else(|| anyhow!("invalid app bundle path {}", app_path.display()))?;
-    let mount_root = temp_dir.join("mount");
+fn stage_macos_payload(
+    downloaded_dmg: &Path,
+    version_dir: &Path,
+    app_name: &OsStr,
+) -> Result<PathBuf> {
+    let payload_root = version_dir.join(PAYLOAD_DIR);
+    if payload_root.exists() {
+        fs::remove_dir_all(&payload_root)
+            .with_context(|| format!("failed to clear {}", payload_root.display()))?;
+    }
+    fs::create_dir_all(&payload_root)
+        .with_context(|| format!("failed to create {}", payload_root.display()))?;
+    let staged_app = payload_root.join(app_name);
+
+    let mount_root = version_dir.join(MOUNT_DIR);
+    release_abandoned_mounts(version_dir);
+    let _ = fs::remove_dir_all(&mount_root);
     fs::create_dir_all(&mount_root)
         .with_context(|| format!("failed to create {}", mount_root.display()))?;
 
     let output = PlatformCommand::new("hdiutil")
-        .args(["attach", "-nobrowse"])
+        .args(["attach", "-nobrowse", "-readonly"])
         .arg(downloaded_dmg)
         .arg("-mountroot")
         .arg(&mount_root)
@@ -60,17 +144,78 @@ fn install_macos_update(downloaded_dmg: &Path, temp_dir: &Path) -> Result<()> {
         .context("failed to mount update disk image")?;
     ensure_output_success(output, "mount update disk image")?;
 
-    let (mount_path, mounted_app) = find_mounted_app(&mount_root, app_name)?;
-    let copy_result = sync_dir_filtered(&mounted_app, &app_path, macos_finder_icon_file);
+    let copy_result =
+        find_mounted_app(&mount_root, app_name).and_then(|(mount_path, mounted_app)| {
+            let copied = sync_dir_filtered(&mounted_app, &staged_app, macos_finder_icon_file);
+            let detached = detach_disk_image(&mount_path);
+            copied.and(detached)
+        });
 
-    let detach_result = PlatformCommand::new("hdiutil")
+    // An abandoned mount outlives the process and keeps the image busy, so the
+    // mount root is swept whether or not the copy worked.
+    let _ = detach_every_mount(&mount_root);
+    let _ = fs::remove_dir_all(&mount_root);
+
+    copy_result.map(|()| staged_app)
+}
+
+#[cfg(target_os = "macos")]
+fn install_macos_from_payload(staged_app: &Path, app_path: &Path) -> Result<()> {
+    if !staged_app.is_dir() {
+        bail!("staged update bundle is missing: {}", staged_app.display());
+    }
+    sync_dir_filtered(staged_app, app_path, macos_finder_icon_file)
+}
+
+#[cfg(target_os = "macos")]
+fn detach_disk_image(mount_path: &Path) -> Result<()> {
+    PlatformCommand::new("hdiutil")
         .args(["detach", "-force"])
-        .arg(&mount_path)
+        .arg(mount_path)
         .output()
         .context("failed to detach update disk image")
-        .and_then(|output| ensure_output_success(output, "detach update disk image"));
+        .and_then(|output| ensure_output_success(output, "detach update disk image"))
+}
 
-    copy_result.and(detach_result)
+/// Detach whatever an interrupted staging left attached under `version_dir`.
+///
+/// A mount outlives the process that made it, and the image is attached
+/// read-only, so a version directory with one still in it cannot be removed:
+/// the delete walks into the volume and fails. Staging runs in the background,
+/// where quitting part-way through is ordinary, so every path that clears a
+/// version directory releases its mounts first.
+#[cfg(target_os = "macos")]
+pub(crate) fn release_abandoned_mounts(version_dir: &Path) {
+    let mount_root = version_dir.join(MOUNT_DIR);
+    if mount_root.is_dir() {
+        let _ = detach_every_mount(&mount_root);
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+pub(crate) fn release_abandoned_mounts(_version_dir: &Path) {}
+
+#[cfg(target_os = "macos")]
+fn detach_every_mount(mount_root: &Path) -> Result<()> {
+    for entry in fs::read_dir(mount_root)
+        .with_context(|| format!("failed to read {}", mount_root.display()))?
+    {
+        let path = entry?.path();
+        if path.is_dir() {
+            let _ = detach_disk_image(&path);
+        }
+    }
+    Ok(())
+}
+
+#[cfg(target_os = "macos")]
+fn install_macos_update(downloaded_dmg: &Path, temp_dir: &Path, app_path: &Path) -> Result<()> {
+    let app_name = app_path
+        .file_name()
+        .ok_or_else(|| anyhow!("invalid app bundle path {}", app_path.display()))?
+        .to_os_string();
+    let staged_app = stage_macos_payload(downloaded_dmg, temp_dir, &app_name)?;
+    install_macos_from_payload(&staged_app, app_path)
 }
 
 #[cfg(target_os = "macos")]
@@ -118,9 +263,16 @@ fn macos_finder_icon_file(relative_path: &Path) -> bool {
     })
 }
 
+/// Extract the release tarball into `version_dir/payload`, and check it holds
+/// what the install step will look for. Decompression is the slow half of a
+/// Linux update, so it happens here rather than after the user asks to restart.
 #[cfg(target_os = "linux")]
-fn install_linux_update(downloaded_tar_gz: &Path, temp_dir: &Path) -> Result<PathBuf> {
-    let extracted = temp_dir.join("extract");
+fn stage_linux_payload(downloaded_tar_gz: &Path, version_dir: &Path) -> Result<PathBuf> {
+    let extracted = version_dir.join(PAYLOAD_DIR);
+    if extracted.exists() {
+        fs::remove_dir_all(&extracted)
+            .with_context(|| format!("failed to clear {}", extracted.display()))?;
+    }
     fs::create_dir_all(&extracted)
         .with_context(|| format!("failed to create {}", extracted.display()))?;
 
@@ -133,6 +285,24 @@ fn install_linux_update(downloaded_tar_gz: &Path, temp_dir: &Path) -> Result<Pat
         .context("failed to extract Linux update")?;
     ensure_output_success(output, "extract Linux update")?;
 
+    if !extracted.join("knotq").is_file() {
+        bail!("Linux update did not contain knotq");
+    }
+    if !extracted.join("knotq-mcp").is_file() {
+        bail!("Linux update did not contain knotq-mcp");
+    }
+
+    Ok(extracted)
+}
+
+#[cfg(target_os = "linux")]
+fn install_linux_update(downloaded_tar_gz: &Path, temp_dir: &Path) -> Result<PathBuf> {
+    let extracted = stage_linux_payload(downloaded_tar_gz, temp_dir)?;
+    install_linux_from_payload(&extracted)
+}
+
+#[cfg(target_os = "linux")]
+fn install_linux_from_payload(extracted: &Path) -> Result<PathBuf> {
     let source_exe = extracted.join("knotq");
     if !source_exe.is_file() {
         bail!("Linux update did not contain knotq");
@@ -473,5 +643,228 @@ mod linux_tests {
             b"keep"
         );
         fs::remove_dir_all(root).ok();
+    }
+}
+
+#[cfg(all(test, target_os = "macos"))]
+mod macos_tests {
+    use super::*;
+    use std::os::unix::fs::PermissionsExt;
+
+    fn scratch_dir(label: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "knotq-{label}-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    /// An app bundle shaped like the real one: a nested executable, a symlink of
+    /// the kind every framework bundle contains, and a resource.
+    fn write_app_bundle(app: &Path, marker: &str) {
+        let macos = app.join("Contents/MacOS");
+        let resources = app.join("Contents/Resources");
+        fs::create_dir_all(&macos).unwrap();
+        fs::create_dir_all(&resources).unwrap();
+        fs::write(app.join("Contents/Info.plist"), marker.as_bytes()).unwrap();
+        fs::write(macos.join("KnotQ"), format!("binary {marker}")).unwrap();
+        fs::set_permissions(macos.join("KnotQ"), fs::Permissions::from_mode(0o755)).unwrap();
+        fs::write(resources.join("icon.icns"), format!("icon {marker}")).unwrap();
+        std::os::unix::fs::symlink("Resources", app.join("Contents/Current")).unwrap();
+    }
+
+    /// Build a disk image laid out the way `bundling/macos/post-bundle.sh` does:
+    /// the bundle plus an `/Applications` symlink.
+    fn build_dmg(dir: &Path, app_name: &str, marker: &str) -> PathBuf {
+        let stage = dir.join("stage");
+        fs::create_dir_all(&stage).unwrap();
+        write_app_bundle(&stage.join(app_name), marker);
+        std::os::unix::fs::symlink("/Applications", stage.join("Applications")).unwrap();
+
+        let dmg = dir.join("KnotQ.dmg");
+        let output = PlatformCommand::new("hdiutil")
+            .args(["create", "-volname", "KnotQ", "-srcfolder"])
+            .arg(&stage)
+            .args(["-ov", "-format", "UDZO", "-quiet"])
+            .arg(&dmg)
+            .output()
+            .expect("hdiutil create");
+        assert!(
+            output.status.success(),
+            "hdiutil create failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        dmg
+    }
+
+    /// The whole point of staging: mounting the image and reading the bundle out
+    /// of it happens while nothing waits on it, so what is left on disk is a
+    /// plain directory the install step can copy.
+    #[test]
+    fn staging_unpacks_the_bundle_out_of_the_disk_image() {
+        let _serialized = disk_image_tool_lock();
+        let root = scratch_dir("stage-dmg");
+        let dmg = build_dmg(&root, "KnotQ.app", "new");
+        let version_dir = root.join("0.60.0");
+        fs::create_dir_all(&version_dir).unwrap();
+
+        let staged = stage_macos_payload(&dmg, &version_dir, OsStr::new("KnotQ.app")).unwrap();
+
+        assert_eq!(staged, version_dir.join(PAYLOAD_DIR).join("KnotQ.app"));
+        assert_eq!(
+            fs::read_to_string(staged.join("Contents/Info.plist")).unwrap(),
+            "new"
+        );
+        assert_eq!(
+            fs::read_to_string(staged.join("Contents/MacOS/KnotQ")).unwrap(),
+            "binary new"
+        );
+        assert_eq!(
+            fs::read_link(staged.join("Contents/Current")).unwrap(),
+            Path::new("Resources")
+        );
+        assert_eq!(
+            fs::metadata(staged.join("Contents/MacOS/KnotQ"))
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o777,
+            0o755
+        );
+        // Nothing may be left mounted: a live mount holds the image open and
+        // would survive the process that made it.
+        assert!(!version_dir.join("mount").exists());
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    /// Installing from a staged payload has to produce exactly the new bundle:
+    /// files replaced, files the release dropped removed, symlinks and modes
+    /// intact. No disk image: by this point staging has already unpacked one.
+    #[test]
+    fn installing_from_a_staged_payload_replaces_the_installed_bundle() {
+        let root = scratch_dir("install-payload");
+        let staged = root.join(PAYLOAD_DIR).join("KnotQ.app");
+        write_app_bundle(&staged, "new");
+
+        let installed = root.join("Applications").join("KnotQ.app");
+        write_app_bundle(&installed, "old");
+        let dropped = installed.join("Contents/Resources/removed-in-0.60.0.txt");
+        fs::write(&dropped, b"from the previous release").unwrap();
+        // A directory the new release no longer has at all.
+        let dropped_dir = installed.join("Contents/Frameworks/Old.framework");
+        fs::create_dir_all(&dropped_dir).unwrap();
+        fs::write(dropped_dir.join("Old"), b"gone in the new release").unwrap();
+
+        install_macos_from_payload(&staged, &installed).unwrap();
+
+        assert_eq!(
+            fs::read_to_string(installed.join("Contents/Info.plist")).unwrap(),
+            "new"
+        );
+        assert_eq!(
+            fs::read_to_string(installed.join("Contents/MacOS/KnotQ")).unwrap(),
+            "binary new"
+        );
+        assert!(!dropped.exists(), "a file the new release dropped was kept");
+        assert!(
+            !dropped_dir.exists(),
+            "a directory the new release dropped was kept"
+        );
+        assert_eq!(
+            fs::read_link(installed.join("Contents/Current")).unwrap(),
+            Path::new("Resources")
+        );
+        assert_eq!(
+            fs::metadata(installed.join("Contents/MacOS/KnotQ"))
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o777,
+            0o755
+        );
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    /// Installing must refuse rather than half-copy when the payload it was told
+    /// about is not there.
+    #[test]
+    fn installing_without_a_payload_fails_before_touching_the_bundle() {
+        let root = scratch_dir("install-missing-payload");
+        let installed = root.join("Applications").join("KnotQ.app");
+        write_app_bundle(&installed, "old");
+
+        let error =
+            install_macos_from_payload(&root.join("payload/KnotQ.app"), &installed).unwrap_err();
+
+        assert!(
+            format!("{error:#}").contains("staged update bundle is missing"),
+            "unexpected error: {error:#}"
+        );
+        assert_eq!(
+            fs::read_to_string(installed.join("Contents/Info.plist")).unwrap(),
+            "old",
+            "the installed bundle was modified by a failed install"
+        );
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    /// Staging over an existing payload — a retried download, a re-released tag —
+    /// must leave the payload as the new image, not a merge of both.
+    #[test]
+    fn staging_again_over_an_existing_payload_starts_clean() {
+        let _serialized = disk_image_tool_lock();
+        let root = scratch_dir("stage-again");
+        let version_dir = root.join("0.60.0");
+        fs::create_dir_all(&version_dir).unwrap();
+
+        // What an earlier, different staging left behind.
+        let previous = version_dir.join(PAYLOAD_DIR).join("KnotQ.app");
+        write_app_bundle(&previous, "first");
+        let only_in_first = previous.join("Contents/Resources/only-in-first.txt");
+        fs::write(&only_in_first, b"stale").unwrap();
+
+        let dmg = build_dmg(&root, "KnotQ.app", "second");
+        let staged = stage_macos_payload(&dmg, &version_dir, OsStr::new("KnotQ.app")).unwrap();
+
+        assert_eq!(staged, previous);
+        assert_eq!(
+            fs::read_to_string(staged.join("Contents/Info.plist")).unwrap(),
+            "second"
+        );
+        assert!(
+            !only_in_first.exists(),
+            "the previous payload leaked through"
+        );
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    /// A disk image that does not hold the bundle we are updating must fail, and
+    /// must not leave the image mounted behind it.
+    #[test]
+    fn a_disk_image_without_the_bundle_fails_without_leaving_a_mount() {
+        let _serialized = disk_image_tool_lock();
+        let root = scratch_dir("stage-wrong-dmg");
+        let dmg = build_dmg(&root, "SomethingElse.app", "new");
+        let version_dir = root.join("0.60.0");
+        fs::create_dir_all(&version_dir).unwrap();
+
+        let error = stage_macos_payload(&dmg, &version_dir, OsStr::new("KnotQ.app")).unwrap_err();
+
+        assert!(
+            format!("{error:#}").contains("KnotQ.app"),
+            "unexpected error: {error:#}"
+        );
+        assert!(!version_dir.join("mount").exists());
+
+        let _ = fs::remove_dir_all(&root);
     }
 }
