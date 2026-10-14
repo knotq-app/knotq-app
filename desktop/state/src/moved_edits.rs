@@ -693,12 +693,22 @@ fn collect_move_placements(
     command: &Command,
     placements: &mut HashMap<ItemId, LocalItemPlacement>,
 ) {
-    let Command::Batch(_) = command else {
-        return;
-    };
     let mut deleted = HashMap::new();
     let mut inserted = Vec::new();
     collect_move_parts(command, &mut deleted, &mut inserted);
+    // A line deleted without being inserted anywhere is gone, not moved: a
+    // placement an earlier operation recorded for it must not outlive that, or
+    // the landing puts back a line the user deleted after moving it (chaos
+    // seed 272: carried over twice, then deleted, then back after the sync —
+    // and twice, because the account had it on its original day as well).
+    for item in deleted.keys() {
+        if !inserted.iter().any(|(_, _, inserted)| inserted.id == *item) {
+            placements.remove(item);
+        }
+    }
+    let Command::Batch(_) = command else {
+        return;
+    };
     for (scheme, position, item) in inserted {
         if deleted
             .get(&item.id)

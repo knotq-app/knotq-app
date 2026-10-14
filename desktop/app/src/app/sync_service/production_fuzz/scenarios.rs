@@ -756,6 +756,109 @@ fn a_line_retyped_while_another_device_moves_it_keeps_the_new_text() {
     world.settle_and_assert();
 }
 
+/// A line moved to another scheme and then deleted, both before a sync, is
+/// deleted. The landing re-expresses this device's unsynced moves over the
+/// run's result, and it used to do so for a move whose line the user had since
+/// deleted — putting the line back in the scheme it was moved to (chaos seed
+/// 272 at 200 steps, where it came back twice).
+#[test]
+fn a_line_moved_and_then_deleted_before_a_sync_stays_deleted() {
+    let mut world = world(90_272, 1);
+    let a = world.add_device(Some(0));
+    world.sync(a, 0);
+    let b = world.add_device(Some(0));
+    world.sync(b, 0);
+    world.sync(a, 0);
+    let (source, target, line, other) = {
+        let workspace = world.devices[a].as_ref().unwrap().state.workspace.clone();
+        let mut schemes: Vec<_> = workspace
+            .schemes
+            .values()
+            .filter(|scheme| {
+                !workspace.daily_queue.values().any(|id| *id == scheme.id)
+                    && scheme.items.len() >= 2
+            })
+            .map(|scheme| scheme.id)
+            .collect();
+        schemes.sort();
+        let source = schemes[0];
+        let items = &workspace.scheme(source).unwrap().items;
+        (source, schemes[1], items[0].id, items[1].id)
+    };
+    // Device b changes a different line and syncs, so a's next run has a
+    // remote update to land.
+    world.local(b, |device, _| {
+        device
+            .state
+            .apply_command(Command::UpdateItemText {
+                scheme: source,
+                item: other,
+                text: "changed on b".to_string(),
+            })
+            .expect("retype another line");
+    });
+    world.sync(b, 0);
+    // Device a moves the line, then deletes it where it landed.
+    world.local(a, |device, _| {
+        let workspace = device.state.workspace.clone();
+        let moved = workspace
+            .scheme(source)
+            .unwrap()
+            .item(line)
+            .unwrap()
+            .clone();
+        let position = workspace.scheme(target).unwrap().items.len();
+        device
+            .state
+            .apply_command(Command::Batch(vec![
+                Command::DeleteItem {
+                    scheme: source,
+                    item: line,
+                },
+                Command::InsertItem {
+                    scheme: target,
+                    position,
+                    item: moved,
+                },
+            ]))
+            .expect("move line");
+        device
+            .state
+            .apply_command(Command::DeleteItem {
+                scheme: target,
+                item: line,
+            })
+            .expect("delete the moved line");
+    });
+    world.sync(a, 0);
+    world.sync(b, 0);
+    world.sync(a, 0);
+    for index in [a, b] {
+        let workspace = &world.devices[index].as_ref().unwrap().state.workspace;
+        let holders: Vec<_> = workspace
+            .schemes
+            .values()
+            .filter(|scheme| scheme.item(line).is_some())
+            .map(|scheme| scheme.id)
+            .collect();
+        assert!(
+            holders.is_empty(),
+            "device {index}: the deleted line is back in {holders:?}"
+        );
+        assert_eq!(
+            workspace
+                .scheme(source)
+                .unwrap()
+                .item(other)
+                .unwrap()
+                .text(),
+            "changed on b",
+            "device {index}: the other device's edit did not land"
+        );
+    }
+    world.settle_and_assert();
+}
+
 /// The source edit can be acknowledged before a different device moves the
 /// stale copy. It is no longer in the pending queue when the move lands, so
 /// the landing journal must still carry the complete source value forward.
