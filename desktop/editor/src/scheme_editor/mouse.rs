@@ -194,6 +194,16 @@ impl SchemeEditor {
             }
         }
 
+        if event.button == MouseButton::Left && self.start_image_resize(event.position) {
+            self.is_selecting = false;
+            self.mouse_selection_mode = None;
+            self.mouse_selection_origin = None;
+            self.stop_responding_to_mouse_movements();
+            cx.stop_propagation();
+            cx.notify();
+            return;
+        }
+
         if event.button == MouseButton::Right {
             let loc = self.location_for_window_position(event.position);
             if let Some(row) = self.rows.get(loc.row) {
@@ -358,6 +368,25 @@ impl SchemeEditor {
             cx.notify();
         }
 
+        let hovered_image = (!self.read_only)
+            .then(|| self.image_hitbox_at(event.position))
+            .flatten();
+        let hovered_image_handle = hovered_image
+            .is_some_and(|hitbox| bounds_contains(hitbox.handle_bounds(), event.position));
+        let hovered_image = hovered_image.map(|hitbox| hitbox.item_id);
+        if hovered_image != self.hovered_image || hovered_image_handle != self.hovered_image_handle
+        {
+            self.hovered_image = hovered_image;
+            self.hovered_image_handle = hovered_image_handle;
+            cx.notify();
+        }
+
+        if self.is_resizing_image() && event.dragging() {
+            self.drag_image_resize(event.position, cx);
+            cx.stop_propagation();
+            return;
+        }
+
         if self.is_selecting && event.dragging() {
             self.drag_to_position(event.position, cx);
             cx.stop_propagation();
@@ -370,6 +399,7 @@ impl SchemeEditor {
         _window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        self.finish_image_resize(cx);
         self.is_selecting = false;
         self.mouse_selection_mode = None;
         self.mouse_selection_origin = None;

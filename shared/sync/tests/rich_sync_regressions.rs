@@ -208,6 +208,116 @@ fn archived_nested_folder_keeps_rich_child_scheme_after_concurrent_edit() {
     }
 }
 
+/// Resizing an image rewrites the size stored on its line and nothing else: the
+/// asset, and so the uploaded bytes, stay as they were.
+#[test]
+fn resized_image_reaches_a_peer_with_its_new_size() {
+    let mut h = Harness::new(2);
+    h.login_all();
+
+    let scheme = h.add_scheme(D0, "Screenshots", &["placeholder"]);
+    h.settle();
+    let image = image_ref(1200, 800);
+    let line = top_level_image_item(image);
+    replace_scheme_items(&mut h, D0, scheme, vec![Item::new("caption"), line.clone()]);
+    h.settle();
+
+    resize_image_line(&mut h, D1, scheme, 1, 300, 200);
+    h.settle();
+    h.assert_all_converged();
+
+    for key in h.device_keys() {
+        let items = &h.device(key).workspace.schemes[&scheme].items;
+        assert_eq!(items.len(), 2, "{key:?}: a resize changed the line count");
+        assert_eq!(items[1].id, line.id, "{key:?}: a resize replaced the line");
+        assert_eq!(
+            items[1].content.image(),
+            Some(&ImageInline {
+                width: Some(300),
+                height: Some(200),
+                ..image
+            }),
+            "{key:?}: the resized image did not arrive intact"
+        );
+    }
+}
+
+/// Two devices dragging the same image at once must still leave one image on
+/// the line, at one of the two sizes, on every device.
+#[test]
+fn concurrent_image_resizes_converge_on_one_image() {
+    let mut h = Harness::new(3);
+    h.login_all();
+
+    let scheme = h.add_scheme(D0, "Screenshots", &["placeholder"]);
+    h.settle();
+    let image = image_ref(1200, 800);
+    let line = top_level_image_item(image);
+    replace_scheme_items(&mut h, D0, scheme, vec![line.clone(), Item::new("after")]);
+    h.settle();
+
+    resize_image_line(&mut h, D0, scheme, 0, 600, 400);
+    resize_image_line(&mut h, D1, scheme, 0, 240, 160);
+    h.sync(D0);
+    h.sync(D1);
+    h.sync(D0);
+    h.settle();
+    h.assert_all_converged();
+
+    let winner = h.device(D2).workspace.schemes[&scheme].items[0]
+        .content
+        .image()
+        .copied()
+        .expect("the line is still an image");
+    assert_eq!(winner.asset, image.asset, "the resize changed the asset");
+    assert!(
+        [(Some(600), Some(400)), (Some(240), Some(160))].contains(&(winner.width, winner.height)),
+        "converged on a size neither device chose: {winner:?}"
+    );
+    for key in h.device_keys() {
+        let items = &h.device(key).workspace.schemes[&scheme].items;
+        assert_eq!(items.len(), 2, "{key:?}: a resize changed the line count");
+        assert_eq!(items[0].id, line.id, "{key:?}: a resize replaced the line");
+        assert_eq!(items[0].content.image(), Some(&winner), "{key:?}");
+        assert_eq!(items[1].text(), "after", "{key:?}");
+    }
+
+    // The line must stay editable afterwards: a later resize is one more plain
+    // edit, not a second image.
+    resize_image_line(&mut h, D2, scheme, 0, 90, 60);
+    h.settle();
+    h.assert_all_converged();
+    for key in h.device_keys() {
+        let items = &h.device(key).workspace.schemes[&scheme].items;
+        assert_eq!(items.len(), 2, "{key:?}");
+        let resized = items[0].content.image().expect("still an image");
+        assert_eq!(
+            (resized.width, resized.height),
+            (Some(90), Some(60)),
+            "{key:?}"
+        );
+    }
+}
+
+fn resize_image_line(
+    h: &mut Harness,
+    key: DeviceKey,
+    scheme: knotq_model::SchemeId,
+    index: usize,
+    width: u32,
+    height: u32,
+) {
+    let device = h.device_mut_for_surgery(key);
+    let item = &mut device.scheme_mut_pub(scheme).items[index];
+    let image = *item.content.image().expect("an image line");
+    item.set_image(ImageInline {
+        width: Some(width),
+        height: Some(height),
+        ..image
+    });
+    device.record_changes(WorkspaceCrdtChangeSet::default().touch_scheme(scheme));
+}
+
 #[test]
 fn synced_completion_cancels_due_notification_after_concurrent_content_edit() {
     let mut h = Harness::new(2);

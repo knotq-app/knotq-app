@@ -1,4 +1,4 @@
 mod block_markup;
-mod images;
+pub(super) mod images;
 mod link_button;
 mod paint;
