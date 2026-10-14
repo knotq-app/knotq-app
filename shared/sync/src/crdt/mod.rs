@@ -748,10 +748,41 @@ impl WorkspaceCrdtDocuments {
         actual_folders
             .iter_mut()
             .for_each(|folder| folder.children.clear());
+        // A `folder_sync` entry only describes a folder the index materializes,
+        // live or in the trash. The map can hold more than that — an entry whose
+        // node the document no longer resolves to a folder — and the plain
+        // workspace, being a projection of the document, never lists those. Counting
+        // one as a difference makes the device look permanently "ahead" on something
+        // it has never shown: the pre-pull repair rewrites the index to drop it and
+        // pushes a full snapshot, but nothing visible changed, so the run does not
+        // land, the UI store keeps the document it had, and the next run finds the
+        // same difference. Production fuzz chaos seed 155 is that loop — one device,
+        // alone on its account, re-publishing the workspace index on every sync.
+        let materialized = |folders: &[knotq_model::Folder],
+                            recently_deleted: &[knotq_model::FolderId],
+                            entries: Vec<FolderSyncEntry>| {
+            entries
+                .into_iter()
+                .filter(|entry| {
+                    folders.iter().any(|folder| folder.id == entry.folder)
+                        || recently_deleted.contains(&entry.folder)
+                })
+                .collect::<Vec<_>>()
+        };
+        let actual_folder_sync = materialized(
+            &actual_folders,
+            &actual.recently_deleted_folders,
+            actual.folder_sync,
+        );
+        let expected_folder_sync = materialized(
+            &expected.folders,
+            &expected.recently_deleted_folders,
+            expected.folder_sync,
+        );
         Ok(actual_folders == expected.folders
             && actual.recently_deleted_folders == expected.recently_deleted_folders
             && actual.deleted_folder_origins == expected.deleted_folder_origins
-            && actual.folder_sync == expected.folder_sync)
+            && actual_folder_sync == expected_folder_sync)
     }
 
     /// Promote a deferred scheme document into a live Yjs document, so it can be
