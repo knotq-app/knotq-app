@@ -1443,7 +1443,11 @@ fn replay_production_seed() {
     run_seed(
         seed,
         Config {
-            accounts: if chaos { 2 } else { 1 },
+            // `KNOTQ_REPRO_ACCOUNTS=1` keeps the faults (crashes, sign-outs, a
+            // lossy backend) and takes away the second account, so no device
+            // can switch: what still fails then is not the account-switch
+            // family.
+            accounts: env_usize("KNOTQ_REPRO_ACCOUNTS", if chaos { 2 } else { 1 }),
             initial_devices: 3,
             max_devices: if chaos { 5 } else { 4 },
             steps: env_usize("KNOTQ_FUZZ_STEPS", 120),
