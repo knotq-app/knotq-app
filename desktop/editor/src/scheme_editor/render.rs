@@ -17,7 +17,9 @@ impl gpui::Render for SchemeEditor {
             .key_context(KEY_CONTEXT)
             .track_focus(&self.focus_handle)
             .w_full()
-            .cursor(if self.hovered_link {
+            .cursor(if self.hovered_image_handle || self.is_resizing_image() {
+                CursorStyle::ResizeUpLeftDownRight
+            } else if self.hovered_link {
                 CursorStyle::PointingHand
             } else {
                 CursorStyle::IBeam
@@ -226,6 +228,25 @@ impl Element for SchemeTextElement {
         window: &mut Window,
         cx: &mut App,
     ) {
+        if self.editor.read(cx).is_resizing_image() {
+            // Keep following the mouse once it leaves the editor mid-drag.
+            let editor = self.editor.clone();
+            window.on_mouse_event(move |event: &MouseMoveEvent, phase, _window, cx| {
+                if phase == DispatchPhase::Bubble && event.dragging() {
+                    editor.update(cx, |editor, cx| {
+                        editor.drag_image_resize(event.position, cx);
+                    });
+                }
+            });
+
+            let editor = self.editor.clone();
+            window.on_mouse_event(move |event: &MouseUpEvent, phase, _window, cx| {
+                if phase == DispatchPhase::Bubble && event.button == MouseButton::Left {
+                    editor.update(cx, |editor, cx| editor.finish_image_resize(cx));
+                }
+            });
+        }
+
         if self.editor.read(cx).is_selecting {
             let editor = self.editor.clone();
             window.on_mouse_event(move |event: &MouseMoveEvent, phase, _window, cx| {

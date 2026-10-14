@@ -14,6 +14,7 @@ impl SchemeEditor {
         self.link_hitboxes.clear();
         self.open_link_button = None;
         self.table_control_hitboxes.clear();
+        self.image_hitboxes.clear();
         let theme = self.theme;
         let text_origin = point(
             bounds.left() + px(TEXT_LEFT_PAD),
@@ -302,7 +303,7 @@ impl SchemeEditor {
             + if has_text { px(IMAGE_TOP_GAP) } else { px(0.0) };
 
         for media in item.images() {
-            let media_size = media_display_size(media, max_width);
+            let media_size = self.media_size(media, max_width);
             if media_size.height <= px(0.0) {
                 continue;
             }
@@ -322,7 +323,34 @@ impl SchemeEditor {
                         window.paint_image(bounds, Corners::all(px(5.0)), render_image, 0, false);
                 }
             }
+            self.image_hitboxes.push(ImageHitbox {
+                bounds,
+                item_id: item.id,
+                max_width,
+            });
+            if self.image_shows_resize_handle(item.id) {
+                self.paint_image_resize_handle(bounds, window);
+            }
             y += media_size.height + px(IMAGE_STACK_GAP);
         }
+    }
+
+    /// The grip at an image's bottom-right corner: a small filled square that
+    /// reads on both light and dark images.
+    fn paint_image_resize_handle(&self, image: Bounds<Pixels>, window: &mut Window) {
+        let side = px(9.0);
+        let inset = px(3.0);
+        let grip = Bounds::new(
+            point(image.right() - side - inset, image.bottom() - side - inset),
+            size(side, side),
+        );
+        window.paint_quad(quad(
+            grip,
+            px(2.5),
+            token_rgba(self.theme.button_bg),
+            px(1.5),
+            token_hsla(self.theme.border_strong),
+            BorderStyle::default(),
+        ));
     }
 }

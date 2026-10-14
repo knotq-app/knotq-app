@@ -63,6 +63,7 @@ use links::*;
 use markdown::*;
 use media::*;
 use navigation::*;
+use painting::images::{ImageHitbox, ImageResize};
 use selection::TextSelection;
 use table::{CellSlot, TableControlHitbox, TableControlKind, TableLayout};
 
@@ -320,6 +321,15 @@ pub struct SchemeEditor {
     auto_scroll_task: Option<Task<()>>,
     auto_scroll_last_mouse_position: Option<Point<Pixels>>,
     image_cache: HashMap<Uuid, Option<Arc<Image>>>,
+    /// Each image file's own pixel size, read once from its header. Layout runs
+    /// behind `&self`, hence the cell.
+    image_intrinsic_sizes: std::cell::RefCell<HashMap<Uuid, Option<(u32, u32)>>>,
+    image_hitboxes: Vec<ImageHitbox>,
+    /// The image under the mouse, which is the one that shows its resize handle.
+    hovered_image: Option<ItemId>,
+    hovered_image_handle: bool,
+    /// The corner drag in progress, if any.
+    image_resize: Option<ImageResize>,
     /// Tracks the last auto-bulletize conversion so backspace can undo it.
     /// Stores (row, original_text, original_marker) before the conversion.
     auto_bullet_undo: Option<(usize, String, ItemMarker)>,
