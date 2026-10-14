@@ -42,6 +42,44 @@ wedged. Any other failing seed still fails the build.
 | **3** | No backup/DR for the backend's Durable Object state | A project, and an ops decision |
 | **5** | Cloudflare rate limiting unverified in production | Needs the dashboard, not this checkout |
 
+**Measured 2026-10-13 — the fixed-seed gates are green; fresh seeds are not.**
+The release gate (chaos 1-300 and single-account 10000-10299 at 200 steps) and
+the nightly (400 x 300) pass because every failing seed *in those sets* was fixed
+one at a time. A sync change reshuffles each seed's scenario, so "fix X turned
+seed Y red" usually means Y now reaches an older bug — diff the two traces before
+blaming the fix. Rates on seeds no gate runs, at 200 steps, on the tree with #67:
+
+| Configuration | Seeds | Failing | What |
+|---|---|---|---|
+| chaos (two accounts, switching, faults) | 301-700 | 6 (318 457 544 578 676 691) | lost Daily binding; page/document divergence; lost starter row x2; fresh device missing content; duplicate row |
+| faults, one account (`KNOTQ_REPRO_ACCOUNTS=1`) | 1-700 | 4 (201 251 335 667) | lost row x2; page/document divergence x2 |
+| plain single account | 10300-10699 | 2 (10502 10608) | "sync lost item ...0402" |
+| v0.58.0, chaos | 301-700 | 11 | (for comparison; its own nightly was red in CI on Oct 2-3) |
+
+So the residue is **not** only the account-switch family (0i): a single-account
+user can reach it. After #67 the nightly's own seeds 32, 186 (chaos) and 20047
+(journal loss) fail; they pass on the commit before it. 20047's last behavioural
+difference from that commit is before step 70 and its failing chain starts after
+step 133; 32 and 186 were not traced.
+
+**10502, traced.** A fresh install (device 3) carries starter row `...0402` from
+09-14 to 09-15 before its first sync, then undoes that. Device 1 had already
+moved the same row to 09-15 on the account. Both inserts into `f9bc2620` carry
+the same presence tag — `ensure_item_presence` writes `seed:{item_id}` for any
+first insert — so device 3's undo (`r:seed:...`) removes device 1's placement
+too. Device 3's first run then pushes with the row live nowhere (its own copy on
+09-14 is a generated row the first sync does not publish), and only its next
+sync puts the row back on 09-14. The oracle reports the window in between; a
+device that never synced again would make it permanent. Not attempted: giving
+authored inserts a per-replica tag. Carryover must keep the shared tag, or a row
+deleted on one device comes back when another device's own carryover of it
+arrives.
+
+**251, not fully traced:** the loss follows a device emptying the trash (three
+schemes purged) and another device's pull dropping a scheme it still held
+unpushed edits for. Whether the lost row had been moved into a purged scheme was
+not confirmed.
+
 Not re-verified on 2026-10-10: the individual `[FIXED]` entries, and whether
 **0r** (seed 10105's Daily page colour, "passes but untraced") is still
 untraced. They are as their own sections left them.
