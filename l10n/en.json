@@ -1088,6 +1088,7 @@
   "web.account.use_different_account": "Use a different account",
   "web.account.verify_gate_body": "We sent a verification link to your account email. Confirm it to turn on KnotQ Sync.",
   "web.account.verify_gate_title": "Verify your email to subscribe",
+  "web.auth.checking_existing_session": "Checking your existing KnotQ session…",
   "web.auth.confirm_password_label": "Confirm password",
   "web.auth.confirm_your_password": "Confirm your password.",
   "web.auth.create_account": "Create account",
