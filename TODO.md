@@ -42,6 +42,84 @@ wedged. Any other failing seed still fails the build.
 | **3** | No backup/DR for the backend's Durable Object state | A project, and an ops decision |
 | **5** | Cloudflare rate limiting unverified in production | Needs the dashboard, not this checkout |
 
+**Fixed 2026-10-14 — every production-fuzz seed passes, measured on a deterministic fuzzer.**
+
+*The fuzzer was not deterministic, and that is why seeds "used to pass".* Undo
+grouping read the wall clock (`EDITOR_UNDO_GROUP_WINDOW`), so a loaded machine
+spread a seed's steps past the window and played a different scenario than an
+idle one; "complete past events" also used the real date. Both are now fixed for
+the fuzzer (`knotq_state::freeze_undo_clock`, `DesktopDevice::simulated_now`).
+Measured that way, main at `7a71c4a` failed **10 of 1,200** nightly-depth seeds
+(400 x 300: chaos 4 32 44 226 249 326, single-account 10082 10130 10166 10199);
+the green nightlies were the CI machine's timing. The "process-dependent" seeds
+in the memory notes (10350 etc.) were this.
+
+What was wrong, and the fix for each:
+
+1. **A line could end up in no document.** Two devices moved one line to
+   different schemes; each device's `reconcile_item_placements` deleted the copy
+   it judged the loser, while a third move removed the winner (10350, 20047,
+   10130 — permanent loss on every device). The "the winner is a minimum, so it
+   is never deleted" argument does not survive concurrent moves. Removals are now
+   marked with *why*: `m:<tag>` when the line lives elsewhere now (a move's
+   source, a losing duplicate) and `x:<tag>` when the user deleted it
+   (`tombstone_item`). Workspace materialization shows a line that has no live
+   copy anywhere — off-window Daily documents included — from its lowest copy
+   removed only as a placement (`restore_lines_removed_only_as_placements`).
+   Older builds read only `a:`/`r:` and the `deleted` scalar, so to them nothing
+   changed.
+2. **A deleted line came back from a hidden duplicate** (32, 326, 4): deleting
+   the visible copy revealed the copy the dedupe hid. A local command that takes
+   a line out of the visible workspace — a delete, or a scheme/folder removed for
+   good — now removes and `x:`-marks every copy this device holds
+   (`WorkspaceStore::every_copy_of`, one map lookup per document).
+3. **Two creations of one line with different text doubled it** (249; the
+   long-open 10117 mechanism, pinned test now un-ignored). The creation update
+   records its content as `creation_candidate:<sha>` after the text, under the
+   same clientID — so an older build's identical creation is a byte prefix and
+   still dedupes (`item_creation_from_an_older_build_is_a_prefix`); pins
+   re-recorded without a version bump, on purpose (see the pin tests). When the
+   text is exactly the candidates run together, every replica reads the
+   lowest-hash one, and the next edit diffs against the real text.
+4. **The UI copy could keep a line the store had placed elsewhere** (10130).
+   `AppState::reconcile_item_placements` now refreshes the visible workspace
+   whenever it differs from the store, not only when the store changed.
+5. **A Daily page opened while signed out was dropped by the first pull of the
+   account it then joined** (318). `restore_unpublished_schemes_dropped_by_pull`
+   skipped every Daily page, on the grounds that the client rebuilds a day from
+   its binding — but this day's binding was never published either. An
+   unpublished day with unpushed edits whose date the pulled index binds to
+   nothing is now put back with its binding.
+6. **A fresh install whose first run pulled a few scheme documents and then
+   dropped its connection published its own index over the account's** (578: a
+   folder the account held in the trash was deleted for everyone). Same family
+   as 0D, one state further: some cursors had moved, but never the index's. The
+   whole-index repair now also requires that this device has pulled or pushed
+   the index itself (pushed too, which is why 109 does not wedge).
+7. Fuzzer false alarms, fixed in the fuzzer: the settle loop could stop on a
+   round in which a run crashed, quit or failed before landing (226), and the
+   fresh-device check counted such runs (44, four quits in a row) — both now
+   require landed runs. The Daily-binding check now excuses a day the device's
+   OWN step took away, the way the line and page checks already did (665: a
+   crash lost a day opened and never saved; per device, because a day's page id
+   is a function of its date).
+
+Tried and rejected, with numbers: keeping hidden copies instead of deleting them
+(46 failing seeds at 400 x 300 — every path that rebuilds the visible workspace
+would have to dedupe); a fresh presence tag per move destination (chaos 57 fails
+and the sweep takes 60% longer; the account-switch seed it targeted, 186, passes
+without it). `KNOWN_FAILING` (10106 10175 10192) is gone: all three pass.
+
+Gates on the fix, all green: production fuzz (every configuration plus the
+pinned scenarios) at 800 x 200 — 2,400 seeds, which contains the release gate's
+300 x 200 and PR CI's 128, and 1,500 seeds no gate had run — and at the
+nightly's 400 x 300; `sync_property_model` at 800 x 400; the HTTP + WebSocket
+stress suite against wrangler with `--fuzz`; `cargo test` for knotq-sync,
+knotq-state and knotq-app (760 passed); mobile core with `--features accounts`
+(81 passed) and its lazy-daily fuzz at 1,024 steps. Note the mobile gate command
+in `mobile/CLAUDE.md` names `tests::seeded_lazy_daily_…`, which matches nothing;
+the test is `tests_daily::…` (mobile CI was fixed for this, its CLAUDE.md not).
+
 **Measured 2026-10-13 — the fixed-seed gates are green; fresh seeds are not.**
 The release gate (chaos 1-300 and single-account 10000-10299 at 200 steps) and
 the nightly (400 x 300) pass because every failing seed *in those sets* was fixed
