@@ -723,7 +723,7 @@ fn concurrent_same_item_creation_with_different_content_doubles_the_text() {
     // An edit on top diffs against the real text, so it removes the other run.
     let mut scheme = Scheme::new("Daily", 0);
     let mut item = merged.scheme_items().unwrap()[0].clone();
-    item.set_text(&format!("{text}!"));
+    item.set_text(format!("{text}!"));
     scheme.items.push(item);
     merged.replace_scheme(&scheme).unwrap();
     let after = YrsSchemeDocument::new(document);
