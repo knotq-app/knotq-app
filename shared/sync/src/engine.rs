@@ -1375,10 +1375,24 @@ fn queue_local_only_documents_before_pull(
     // and is worse: keying it on the index cursor alone wedges chaos 109 (the repair
     // is also what PUBLISHES, so withholding it leaves the queue nowhere to drain),
     // and dropping the repair outright costs chaos 34 and 66 as well. See TODO.md 0D.
-    let first_sync_with_this_server = !local_state
+    // ...and the index itself must have been exchanged. The repair writes the
+    // index WHOLE, so it is only safe from a device that has received the
+    // account's index or published one. A fresh install whose first run pulled
+    // a few scheme documents before its connection dropped has moved cursors but
+    // has never seen the index, and its repair published its own pre-sign-in
+    // view over the account's — deleting a folder the account held in the trash
+    // (chaos seed 578). "Pushed" counts as well as "pulled": the repair is also
+    // how a device's index is published at all, which is why keying on the
+    // pulled index alone wedged chaos 109.
+    let exchanged_the_index = local_state
         .document_cursors
-        .values()
-        .any(|cursor| cursor.last_pulled_sequence > 0 || cursor.last_pushed_sequence > 0);
+        .get(&crdt_docs.workspace_document_id())
+        .is_some_and(|cursor| cursor.last_pulled_sequence > 0 || cursor.last_pushed_sequence > 0);
+    let first_sync_with_this_server = !exchanged_the_index
+        || !local_state
+            .document_cursors
+            .values()
+            .any(|cursor| cursor.last_pulled_sequence > 0 || cursor.last_pushed_sequence > 0);
     let recover_local_tombstones = local_state.needs_storage_recovery();
     if first_sync_with_this_server {
         // The message states the predicate it actually tests. It briefly claimed
@@ -2635,6 +2649,19 @@ mod tests {
             knotq_model::SyncDocumentKind::Scheme,
             1,
             0,
+        );
+        // ...and that has exchanged the index itself, which the repair now also
+        // requires (it writes the index whole; chaos seed 578). Pushed rather
+        // than pulled, so the stale index below is still applied.
+        local_state.document_cursors.insert(
+            workspace_document,
+            crate::DocumentSyncCursor {
+                document: workspace_document,
+                kind: knotq_model::SyncDocumentKind::PersonalWorkspace,
+                last_pulled_sequence: 0,
+                last_pushed_sequence: 1,
+                epoch: 0,
+            },
         );
 
         let outcome = batch_pull_and_apply(

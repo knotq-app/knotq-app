@@ -173,6 +173,16 @@ impl DesktopDevice {
         self.state.daily_queue_today
     }
 
+    /// Noon UTC on this device's simulated day. The fuzzer's calendar is fixed,
+    /// so "now" must be too: the wall clock made "complete past events" depend
+    /// on the date a run happened on.
+    pub(super) fn simulated_now(&self) -> chrono::DateTime<chrono::Utc> {
+        self.today()
+            .and_hms_opt(12, 0, 0)
+            .expect("noon exists")
+            .and_utc()
+    }
+
     /// Where this device's visible workspace disagrees with its own CRDT
     /// documents — the projection law (`knotq_sync::projection`).
     ///

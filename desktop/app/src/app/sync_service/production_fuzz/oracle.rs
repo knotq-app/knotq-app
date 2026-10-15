@@ -70,6 +70,16 @@ pub(super) struct View {
 }
 
 impl View {
+    /// Where the item whose id starts with `prefix` is, for traces: the first
+    /// eight characters of its scheme's id, or `-` when no visible scheme holds it.
+    pub(super) fn item_place(&self, prefix: &str) -> String {
+        self.items
+            .iter()
+            .find(|(item, _)| item.to_string().starts_with(prefix))
+            .map(|(_, scheme)| scheme.to_string()[..8].to_string())
+            .unwrap_or_else(|| "-".to_string())
+    }
+
     pub(super) fn of(workspace: &Workspace) -> Self {
         let mut view = View::default();
         // The root folder is not user-visible, and its id is re-derived from the
@@ -285,6 +295,11 @@ impl View {
 pub(super) struct Attribution {
     destroyed_items: HashSet<ItemId>,
     destroyed_schemes: HashSet<SchemeId>,
+    /// `(device, scheme)` for a page that device's own step took away — an
+    /// edit, or a crash losing what it had not saved. Kept per device because a
+    /// Daily page's id is a function of its date, so the same id is every
+    /// device's page for that day.
+    destroyed_on_device: HashSet<(usize, SchemeId)>,
     destroyed_folders: HashSet<FolderId>,
     /// Where an item was moved to, for items whose scheme a local step changed.
     /// See [`Attribution::moved_into_a_destroyed_scheme`].
@@ -328,6 +343,7 @@ impl Attribution {
         for scheme in before.schemes.keys() {
             if !after.schemes.contains_key(scheme) {
                 self.destroyed_schemes.insert(*scheme);
+                self.destroyed_on_device.insert((device, *scheme));
             }
         }
         for item in before.items.keys() {
@@ -833,7 +849,12 @@ impl Attribution {
                 .values()
                 .filter(|holder| *holder == scheme)
                 .count();
-            if !after.daily.contains_key(date) {
+            // A day this device's own step took away — a crash losing a page it
+            // had opened and not yet saved (chaos seed 665) — is explained, as
+            // the same crash losing the page's lines already is.
+            if !after.daily.contains_key(date)
+                && !self.destroyed_on_device.contains(&(device, *scheme))
+            {
                 violations.push(format!(
                     "device {device}: {label} lost the Daily Queue binding for {date} \
                      ({scheme}, held {held} line(s))"

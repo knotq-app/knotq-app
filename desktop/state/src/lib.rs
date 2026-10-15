@@ -38,8 +38,9 @@ pub use session::{EditorSession, EditorSessions, SchemeEditorMenuState};
 pub use state::AppState;
 pub use store::{CrdtSaveScope, StoreOperation, WorkspaceDirtyState, WorkspaceStore};
 pub use undo::{
-    calendar_toggle_keys, editor_undo_key, recurrence_undo_key, should_coalesce_editor_undo,
-    should_coalesce_recurrence_undo, EditorUndoGroup, EditorUndoKey, UNDO_DEPTH,
+    calendar_toggle_keys, editor_undo_key, freeze_undo_clock, recurrence_undo_key,
+    should_coalesce_editor_undo, should_coalesce_recurrence_undo, undo_clock_now, EditorUndoGroup,
+    EditorUndoKey, UNDO_DEPTH,
 };
 pub use undo_store::{NavSnapshot, SyncDelta, UndoEntry, UndoScope, UndoStore};
 pub use workspace_view::WorkspaceView;

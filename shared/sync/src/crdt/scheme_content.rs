@@ -51,6 +51,20 @@ pub struct YrsSchemeDocument {
     /// refreshed the shadow, so the shadow can never describe a document that
     /// something else has changed underneath it.
     shadow_valid: Arc<AtomicBool>,
+    /// Removals the next write makes, by kind (`mark_removals`).
+    removals: Mutex<Removals>,
+}
+
+/// How the next write removes each line it removes. A line it removes without
+/// being told is a hard removal — the conservative default, which can never
+/// bring anything back.
+#[derive(Default)]
+struct Removals {
+    /// Removed because the line now lives elsewhere: a move's source, or a
+    /// duplicate copy losing to another. See `tombstone_item`.
+    placement: HashSet<String>,
+    /// Removed by the user. Also hardens a copy already removed as a placement.
+    deletion: HashSet<String>,
 }
 
 /// Install the shadow's invalidation observer on `doc`.
@@ -87,6 +101,7 @@ impl YrsSchemeDocument {
             shadow: Mutex::new(None),
             presence_enabled: true,
             shadow_valid,
+            removals: Mutex::new(Removals::default()),
         }
     }
 
@@ -104,6 +119,7 @@ impl YrsSchemeDocument {
             shadow: Mutex::new(None),
             presence_enabled: true,
             shadow_valid,
+            removals: Mutex::new(Removals::default()),
         }
     }
 
@@ -308,6 +324,19 @@ impl YrsSchemeDocument {
         Ok(())
     }
 
+    /// Say why the next write removes `deleted`: those in `placement` because
+    /// the line lives elsewhere now, the rest because the user deleted them.
+    pub(crate) fn mark_removals(&self, deleted: &HashSet<String>, placement: &HashSet<String>) {
+        let mut removals = self.removals.lock().unwrap_or_else(|err| err.into_inner());
+        for item in deleted {
+            if placement.contains(item) {
+                removals.placement.insert(item.clone());
+            } else {
+                removals.deletion.insert(item.clone());
+            }
+        }
+    }
+
     fn presence_epoch(&self) -> String {
         let state = self.state_vector_v1();
         let digest = Sha256::digest(&state);
@@ -331,9 +360,12 @@ impl YrsSchemeDocument {
         // has happened since, and the scheme still holds exactly the same items in
         // the same order. Anything else — a remote update, an item added, removed
         // or reordered — reads the document as before.
-        let reusable_shadow = self
-            .shadow_valid
-            .swap(false, Ordering::AcqRel)
+        let removals =
+            std::mem::take(&mut *self.removals.lock().unwrap_or_else(|err| err.into_inner()));
+        // A marked deletion may have to harden a copy that is already removed,
+        // which only the sweep below can see; the shadow would skip it.
+        let marked = !removals.deletion.is_empty();
+        let reusable_shadow = (!marked && self.shadow_valid.swap(false, Ordering::AcqRel))
             .then(|| {
                 self.shadow
                     .lock()
@@ -560,6 +592,12 @@ impl YrsSchemeDocument {
             // permanently. It also reported the item as touched, which is wrong:
             // this pass changed nothing about it.
             if has_schema && read_stored_item(&item_map, &txn).deleted {
+                // Already removed. A user deletion of a line that was removed
+                // here only as a placement makes that removal final, so the
+                // copy can never be brought back as the line's last home.
+                if removals.deletion.contains(&key) && harden_removal(&item_map, &mut txn) {
+                    touched.insert(key.clone());
+                }
                 continue;
             }
             touched.insert(key.clone());
@@ -568,7 +606,8 @@ impl YrsSchemeDocument {
                 // concurrent with another replica's edit detaches the map and loses
                 // fields ("item schema missing"), wedging the scheme; a tombstone keeps a
                 // valid map that merges with concurrent edits. Materialization skips it.
-                tombstone_item(&item_map, &mut txn)?;
+                let placement = removals.placement.contains(&key);
+                tombstone_item(&item_map, &mut txn, placement)?;
             } else {
                 // Already a partial/clobbered entry (schema missing, e.g. from a legacy
                 // hard-remove race). Hard-remove it: tombstoning would leave it
@@ -680,7 +719,7 @@ impl YrsSchemeDocument {
                     match item_text_ref(&item_map, &txn) {
                         Some(text_ref) => {
                             let current = match prev {
-                                Some(stored) => stored.content.clone(),
+                                Some(stored) => stored.text_content.clone(),
                                 None => read_text_content(&text_ref, &txn),
                             };
                             let new_content = normalize_inline_content(&item.content.to_inlines());
@@ -756,8 +795,10 @@ impl YrsSchemeDocument {
                         // entry always carries one by the time we get here.
                         has_text: true,
                         content_shadow: Some(content.clone()),
+                        text_content: content.clone(),
                         content,
                         deleted: false,
+                        placement_removed: false,
                     },
                 );
             }
@@ -919,6 +960,62 @@ impl YrsSchemeDocument {
         Ok(summary)
     }
 
+    /// Ids of the lines this document removed only because they lived
+    /// elsewhere (`removed_only_as_a_placement`). Reads presence maps only —
+    /// no text, no metadata — because workspace materialization asks every
+    /// document this on every pass.
+    pub(crate) fn placement_removed_ids(&self) -> anyhow::Result<HashSet<String>> {
+        let items_by_id = self.doc.get_or_insert_map("items_by_id");
+        let txn = self.doc.transact();
+        let mut ids = HashSet::new();
+        for key in items_by_id.keys(&txn) {
+            let Some(item_map) = item_map_ref(&items_by_id, &txn, key) else {
+                continue;
+            };
+            let Some(presence) = presence_map_ref(&item_map, &txn) else {
+                continue;
+            };
+            if active_presence_adds(&presence, &txn).is_empty()
+                && removed_only_as_a_placement(&presence, &txn)
+            {
+                ids.insert(key.to_string());
+            }
+        }
+        Ok(ids)
+    }
+
+    /// Whether this document holds `item` live, or removed only as a
+    /// placement: a copy a deletion by the user has to reach. One map lookup,
+    /// not a decode of the document.
+    pub(crate) fn holds_a_copy_of(&self, item: &str) -> bool {
+        let items_by_id = self.doc.get_or_insert_map("items_by_id");
+        let txn = self.doc.transact();
+        let Some(item_map) = item_map_ref(&items_by_id, &txn, item) else {
+            return false;
+        };
+        let entry = read_stored_item(&item_map, &txn);
+        !entry.snapshot_json.is_empty() && (!entry.deleted || entry.placement_removed)
+    }
+
+    /// [`Self::scheme_items`], with the placement-removed lines in `restore`
+    /// counted as live, in their own positions.
+    pub(crate) fn scheme_items_restoring(
+        &self,
+        restore: &HashSet<String>,
+    ) -> anyhow::Result<Vec<Item>> {
+        Ok(self
+            .sorted_entries()?
+            .into_iter()
+            .filter(|(_, entry)| !entry.snapshot_json.is_empty())
+            .filter_map(|(id, entry)| {
+                let live = !entry.deleted || (entry.placement_removed && restore.contains(&id));
+                let mut item = entry.meta?;
+                item.content = ItemContent::from_inlines(entry.content);
+                live.then_some(item)
+            })
+            .collect())
+    }
+
     pub(crate) fn scheme_items(&self) -> anyhow::Result<Vec<Item>> {
         Ok(self
             .sorted_entries()?
@@ -982,6 +1079,12 @@ pub(crate) struct StoredItem {
     /// instead of being hard-removed, so a concurrent remove+edit can't detach the map
     /// and lose fields. Materialization skips tombstoned items.
     deleted: bool,
+    /// Removed, but only because the line lived elsewhere — see
+    /// `removed_only_as_a_placement`.
+    placement_removed: bool,
+    /// What the Text really holds, which `content` may resolve
+    /// (`creation_runs_resolved`). Edits diff against this one.
+    text_content: Vec<Inline>,
 }
 
 pub(crate) fn item_map_ref(items_by_id: &MapRef, txn: &impl ReadTxn, key: &str) -> Option<MapRef> {
@@ -1061,10 +1164,27 @@ fn add_presence_tag_to_map(presence: &MapRef, txn: &mut TransactionMut, tag: Str
     presence.insert(txn, format!("a:{tag}"), true);
 }
 
-fn tombstone_item(item_map: &MapRef, txn: &mut TransactionMut) -> anyhow::Result<()> {
+/// Remove a line from this document.
+///
+/// Each removed tag is marked with why: `m:<tag>` when the line was removed
+/// because it lives elsewhere now (a move's source, a losing duplicate), and
+/// `x:<tag>` when the user deleted it. A copy removed only as a placement is
+/// still the line, and if every live copy is later removed too — two devices
+/// moving it at once while a third cleans up the duplicate, each from what it
+/// had seen — it is where the line comes back rather than being lost
+/// (`removed_only_as_a_placement`, used by workspace materialization; fuzz
+/// seeds 10350 and 20047). Older builds read only `a:`/`r:` and the `deleted`
+/// scalar, so to them this is the same removal as before.
+fn tombstone_item(
+    item_map: &MapRef,
+    txn: &mut TransactionMut,
+    placement: bool,
+) -> anyhow::Result<()> {
     if let Some(presence) = presence_map_ref(item_map, txn) {
         for tag in active_presence_adds(&presence, txn) {
             presence.insert(txn, format!("r:{tag}"), true);
+            let why = if placement { "m" } else { "x" };
+            presence.insert(txn, format!("{why}:{tag}"), true);
         }
     }
     // Retain the scalar for older clients. New clients derive presence from the
@@ -1072,6 +1192,118 @@ fn tombstone_item(item_map: &MapRef, txn: &mut TransactionMut) -> anyhow::Result
     // erase a newer resurrection.
     item_map.insert(txn, "deleted", true);
     Ok(())
+}
+
+const CREATION_CANDIDATE_PREFIX: &str = "creation_candidate:";
+
+fn hex_digest(bytes: &[u8]) -> String {
+    Sha256::digest(bytes)
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect()
+}
+
+/// Two devices that each create the same line id with different first text —
+/// a Daily carryover's derived id, the line edited on one of them before its
+/// first sync — author the two texts under different deterministic clientIDs,
+/// and the merged Text holds both, one after the other (fuzz seeds 10117, 249;
+/// `concurrent_same_item_creation_with_different_content_doubles_the_text`).
+/// Nothing can be preferred until both are present, so the resolution is a
+/// pure function of the document: when the text is EXACTLY the creations'
+/// contents run together (nobody has edited it since), it reads as the
+/// creation whose content hash is lowest, on every replica. The next edit
+/// diffs against the real text, so it removes the other runs as it goes.
+fn creation_runs_resolved(
+    item_map: &MapRef,
+    txn: &impl ReadTxn,
+    actual: &[Inline],
+) -> Option<Vec<Inline>> {
+    let mut candidates: Vec<(String, Vec<Inline>)> = item_map
+        .keys(txn)
+        .filter(|key| key.starts_with(CREATION_CANDIDATE_PREFIX))
+        .map(str::to_string)
+        .collect::<Vec<_>>()
+        .into_iter()
+        .filter_map(|key| {
+            let json = item_map
+                .get_as::<_, Option<String>>(txn, &key)
+                .ok()
+                .flatten()?;
+            let content = serde_json::from_str::<Vec<Inline>>(&json).ok()?;
+            Some((key, normalize_inline_content(&content)))
+        })
+        .collect();
+    if candidates.len() < 2 || candidates.len() > 4 {
+        return None;
+    }
+    candidates.sort_by(|left, right| left.0.cmp(&right.0));
+    let actual_units = content_units(actual);
+    let total: usize = candidates
+        .iter()
+        .map(|(_, content)| content_units(content).len())
+        .sum();
+    if total != actual_units.len() {
+        return None;
+    }
+    let mut order: Vec<usize> = (0..candidates.len()).collect();
+    loop {
+        let joined: Vec<ContentUnit> = order
+            .iter()
+            .flat_map(|index| content_units(&candidates[*index].1))
+            .collect();
+        if joined == actual_units {
+            return Some(candidates[0].1.clone());
+        }
+        if !next_permutation(&mut order) {
+            return None;
+        }
+    }
+}
+
+fn next_permutation(order: &mut [usize]) -> bool {
+    let Some(pivot) = (1..order.len()).rev().find(|&i| order[i - 1] < order[i]) else {
+        return false;
+    };
+    let swap = (pivot..order.len())
+        .rev()
+        .find(|&j| order[j] > order[pivot - 1])
+        .unwrap();
+    order.swap(pivot - 1, swap);
+    order[pivot..].reverse();
+    true
+}
+
+/// Make an existing removal a deletion: mark every removed tag `x:`. Returns
+/// whether anything was written.
+fn harden_removal(item_map: &MapRef, txn: &mut TransactionMut) -> bool {
+    let Some(presence) = presence_map_ref(item_map, txn) else {
+        return false;
+    };
+    let keys: HashSet<String> = presence.keys(txn).map(str::to_string).collect();
+    let mut changed = false;
+    for key in &keys {
+        if let Some(tag) = key.strip_prefix("r:") {
+            if !keys.contains(&format!("x:{tag}")) {
+                presence.insert(txn, format!("x:{tag}"), true);
+                changed = true;
+            }
+        }
+    }
+    changed
+}
+
+/// Whether a removed entry was removed only because the line lived elsewhere:
+/// it has removed tags, every one of them marked `m:`, none marked `x:`. An
+/// entry removed by an older build carries no marks and so is never one.
+fn removed_only_as_a_placement(presence: &MapRef, txn: &impl ReadTxn) -> bool {
+    let keys: HashSet<String> = presence.keys(txn).map(str::to_string).collect();
+    let mut removed = keys
+        .iter()
+        .filter_map(|key| key.strip_prefix("r:"))
+        .peekable();
+    removed.peek().is_some()
+        && removed
+            .all(|tag| keys.contains(&format!("m:{tag}")) && !keys.contains(&format!("x:{tag}")))
 }
 
 /// Build the deterministic creation sub-update for a new item: its skeleton (see
@@ -1084,6 +1316,27 @@ pub(crate) fn build_item_creation_update(
     document: DocumentId,
     item_id: &str,
     content: &[Inline],
+) -> anyhow::Result<Vec<u8>> {
+    build_item_creation_update_inner(document, item_id, content, true)
+}
+
+/// The creation update builds before `creation_candidate:` existed wrote: the
+/// same operations, minus the trailing candidate key. Tests only — it is what
+/// proves an older build's creation is a prefix of this one's.
+#[cfg(test)]
+pub(crate) fn build_item_creation_update_without_candidate(
+    document: DocumentId,
+    item_id: &str,
+    content: &[Inline],
+) -> anyhow::Result<Vec<u8>> {
+    build_item_creation_update_inner(document, item_id, content, false)
+}
+
+fn build_item_creation_update_inner(
+    document: DocumentId,
+    item_id: &str,
+    content: &[Inline],
+    name_the_candidate: bool,
 ) -> anyhow::Result<Vec<u8>> {
     let skeleton = build_item_skeleton_update(document, item_id);
     if content.is_empty() {
@@ -1111,6 +1364,19 @@ pub(crate) fn build_item_creation_update(
             return Ok(skeleton);
         };
         insert_inline_content(&text, &mut txn, content)?;
+        // Name this creation's content in the item, AFTER the text and under
+        // the same clientID: an older build's creation of the same content is
+        // then a strict prefix of this one and still dedupes into it, while two
+        // creations with DIFFERENT content each leave their own key. That is
+        // what lets every replica recognise the doubled text two such creations
+        // merge into and agree on one of them (`creation_runs_resolved`).
+        if name_the_candidate {
+            item_map.insert(
+                &mut txn,
+                format!("{CREATION_CANDIDATE_PREFIX}{}", hex_digest(&content_key)),
+                serde_json::to_string(content)?,
+            );
+        }
     }
     let text_update = doc.transact().encode_diff_v1(&after_skeleton);
     Ok(yrs::merge_updates_v1(&[skeleton, text_update])?)
@@ -1170,6 +1436,9 @@ pub(crate) fn read_stored_item(item_map: &MapRef, txn: &impl ReadTxn) -> StoredI
             (scalar_deleted && !explicit_resurrection) || active.is_empty()
         })
         .unwrap_or(scalar_deleted);
+    let placement_removed = deleted
+        && presence_map_ref(item_map, txn)
+            .is_some_and(|presence| removed_only_as_a_placement(&presence, txn));
     StoredItem {
         position: str_field("position"),
         snapshot_json,
@@ -1191,9 +1460,13 @@ pub(crate) fn read_stored_item(item_map: &MapRef, txn: &impl ReadTxn) -> StoredI
         // available; the JSON comparison is the fallback.
         item: None,
         has_text,
-        content: reconcile_content_shadow(content, content_shadow.as_deref()),
+        content: creation_runs_resolved(item_map, txn, &content).unwrap_or_else(|| {
+            reconcile_content_shadow(content.clone(), content_shadow.as_deref())
+        }),
+        text_content: content,
         content_shadow,
         deleted,
+        placement_removed,
     }
 }
 

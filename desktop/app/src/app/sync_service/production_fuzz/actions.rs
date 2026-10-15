@@ -821,7 +821,8 @@ pub(super) fn random_local_action(device: &mut DesktopDevice, rng: &mut Rng) -> 
             "page days in"
         }
         44 => {
-            knotq_state::complete_past_events(&mut device.state, Utc::now());
+            let now = device.simulated_now();
+            knotq_state::complete_past_events(&mut device.state, now);
             "complete past events"
         }
         45 => {

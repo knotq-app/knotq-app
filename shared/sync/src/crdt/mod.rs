@@ -236,6 +236,11 @@ pub struct WorkspaceCrdtChangeSet {
     /// hidden by workspace-wide duplicate placement; only an explicit delete
     /// is evidence that such a copy should be tombstoned.
     pub deleted_items: HashMap<SchemeId, HashSet<String>>,
+    /// The subset of `deleted_items` removed only because the line lives
+    /// elsewhere now — a move's source, or a duplicate losing to another copy.
+    /// Everything else in `deleted_items` is a deletion by the user. See
+    /// `tombstone_item` for what the distinction buys.
+    pub placement_removed_items: HashMap<SchemeId, HashSet<String>>,
 }
 
 impl WorkspaceCrdtChangeSet {
@@ -254,6 +259,12 @@ impl WorkspaceCrdtChangeSet {
         self.schemes.extend(other.schemes);
         for (scheme, items) in other.deleted_items {
             self.deleted_items.entry(scheme).or_default().extend(items);
+        }
+        for (scheme, items) in other.placement_removed_items {
+            self.placement_removed_items
+                .entry(scheme)
+                .or_default()
+                .extend(items);
         }
     }
 
@@ -1898,12 +1909,18 @@ impl WorkspaceCrdtDocuments {
                     merge_raw_only_items(scheme, raw_items, changeset.deleted_items.get(&id))
                 })
                 .unwrap_or_else(|| scheme.clone());
-            match self
+            let document = self
                 .schemes
                 .entry(id)
-                .or_insert_with(|| new_scheme_document(id, meta.id))
-                .sync_scheme_from_base(bases.get(&id), &sync_scheme)
-            {
+                .or_insert_with(|| new_scheme_document(id, meta.id));
+            if let Some(deleted) = changeset.deleted_items.get(&id) {
+                let empty = HashSet::new();
+                document.mark_removals(
+                    deleted,
+                    changeset.placement_removed_items.get(&id).unwrap_or(&empty),
+                );
+            }
+            match document.sync_scheme_from_base(bases.get(&id), &sync_scheme) {
                 Ok(Some(update)) => outcome.updates.push(update),
                 Ok(None) => {}
                 Err(err) => outcome.push_error(format!("scheme CRDT update {id}"), err),
@@ -2434,6 +2451,103 @@ impl WorkspaceCrdtDocuments {
             .and_then(|document| document.scheme_items().ok())
     }
 
+    /// A line live in none of the materialized schemes, whose copies were all
+    /// removed only because it lived elsewhere, has not been deleted by anyone:
+    /// every replica that removed a copy believed another copy survived, and
+    /// the last surviving one went the same way (two devices moving the line
+    /// at once while a third tidied up the duplicate — fuzz seeds 10350 and
+    /// 20047). Show it in the lowest such scheme instead of losing it. A
+    /// deletion by the user marks every copy it can see as deleted
+    /// (`tombstone_item`), so nothing deleted comes back this way.
+    fn restore_lines_removed_only_as_placements(&self, workspace: &mut Workspace) {
+        let live: HashSet<String> = workspace
+            .schemes
+            .values()
+            .flat_map(|scheme| scheme.items.iter().map(|item| item.id.to_string()))
+            .collect();
+        let mut homes: HashMap<String, SchemeId> = HashMap::new();
+        let mut scheme_ids: Vec<SchemeId> = workspace.schemes.keys().copied().collect();
+        scheme_ids.sort();
+        for scheme_id in &scheme_ids {
+            let Some(document) = self.schemes.get(scheme_id) else {
+                continue;
+            };
+            let Ok(removed) = document.placement_removed_ids() else {
+                continue;
+            };
+            for id in removed {
+                if !live.contains(&id) {
+                    homes.entry(id).or_insert(*scheme_id);
+                }
+            }
+        }
+        if homes.is_empty() {
+            return;
+        }
+        // A copy still live in a document this device has not materialized —
+        // an off-window Daily page — is the line's home; nothing was lost.
+        // Decoded only now, when there is something to ask about.
+        for deferred in self.deferred.values() {
+            if homes.is_empty() {
+                return;
+            }
+            let Ok(document) = deferred_live_document(deferred) else {
+                continue;
+            };
+            let Ok(items) = document.scheme_items() else {
+                continue;
+            };
+            for item in items {
+                homes.remove(&item.id.to_string());
+            }
+        }
+        for (scheme_id, document) in &self.schemes {
+            if homes.is_empty() {
+                return;
+            }
+            if workspace.schemes.contains_key(scheme_id) {
+                continue;
+            }
+            if let Ok(items) = document.scheme_items() {
+                for item in items {
+                    homes.remove(&item.id.to_string());
+                }
+            }
+        }
+        if homes.is_empty() {
+            return;
+        }
+        let mut by_scheme: HashMap<SchemeId, HashSet<String>> = HashMap::new();
+        for (id, scheme) in homes {
+            by_scheme.entry(scheme).or_default().insert(id);
+        }
+        for (scheme_id, restore) in by_scheme {
+            let Some(document) = self.schemes.get(&scheme_id) else {
+                continue;
+            };
+            let Ok(items) = document.scheme_items_restoring(&restore) else {
+                continue;
+            };
+            if let Some(scheme) = workspace.schemes.get_mut(&scheme_id) {
+                scheme.items = items.into();
+            }
+        }
+    }
+
+    /// Every scheme document holding `item`, live or removed only as a
+    /// placement — every copy a deletion by the user has to reach.
+    pub fn documents_holding_any_copy(&self, item: knotq_model::ItemId) -> Vec<SchemeId> {
+        let id = item.to_string();
+        let mut holders: Vec<SchemeId> = self
+            .schemes
+            .iter()
+            .filter(|(_, document)| document.holds_a_copy_of(&id))
+            .map(|(id, _)| *id)
+            .collect();
+        holders.sort();
+        holders
+    }
+
     pub fn documents_holding_item(&self, item: knotq_model::ItemId) -> Vec<SchemeId> {
         let mut holders: Vec<SchemeId> = self
             .schemes
@@ -2767,6 +2881,7 @@ impl WorkspaceCrdtDocuments {
         // winner on every replica. Only schemes materialized above participate:
         // a lazy/off-window Daily page is intentionally absent and must not be
         // interpreted as a deletion or placement decision.
+        self.restore_lines_removed_only_as_placements(&mut workspace);
         let hidden_copies = dedupe_materialized_items(&mut workspace);
         workspace.ensure_sync_metadata();
         Ok((workspace, hidden_copies))

@@ -86,6 +86,10 @@ struct World {
     trace: bool,
     step: usize,
     config: Config,
+    /// Runs that never landed — the app crashed or quit first, or the run
+    /// failed. Counted so the settle loop and the fresh-device check can tell a
+    /// round that synced from one that only looks quiet.
+    interrupted_runs: usize,
 }
 
 fn fuzz_root(seed: u64) -> PathBuf {
@@ -109,6 +113,7 @@ impl World {
             server_views: (0..config.accounts).map(|_| View::default()).collect(),
             devices: Vec::new(),
             projection_excused: Vec::new(),
+            interrupted_runs: 0,
             passive_accounts: Vec::new(),
             rng: Rng::new(seed),
             attribution: Attribution::default(),
@@ -140,6 +145,47 @@ impl World {
                 self.step,
                 message.as_ref()
             );
+            // `KNOTQ_DBG_ITEM=<item uuid>`: after every traced line, say which
+            // scheme each device and each account's last server audit holds the
+            // item in. Read-only, so a watched run plays the same scenario.
+            if let Ok(watch) = std::env::var("KNOTQ_DBG_ITEM") {
+                let mut places = Vec::new();
+                for (index, device) in self.devices.iter().enumerate() {
+                    let Some(device) = device else { continue };
+                    // In-memory only: reading the off-window pages from disk here
+                    // changed what a traced run did.
+                    let view = View::of(&device.state.workspace);
+                    places.push(format!("d{index}={}", view.item_place(&watch)));
+                }
+                for (account, view) in self.server_views.iter().enumerate() {
+                    places.push(format!("srv{account}={}", view.item_place(&watch)));
+                }
+                eprintln!("    [watch {watch:.8}] {}", places.join(" "));
+            }
+            // `KNOTQ_DBG_DAY=<yyyy-mm-dd>`: which scheme each device binds that
+            // day to, and how many lines the page holds.
+            if let Ok(day) = std::env::var("KNOTQ_DBG_DAY") {
+                if let Ok(date) = day.parse::<NaiveDate>() {
+                    let mut places = Vec::new();
+                    for (index, device) in self.devices.iter().enumerate() {
+                        let Some(device) = device else { continue };
+                        let workspace = &device.state.workspace;
+                        let place = match workspace.daily_queue.get(&date) {
+                            Some(id) => format!(
+                                "{:.8}:{}",
+                                id.to_string(),
+                                workspace
+                                    .schemes
+                                    .get(id)
+                                    .map_or("unloaded".to_string(), |s| s.items.len().to_string())
+                            ),
+                            None => "-".to_string(),
+                        };
+                        places.push(format!("d{index}={place}"));
+                    }
+                    eprintln!("    [day {day}] {}", places.join(" "));
+                }
+            }
         }
     }
 
@@ -294,6 +340,7 @@ impl World {
         // The app can quit or crash before a finished run lands: the run's
         // pushes happened, but its result is never adopted.
         if self.config.chaos && self.rng.below(10) == 0 {
+            self.interrupted_runs += 1;
             drop(run);
             if self.rng.below(2) == 0 {
                 self.log(format!("device {index} in-flight: crashed before landing"));
@@ -320,6 +367,10 @@ impl World {
             let _ = device.sync_now(&self.accounts[account], false);
         }
         let after = self.view(index);
+        if error.is_some() {
+            // A failed run pulled nothing durable either; see `interrupted_runs`.
+            self.interrupted_runs += 1;
+        }
         self.log(format!(
             "device {index} synced account {account}: {}",
             error.map_or("ok".to_string(), |err| format!("{err:#}"))
@@ -404,6 +455,26 @@ impl World {
                         skipped.document, skipped.kind, skipped.reason
                     );
                 }
+                if let Ok(watch) = std::env::var("KNOTQ_DBG_ITEM") {
+                    // Every document the server holds the watched row live in,
+                    // before the materializer's dedupe picks one.
+                    let mut holders: Vec<String> = outcome
+                        .workspace
+                        .scheme_sync
+                        .keys()
+                        .filter(|scheme| {
+                            crdt.materialized_scheme_items(**scheme)
+                                .is_some_and(|items| {
+                                    items
+                                        .iter()
+                                        .any(|item| item.id.to_string().starts_with(&watch))
+                                })
+                        })
+                        .map(|scheme| scheme.to_string()[..8].to_string())
+                        .collect();
+                    holders.sort();
+                    eprintln!("    [watch server docs] {}", holders.join(","));
+                }
                 if std::env::var("KNOTQ_DBG_AUDIT").is_ok() {
                     let mut daily: Vec<String> = outcome
                         .workspace
@@ -477,7 +548,8 @@ impl World {
     fn relaunch(&mut self, index: usize) {
         // Shutdown completes elapsed events — a local edit, attributed as one.
         self.local(index, |device, _| {
-            knotq_state::complete_past_events(&mut device.state, chrono::Utc::now());
+            let now = device.simulated_now();
+            knotq_state::complete_past_events(&mut device.state, now);
         });
         let before = self.view(index);
         let device = self.devices[index].take().unwrap();
@@ -645,8 +717,17 @@ impl World {
                 }
                 if self.converged(&indexes) {
                     // One more round so every pusher pulls its own echo.
+                    let interrupted = self.interrupted_runs;
                     for index in &indexes {
                         self.sync(*index, 0);
+                    }
+                    // A round in which a run crashed or quit before landing
+                    // is not quiescent: the relaunched device has not pulled
+                    // back what it had already pushed (chaos seed 226 ended its
+                    // settle on exactly that, a lone device on its account
+                    // whose binding the server held and its next sync restored).
+                    if self.interrupted_runs != interrupted {
+                        continue;
                     }
                     // Matching views are not enough: a device whose attempts
                     // kept failing (injected connection drops) can look
@@ -734,8 +815,20 @@ impl World {
             // full settle below covers values.
             let reference_content = self.view(first).content_keys();
             let fresh = self.add_device(Some(account));
-            for _ in 0..3 {
+            // Three runs that LANDED: a run the app quits or crashes before
+            // landing leaves the device showing nothing it pulled, which says
+            // nothing about the server (chaos seed 44 quit four in a row and
+            // reported the whole account as lost).
+            let mut landed = 0;
+            for _ in 0..12 {
+                let interrupted = self.interrupted_runs;
                 self.sync(fresh, 0);
+                if self.interrupted_runs == interrupted {
+                    landed += 1;
+                    if landed == 3 {
+                        break;
+                    }
+                }
             }
             let fresh_content = self.view(fresh).content_keys();
             let missing: Vec<&String> = reference_content
@@ -860,6 +953,10 @@ fn run_seeds(first_seed: u64, config: impl Fn() -> Config + Sync) {
 /// Keep the production API untouched while making each test's environment a
 /// properly scoped resource.
 fn with_fuzz_test_environment<R>(maintenance_coverage: bool, f: impl FnOnce() -> R) -> R {
+    // Undo grouping reads a clock; under the real one a busy machine grouped the
+    // same seed's edits differently, so a seed's scenario depended on what else
+    // was running.
+    knotq_state::freeze_undo_clock();
     // Set before anything in this process writes a file, which is why it lives
     // here rather than in `run_seeds_inner`: the pinned single-seed regressions
     // call `run_seed` directly, `cargo test` runs them alongside the sweeps, and
@@ -945,22 +1042,9 @@ fn run_seeds_inner(first_seed: u64, config: impl Fn() -> Config + Sync) {
     // is worthless for a wide sweep (`KNOTQ_FUZZ_SEEDS=1000`) and it makes "did
     // this change help?" unanswerable, because the seeds after the first
     // failure never ran at all.
-    // Seeds excused from blocking a build: analysed, metadata-only divergences
-    // where one device keeps its own scheme name/colour/gsync while the account
-    // moves on. Root cause in `app/TODO.md` 0w -- repopulate_workspace_canonically
-    // discards the snapshot that would publish a pre-first-sync device's index
-    // writes, so those writes stay local forever with an empty pending queue.
-    // None of them loses content, drops an item, or wedges a device.
-    //
-    // The seeds that DO are deliberately absent and still fail the build: 194 (a
-    // lost Daily Queue binding), 332 and 10054 (an item no device deleted), 389
-    // (13 visible rows against the document's 14), 10117 (the document holds the
-    // workspace's text applied twice).
-    //
-    // A seed not listed here that fails still fails the sweep. That is the gate's
-    // real job -- catching something this fleet has never seen -- and it is
-    // untouched by this list.
-    const KNOWN_FAILING: &[u64] = &[10106, 10175, 10192];
+    // Every failing seed fails the build. There used to be an excused list
+    // here (10106, 10175, 10192: metadata-only divergences, TODO 0w); all
+    // three pass at every depth the gates run since 2026-10-14.
 
     let failures: Mutex<Vec<(u64, String)>> = Mutex::new(Vec::new());
     std::thread::scope(|scope| {
@@ -992,7 +1076,6 @@ fn run_seeds_inner(first_seed: u64, config: impl Fn() -> Config + Sync) {
         }
     });
     let mut failures = std::mem::take(&mut *census(&failures));
-    failures.retain(|(seed, _)| KNOWN_FAILING.iter().all(|k| k != seed));
     if failures.is_empty() {
         return;
     }
