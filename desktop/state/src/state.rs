@@ -588,10 +588,16 @@ impl AppState {
     /// UI state only mirrors its result.
     pub fn reconcile_item_placements(&mut self) -> bool {
         let changed = self.store.reconcile_item_placements();
-        if changed {
+        // The visible copy can be the stale one even when the store needed
+        // nothing: the landing adopted the run's workspace, then a repair put
+        // a line back and the store's own materialization placed it once while
+        // the adopted copy still showed it where the run had (production fuzz
+        // single-account seed 10130 showed one line twice).
+        let drifted = !changed && *self.store.workspace() != *self.workspace;
+        if changed || drifted {
             self.sync_workspace_from_store();
         }
-        changed
+        changed || drifted
     }
 
     /// Refresh the local workspace copy after a command, carrying over the

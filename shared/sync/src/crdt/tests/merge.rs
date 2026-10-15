@@ -682,11 +682,11 @@ fn moving_an_item_again_after_undo_survives_a_concurrent_tombstone() {
 /// its creation seed carries the edited text while another device's carries the
 /// original, and the merged document holds `original + edited`.
 ///
-/// Ignored because it documents an open gap, not a regression — fixing it needs
-/// a convergent repair (both replicas must pick the same surviving run), and the
-/// content key cannot simply be dropped without re-breaking 10013's dedupe.
+/// Both replicas must settle on the SAME creation — whichever order they merged
+/// in — and the next edit must leave no trace of the other run in the document.
+/// The creation update names its content (`creation_candidate:`), which is what
+/// makes the doubled text recognisable as two creations rather than an edit.
 #[test]
-#[ignore = "open gap: TODO.md 0w — concurrent same-item creation with different content doubles the text"]
 fn concurrent_same_item_creation_with_different_content_doubles_the_text() {
     let document = DocumentId::new();
     let shared = Item::new("base");
@@ -705,12 +705,30 @@ fn concurrent_same_item_creation_with_different_content_doubles_the_text() {
     let merged = YrsSchemeDocument::new(document);
     merged.apply_update_v1(&a.encode_state_v1()).unwrap();
     merged.apply_update_v1(&b.encode_state_v1()).unwrap();
+    let other = YrsSchemeDocument::new(document);
+    other.apply_update_v1(&b.encode_state_v1()).unwrap();
+    other.apply_update_v1(&a.encode_state_v1()).unwrap();
 
     let text = merged.scheme_items().unwrap()[0].text().to_string();
     assert!(
         text == original || text == edited,
         "one creation seed must survive, got {text:?}"
     );
+    assert_eq!(
+        other.scheme_items().unwrap()[0].text().to_string(),
+        text,
+        "replicas that merged in the other order must pick the same creation"
+    );
+
+    // An edit on top diffs against the real text, so it removes the other run.
+    let mut scheme = Scheme::new("Daily", 0);
+    let mut item = merged.scheme_items().unwrap()[0].clone();
+    item.set_text(&format!("{text}!"));
+    scheme.items.push(item);
+    merged.replace_scheme(&scheme).unwrap();
+    let after = YrsSchemeDocument::new(document);
+    after.apply_update_v1(&merged.encode_state_v1()).unwrap();
+    assert_eq!(after.item_texts().unwrap(), vec![format!("{text}!")]);
 }
 
 /// An item skeleton's struct identity does not include its document, so the same

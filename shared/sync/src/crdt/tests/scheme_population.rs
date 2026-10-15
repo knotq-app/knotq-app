@@ -114,13 +114,21 @@ fn a_document_is_populated_only_once() {
     assert_eq!(texts(&doc), ["Thesis", "Argument", "Final draft"]);
 }
 
-/// The population clientID hashes the CONTENT, not the encoding, so these bytes
-/// must never change for the same content without bumping
+/// The population clientID hashes the CONTENT, not the encoding, so the
+/// operations under it must never change for the same content without bumping
 /// `SCHEME_POPULATION_ENCODING_VERSION` — otherwise two builds would write
 /// different operations under the same `(clientID, clock)`.
+///
+/// Re-pinned 2026-10-14 for `creation_candidate:` without a version bump, on
+/// purpose: the candidate key is one more operation APPENDED under each item's
+/// creation clientID, after the text, so every `(clientID, clock)` an older build
+/// wrote still holds the same operation (`item_creation_from_an_older_build_is_a_prefix`
+/// proves it byte for byte). Bumping the version would change the clientIDs and
+/// stop old and new builds from deduping identical creations, which is the
+/// fleet-wide doubling the version exists to prevent.
 #[test]
 fn scheme_population_encoding_is_pinned() {
-    const PINNED: &str = "71a309041e7b46b33a7d3fbfa7a82778e4a0a0222f879d99a294c21ddfb0d5ff";
+    const PINNED: &str = "daa2cf5970f119e3c8bd2a47650b5e118d2f39d52ea0c3615ba8efbf94d8790b";
     let document: DocumentId = "00000000-0000-8000-8000-000000000201".parse().unwrap();
     let doc = YrsSchemeDocument::new(document);
     doc.sync_scheme(&starter()).unwrap();
@@ -136,10 +144,11 @@ fn scheme_population_encoding_is_pinned() {
 /// The creation clientID hashes the CONTENT, not the encoding, so these bytes
 /// must never change for the same id and content without bumping
 /// `ITEM_CREATION_ENCODING_VERSION` — otherwise two builds would write different
-/// operations under the same `(clientID, clock)`.
+/// operations under the same `(clientID, clock)`. Re-pinned 2026-10-14; see
+/// `scheme_population_encoding_is_pinned` for why that is not a version change.
 #[test]
 fn item_creation_encoding_is_pinned() {
-    const PINNED: &str = "62773a23bac0ac564b32b59b04e032ccc043a9dd3d5a9e6d09633198ae3617c7";
+    const PINNED: &str = "d4b357c8bad40c9572420e6ba8294a567790d6afba5137fd0edb9af751fdcdbb";
     let document: DocumentId = "00000000-0000-8000-8000-000000000201".parse().unwrap();
     // A FIXED item id: `Item::new` mints a random one, which would re-pin itself
     // on every run.
@@ -155,4 +164,40 @@ fn item_creation_encoding_is_pinned() {
         actual, PINNED,
         "the item creation encoding changed: bump ITEM_CREATION_ENCODING_VERSION and re-pin"
     );
+}
+
+/// What a build from before `creation_candidate:` wrote for the same line —
+/// still byte-identical to the hash pinned until 2026-10-14 — merged with what
+/// this build writes, is ONE line with ONE copy of its text: the older
+/// creation's operations are exactly the leading ones of the newer.
+#[test]
+fn item_creation_from_an_older_build_is_a_prefix() {
+    const PINNED_BEFORE_CANDIDATES: &str =
+        "62773a23bac0ac564b32b59b04e032ccc043a9dd3d5a9e6d09633198ae3617c7";
+    let document: DocumentId = "00000000-0000-8000-8000-000000000201".parse().unwrap();
+    const ITEM: &str = "00000000-0000-8000-8000-000000000401";
+    let item = knotq_model::Item::new("Thesis");
+    let content =
+        super::super::scheme_content::normalize_inline_content(&item.content.to_inlines());
+    let older = super::super::scheme_content::build_item_creation_update_without_candidate(
+        document, ITEM, &content,
+    )
+    .unwrap();
+    let digest: String = Sha256::digest(&older)
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect();
+    assert_eq!(
+        digest, PINNED_BEFORE_CANDIDATES,
+        "the older encoding is reproduced exactly"
+    );
+    let newer =
+        super::super::scheme_content::build_item_creation_update(document, ITEM, &content).unwrap();
+    for order in [[&older, &newer], [&newer, &older]] {
+        let doc = YrsSchemeDocument::new(document);
+        for update in order {
+            doc.apply_update_v1(update).unwrap();
+        }
+        assert_eq!(doc.item_texts().unwrap(), vec!["Thesis".to_string()]);
+    }
 }

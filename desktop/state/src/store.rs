@@ -443,6 +443,29 @@ impl WorkspaceStore {
                     dropped.join(", ")
                 );
             }
+            let mut dropped_schemes: Vec<String> = self
+                .workspace
+                .schemes
+                .keys()
+                .filter(|id| !recovered.schemes.contains_key(id))
+                .map(|id| id.to_string())
+                .collect();
+            let dropped_days: Vec<String> = self
+                .workspace
+                .daily_queue
+                .keys()
+                .filter(|date| !recovered.daily_queue.contains_key(date))
+                .map(|date| date.to_string())
+                .collect();
+            if !dropped_schemes.is_empty() || !dropped_days.is_empty() {
+                dropped_schemes.sort();
+                eprintln!(
+                    "sync: launch reconcile drops scheme(s) [{}] and day binding(s) [{}] its \
+                     documents do not hold",
+                    dropped_schemes.join(", "),
+                    dropped_days.join(", ")
+                );
+            }
         }
         self.workspace = recovered;
         self.index = None;
@@ -755,6 +778,7 @@ impl WorkspaceStore {
             // naming them as deletions is the only evidence that tombstones
             // one.
             changes.deleted_items = hidden_copies.clone();
+            changes.placement_removed_items = hidden_copies.clone();
             self.defer_crdt(changes);
             self.flush_crdt();
             self.dirty.schemes.extend(hidden_copies.into_keys());
@@ -1690,8 +1714,30 @@ impl WorkspaceStore {
         let may_change_document_set = command_may_change_document_set(&command);
         self.record_population_bases(&command);
         let restored_probe = command.clone();
+        // A scheme or folder removed for good takes its lines with it, and
+        // which lines those were is only known before the command lands.
+        let lines_before =
+            removes_whole_schemes(&command).then(|| visible_line_ids(&self.workspace));
         let receipt = self.workspace.apply(command.clone())?;
-        let crdt_changes = crdt_change_set_for_command(&command);
+        let gone: Vec<knotq_model::ItemId> = match lines_before {
+            Some(before) => {
+                let after = visible_line_ids(&self.workspace);
+                before.difference(&after).copied().collect()
+            }
+            None => lines_the_command_deletes(&command),
+        };
+        let other_copies = self.every_copy_of(&gone);
+        let mut crdt_changes = crdt_change_set_for_command(&command);
+        for (scheme, items) in other_copies {
+            if self.workspace.schemes.contains_key(&scheme) {
+                crdt_changes.schemes.insert(scheme);
+                crdt_changes
+                    .deleted_items
+                    .entry(scheme)
+                    .or_default()
+                    .extend(items);
+            }
+        }
         let crdt_updates =
             self.after_workspace_change(&receipt.touched, crdt_changes, may_change_document_set);
         self.pending_operations.push_back(StoreOperation {
@@ -1749,6 +1795,38 @@ impl WorkspaceStore {
             }
         }
         Ok(receipt)
+    }
+
+    /// Every copy of each of `lines`, in the documents of schemes still in the
+    /// workspace: live ones, and ones removed only because the line lived
+    /// elsewhere.
+    ///
+    /// A line a local command took out of the visible workspace altogether —
+    /// deleted, or gone with its scheme — was deleted by the user, and every
+    /// copy has to say so. A copy hidden by the duplicate rule is still the
+    /// same line, and left live it reappears the moment the visible one goes
+    /// (production fuzz chaos seed 32); left removed-as-a-placement, it is
+    /// where materialization brings the line back once no live copy remains
+    /// (`restore_lines_removed_only_as_placements`), which is right for a line
+    /// lost to concurrent moves and wrong for one the user deleted.
+    ///
+    /// Asked after the command lands, of documents that have not seen it yet
+    /// (its writes are still deferred) — which is what lets it find copies the
+    /// command is about to remove. One lookup per document per line.
+    fn every_copy_of(
+        &mut self,
+        lines: &[knotq_model::ItemId],
+    ) -> HashMap<SchemeId, HashSet<String>> {
+        let mut copies: HashMap<SchemeId, HashSet<String>> = HashMap::new();
+        if lines.is_empty() {
+            return copies;
+        }
+        for line in lines {
+            for holder in self.crdt.documents_holding_any_copy(*line) {
+                copies.entry(holder).or_default().insert(line.to_string());
+            }
+        }
+        copies
     }
 
     pub fn apply_remote(
@@ -1873,6 +1951,45 @@ fn command_restores_content(command: &Command) -> bool {
     }
 }
 
+/// Whether `command` removes a scheme or folder for good, taking its lines.
+fn removes_whole_schemes(command: &Command) -> bool {
+    match command {
+        Command::PermanentlyDeleteScheme { .. } | Command::PermanentlyDeleteFolder { .. } => true,
+        Command::Batch(commands) => commands.iter().any(removes_whole_schemes),
+        _ => false,
+    }
+}
+
+/// The lines `command` deletes outright: removed from a scheme and put back
+/// nowhere. A line removed from one scheme and inserted into another moved.
+fn lines_the_command_deletes(command: &Command) -> Vec<knotq_model::ItemId> {
+    let mut deleted: HashMap<SchemeId, HashSet<String>> = HashMap::new();
+    collect_deleted_item_ids(command, &mut deleted);
+    if deleted.is_empty() {
+        return Vec::new();
+    }
+    let mut inserted: HashMap<SchemeId, HashSet<String>> = HashMap::new();
+    collect_inserted_item_ids(command, &mut inserted);
+    let inserted: HashSet<&String> = inserted.values().flatten().collect();
+    let mut lines: Vec<knotq_model::ItemId> = deleted
+        .values()
+        .flatten()
+        .filter(|item| !inserted.contains(item))
+        .filter_map(|item| item.parse().ok())
+        .collect();
+    lines.sort();
+    lines.dedup();
+    lines
+}
+
+fn visible_line_ids(workspace: &Workspace) -> HashSet<knotq_model::ItemId> {
+    workspace
+        .schemes
+        .values()
+        .flat_map(|scheme| scheme.items.iter().map(|item| item.id))
+        .collect()
+}
+
 fn crdt_change_set_for_command(command: &Command) -> WorkspaceCrdtChangeSet {
     let documents = command.crdt_documents();
     let mut deleted_items: HashMap<SchemeId, HashSet<String>> = HashMap::new();
@@ -1909,10 +2026,29 @@ fn crdt_change_set_for_command(command: &Command) -> WorkspaceCrdtChangeSet {
                 .any(|(source, items)| source != destination && items.contains(item))
         })
     });
+    let mut placement_removed_items: HashMap<SchemeId, HashSet<String>> = HashMap::new();
+    for (destination, inserted) in &inserted_items {
+        for item in inserted {
+            let sources: Vec<SchemeId> = deleted_items
+                .iter()
+                .filter(|(source, items)| *source != destination && items.contains(item))
+                .map(|(source, _)| *source)
+                .collect();
+            // A move's source copy is removed because the line lives in the
+            // destination now, not because anyone deleted it.
+            for source in sources {
+                placement_removed_items
+                    .entry(source)
+                    .or_default()
+                    .insert(item.clone());
+            }
+        }
+    }
     WorkspaceCrdtChangeSet {
         workspace: documents.workspace || moves_a_line_between_schemes,
         schemes: documents.schemes.into_iter().collect(),
         deleted_items,
+        placement_removed_items,
     }
 }
 

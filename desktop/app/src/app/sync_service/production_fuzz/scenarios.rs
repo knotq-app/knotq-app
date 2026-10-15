@@ -5,7 +5,7 @@
 
 use chrono::{Duration, NaiveDate};
 use knotq_commands::Command;
-use knotq_model::{Item, SchemeId};
+use knotq_model::{Item, ItemId, SchemeId};
 use knotq_storage_json::load_daily_queue_scheme;
 
 use super::device::{CrashPoint, DesktopDevice};
@@ -854,6 +854,102 @@ fn a_line_moved_and_then_deleted_before_a_sync_stays_deleted() {
                 .text(),
             "changed on b",
             "device {index}: the other device's edit did not land"
+        );
+    }
+    world.settle_and_assert();
+}
+
+/// Move `line` from `from` to `to` on device `index`, the way the editor does.
+fn move_line(world: &mut World, index: usize, from: SchemeId, to: SchemeId, line: ItemId) {
+    world.local(index, |device, _| {
+        let workspace = device.state.workspace.clone();
+        let moved = workspace.scheme(from).unwrap().item(line).unwrap().clone();
+        let position = workspace.scheme(to).unwrap().items.len();
+        device
+            .state
+            .apply_command(Command::Batch(vec![
+                Command::DeleteItem {
+                    scheme: from,
+                    item: line,
+                },
+                Command::InsertItem {
+                    scheme: to,
+                    position,
+                    item: moved,
+                },
+            ]))
+            .expect("move line");
+    });
+}
+
+/// Two devices move one line to different schemes at the same time, and a
+/// third, having seen both copies, moves it again. Nobody deleted the line, so
+/// it must survive in some scheme everywhere.
+///
+/// It used to end up in none. The duplicate the first two moves leave behind
+/// was cleaned up by deleting the "losing" copy, each device judging from what
+/// it had seen, while the third move removed the "winning" one (single-account
+/// fuzz seed 10350, journal-loss 20047). Those removals are now marked as
+/// placements, and a line left with no live copy is shown from one of them.
+#[test]
+fn concurrent_moves_of_one_line_never_lose_it() {
+    let mut world = world(90_350, 1);
+    let a = world.add_device(Some(0));
+    world.sync(a, 0);
+    let b = world.add_device(Some(0));
+    world.sync(b, 0);
+    let c = world.add_device(Some(0));
+    world.sync(c, 0);
+    world.sync(a, 0);
+    world.sync(b, 0);
+    // Three ordinary schemes in id order, and a line on today's page.
+    let (low, mid, high, today, line) = {
+        let workspace = world.devices[a].as_ref().unwrap().state.workspace.clone();
+        let mut schemes: Vec<_> = workspace
+            .schemes
+            .values()
+            .filter(|scheme| !workspace.daily_queue.values().any(|id| *id == scheme.id))
+            .map(|scheme| scheme.id)
+            .collect();
+        schemes.sort();
+        assert!(
+            schemes.len() >= 3,
+            "the starter workspace has three schemes"
+        );
+        let today = workspace
+            .daily_queue
+            .values()
+            .copied()
+            .find(|id| workspace.scheme(*id).is_some_and(|s| !s.items.is_empty()))
+            .expect("a Daily page with a line");
+        let line = workspace.scheme(today).unwrap().items[0].id;
+        (schemes[0], schemes[1], schemes[2], today, line)
+    };
+    // a moves the line to the lowest scheme, which wins every duplicate.
+    move_line(&mut world, a, today, low, line);
+    world.sync(a, 0);
+    // c sees it there and moves it on, to the highest scheme.
+    world.sync(c, 0);
+    move_line(&mut world, c, low, high, line);
+    // b, not having seen a's move, moves the same line to the middle scheme;
+    // its sync then shows it a's copy, which beats its own.
+    move_line(&mut world, b, today, mid, line);
+    world.sync(b, 0);
+    // c's sync publishes its move and shows it b's copy, which beats c's.
+    world.sync(c, 0);
+    world.sync(b, 0);
+    world.sync(c, 0);
+    world.sync(a, 0);
+    for index in [a, b, c] {
+        let workspace = &world.devices[index].as_ref().unwrap().state.workspace;
+        let holders = workspace
+            .schemes
+            .values()
+            .filter(|scheme| scheme.item(line).is_some())
+            .count();
+        assert_eq!(
+            holders, 1,
+            "device {index} shows line {line} in {holders} schemes"
         );
     }
     world.settle_and_assert();

@@ -691,6 +691,8 @@ struct HeldScheme {
     archived: bool,
     /// Whether the Daily Queue binds this scheme to a date.
     daily: bool,
+    /// The date it is bound to, when it is.
+    daily_date: Option<chrono::NaiveDate>,
     /// The body, captured only for a scheme that could need putting back.
     ///
     /// Applying a pull PRUNES the live CRDT document of a scheme the merged
@@ -723,6 +725,12 @@ fn held_schemes(
         workspace.recently_deleted.iter().copied().collect();
     let daily: std::collections::HashSet<knotq_model::SchemeId> =
         workspace.daily_queue.values().copied().collect();
+    let daily_dates: std::collections::HashMap<knotq_model::SchemeId, chrono::NaiveDate> =
+        workspace
+            .daily_queue
+            .iter()
+            .map(|(date, scheme)| (*scheme, *date))
+            .collect();
     workspace
         .schemes
         .iter()
@@ -747,6 +755,7 @@ fn held_schemes(
                     placement: placements.get(id).copied(),
                     archived: archived.contains(id),
                     daily: daily.contains(id),
+                    daily_date: daily_dates.get(id).copied(),
                     items: at_risk.then(|| scheme.items.clone()),
                 },
             ))
@@ -820,7 +829,18 @@ fn restore_unpublished_schemes_dropped_by_pull(
         // reached by this rescue on chaos 127). The client brings the day back
         // from its binding through `ensure_daily_queue` when it needs it.
         let daily = scheme.daily || daily_now.contains(scheme_id);
-        let restorable = !published && unpushed && !scheme.archived && !daily;
+        // ...unless the day's binding went with it. The binding is what the
+        // client rebuilds a day from, so a day this device opened and never
+        // published — opened while signed out, then signed into an account
+        // that has no such day — has nothing to come back from, and its lines
+        // go with it (production fuzz chaos seeds 318 and 665). Such a day is
+        // loaded, being in the workspace the pull started from, so putting it
+        // back with its binding keeps the two halves in step.
+        let unbound_day = scheme.daily_date.filter(|date| {
+            !daily_now.contains(scheme_id) && !workspace.daily_queue.contains_key(date)
+        });
+        let restorable =
+            !published && unpushed && !scheme.archived && (!daily || unbound_day.is_some());
         let Some(items) = crdt_docs
             .materialized_scheme_items(*scheme_id)
             .or_else(|| scheme.items.clone().map(Vec::from))
@@ -848,6 +868,9 @@ fn restore_unpublished_schemes_dropped_by_pull(
             .scheme_sync
             .entry(*scheme_id)
             .or_insert_with(|| scheme.sync.clone());
+        if let Some(date) = unbound_day {
+            workspace.daily_queue.insert(date, *scheme_id);
+        }
         // Put it back where the user had it when that folder survived the pull.
         // Otherwise leave it unplaced: `normalize_one_level_folders` runs next
         // and re-homes a scheme the folder tree does not mention under the root,
