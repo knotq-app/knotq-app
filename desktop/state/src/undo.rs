@@ -38,6 +38,28 @@ pub fn recurrence_undo_key(cmd: &Command) -> Option<EditorUndoKey> {
     }
 }
 
+/// The clock undo grouping reads. Wall time in the app; frozen by
+/// [`freeze_undo_clock`] so a test that drives edits programmatically groups
+/// them the same way however fast the machine runs it. With the real clock, a
+/// loaded machine spread the production fuzzer's steps past the grouping window
+/// and the same seed played a different scenario under load than on an idle
+/// machine, which is why some fuzz seeds failed only while other runs shared the
+/// CPU.
+pub fn undo_clock_now() -> Instant {
+    FROZEN_UNDO_CLOCK
+        .get()
+        .copied()
+        .unwrap_or_else(Instant::now)
+}
+
+static FROZEN_UNDO_CLOCK: std::sync::OnceLock<Instant> = std::sync::OnceLock::new();
+
+/// Stop the undo-grouping clock for the rest of the process: every edit then
+/// counts as made at the same instant. For tests only.
+pub fn freeze_undo_clock() {
+    let _ = FROZEN_UNDO_CLOCK.set(Instant::now());
+}
+
 pub fn should_coalesce_editor_undo(
     key: Option<EditorUndoKey>,
     group: Option<EditorUndoGroup>,

@@ -47,7 +47,7 @@ impl AppState {
 
     pub fn apply_editor_command(&mut self, command: Command) -> Option<CommandReceipt> {
         self.recurrence_undo_group = None;
-        let now = Instant::now();
+        let now = crate::undo::undo_clock_now();
         self.apply_filtered_command(command, true, Some(now))
     }
 
@@ -160,12 +160,12 @@ impl AppState {
         if editor_command {
             self.editor_undo_group = editor_undo_key(&receipt.inverse).map(|key| EditorUndoGroup {
                 key,
-                last_edit: now.unwrap_or_else(Instant::now),
+                last_edit: now.unwrap_or_else(crate::undo::undo_clock_now),
             });
         } else {
             self.recurrence_undo_group = recurrence_key.map(|key| EditorUndoGroup {
                 key,
-                last_edit: Instant::now(),
+                last_edit: crate::undo::undo_clock_now(),
             });
         }
         self.undo_store.clear_redo_conflicting(&receipt.inverse);
