@@ -1,42 +1,36 @@
 # Known gaps
 
-## Where things stand (checked 2026-10-10)
+## Where things stand (checked 2026-10-16)
 
 Read this first; much of what follows is the record of how each item was found
 and is written as of the day it was found.
 
-**The gates are green.** Checked against the runs, not against the notes below:
+**The gates are green, and no seed is excused.** Checked against the runs, not
+against the notes below:
 
-- **Nightly deep fuzz (`sync-fuzz.yml`)** — passing since 2026-10-04. It ran at
-  its configured depth on `c2a311d` (2026-10-04) and `6085be8` (2026-10-10): the
-  property fuzzer at 1500 x 400, the multi-origin daily-queue stress at 3000
-  seeds, the desktop production-path fuzzer at 400 x 300, and the deep WebSocket
-  job. The green runs in between are skips — the workflow does not re-fuzz a
-  commit pair it has already fuzzed — so two real runs, not seven.
-- **PR gate (`ci.yml` `sync-stress`)** — green on `main` through #59.
-- **Release gate** — v0.58.0 built on 2026-10-01 after two red attempts.
+- **Nightly deep fuzz (`sync-fuzz.yml`)** — green on `7442b92` (2026-10-16, run
+  38834983813): the property fuzzer at 1500 x 400 (15 passed), the multi-origin
+  daily-queue stress at 3000 seeds, the desktop production-path fuzzer at
+  400 x 300 (36 passed), and the deep WebSocket job. It was red on `7a71c4a`
+  (2026-10-14 and 10-15) until #69. The runs that were green before that were
+  the CI machine's timing, not a pass — see "Fixed 2026-10-14" below.
+- **PR gate (`ci.yml` `sync-stress`)** — green on `main` through #70.
+- **Release gate** — v0.59.0's sync-stress gate passed at the tag (2026-10-16).
 
-So **0w** ("at its configured depth it is red") and **0E** ("main fails 20223,
-this tree fails chaos 6") describe a state that no longer holds. Their sections
-are kept as the record of what was wrong and what fixed it.
+`KNOWN_FAILING` is gone: seeds **10106, 10175 and 10192** pass. One check is
+still waived by design: the projection law is not checked on a device after it
+switches accounts (`projection_excused`, **0i-b** below). **0w** and **0E** describe a state that no longer holds; their
+sections are kept as the record of what was wrong and what fixed it.
 
-**Green is not the same as nothing excused.** `run_seeds` in
-`production_fuzz/mod.rs` does not fail the sweep on single-account seeds
-**10106, 10175 and 10192** (`KNOWN_FAILING`, #53). They are one bug, still
-open: a device that created a scheme before its first sync keeps its own
-name/colour/gsync for it while the account moves on, because
-`repopulate_workspace_canonically` discards the snapshot that would publish its
-index writes. Metadata only — no content lost, no item dropped, no device
-wedged. Any other failing seed still fails the build.
+**Fixed since 2026-10-10:** item **4** (undo wiped by a sync), by #62; every
+failing production-fuzz seed, by #69.
 
-**Fixed since this block was written:** item **4** (undo wiped by a sync), by #62.
-
-**Still open, in the order a user would feel them:**
+**Still open, in the order a user would feel them.** The fuzz gates do not reach
+these, so green does not cover them:
 
 | | What | Why it is not fixed |
 |---|---|---|
 | **0i**, **0i-b** | Switching accounts on a device can delete the *other* account's data | Root cause found (identical Yjs structs across accounts). Two fixes failed; the remaining one changes the document format |
-| `KNOWN_FAILING` | The three excused seeds above | Four fixes rejected at 300 x 200 |
 | **0C** | Item skeletons alias across documents; the namespaced skeleton is written but not landed | An incompatible format change |
 | **0z** | `unlanded_pulls` is never cleared when a run lands | Not yet attempted |
 | **3** | No backup/DR for the backend's Durable Object state | A project, and an ops decision |
@@ -994,7 +988,7 @@ content into this device's deletions and reverts.
 chaos 190 and 299: recovery then sees no change at all, writes nothing, and the
 documents stay behind the plain files, so the projection law fails on launch.
 
-## 0w. [GREEN since 2026-10-04, three seeds excused] The nightly deep gate never ran, and at its configured depth it was red
+## 0w. [GREEN, no seed excused since #69] The nightly deep gate never ran, and at its configured depth it was red
 
 **Found 2026-09-24 while debugging eight consecutive red nightlies.** The red
 was not a sync bug. `sync-fuzz.yml` installed only `pkg-config` and
