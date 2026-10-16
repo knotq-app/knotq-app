@@ -18,11 +18,15 @@ on:
   workflow_dispatch:
     inputs:
       seeds:
-        description: "Seeds per fuzz test"
+        description: "Seeds for the in-memory property fuzz"
         required: false
         default: "1500"
       steps:
-        description: "Operations per seed"
+        description: "Operations per seed for the property fuzz"
+        required: false
+        default: "400"
+      production_seeds:
+        description: "Seeds for the desktop production-path fuzz"
         required: false
         default: "400"
       ws_seeds:
@@ -97,9 +101,9 @@ jobs:
     runs-on: ubuntu-24.04
     needs: changed
     if: needs.changed.outputs.run == 'true'
-    # The default 1500 x 400 run takes ~15 minutes; leave headroom for a cold
-    # cache and for the manual dispatch to ask for more.
-    timeout-minutes: 90
+    # At the defaults this job takes ~80 minutes (property ~50, daily-queue
+    # stress ~11, production-path ~20); a deeper manual dispatch needs more.
+    timeout-minutes: 120
 
     steps:
       - uses: actions/checkout@v6
@@ -137,9 +141,12 @@ jobs:
           cargo test -p knotq-sync --test sync_property_model --release -- \
             --include-ignored --exact daily_queue_multiorigin_stress --nocapture
 
+      # Its own input: this fuzzer is far slower per seed than the property
+      # fuzz, so sharing `seeds` made every manual dispatch run it at 1500
+      # seeds and hit the job timeout (run 38826091409, cancelled at 1400/1500).
       - name: Run the desktop production-path fuzzer at depth
         env:
-          KNOTQ_FUZZ_SEEDS: ${{ github.event.inputs.seeds || '400' }}
+          KNOTQ_FUZZ_SEEDS: ${{ github.event.inputs.production_seeds || '400' }}
           KNOTQ_FUZZ_STEPS: "300"
         run: cargo test -p knotq-app --release production_fuzz -- --nocapture
 
