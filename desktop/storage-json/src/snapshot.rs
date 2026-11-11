@@ -32,10 +32,18 @@ const SNAPSHOT_ROOT: &str = "snapshots";
 /// hundred saves still costs one copy.
 const KEEP: usize = 7;
 
-/// Directories that must never be copied *into* a snapshot: the snapshot roots
-/// themselves (which would recurse), and logs, which are large, are not user
-/// content, and are actively being written while the copy runs.
-const EXCLUDED: &[&str] = &["snapshots", "backups", "upgrade-backups", "logs"];
+/// Top-level entries that must never be copied *into* a snapshot: the snapshot
+/// and backup roots themselves (which would recurse or duplicate), logs (not
+/// user content, written while the copy runs) and staged updates.
+const EXCLUDED: &[&str] = &["snapshots", "backups", "upgrade-backups", "logs", "updates"];
+/// The same, deeper in the tree, as paths relative to the data directory. The
+/// workspace's own history store and weekday backups are each bigger than the
+/// workspace, and are their own recovery paths.
+const EXCLUDED_NESTED: &[&str] = &["workspace/.knotq-history", "workspace/backups"];
+/// Name fragments of files the app sets aside rather than deletes (an old form
+/// after a migration, a quarantined unreadable file) and rotated logs. Kept on
+/// disk, never multiplied by seven.
+const EXCLUDED_FRAGMENTS: &[&str] = &[".migrated", ".unreadable-", ".corrupt", ".log", ".tmp"];
 
 /// A snapshot on disk, newest first when listed.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -112,13 +120,7 @@ pub fn restore_snapshot(data_dir: &Path, snapshot: &RecoverySnapshot) -> Result<
     // Remove the live copy of everything the snapshot replaces, so a file the
     // snapshot does not have does not survive the restore and leave the
     // directory describing two different workspaces.
-    for entry in fs::read_dir(data_dir).with_context(|| format!("read {}", data_dir.display()))? {
-        let entry = entry?;
-        if is_excluded(&entry.file_name().to_string_lossy()) {
-            continue;
-        }
-        remove_any(&entry.path())?;
-    }
+    clear_tree(data_dir, Path::new(""))?;
     copy_tree(&snapshot.dir, data_dir)?;
     Ok(displaced)
 }
@@ -177,37 +179,76 @@ fn prune(data_dir: &Path) -> Result<()> {
     Ok(())
 }
 
-fn is_excluded(name: &str) -> bool {
-    EXCLUDED.contains(&name) || name.starts_with('.')
+/// Whether `rel` (relative to the data directory) stays out of snapshots and
+/// is left alone by a restore.
+fn is_excluded(rel: &Path) -> bool {
+    let Some(name) = rel.file_name().map(|name| name.to_string_lossy()) else {
+        return false;
+    };
+    if EXCLUDED_NESTED.iter().any(|path| rel == Path::new(path)) {
+        return true;
+    }
+    if rel.parent() != Some(Path::new("")) {
+        return false;
+    }
+    EXCLUDED.contains(&name.as_ref())
+        || name.starts_with('.')
+        || EXCLUDED_FRAGMENTS
+            .iter()
+            .any(|fragment| name.contains(fragment))
 }
 
-/// Copy every child of `from` into `to`, skipping the excluded roots.
-fn copy_tree(from: &Path, to: &Path) -> Result<()> {
-    fs::create_dir_all(to).with_context(|| format!("create {}", to.display()))?;
-    for entry in fs::read_dir(from).with_context(|| format!("read {}", from.display()))? {
+/// Whether some excluded path lives below directory `rel`, so clearing it must
+/// recurse instead of removing it whole.
+fn holds_excluded(rel: &Path) -> bool {
+    EXCLUDED_NESTED.iter().any(|path| {
+        let path = Path::new(path);
+        path != rel && path.starts_with(rel)
+    })
+}
+
+/// Remove everything under `dir` that a snapshot would carry.
+fn clear_tree(dir: &Path, rel: &Path) -> Result<()> {
+    for entry in fs::read_dir(dir).with_context(|| format!("read {}", dir.display()))? {
         let entry = entry?;
-        let name = entry.file_name();
-        if is_excluded(&name.to_string_lossy()) {
+        let child = rel.join(entry.file_name());
+        if is_excluded(&child) {
             continue;
         }
-        copy_recursive(&entry.path(), &to.join(name))?;
+        if entry.path().is_dir() && holds_excluded(&child) {
+            clear_tree(&entry.path(), &child)?;
+        } else {
+            remove_any(&entry.path())?;
+        }
     }
     Ok(())
 }
 
-fn copy_recursive(from: &Path, to: &Path) -> Result<()> {
-    if from.is_dir() {
-        fs::create_dir_all(to).with_context(|| format!("create {}", to.display()))?;
-        for entry in fs::read_dir(from).with_context(|| format!("read {}", from.display()))? {
-            let entry = entry?;
-            copy_recursive(&entry.path(), &to.join(entry.file_name()))?;
+/// Copy every child of `from` into `to`, skipping the excluded paths.
+/// `fs::copy` clones on APFS, so an unchanged file costs no disk.
+fn copy_tree(from: &Path, to: &Path) -> Result<()> {
+    copy_filtered(from, to, Path::new(""))
+}
+
+fn copy_filtered(from: &Path, to: &Path, rel: &Path) -> Result<()> {
+    if !from.is_dir() {
+        if let Some(parent) = to.parent() {
+            fs::create_dir_all(parent).with_context(|| format!("create {}", parent.display()))?;
         }
+        fs::copy(from, to)
+            .with_context(|| format!("copy {} to {}", from.display(), to.display()))?;
         return Ok(());
     }
-    if let Some(parent) = to.parent() {
-        fs::create_dir_all(parent).with_context(|| format!("create {}", parent.display()))?;
+    fs::create_dir_all(to).with_context(|| format!("create {}", to.display()))?;
+    for entry in fs::read_dir(from).with_context(|| format!("read {}", from.display()))? {
+        let entry = entry?;
+        let name = entry.file_name();
+        let child = rel.join(&name);
+        if is_excluded(&child) {
+            continue;
+        }
+        copy_filtered(&entry.path(), &to.join(name), &child)?;
     }
-    fs::copy(from, to).with_context(|| format!("copy {} to {}", from.display(), to.display()))?;
     Ok(())
 }
 

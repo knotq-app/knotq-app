@@ -212,3 +212,36 @@ fn a_restore_request_is_not_mistaken_for_a_snapshot() {
 
     assert_eq!(list_snapshots(root).len(), 1);
 }
+
+#[test]
+fn snapshots_skip_history_backups_and_set_aside_files_and_restore_keeps_them() {
+    const LABEL: &str = "snapshots_skip_history_backups_and_set_aside_files";
+    let root = &temp_data_dir(LABEL);
+    data_dir_with_both_halves(root);
+    write(&root.join("workspace/schemes/a.knotq"), "scheme");
+    write(&root.join("workspace/.knotq-history/v1/blob"), "history");
+    write(&root.join("workspace/backups/Mon/a.knotq"), "weekday copy");
+    write(&root.join("sync-crdt-state.json.migrated"), "old form");
+    write(&root.join("knotq-notif.log.1"), "log");
+    write(&root.join("updates/KnotQ.app"), "staged update");
+
+    let snapshot = capture_daily_snapshot(root).unwrap().unwrap();
+    // Each of these is bigger than the workspace; seven copies of them is how
+    // a 30 MB workspace would cost gigabytes.
+    assert!(snapshot.dir.join("workspace/schemes/a.knotq").exists());
+    assert!(!snapshot.dir.join("workspace/.knotq-history").exists());
+    assert!(!snapshot.dir.join("workspace/backups").exists());
+    assert!(!snapshot.dir.join("sync-crdt-state.json.migrated").exists());
+    assert!(!snapshot.dir.join("knotq-notif.log.1").exists());
+    assert!(!snapshot.dir.join("updates").exists());
+
+    // Not in the snapshot must not mean "deleted by a restore".
+    write(&root.join("workspace/schemes/b.knotq"), "added later");
+    restore_snapshot(root, &snapshot).unwrap();
+    assert!(!root.join("workspace/schemes/b.knotq").exists());
+    assert!(root.join("workspace/schemes/a.knotq").exists());
+    assert!(root.join("workspace/.knotq-history/v1/blob").exists());
+    assert!(root.join("workspace/backups/Mon/a.knotq").exists());
+    assert!(root.join("sync-crdt-state.json.migrated").exists());
+    assert!(root.join("knotq-notif.log.1").exists());
+}
