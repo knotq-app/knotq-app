@@ -3,6 +3,9 @@ name: Release
 on:
   push:
     tags: ["v*"]
+    # Dry run: push a release-check/<anything> branch to build, sign, package
+    # and smoke-test every platform without publishing.
+    branches: ["release-check/**"]
 
 permissions:
   # Build, signing, and packaging jobs only need to read the tagged source.
@@ -116,7 +119,10 @@ jobs:
 
       - name: Derive version
         id: version
-        run: echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+        run: |
+          # A dry run has no version tag; give it a valid, never-published one.
+          if [[ "$GITHUB_REF_TYPE" == tag ]]; then v="${GITHUB_REF_NAME#v}"; else v="0.0.${GITHUB_RUN_NUMBER}"; fi
+          echo "version=$v" >> "$GITHUB_OUTPUT"
 
       - name: Apply bundle version
         run: perl -0pi -e 's/^version = "[^"]+"/version = "$ENV{KNOTQ_VERSION}"/m' desktop/app/Cargo.toml
@@ -170,7 +176,10 @@ jobs:
 
       - name: Derive version
         id: version
-        run: echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+        run: |
+          # A dry run has no version tag; give it a valid, never-published one.
+          if [[ "$GITHUB_REF_TYPE" == tag ]]; then v="${GITHUB_REF_NAME#v}"; else v="0.0.${GITHUB_RUN_NUMBER}"; fi
+          echo "version=$v" >> "$GITHUB_OUTPUT"
 
       - name: Download macOS app bundles
         uses: actions/download-artifact@v7
@@ -262,6 +271,13 @@ jobs:
             exit 1
           fi
 
+      # Install from the DMG and launch it, the way a user would. Signing and
+      # notarization passing says nothing about whether the app starts.
+      - name: Smoke test the DMG
+        run: bash bundling/macos/smoke-test.sh "dist/macos/KnotQ-${{ steps.version.outputs.version }}-macos-${{ matrix.arch }}.dmg"
+        env:
+          KNOTQ_SMOKE_REQUIRE_SIGNED: "1"
+
       - name: Upload artifact
         uses: actions/upload-artifact@v6
         with:
@@ -292,7 +308,10 @@ jobs:
       - name: Derive version
         id: version
         shell: bash
-        run: echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+        run: |
+          # A dry run has no version tag; give it a valid, never-published one.
+          if [[ "$GITHUB_REF_TYPE" == tag ]]; then v="${GITHUB_REF_NAME#v}"; else v="0.0.${GITHUB_RUN_NUMBER}"; fi
+          echo "version=$v" >> "$GITHUB_OUTPUT"
 
       - name: Apply version
         shell: bash
@@ -388,6 +407,10 @@ jobs:
             }
           }
 
+      - name: Smoke test the installer
+        shell: pwsh
+        run: ./bundling/windows/smoke-test.ps1 "${{ github.workspace }}\dist\windows\KnotQ-${{ steps.version.outputs.version }}-windows-x64-setup.exe"
+
       - name: Upload artifact
         uses: actions/upload-artifact@v6
         with:
@@ -416,7 +439,10 @@ jobs:
 
       - name: Derive version
         id: version
-        run: echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+        run: |
+          # A dry run has no version tag; give it a valid, never-published one.
+          if [[ "$GITHUB_REF_TYPE" == tag ]]; then v="${GITHUB_REF_NAME#v}"; else v="0.0.${GITHUB_RUN_NUMBER}"; fi
+          echo "version=$v" >> "$GITHUB_OUTPUT"
 
       - name: Apply version
         run: perl -0pi -e 's/^version = "[^"]+"/version = "$ENV{KNOTQ_VERSION}"/m' desktop/app/Cargo.toml
@@ -446,6 +472,13 @@ jobs:
           tar czf "dist/linux/KnotQ-${{ steps.version.outputs.version }}-linux-x86_64.tar.gz" \
             -C dist/linux/stage knotq knotq-mcp assets
 
+      - name: Smoke test the tarball
+        run: |
+          # A display and a software Vulkan driver (lavapipe) for GPUI.
+          sudo apt-get install -y xvfb mesa-vulkan-drivers
+          xvfb-run -a -s "-screen 0 1920x1080x24" \
+            bash bundling/linux/smoke-test.sh "dist/linux/KnotQ-${{ steps.version.outputs.version }}-linux-x86_64.tar.gz"
+
       - name: Upload artifact
         uses: actions/upload-artifact@v6
         with:
@@ -454,6 +487,8 @@ jobs:
 
   publish:
     name: Publish GitHub release
+    # Dry runs (release-check/**) stop after the smoke tests.
+    if: github.ref_type == 'tag'
     runs-on: ubuntu-24.04
     needs: [package-macos, build-windows, build-linux]
     permissions:
