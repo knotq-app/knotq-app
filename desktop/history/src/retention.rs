@@ -38,6 +38,11 @@ pub(crate) fn rotate_snapshots(workspace_dir: &Path, now: DateTime<Utc>) -> Resu
     Ok(())
 }
 
+/// Daily restore points are kept four weeks. Older ones were a year deep and
+/// cost more disk than the workspace they protect; the recovery snapshots and
+/// sync history cover the long tail.
+pub(crate) const MAX_AGE_DAYS: i64 = 28;
+
 pub(crate) fn retention_bucket(
     timestamp: DateTime<Utc>,
     now: DateTime<Utc>,
@@ -49,7 +54,7 @@ pub(crate) fn retention_bucket(
         ("h1", 60 * 60)
     } else if age <= Duration::days(7) {
         ("h4", 4 * 60 * 60)
-    } else if age <= Duration::days(365) {
+    } else if age <= Duration::days(MAX_AGE_DAYS) {
         ("d1", 24 * 60 * 60)
     } else {
         return None;

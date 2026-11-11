@@ -207,7 +207,7 @@ mod tests {
     use super::*;
     use crate::retention::retention_bucket;
     use crate::support::temp_suffix;
-    use chrono::{Duration, TimeZone};
+    use chrono::{Duration, TimeZone, Timelike};
     use std::path::PathBuf;
 
     #[test]
@@ -231,12 +231,12 @@ mod tests {
             "h4"
         );
         assert_eq!(
-            retention_bucket(now - Duration::days(300), now)
+            retention_bucket(now - Duration::days(27), now)
                 .unwrap()
                 .tier,
             "d1"
         );
-        assert!(retention_bucket(now - Duration::days(366), now).is_none());
+        assert!(retention_bucket(now - Duration::days(29), now).is_none());
     }
 
     #[test]
@@ -308,7 +308,8 @@ mod tests {
         let workspace_dir = unique_temp_dir("knotq-history-dedupe");
         fs::create_dir_all(&workspace_dir).unwrap();
         fs::write(workspace_dir.join("workspace.json"), "one").unwrap();
-        let first_time = Utc.with_ymd_and_hms(2026, 5, 20, 18, 0, 0).unwrap();
+        // Relative to now: rotation drops anything past the retention window.
+        let first_time = Utc::now().with_nanosecond(0).unwrap() - Duration::days(1);
         let second_time = first_time + Duration::minutes(5);
 
         record_workspace_snapshot_at(&workspace_dir, first_time).unwrap();

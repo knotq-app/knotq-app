@@ -14,6 +14,9 @@ const BACKUP_ROOT: &str = "upgrade-backups";
 /// How many upgrade backups to keep. They are small (a migration declares a
 /// bounded path set) but they are dead weight once a build has run for a while.
 const KEEP: usize = 3;
+/// A backup older than this is dropped even if it is among the newest
+/// [`KEEP`]: a migration that has run cleanly for four weeks has stuck.
+const MAX_AGE_DAYS: i64 = 28;
 
 pub struct Snapshot {
     pub dir: PathBuf,
@@ -57,8 +60,13 @@ pub fn restore(snapshot: &Snapshot) -> Result<()> {
     Ok(())
 }
 
-/// Drop all but the newest [`KEEP`] backups.
+/// Drop all but the newest [`KEEP`] backups, and any older than
+/// [`MAX_AGE_DAYS`].
 pub fn prune(data_dir: &Path) {
+    prune_at(data_dir, chrono::Utc::now());
+}
+
+fn prune_at(data_dir: &Path, now: chrono::DateTime<chrono::Utc>) {
     let root = data_dir.join(BACKUP_ROOT);
     let Ok(entries) = fs::read_dir(&root) else {
         return;
@@ -70,13 +78,25 @@ pub fn prune(data_dir: &Path) {
         .map(|entry| entry.path())
         .filter(|path| path.is_dir())
         .collect();
-    if dirs.len() <= KEEP {
-        return;
-    }
     dirs.sort();
-    for stale in &dirs[..dirs.len() - KEEP] {
-        let _ = fs::remove_dir_all(stale);
+    let cutoff = now - chrono::Duration::days(MAX_AGE_DAYS);
+    let excess = dirs.len().saturating_sub(KEEP);
+    for (index, dir) in dirs.iter().enumerate() {
+        // An unparseable name is never aged out, only rotated out.
+        let expired = backup_time(dir).is_some_and(|taken| taken < cutoff);
+        if index < excess || expired {
+            let _ = fs::remove_dir_all(dir);
+        }
     }
+}
+
+/// The timestamp `create` put at the end of the directory name.
+fn backup_time(dir: &Path) -> Option<chrono::DateTime<chrono::Utc>> {
+    let name = dir.file_name()?.to_str()?;
+    let (_, stamp) = name.rsplit_once('-')?;
+    chrono::NaiveDateTime::parse_from_str(stamp, "%Y%m%dT%H%M%S%.3f")
+        .ok()
+        .map(|naive| naive.and_utc())
 }
 
 fn copy_recursive(from: &Path, to: &Path) -> Result<()> {
@@ -182,6 +202,33 @@ mod tests {
         for newest in &made[made.len() - KEEP..] {
             assert!(kept.contains(newest), "{} was pruned", newest.display());
         }
+        let _ = fs::remove_dir_all(data_dir);
+    }
+
+    #[test]
+    fn backups_older_than_four_weeks_are_dropped() {
+        let data_dir = temp_dir("prune-age");
+        let file = data_dir.join("state.json");
+        fs::write(&file, b"x").unwrap();
+        let made = create(&data_dir, "crdt-state-per-document-files", &[file])
+            .unwrap()
+            .dir;
+        assert!(
+            backup_time(&made).is_some(),
+            "name must carry its timestamp"
+        );
+
+        prune_at(
+            &data_dir,
+            chrono::Utc::now() + chrono::Duration::days(MAX_AGE_DAYS - 1),
+        );
+        assert!(made.exists(), "a recent backup must survive");
+
+        prune_at(
+            &data_dir,
+            chrono::Utc::now() + chrono::Duration::days(MAX_AGE_DAYS + 1),
+        );
+        assert!(!made.exists(), "an expired backup must be dropped");
         let _ = fs::remove_dir_all(data_dir);
     }
 }
